@@ -9,6 +9,7 @@ import {
   createSqlMcpLeasePort,
   createSqlSandboxStore,
   createSqlVaultStore,
+  setCredential,
 } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -81,7 +82,17 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
       "insert into public.goldens(id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id) values($1,$2,$3,'golden','private','modal','workspace','main','ap-mcp-test')",
       [golden, org, user],
     );
+    const vault = createSqlVaultStore(db);
+    await setCredential(vault, encryptionKey, user, {
+      scope: "user",
+      org: undefined,
+      kind: "openai",
+      value: "synthetic-model-account",
+    });
+    const account = (await vault.listCredentials("user", user))[0]!;
     const record = await createSqlSandboxStore(db).insert({
+      credentialId: account.id!,
+      credentialVersion: account.version!,
       id: sandbox,
       provider: "modal",
       providerSandboxId: "bx_live_mcp",

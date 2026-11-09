@@ -40,6 +40,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
+import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
@@ -112,6 +113,8 @@ const modelCatalogText = Object.entries(MODEL_CATALOG)
 const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
 const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
 const modelOutput = {
+  credentialId: z.string().nullable().optional(),
+  credentialVersion: z.number().int().nullable().optional(),
   model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
   reasoningEffort: z.string().nullable(),
 };
@@ -257,9 +260,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const live = async (sandboxId: string) => {
+  const live = async (sandboxId: string, allowUnbound = false) => {
     const found = await visible(sandboxId);
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
+    if (!allowUnbound && found.provider === "modal" && !found.credentialId)
+      throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,
       provider: await context.provider(found),
@@ -570,6 +575,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .describe(
               "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
             ),
+          credentialId: z.string().uuid().optional(),
           prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
           ttl_seconds: z
             .number()
@@ -637,6 +643,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),
+            ...(args.credentialId ? { credentialId: args.credentialId } : {}),
             ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
             ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
             ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
@@ -652,6 +659,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           repositoryDir: result.sandbox.repositoryDir ?? null,
           model: result.sandbox.model,
           reasoningEffort: result.sandbox.reasoningEffort,
+          credentialId: result.sandbox.credentialId ?? null,
+          credentialVersion: result.sandbox.credentialVersion ?? null,
           machineSize: result.sandbox.machineSize ?? null,
           status: result.sandbox.status,
           conversationIds: result.sandbox.conversationIds,
@@ -721,6 +730,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           repositoryDir: row.repositoryDir ?? null,
           model: row.model,
           reasoningEffort: row.reasoningEffort,
+          credentialId: row.credentialId ?? null,
+          credentialVersion: row.credentialVersion ?? null,
           machineSize: row.machineSize ?? null,
           status: row.status,
           statusReason: row.statusReason,
@@ -798,7 +809,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       readOnly: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const { sandbox: found, provider } = await live(args.id, true);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
@@ -835,6 +846,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+      if (found.credentialId)
+        await context.launchCredentials.resolve(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId,
+          found.credentialVersion ?? undefined,
+        );
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await provider.get(found.providerSandboxId);
@@ -899,6 +917,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const { sandbox: found, provider } = await live(args.id);
       const delivery = provider.capabilities[found.harness].steer;
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
+      if (delivery === "restart" && found.credentialId)
+        await context.launchCredentials.resolve(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId,
+          found.credentialVersion ?? undefined,
+        );
       const receipt = await provider.steer({
         sandboxId: found.providerSandboxId,
         text: args.text,
@@ -994,7 +1019,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       destructive: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const { sandbox: found, provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1176,7 +1201,11 @@ function describe(error: unknown): { code: string; message: string } {
     }
     return { code: error.code, message: error.message };
   }
-  if (error instanceof VaultError) return { code: "missing_credential", message: error.message };
+  if (error instanceof VaultError)
+    return {
+      code: error.code.startsWith("credential_binding_") ? error.code : "missing_credential",
+      message: error.message,
+    };
   if (error instanceof EncryptionKeyError) return { code: "unavailable", message: error.message };
   if (error instanceof DataError) return { code: "unavailable", message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };
