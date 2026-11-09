@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { CopyCommand } from "./Copy";
 import { CIPHER, GITHUB_TOKEN_HOURS, STORY } from "./content";
@@ -14,6 +15,8 @@ import { Review } from "./Review";
 
 type Hunk = {
   id: string;
+  /** The chapter's name: the nav's word where the nav has one. */
+  label: string;
   title: string;
   /** The task today: plain, only what Armada's facts imply. */
   before: string;
@@ -26,6 +29,7 @@ type Hunk = {
 const HUNKS: Hunk[] = [
   {
     id: "method",
+    label: "Method",
     title: "Set up your repos once.",
     before: "Each fresh start: [clone], install, run the setup again.",
     after: [
@@ -38,6 +42,7 @@ const HUNKS: Hunk[] = [
   },
   {
     id: "fleet",
+    label: "Fleet",
     title: "Launch one agent, or ten.",
     before: "[One checkout] on one laptop, shared by whatever runs in it.",
     after: [
@@ -50,6 +55,7 @@ const HUNKS: Hunk[] = [
   },
   {
     id: "tools",
+    label: "Tools",
     title: "Hand them your tools.",
     before: "MCP servers [set up on your machine], for the agent on it.",
     after: [
@@ -63,6 +69,7 @@ const HUNKS: Hunk[] = [
   },
   {
     id: "resume",
+    label: "Resume",
     title: "Stop the machine. Keep the thread.",
     before: "Close the lid and [the turn is lost].",
     after: [
@@ -75,6 +82,7 @@ const HUNKS: Hunk[] = [
   },
   {
     id: "cli",
+    label: "CLI",
     title: "Drive it from the browser, the terminal or your agent.",
     before: "The session lives in [the terminal that started it].",
     after: [
@@ -87,6 +95,7 @@ const HUNKS: Hunk[] = [
   },
   {
     id: "keys",
+    label: "Keys",
     title: "Your keys stay in Armada.",
     before: "Agent keys [in files on the machine] the agent runs on.",
     after: [
@@ -99,6 +108,15 @@ const HUNKS: Hunk[] = [
     command: STORY.keys,
   },
 ];
+
+/** The chapters the nav names, in order, and where the install step is. */
+const INDEX = [
+  ["method", "Method"],
+  ["fleet", "Fleet"],
+  ["cli", "CLI"],
+  ["keys", "Keys"],
+  ["install", "Install"],
+] as const;
 
 /** What stays the same between two hunks: the folded, unchanged lines. */
 const UNCHANGED = [
@@ -128,19 +146,22 @@ function words(text: string): ReactNode[] {
 }
 
 function HunkView({ hunk, old, now }: { hunk: Hunk; old: number; now: number }) {
-  const added = hunk.after.length + 2;
+  const added = hunk.after.length + 1;
   return (
     <section id={hunk.id} className="dx-hunk" aria-labelledby={`${hunk.id}-title`}>
       <h2 id={`${hunk.id}-title`} className="dx-hh">
-        <span className="dx-range" aria-hidden>
-          @@ -{old},1 +{now},{added} @@
+        <span className="dx-range">
+          <span className="dx-label">{hunk.label}</span>
+          <span aria-hidden>
+            @@ -{old},1 +{now},{added} @@
+          </span>
         </span>
         <span className="dx-title">{hunk.title}</span>
       </h2>
       <div className="dx-rows">
         <div className="dx-side is-old">
           <Line kind="del" no={old}>
-            <p>
+            <p className="dx-before">
               <span className="sr-only">Today: </span>
               {words(hunk.before)}
             </p>
@@ -156,14 +177,16 @@ function HunkView({ hunk, old, now }: { hunk: Hunk; old: number; now: number }) 
               </p>
             </Line>
           ))}
-          <Line kind="add" no={now + hunk.after.length} block>
-            {hunk.figure}
-          </Line>
-          <Line kind="add" no={now + hunk.after.length + 1} block>
-            <CopyCommand command={hunk.command} words />
-          </Line>
         </div>
       </div>
+      <Line kind="add" no={now + hunk.after.length} block>
+        <div className="dx-proof">
+          <div className="dx-proof-figure">{hunk.figure}</div>
+          <div className="dx-proof-cmd">
+            <CopyCommand command={hunk.command} words />
+          </div>
+        </div>
+      </Line>
     </section>
   );
 }
@@ -196,11 +219,23 @@ export function Story() {
   const placed = HUNKS.map((hunk) => {
     const at = { hunk, old, now };
     old += 2;
-    now += hunk.after.length + 3;
+    now += hunk.after.length + 2;
     return at;
   });
   return (
     <div className="dx">
+      <nav className="dx-index" aria-label="The story">
+        <ul>
+          {INDEX.map(([id, name]) => (
+            <li key={id}>
+              <a href={`#${id}`}>{name}</a>
+            </li>
+          ))}
+        </ul>
+        <Link href="/login" className="lp-button is-lime is-sm">
+          Sign in to try Armada
+        </Link>
+      </nav>
       <div className="dx-file">
         <div className="dx-head">
           <p className="dx-head-side is-old">
