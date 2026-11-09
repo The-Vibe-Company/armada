@@ -67,7 +67,7 @@ jobs:
 
   production:
     name: Production migrations
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (vars.RELEASE_SYNCED_DEPLOYS != 'true' || inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production

@@ -1,5 +1,13 @@
 # Automatic production migrations
 
+> **Release-sync opt-in:** When repository variable `RELEASE_SYNCED_DEPLOYS=true`,
+> the push-to-main production job and manual standalone migration apply are disabled.
+> Tagged migrations run inside Release before server/dashboard/npm deployment, using
+> the validated release SHA. Manual history, guarded repair and dry-run remain available;
+> they still inspect current main and are not a tagged apply/recovery path.
+> Use [release recovery and owner cutover](releasing.md#release-synchronized-production-owner-opt-in).
+> The legacy behavior documented below applies only while the variable is absent/false.
+
 The **Database migrations** workflow applies pending `supabase/migrations/*.sql`
 after a push to `main` changes that directory. It uses Supabase CLI 2.75.0,
 linked-project `db push`, and the remote migration history: re-running skips

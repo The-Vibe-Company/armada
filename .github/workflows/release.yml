@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: ${{ vars.RELEASE_SYNCED_DEPLOYS == 'true' && 'release-production' || format('release-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -164,10 +164,68 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  production:
+    name: Release migrations, server and dashboard
+    needs: [check, binary]
+    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    concurrency:
+      group: production-supabase-migrations
+      cancel-in-progress: false
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
+      RELEASE_SHA: ${{ needs.check.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject superseded releases
+        run: |
+          # Recovery retries the latest stable release, never silently downgrades production.
+          latest=$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '1p')
+          test "v$RELEASE_VERSION" = "$latest" || {
+            echo "::error::Production deploy requires the latest stable tag ($latest); use a new hotfix release."
+            exit 1
+          }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.75.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install pinned deployment clients
+        run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+      - name: Migrate, deploy server, wait healthy, then deploy dashboard
+        run: bash .release-tools/scripts/release/deploy-production.sh
+      - name: Report stopped release
+        if: failure()
+        run: echo "::error::Release stopped; do not deploy later stages manually. See docs/releasing.md for partial-release recovery."
+
   publish:
     name: Publish to npm
-    needs: [check, binary]
-    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    needs: [check, binary, production]
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.production.result == 'success' || (needs.production.result == 'skipped' && (vars.RELEASE_SYNCED_DEPLOYS != 'true' || needs.check.outputs.publish != 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm
