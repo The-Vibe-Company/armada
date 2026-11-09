@@ -94,16 +94,19 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
     async setSandbox(id: string, boatSandboxId: string): Promise<void> {
       await write(
         sql,
-        `update public.goldens set provider_sandbox_id = $2 where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
+        `update public.goldens set provider_sandbox_id = $2, boat_sandbox_id = case when provider = 'boat' then $2 else null end where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
         [id, boatSandboxId],
       );
     },
 
+    // Write compatibility pairs explicitly: correctness must not depend on a repair trigger.
+    // Modal's Boat aliases remain null.
     async setSnapshot(id: string, providerSnapshotId: string): Promise<void> {
-      await write(sql, `update public.goldens set provider_snapshot_id = $2 where id = $1 returning id`, [
-        id,
-        providerSnapshotId,
-      ]);
+      await write(
+        sql,
+        `update public.goldens set provider_snapshot_id = $2, boat_snapshot_id = case when provider = 'boat' then $2 else null end where id = $1 returning id`,
+        [id, providerSnapshotId],
+      );
     },
   };
 }
