@@ -14,6 +14,7 @@ const dto = (overrides: Record<string, unknown> = {}) => ({
   url: "https://mcp.linear.app/mcp",
   authType: "oauth",
   status: "not_connected",
+  defaultForLaunch: false,
   ...overrides,
 });
 
@@ -110,6 +111,52 @@ describe("MCP control client", () => {
         body: { state: "state-1234", code: "c", issuer: "https://auth.example" },
       },
     ]);
+  });
+
+  test("a catalog service connects by id only, and metadata sends only what changes", async () => {
+    const { calls, control } = server((operation) =>
+      Response.json({
+        connection: dto({ catalogId: "linear", defaultForLaunch: operation === "metadata", status: "connected" }),
+      }),
+    );
+    const created = await control.createFromCatalog({ org: ORG, scope: "personal", name: "Work", serviceId: "linear" });
+    const updated = await control.metadata({ org: ORG, id: ID, defaultForLaunch: true });
+    expect(calls.map(({ url, body }) => ({ url, body }))).toEqual([
+      {
+        url: "https://armada.example/api/v1/mcp/create",
+        body: { org: ORG, scope: "personal", name: "Work", serviceId: "linear" },
+      },
+      { url: "https://armada.example/api/v1/mcp/metadata", body: { org: ORG, id: ID, defaultForLaunch: true } },
+    ]);
+    expect([created.catalogId, created.defaultForLaunch, updated.defaultForLaunch]).toEqual(["linear", false, true]);
+  });
+
+  test("the catalog only offers Connect for a service the server reports available", async () => {
+    const service = { id: "notion", label: "Notion", url: "https://mcp.notion.com/mcp", availability: "available" };
+    const { calls, control } = server(() =>
+      Response.json({
+        services: [
+          service,
+          { ...service, id: "slack", label: "Slack", availability: "setup_required", setupMessage: "Register an app." },
+          { ...service, id: "future", label: "Future", availability: "maybe" },
+          { ...service, id: "bad", url: "javascript:alert(1)" },
+          { ...service, id: "Not An Id" },
+        ],
+      }),
+    );
+    const services = await control.catalog(ORG);
+    expect(calls[0]?.body).toEqual({ org: ORG });
+    expect(services.map((item) => [item.id, item.availability])).toEqual([
+      ["notion", "available"],
+      ["slack", "setup_required"],
+      ["future", "setup_required"],
+    ]);
+    expect(services[1]?.setupMessage).toBe("Register an app.");
+  });
+
+  test("a server without the catalog says so instead of offering nothing", async () => {
+    const { control } = server(() => Response.json({ error: { message: "Unknown route." } }, { status: 404 }));
+    await expect(control.catalog(ORG)).rejects.toThrow("does not offer the service catalog yet");
   });
 
   test("revoke and delete need the server's explicit confirmation", async () => {

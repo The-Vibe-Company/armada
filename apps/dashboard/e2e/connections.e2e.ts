@@ -20,10 +20,18 @@ async function mockState(): Promise<MockState> {
 const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`);
 
 async function openAdd(page: Page) {
-  await page.getByRole("button", { name: "Add connection" }).click();
-  const dialog = page.getByRole("dialog", { name: "Add an MCP connection" });
+  await page.getByRole("button", { name: "Custom server" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add a custom server" });
   await expect(dialog).toBeVisible();
   return dialog;
+}
+
+/** Opens a connection's menu and picks one of its actions. */
+async function menu(page: Page, name: string, item: string) {
+  await card(page, name)
+    .getByRole("button", { name: `More actions for ${name}` })
+    .click();
+  await page.getByRole("menuitem", { name: item }).click();
 }
 
 test.beforeEach(reset);
@@ -37,9 +45,8 @@ for (const mobile of [false, true]) {
     const personal = page.getByRole("region", { name: "Your connections" });
     const shared = page.getByRole("region", { name: "Acme connections" });
     await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("alice@linear.test");
-    await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText(
-      "21 tools · 0 resources · 1 prompt",
-    );
+    await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("Linear");
+    await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("21 tools");
     await expect(shared.locator('[data-connection="Acme Docs"]')).toContainText("Connected");
     await expect(shared.locator('[data-connection="Acme Sentry"]')).toContainText("Needs reconnect");
     await expect(shared.locator('[data-connection="Acme Sentry"]')).toContainText("refresh token was revoked");
@@ -55,7 +62,7 @@ for (const mobile of [false, true]) {
       animations: "disabled",
     });
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Add connection" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Custom server" })).toBeFocused();
   });
 }
 
@@ -65,6 +72,7 @@ test("a member manages personal connections only and cannot add org ones", async
   await expect(card(page, "Alice Linear")).toHaveCount(0);
   await expect(card(page, "Acme Docs")).toContainText("Managed by the org's admins.");
   await expect(card(page, "Acme Docs").getByRole("button")).toHaveCount(0);
+  await expect(card(page, "Acme Docs").getByRole("switch")).toHaveCount(0);
   const dialog = await openAdd(page);
   await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeDisabled();
   await expect(dialog.getByText("Only an org admin adds these.")).toBeVisible();
@@ -143,7 +151,7 @@ test("a callback without a dashboard session goes to sign-in and keeps nothing o
 test("disabling a connection takes it out of launches until it is enabled again", async ({ page }) => {
   await signIn(page, "alice@example.com", "/connections");
   const docs = card(page, "Acme Docs");
-  await docs.getByRole("button", { name: "Disable Acme Docs" }).click();
+  await menu(page, "Acme Docs", "Disable");
   await expect(docs.getByRole("status")).toContainText("Acme Docs is disabled. New launches cannot select it.");
   await expect(docs).toContainText("Disabled");
   await docs.screenshot({ path: "test-results/connection-disabled.png", animations: "disabled" });
@@ -159,14 +167,14 @@ test("disabling a connection takes it out of launches until it is enabled again"
   await expect(page.getByRole("dialog").getByText("Disabled. Enable it on the Connections page first.")).toBeVisible();
 
   await page.goto("/connections");
-  await docs.getByRole("button", { name: "Enable Acme Docs" }).click();
+  await menu(page, "Acme Docs", "Enable");
   await expect(docs.getByRole("status")).toContainText("Acme Docs is enabled.");
   await expect(docs).toContainText("Connected");
 
   // A member gets no Disable control on an org connection.
   await page.context().clearCookies();
   await signIn(page, "bob@example.com", "/connections");
-  await expect(card(page, "Acme Docs").getByRole("button", { name: "Disable Acme Docs" })).toHaveCount(0);
+  await expect(card(page, "Acme Docs").getByRole("button", { name: "More actions for Acme Docs" })).toHaveCount(0);
 });
 
 test("a bearer token is write-only: refused tokens are reported, and the field never keeps the value", async ({
@@ -199,7 +207,7 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
   expect(state.controlCalls.find((call) => call.operation === "create")?.body.authentication).toBe("bad-token");
 
   // Editing warns that the stored token is cleared, then reconnects with the new one.
-  await row.getByRole("button", { name: "Edit Internal API" }).click();
+  await menu(page, "Internal API", "Edit server");
   const edit = page.getByRole("dialog", { name: "Edit Internal API" });
   await expect(edit.getByText("Any saved sign-in, token or headers are deleted, not kept")).toBeVisible();
   // The complete definition is shown and resubmitted: the registry's save is a full replace.
@@ -224,11 +232,11 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
     authentication: "good-token",
   });
 
-  await row.getByRole("button", { name: "Revoke" }).click();
-  await page.getByRole("button", { name: "Revoke access" }).click();
+  await menu(page, "Internal API", "Revoke access");
+  await page.getByRole("alertdialog").getByRole("button", { name: "Revoke access" }).click();
   await expect(row).toContainText("Not connected");
   await expect(row.getByRole("status")).toContainText("Access revoked");
-  await row.getByRole("button", { name: "Delete" }).click();
+  await menu(page, "Internal API", "Delete");
   await page.getByRole("button", { name: "Delete connection" }).click();
   await expect(row).toHaveCount(0);
 });
@@ -265,8 +273,12 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await expect(files).toContainText("npx -y @modelcontextprotocol/server-filesystem@2026.1.14 /workspace");
   await expect(files).toContainText("stdio (in sandbox)");
   await expect(files.locator("[data-connection-status]")).toHaveText("Configured for launch");
-  await expect(files).toContainText("Available in sandbox");
-  await expect(files.getByRole("button", { name: /^Check/ })).toHaveCount(0);
+  await files.getByRole("button", { name: "More actions for files" }).click();
+  await expect(page.getByRole("menuitem", { name: "Edit server" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Check" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toBeHidden();
+  await expect(files.getByRole("button", { name: "More actions for files" })).toBeFocused();
   const created = (await mockState()).controlCalls.find((call) => call.operation === "create");
   expect(created?.body).toEqual({
     org: ACME,
@@ -279,7 +291,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   });
 
   // An edit is a full replace with the stored scope, and leaves it configured for launch again.
-  await files.getByRole("button", { name: "Edit files" }).click();
+  await menu(page, "files", "Edit server");
   const edit = page.getByRole("dialog", { name: "Edit files" });
   await edit.getByLabel("Arguments, one per line").fill("-y\n@modelcontextprotocol/server-filesystem@2026.2.1\n/srv");
   await edit.getByRole("button", { name: "Save", exact: true }).click();
@@ -325,9 +337,11 @@ test("a launch picks connections; personal ones need a private sandbox even from
   await dialog.getByRole("radio", { name: /^Org/ }).focus();
   await page.keyboard.press("ArrowLeft");
   await expect(dialog.getByRole("radio", { name: /^Private/ })).toBeChecked();
-  await linear.focus();
+  // Untouched, the selection follows the visibility: a private sandbox starts with the personal default.
+  await expect(linear).toBeChecked();
+  await expect(docs).not.toBeChecked();
+  await docs.focus();
   await page.keyboard.press("Space");
-  await docs.check();
   await expect(linear).toBeChecked();
   await dialog.getByRole("radio", { name: /^Org/ }).check();
   await expect(dialog.getByText("A personal connection was unselected")).toBeVisible();
@@ -387,7 +401,7 @@ test("switching organization switches the connections and their launch choices",
   await expect(card(page, "Zenith Search")).toBeVisible();
   await expect(card(page, "Acme Docs")).toHaveCount(0);
   await expect(card(page, "Alice Linear")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Add connection" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Custom server" })).toBeVisible();
   // Alice is only a member in Zenith: its org connections are read-only for her.
   await expect(card(page, "Zenith Search")).toContainText("Managed by the org's admins.");
   const lists = (await mockState()).controlCalls.filter((call) => call.operation === "list");
@@ -405,4 +419,166 @@ test("a sandbox's applied connections come from the registry, and a failed read 
   await page.reload();
   await expect(section.getByRole("alert")).toContainText("could not be loaded");
   await expect(section).not.toContainText("Launched without");
+});
+
+test("a catalog service adds a second named account through its sign-in, and Slack shows its setup instead", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/connections");
+  const services = page.getByRole("region", { name: "Services" });
+  const slack = services.locator('[data-service="slack"]');
+  await expect(slack).toContainText("Setup required");
+  await expect(slack).toContainText("Registered confidential OAuth client required");
+  await expect(slack.getByRole("button")).toHaveCount(0);
+  await expect(slack.getByRole("link", { name: "Setup guide" })).toHaveAttribute(
+    "href",
+    "https://docs.slack.dev/ai/slack-mcp-server/",
+  );
+  await expect(services.locator('[data-service="linear"]')).toContainText("1 connection");
+
+  await services.getByRole("button", { name: "Connect another Linear account" }).click();
+  const dialog = page.getByRole("dialog", { name: "Connect Linear" });
+  await expect(dialog.getByLabel("Name")).toHaveValue("Linear");
+  await dialog.getByLabel("Name").fill("Work Linear");
+  await dialog.getByLabel("Include in new launches by default").check();
+  await page.screenshot({ path: "test-results/connect-service-desktop.png", animations: "disabled" });
+  await dialog.getByRole("button", { name: "Continue to Linear" }).click();
+
+  await expect(page.getByRole("heading", { name: "Authorize Armada for Work Linear" })).toBeVisible();
+  await page.getByRole("link", { name: "Allow" }).click();
+  await expect(page.locator('[data-oauth-return="connected"]')).toContainText("Work Linear is connected");
+  // Two accounts of one service are two connections: each keeps its own nickname and its verified account.
+  await expect(card(page, "Work Linear")).toContainText("Signed in as service@oauth.test");
+  await expect(card(page, "Alice Linear")).toContainText("Signed in as alice@linear.test");
+  await expect(
+    card(page, "Work Linear").getByRole("switch", { name: "Include Work Linear by default" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(services.locator('[data-service="linear"]')).toContainText("2 connections");
+  await page.screenshot({ path: "test-results/connections-catalog-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/connections-catalog-mobile.png", fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  let state = await mockState();
+  const created = state.connections.find((row) => row.name === "Work Linear");
+  expect(created?.id).not.toBe(ALICE_LINEAR);
+  // Only the service id travels: the server owns the URL and the sign-in.
+  expect(state.controlCalls.find((call) => call.operation === "create")?.body).toEqual({
+    org: ACME,
+    scope: "personal",
+    name: "Work Linear",
+    serviceId: "linear",
+  });
+  expect(state.controlCalls.find((call) => call.operation === "metadata")?.body).toEqual({
+    org: ACME,
+    id: created?.id,
+    defaultForLaunch: true,
+  });
+
+  // A forged form for a service that still needs setup is refused before anything is created.
+  await services.getByRole("button", { name: "Connect Notion" }).click();
+  const notion = page.getByRole("dialog", { name: "Connect Notion" });
+  await notion.locator('input[name="service"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "slack";
+  });
+  await notion.getByRole("button", { name: "Continue to Notion" }).click();
+  await expect(notion.getByRole("alert")).toContainText("Slack needs setup on this Armada server first.");
+  state = await mockState();
+  expect(state.controlCalls.filter((call) => call.operation === "create")).toHaveLength(1);
+  await page.keyboard.press("Escape");
+  await expect(services.getByRole("button", { name: "Connect Notion" })).toBeFocused();
+
+  // Once the connection exists, a failed sign-in start is finished on its row: the dialog offers no second submit,
+  // and opens again on a fresh form.
+  await fetch(`${MOCK}/__test/fail-connect`, { method: "POST" });
+  await services.getByRole("button", { name: "Connect Notion" }).click();
+  await notion.getByRole("button", { name: "Continue to Notion" }).click();
+  await expect(notion.getByRole("alert")).toContainText(
+    "Notion was added, but connecting failed: The authorization server did not answer.",
+  );
+  await expect(notion.getByRole("button", { name: "Continue to Notion" })).toHaveCount(0);
+  await notion.locator("[data-service-outcome]").getByRole("button", { name: "Close" }).click();
+  await expect(card(page, "Notion").getByRole("button", { name: "Connect Notion" })).toBeVisible();
+  await services.getByRole("button", { name: "Connect another Notion account" }).click();
+  await expect(notion.getByLabel("Name")).toHaveValue("Notion 2");
+  await expect(notion.getByRole("alert")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  state = await mockState();
+  expect(state.controlCalls.filter((call) => call.operation === "create")).toHaveLength(2);
+
+  // A server without the catalog still lists every connection and offers a custom server.
+  await fetch(`${MOCK}/__test/fail-catalog`, { method: "POST" });
+  await page.goto("/connections");
+  await expect(page.locator("[data-catalog-unavailable]")).toContainText("does not offer the service catalog yet");
+  await expect(card(page, "Work Linear")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Custom server" })).toBeVisible();
+});
+
+test("rename and include-by-default change metadata only, and an unreachable server offers Retry", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/connections");
+  await menu(page, "Alice Linear", "Rename");
+  const dialog = page.getByRole("dialog", { name: "Rename Alice Linear" });
+  await expect(dialog.getByLabel("Name")).toHaveValue("Alice Linear");
+  await dialog.getByLabel("Name").fill("Personal Linear");
+  await dialog.getByRole("button", { name: "Rename" }).click();
+  await expect(dialog).toBeHidden();
+  const linear = card(page, "Personal Linear");
+  await expect(linear.getByRole("status")).toContainText("Renamed to Personal Linear.");
+  await expect(linear).toContainText("Connected");
+  await expect(linear).toContainText("Signed in as alice@linear.test");
+  await expect(linear.getByRole("button", { name: "More actions for Personal Linear" })).toBeFocused();
+
+  const docs = card(page, "Acme Docs");
+  const toggle = docs.getByRole("switch", { name: "Include Acme Docs by default" });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(docs.getByRole("status")).toContainText("Acme Docs is included in new launches by default.");
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await expect(docs).toContainText("Connected");
+  await docs.screenshot({ path: "test-results/connection-default.png", animations: "disabled" });
+  // Neither change went through the full replace, the enable switch or a new sign-in, which would drop the grant.
+  const calls = (await mockState()).controlCalls.filter((call) =>
+    ["metadata", "update", "set-enabled", "connect", "revoke"].includes(call.operation),
+  );
+  expect(calls.map((call) => [call.operation, call.body])).toEqual([
+    ["metadata", { org: ACME, id: ALICE_LINEAR, name: "Personal Linear" }],
+    ["metadata", { org: ACME, id: ACME_DOCS, defaultForLaunch: true }],
+  ]);
+
+  const search = card(page, "Acme Search");
+  await expect(search).toContainText("Unavailable");
+  await expect(search).toContainText("The server did not answer.");
+  await search.getByRole("button", { name: "Retry Acme Search" }).click();
+  await expect(search.getByRole("status")).toContainText("Acme Search is connected.");
+  await expect(search.getByRole("button", { name: "Retry Acme Search" })).toBeHidden();
+});
+
+test("a launch starts with the usable defaults and sends exactly what is ticked, even nothing", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/goldens");
+  const open = async () => {
+    await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+    const dialog = page.getByRole("dialog");
+    // The org golden starts as an org sandbox, where a personal default does not apply.
+    await expect(dialog.getByRole("checkbox", { name: "Alice Linear" })).not.toBeChecked();
+    await dialog.getByRole("radio", { name: /^Private/ }).check();
+    return dialog;
+  };
+
+  let dialog = await open();
+  await expect(dialog.getByRole("checkbox", { name: "Alice Linear" })).toBeChecked();
+  await dialog.getByRole("checkbox", { name: "Alice Linear" }).uncheck();
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+
+  await page.goto("/goldens");
+  dialog = await open();
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+
+  const launches = (await mockState()).launches;
+  expect(launches.map((launch) => [launch.visibility, launch.connections])).toEqual([
+    ["private", []],
+    ["private", [ALICE_LINEAR]],
+  ]);
 });

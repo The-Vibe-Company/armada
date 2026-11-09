@@ -1,13 +1,20 @@
-import { CircleAlertIcon, CircleCheckIcon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon, UserIcon, UsersIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { AddConnectionDialog, ConnectionCard } from "@/components/connections";
+import type { ReactNode } from "react";
+import { AddConnectionDialog, ConnectionCard, ServiceCatalog } from "@/components/connections";
 import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { type McpConnection, type OAuthReturn, oauthReturn, STATUS_INFO } from "@/lib/connections";
+import {
+  type McpCatalogService,
+  type McpConnection,
+  type OAuthReturn,
+  oauthReturn,
+  STATUS_INFO,
+} from "@/lib/connections";
 import { ControlError } from "@/lib/control";
-import { listSelectedConnections, viewerControl } from "@/lib/data/connections";
+import { listSelectedCatalog, listSelectedConnections, viewerControl } from "@/lib/data/connections";
 import { selectedOrganization } from "@/lib/data/selected-org";
 
 export const metadata: Metadata = { title: "Connections" };
@@ -73,23 +80,51 @@ export default async function ConnectionsPage({ searchParams }: Props) {
   const isAdmin = selected.role === "admin";
   const personal = list.connections.filter((item) => item.scope === "personal");
   const shared = list.connections.filter((item) => item.scope === "org");
-  const notice = returned ? await returnNotice(returned, selected.org.id) : null;
+  const [notice, catalog] = await Promise.all([
+    returned ? returnNotice(returned, selected.org.id) : null,
+    listSelectedCatalog(selected.org.id),
+  ]);
+  const services = catalog.state === "ready" ? catalog.services : [];
 
   return (
     <>
       {header}
       {notice}
+      <section className="space-y-3" aria-label="Services">
+        <SectionHeader title="Services" description="Sign in once, then pick it when you launch." />
+        {catalog.state === "ready" ? (
+          services.length > 0 ? (
+            <ServiceCatalog
+              services={services}
+              connections={list.connections}
+              orgId={selected.org.id}
+              orgName={selected.org.name}
+              isAdmin={isAdmin}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">No services offered. Add a custom server instead.</p>
+          )
+        ) : (
+          <p className="text-sm text-muted-foreground" data-catalog-unavailable>
+            Services are not available: {catalog.message} You can still add a custom server.
+          </p>
+        )}
+      </section>
       <ConnectionSection
         title="Your connections"
-        description="Only you. Private sandboxes only."
+        icon={<UserIcon />}
+        description="Only you, in your private sandboxes."
         connections={personal}
+        services={services}
         canManage
         empty="No personal connections."
       />
       <ConnectionSection
         title={`${selected.org.name} connections`}
-        description={isAdmin ? "Every member. You manage them." : "Every member. Only an admin adds or changes them."}
+        icon={<UsersIcon />}
+        description={isAdmin ? "Every member. You manage them." : "Every member. Only an admin changes them."}
         connections={shared}
+        services={services}
         canManage={isAdmin}
         empty="No org connections."
       />
@@ -99,26 +134,43 @@ export default async function ConnectionsPage({ searchParams }: Props) {
 
 function ConnectionSection({
   title,
+  icon,
   description,
   connections,
+  services,
   canManage,
   empty,
 }: {
   title: string;
+  icon: ReactNode;
   description: string;
   connections: McpConnection[];
+  services: readonly McpCatalogService[];
   canManage: boolean;
   empty: string;
 }) {
   return (
     <section className="space-y-3" aria-label={title}>
-      <SectionHeader title={title} description={description} />
+      <SectionHeader
+        title={title}
+        description={
+          <span className="flex items-center gap-1.5 [&_svg]:size-3.5">
+            {icon}
+            {description}
+          </span>
+        }
+      />
       {connections.length === 0 ? (
         <p className="rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">{empty}</p>
       ) : (
         <ul className="divide-y rounded-lg border">
           {connections.map((connection) => (
-            <ConnectionCard key={connection.id} connection={connection} canManage={canManage} />
+            <ConnectionCard
+              key={connection.id}
+              connection={connection}
+              canManage={canManage}
+              serviceLabel={services.find((service) => service.id === connection.catalogId)?.label}
+            />
           ))}
         </ul>
       )}

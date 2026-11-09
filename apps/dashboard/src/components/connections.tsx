@@ -2,24 +2,31 @@
 
 import {
   CircleAlertIcon,
+  EllipsisIcon,
   GlobeIcon,
+  KeyRoundIcon,
+  LogInIcon,
   PencilIcon,
   PlusIcon,
+  PowerIcon,
   RefreshCwIcon,
+  SettingsIcon,
   TerminalIcon,
   Trash2Icon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
-import { type ReactNode, useActionState, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addConnection,
+  addServiceConnection,
   checkConnection,
   connectConnection,
   deleteConnection,
   editConnection,
   revokeConnection,
   setConnectionEnabled,
+  updateConnectionMetadata,
 } from "@/app/actions/connections";
 import { SubmitButton } from "@/components/action-form";
 import {
@@ -30,18 +37,25 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -51,11 +65,14 @@ import {
   authLabel,
   type ConnectionAuthType,
   type ConnectionScope,
+  connectAction,
+  type McpCatalogService,
   type McpConnection,
   parseStdioImport,
   STATUS_INFO,
   scopeLabel,
   statusLabel,
+  suggestedName,
   transportLabel,
 } from "@/lib/connections";
 import { cn } from "@/lib/utils";
@@ -116,7 +133,7 @@ const AUTH_CHOICES: { value: ConnectionAuthType; hint: string }[] = [
 type HeaderRow = { key: number; name: string };
 
 /**
- * The Add connection dialog. Non-secret fields are controlled, so they survive a refused submission; the
+ * The custom server dialog, for anything the catalog does not offer. Non-secret fields are controlled, so they survive a refused submission; the
  * token, header values and client secret are uncontrolled password fields that React empties after every
  * submission, and nothing echoes them back. A success remounts the fields, so the dialog starts clean.
  */
@@ -131,16 +148,14 @@ export function AddConnectionDialog({ orgId, orgName, isAdmin }: { orgId: string
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>
-          <PlusIcon /> Add connection
+        <Button variant="outline">
+          <PlusIcon /> Custom server
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Add an MCP connection</DialogTitle>
-          <DialogDescription>
-            Connect a server once in {orgName}, then pick it when you launch a sandbox.
-          </DialogDescription>
+          <DialogTitle>Add a custom server</DialogTitle>
+          <DialogDescription>Any MCP server by URL, or a command that runs in the sandbox.</DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
           <input type="hidden" name="org" value={orgId} />
@@ -183,30 +198,8 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
         </div>
       </fieldset>
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Who uses it</legend>
-        <input type="hidden" name="scope" value={scope} />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <ChoiceCard
-            name={`${id}-scope`}
-            checked={scope === "personal"}
-            onChange={() => setScope("personal")}
-            icon={<UserIcon />}
-            title="Personal"
-            hint="Your account, your private sandboxes only."
-          />
-          <ChoiceCard
-            name={`${id}-scope`}
-            checked={scope === "org"}
-            onChange={() => setScope("org")}
-            disabled={!isAdmin}
-            icon={<UsersIcon />}
-            title={`Org (${orgName})`}
-            hint={isAdmin ? "One shared account for org sandboxes." : "Only an org admin adds these."}
-          />
-        </div>
-        <p className="text-xs text-muted-foreground">Cannot be changed later.</p>
-      </fieldset>
+      <input type="hidden" name="scope" value={scope} />
+      <ScopeChoice idPrefix={id} scope={scope} onScope={setScope} orgName={orgName} isAdmin={isAdmin} />
 
       <div className="space-y-2">
         <Label htmlFor={`${id}-name`}>Name</Label>
@@ -227,15 +220,8 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
       ) : (
         <StdioFields idPrefix={id} onName={(imported) => setName((current) => current || imported)} />
       )}
-      {sharedSignIn && (
-        <p className="flex gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-foreground">
-          <CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
-          <span>
-            If the server asks for sign-in, the account you authorize becomes the org's shared identity: every org
-            sandbox acts as it. Sign in with a service account, not your personal login.
-          </span>
-        </p>
-      )}
+      {sharedSignIn && <SharedIdentityWarning />}
+      <DefaultCheckbox idPrefix={id} />
 
       <ResultLine result={result} />
       <div className="flex flex-wrap justify-end gap-2">
@@ -568,9 +554,301 @@ function StdioFields({
   );
 }
 
+/* ---------------------------------------------------------------- catalog */
+
+/** A service's initial in a quiet square: the mark of a connection without borrowing anyone's logo. */
+function ServiceMark({ label, className }: { label: string; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-sm font-semibold text-muted-foreground",
+        className,
+      )}
+    >
+      {label.trim().charAt(0).toUpperCase() || "?"}
+    </span>
+  );
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * The curated services, one tile each. A service the deployment cannot sign in to yet says so and offers its
+ * setup guide instead of Connect. A service already connected offers another account: connections are
+ * independent, so the same service can be added as many times as there are accounts.
+ */
+export function ServiceCatalog({
+  services,
+  connections,
+  orgId,
+  orgName,
+  isAdmin,
+}: {
+  services: readonly McpCatalogService[];
+  connections: readonly McpConnection[];
+  orgId: string;
+  orgName: string;
+  isAdmin: boolean;
+}) {
+  return (
+    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      {services.map((service) => {
+        const count = connections.filter((connection) => connection.catalogId === service.id).length;
+        const ready = service.availability === "available";
+        return (
+          <li
+            key={service.id}
+            data-service={service.id}
+            className="flex min-w-0 items-center gap-3 rounded-lg border p-3"
+          >
+            <ServiceMark label={service.label} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{service.label}</p>
+              <p
+                className={cn("text-xs text-muted-foreground", ready ? "truncate" : "line-clamp-2")}
+                title={ready ? service.url : service.setupMessage}
+              >
+                {!ready
+                  ? (service.setupMessage ?? "Needs setup on this Armada server.")
+                  : count > 0
+                    ? `${count} ${count === 1 ? "connection" : "connections"}`
+                    : hostOf(service.url)}
+              </p>
+            </div>
+            {ready ? (
+              <ConnectServiceDialog
+                service={service}
+                taken={connections.map((connection) => connection.name)}
+                another={count > 0}
+                orgId={orgId}
+                orgName={orgName}
+                isAdmin={isAdmin}
+              />
+            ) : (
+              <div className="flex shrink-0 flex-col items-end gap-1">
+                <Badge variant="outline" className={TONE.warn} data-service-setup>
+                  Setup required
+                </Badge>
+                {service.docsUrl && (
+                  <a
+                    href={service.docsUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                  >
+                    Setup guide
+                  </a>
+                )}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * Name, who uses it and the launch default for a new connection to a catalog service, then its sign-in. The name
+ * is a nickname for Armada only; the account it acts as is whatever the service's sign-in returns.
+ */
+function ConnectServiceDialog({
+  service,
+  taken,
+  another,
+  orgId,
+  orgName,
+  isAdmin,
+}: {
+  service: McpCatalogService;
+  taken: readonly string[];
+  another: boolean;
+  orgId: string;
+  orgName: string;
+  isAdmin: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  // Every opening starts a fresh form: no earlier result or half-typed name carries over.
+  const [generation, setGeneration] = useState(0);
+  function change(next: boolean) {
+    setOpen(next);
+    if (!next) setGeneration((value) => value + 1);
+  }
+  return (
+    <Dialog open={open} onOpenChange={change}>
+      <DialogTrigger asChild>
+        <Button
+          variant={another ? "outline" : "default"}
+          size="sm"
+          aria-label={another ? `Connect another ${service.label} account` : `Connect ${service.label}`}
+        >
+          {another ? "Connect another" : "Connect"}
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Connect {service.label}</DialogTitle>
+          <DialogDescription>Then sign in at {service.label} with the account Armada should use.</DialogDescription>
+        </DialogHeader>
+        <ConnectServiceForm
+          key={generation}
+          service={service}
+          taken={taken}
+          orgId={orgId}
+          orgName={orgName}
+          isAdmin={isAdmin}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The form of {@link ConnectServiceDialog}. Once the server created the connection, the form gives way to the
+ * outcome: submitting again would add a second connection, so what remains is finished on the connection's row.
+ */
+function ConnectServiceForm({
+  service,
+  taken,
+  orgId,
+  orgName,
+  isAdmin,
+}: {
+  service: McpCatalogService;
+  taken: readonly string[];
+  orgId: string;
+  orgName: string;
+  isAdmin: boolean;
+}) {
+  const [state, formAction] = useActionState(addServiceConnection, null);
+  const [scope, setScope] = useState<ConnectionScope>("personal");
+  const id = useId();
+  if (state?.created) {
+    return (
+      <div className="space-y-4" data-service-outcome>
+        <ResultLine result={state} />
+        <div className="flex justify-end">
+          <DialogClose asChild>
+            <Button variant="outline">Close</Button>
+          </DialogClose>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <form action={formAction} className="space-y-4">
+      <input type="hidden" name="org" value={orgId} />
+      <input type="hidden" name="service" value={service.id} />
+      <input type="hidden" name="scope" value={scope} />
+      <div className="space-y-2">
+        <Label htmlFor={`${id}-name`}>Name</Label>
+        <Input
+          id={`${id}-name`}
+          name="name"
+          defaultValue={suggestedName(service.label, taken)}
+          required
+          maxLength={120}
+          autoComplete="off"
+          aria-describedby={`${id}-name-hint`}
+        />
+        <p id={`${id}-name-hint`} className="text-xs text-muted-foreground">
+          Your label for this account, such as Work or Personal.
+        </p>
+      </div>
+      <ScopeChoice idPrefix={id} scope={scope} onScope={setScope} orgName={orgName} isAdmin={isAdmin} />
+      {scope === "org" && <SharedIdentityWarning />}
+      <DefaultCheckbox idPrefix={id} />
+      <ResultLine result={state} />
+      <div className="flex justify-end">
+        <SubmitButton>Continue to {service.label}</SubmitButton>
+      </div>
+    </form>
+  );
+}
+
+function ScopeChoice({
+  idPrefix,
+  scope,
+  onScope,
+  orgName,
+  isAdmin,
+}: {
+  idPrefix: string;
+  scope: ConnectionScope;
+  onScope: (scope: ConnectionScope) => void;
+  orgName: string;
+  isAdmin: boolean;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">Who uses it</legend>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <ChoiceCard
+          name={`${idPrefix}-scope`}
+          checked={scope === "personal"}
+          onChange={() => onScope("personal")}
+          icon={<UserIcon />}
+          title="Personal"
+          hint="Your account, your private sandboxes only."
+        />
+        <ChoiceCard
+          name={`${idPrefix}-scope`}
+          checked={scope === "org"}
+          onChange={() => onScope("org")}
+          disabled={!isAdmin}
+          icon={<UsersIcon />}
+          title={`Org (${orgName})`}
+          hint={isAdmin ? "One shared account for org sandboxes." : "Only an org admin adds these."}
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">Cannot be changed later.</p>
+    </fieldset>
+  );
+}
+
+function SharedIdentityWarning() {
+  return (
+    <p className="flex gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-foreground">
+      <CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+      <span>
+        If the server asks for sign-in, the account you authorize becomes the org's shared identity: every org sandbox
+        acts as it. Sign in with a service account, not your personal login.
+      </span>
+    </p>
+  );
+}
+
+/** Whether a new connection starts out included in launches that name no connections. */
+function DefaultCheckbox({ idPrefix }: { idPrefix: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <input
+        id={`${idPrefix}-default`}
+        type="checkbox"
+        name="default_for_launch"
+        aria-describedby={`${idPrefix}-default-hint`}
+        className="mt-0.5 size-4 shrink-0 accent-primary"
+      />
+      <div className="space-y-0.5">
+        <Label htmlFor={`${idPrefix}-default`}>Include in new launches by default</Label>
+        <p id={`${idPrefix}-default-hint`} className="text-xs text-muted-foreground">
+          Preselected when you launch. You can still remove it each time.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- one connection */
 
-/** A button bound to a server action; its result goes to the card's single live line. */
+/** A button bound to a server action; its result goes to the row's single live line. */
 function RowAction({
   action,
   fields,
@@ -578,8 +856,6 @@ function RowAction({
   children,
   variant = "outline",
   label,
-  pendingText,
-  onPending,
   hidden = false,
 }: {
   action: Action;
@@ -588,18 +864,12 @@ function RowAction({
   children: ReactNode;
   variant?: "outline" | "ghost" | "default" | "destructive";
   label?: string;
-  /** Shown on the card's live line while the server works, such as "Disabling…". */
-  pendingText?: string;
   hidden?: boolean;
-  onPending?: (text: string | null) => void;
 }) {
-  const [state, formAction, pending] = useActionState(action, null);
+  const [state, formAction] = useActionState(action, null);
   useEffect(() => {
     if (state) onResult(state);
   }, [state, onResult]);
-  useEffect(() => {
-    if (pendingText) onPending?.(pending ? pendingText : null);
-  }, [pending, pendingText, onPending]);
   return (
     <form action={formAction} hidden={hidden}>
       {Object.entries(fields).map(([key, value]) => (
@@ -612,185 +882,312 @@ function RowAction({
   );
 }
 
+/**
+ * Include-by-default, as a switch. It only changes metadata (`mcp/metadata`): the sign-in, the stored authorization
+ * and running sandboxes stay as they are, and enabling or disabling the connection is a separate action.
+ */
+function DefaultSwitch({
+  connection,
+  onResult,
+}: {
+  connection: McpConnection;
+  onResult: (result: ActionResult) => void;
+}) {
+  const [state, formAction, pending] = useActionState(updateConnectionMetadata, null);
+  useEffect(() => {
+    if (state) onResult(state);
+  }, [state, onResult]);
+  const on = pending ? !connection.defaultForLaunch : connection.defaultForLaunch;
+  return (
+    <form action={formAction} className="flex items-center">
+      <input type="hidden" name="org" value={connection.orgId} />
+      <input type="hidden" name="id" value={connection.id} />
+      <input type="hidden" name="default_for_launch" value={String(!connection.defaultForLaunch)} />
+      <button
+        type="submit"
+        role="switch"
+        aria-checked={on}
+        aria-label={`Include ${connection.name} by default`}
+        disabled={pending}
+        className="group flex items-center gap-2 rounded-md px-1 py-1 text-xs text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60"
+      >
+        <span
+          className={cn(
+            "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors",
+            on ? "border-primary bg-primary" : "border-transparent bg-input dark:bg-input/80",
+          )}
+        >
+          <span
+            className={cn(
+              "absolute size-3 rounded-full bg-background shadow-sm transition-transform motion-reduce:transition-none",
+              on ? "translate-x-3.5" : "translate-x-0.5",
+            )}
+          />
+        </span>
+        Default
+      </button>
+    </form>
+  );
+}
+
+type RowDialog = "rename" | "edit" | "revoke" | "delete" | null;
+
+/**
+ * One connection as a compact row: its name (a nickname), its state, the account the service verified, and the
+ * one action that makes it usable. The rest sits in its menu.
+ */
 export function ConnectionCard({
   connection,
   canManage,
-  notice,
+  serviceLabel,
 }: {
   connection: McpConnection;
   canManage: boolean;
-  notice?: ActionResult | null;
+  /** The catalog service's label, when the connection was created from the catalog. */
+  serviceLabel?: string | undefined;
 }) {
-  const [result, setResult] = useState<ActionResult | null>(notice ?? null);
+  const [result, setResult] = useState<ActionResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<RowDialog>(null);
+  const [, startTransition] = useTransition();
+  const menuTrigger = useRef<HTMLButtonElement>(null);
   const target = { org: connection.orgId, id: connection.id };
   const remote = connection.transport !== "stdio";
   const enabled = connection.status !== "disabled";
-  const connectLabel = !remote
-    ? "Configure"
-    : connection.status === "needs_reconnect" || (connection.status === "connected" && connection.authType === "oauth")
-      ? "Reconnect"
-      : "Connect";
-  // Remote: connect when not connected, or sign in again with OAuth. Stdio: configure for launch when it is not.
-  const canConnect = enabled && (connection.status !== "connected" || (remote && connection.authType === "oauth"));
-  const counts = [
-    ["tools", connection.toolCount],
-    ["resources", connection.resourceCount],
-    ["prompts", connection.promptCount],
-  ] as const;
-  const known = counts.filter(([, value]) => value !== undefined);
+  const custom = !connection.catalogId;
+  const primary = connectAction(connection);
+  const tools =
+    remote && connection.toolCount !== undefined
+      ? `${connection.toolCount} ${connection.toolCount === 1 ? "tool" : "tools"}`
+      : null;
+  const where = !remote
+    ? [connection.command, ...(connection.args ?? [])].filter(Boolean).join(" ")
+    : serviceLabel
+      ? null
+      : (connection.url ?? "URL hidden");
+
+  /** Runs an action that never navigates, reporting on the row's live line. */
+  function run(action: Action, fields: Record<string, string>, pendingText: string) {
+    const data = new FormData();
+    for (const [key, value] of Object.entries(fields)) data.set(key, value);
+    setBusy(pendingText);
+    startTransition(async () => {
+      const outcome = await action(null, data);
+      setBusy(null);
+      setResult(outcome);
+    });
+  }
+
+  // Stable, so a dialog's success effect runs once per result rather than on every render of the row.
+  const closeDialog = useCallback((next: boolean) => {
+    if (!next) setDialog(null);
+  }, []);
+  const restoreFocus = useCallback((event: Event) => {
+    event.preventDefault();
+    menuTrigger.current?.focus();
+  }, []);
 
   return (
-    <li className="space-y-3 p-4" data-connection={connection.name} aria-labelledby={`connection-${connection.id}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 id={`connection-${connection.id}`} className="font-medium">
-              {connection.name}
-            </h3>
-            <ConnectionStatusBadge connection={connection} />
-            <ScopeBadge scope={connection.scope} />
-          </div>
-          <p className="truncate font-mono text-xs text-muted-foreground" title={connection.url ?? undefined}>
-            {remote
-              ? (connection.url ?? "URL hidden")
-              : [connection.command, ...(connection.args ?? [])].filter(Boolean).join(" ")}
-          </p>
-        </div>
-        <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-          <div>
-            <dt className="sr-only">Transport</dt>
-            <dd className="text-muted-foreground">{transportLabel(connection.transport)}</dd>
-          </div>
-          {remote && (
-            <div>
-              <dt className="sr-only">Authentication</dt>
-              <dd className="text-muted-foreground">{authLabel(connection.authType)}</dd>
+    <li className="p-4" data-connection={connection.name} aria-labelledby={`connection-${connection.id}`}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <ServiceMark
+            label={serviceLabel ?? connection.name}
+            className={cn(!serviceLabel && "font-normal", !remote && "font-mono")}
+          />
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 id={`connection-${connection.id}`} className="truncate font-medium">
+                {connection.name}
+              </h3>
+              <ConnectionStatusBadge connection={connection} />
+              {connection.defaultForLaunch && !canManage && (
+                <Badge variant="secondary" data-default-for-launch>
+                  Default
+                </Badge>
+              )}
             </div>
-          )}
-        </dl>
-      </div>
+            <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+              {serviceLabel && <span>{serviceLabel}</span>}
+              {where && (
+                <span className="max-w-full truncate font-mono" title={where}>
+                  {where}
+                </span>
+              )}
+              {!remote && <span>{transportLabel(connection.transport)}</span>}
+              {remote && !serviceLabel && <span>{authLabel(connection.authType)}</span>}
+              {connection.accountLabel && (
+                <span>
+                  Signed in as <span className="text-foreground">{connection.accountLabel}</span>
+                </span>
+              )}
+              {tools && <span>{tools}</span>}
+            </p>
+            {connection.lastError && <p className="text-xs text-destructive">{connection.lastError}</p>}
+          </div>
+        </div>
 
-      <dl className="grid gap-2 text-sm sm:grid-cols-[auto_1fr] sm:gap-x-6">
-        {connection.accountLabel && (
-          <>
-            <dt className="text-xs text-muted-foreground">Signed in as</dt>
-            <dd>{connection.accountLabel}</dd>
-          </>
-        )}
-        <dt className="text-xs text-muted-foreground">Offers</dt>
-        <dd>
-          {!remote
-            ? "Available in sandbox"
-            : known.length === 0
-              ? "Unknown until connected"
-              : known.map(([label, value]) => `${value} ${value === 1 ? label.slice(0, -1) : label}`).join(" · ")}
-        </dd>
-        {connection.lastError && (
-          <>
-            <dt className="text-xs text-destructive">Last error</dt>
-            <dd className="text-destructive">{connection.lastError}</dd>
-          </>
-        )}
-      </dl>
-
-      {canManage ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
-          <RowAction
-            action={connectConnection}
-            fields={target}
-            onResult={setResult}
-            variant="default"
-            label={`${connectLabel} ${connection.name}`}
-            hidden={!canConnect}
-          >
-            {connectLabel}
-          </RowAction>
-          {remote && (
-            <RowAction action={checkConnection} fields={target} onResult={setResult} label={`Check ${connection.name}`}>
-              <RefreshCwIcon /> Check
-            </RowAction>
-          )}
-          <EditConnectionDialog connection={connection} onResult={setResult} />
-          <RowAction
-            action={setConnectionEnabled}
-            fields={{ ...target, enabled: String(!enabled) }}
-            onResult={setResult}
-            variant="ghost"
-            label={`${enabled ? "Disable" : "Enable"} ${connection.name}`}
-            pendingText={enabled ? "Disabling…" : "Enabling…"}
-            onPending={setBusy}
-          >
-            {enabled ? "Disable" : "Enable"}
-          </RowAction>
-          {remote && connection.authType !== "none" && (
-            <ConfirmAction
-              action={revokeConnection}
+        {canManage ? (
+          <div className="flex shrink-0 items-center justify-end gap-2 pl-11 sm:pl-0">
+            {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
+            <RowAction
+              action={connectConnection}
               fields={target}
               onResult={setResult}
-              trigger="Revoke"
-              title={`Revoke access to ${connection.name}?`}
-              description="Armada deletes the stored authorization. Sandboxes launched later cannot use the server until someone connects it again. The definition stays."
-              confirm="Revoke access"
+              variant={primary === "Retry" ? "outline" : "default"}
+              label={`${primary ?? "Connect"} ${connection.name}`}
+              hidden={primary === null}
+            >
+              {primary === "Retry" && <RefreshCwIcon />}
+              {primary ?? "Connect"}
+            </RowAction>
+            <DefaultSwitch connection={connection} onResult={setResult} />
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  ref={menuTrigger}
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`More actions for ${connection.name}`}
+                >
+                  <EllipsisIcon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuItem onSelect={() => setDialog("rename")}>
+                  <PencilIcon /> Rename
+                </DropdownMenuItem>
+                {custom && (
+                  <DropdownMenuItem onSelect={() => setDialog("edit")}>
+                    <SettingsIcon /> Edit server
+                  </DropdownMenuItem>
+                )}
+                {remote && enabled && connection.authType === "oauth" && connection.status === "connected" && (
+                  <DropdownMenuItem onSelect={() => run(connectConnection, target, "Opening sign-in…")}>
+                    <LogInIcon /> Sign in again
+                  </DropdownMenuItem>
+                )}
+                {remote && (
+                  <DropdownMenuItem onSelect={() => run(checkConnection, target, "Checking…")}>
+                    <RefreshCwIcon /> Check
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  onSelect={() =>
+                    run(
+                      setConnectionEnabled,
+                      { ...target, enabled: String(!enabled) },
+                      enabled ? "Disabling…" : "Enabling…",
+                    )
+                  }
+                >
+                  <PowerIcon /> {enabled ? "Disable" : "Enable"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {remote && connection.authType !== "none" && (
+                  <DropdownMenuItem variant="destructive" onSelect={() => setDialog("revoke")}>
+                    <KeyRoundIcon /> Revoke access
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem variant="destructive" onSelect={() => setDialog("delete")}>
+                  <Trash2Icon /> Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        ) : (
+          <p className="pl-11 text-xs text-muted-foreground sm:pl-0">Managed by the org's admins.</p>
+        )}
+      </div>
+      <div className="pl-11 empty:hidden">
+        {busy ? (
+          <p role="status" className="pt-2 text-sm text-muted-foreground">
+            {busy}
+          </p>
+        ) : (
+          <ResultLine result={result} className="pt-2" />
+        )}
+      </div>
+
+      {canManage && (
+        <>
+          <RenameDialog
+            connection={connection}
+            open={dialog === "rename"}
+            onOpenChange={closeDialog}
+            onResult={setResult}
+            onCloseAutoFocus={restoreFocus}
+          />
+          {custom && (
+            <EditConnectionDialog
+              connection={connection}
+              open={dialog === "edit"}
+              onOpenChange={closeDialog}
+              onResult={setResult}
+              onCloseAutoFocus={restoreFocus}
             />
           )}
           <ConfirmAction
+            open={dialog === "revoke"}
+            onOpenChange={closeDialog}
+            onCloseAutoFocus={restoreFocus}
+            action={revokeConnection}
+            fields={target}
+            onResult={setResult}
+            title={`Revoke access to ${connection.name}?`}
+            description="Armada deletes the stored authorization. Sandboxes launched later cannot use the server until someone connects it again. The definition stays."
+            confirm="Revoke access"
+          />
+          <ConfirmAction
+            open={dialog === "delete"}
+            onOpenChange={closeDialog}
+            onCloseAutoFocus={restoreFocus}
             action={deleteConnection}
             fields={target}
             onResult={setResult}
-            trigger="Delete"
             title={`Delete ${connection.name}?`}
             description="The connection and its stored authorization are removed. New launches can no longer select it."
             confirm="Delete connection"
           />
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">Managed by the org's admins.</p>
-      )}
-      {busy ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {busy}
-        </p>
-      ) : (
-        <ResultLine result={result} />
+        </>
       )}
     </li>
   );
 }
 
+type ControlledDialog = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus: (event: Event) => void;
+};
+
 function ConfirmAction({
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
   action,
   fields,
   onResult,
-  trigger,
   title,
   description,
   confirm,
-}: {
+}: ControlledDialog & {
   action: Action;
   fields: Record<string, string>;
   onResult: (result: ActionResult) => void;
-  trigger: string;
   title: string;
   description: string;
   confirm: string;
 }) {
-  const [open, setOpen] = useState(false);
   const [state, formAction] = useActionState(action, null);
   useEffect(() => {
     if (!state) return;
     onResult(state);
-    if (state.ok) setOpen(false);
-  }, [state, onResult]);
+    if (state.ok) onOpenChange(false);
+  }, [state, onResult, onOpenChange]);
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
-          {trigger}
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
@@ -810,40 +1207,84 @@ function ConfirmAction({
   );
 }
 
+/** Renames a connection. Metadata only: its sign-in and every running sandbox keep working. */
+function RenameDialog({
+  connection,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
+  onResult,
+}: ControlledDialog & { connection: McpConnection; onResult: (result: ActionResult) => void }) {
+  const [state, formAction] = useActionState(updateConnectionMetadata, null);
+  const id = useId();
+  useEffect(() => {
+    if (!state) return;
+    if (state.ok) {
+      onResult(state);
+      onOpenChange(false);
+    }
+  }, [state, onResult, onOpenChange]);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
+        <DialogHeader>
+          <DialogTitle>Rename {connection.name}</DialogTitle>
+          <DialogDescription>Only the name changes. Sign-in and running sandboxes are kept.</DialogDescription>
+        </DialogHeader>
+        <form action={formAction} className="space-y-4">
+          <input type="hidden" name="org" value={connection.orgId} />
+          <input type="hidden" name="id" value={connection.id} />
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-name`}>Name</Label>
+            <Input
+              id={`${id}-name`}
+              name="name"
+              defaultValue={connection.name}
+              required
+              maxLength={120}
+              autoComplete="off"
+            />
+          </div>
+          {state && !state.ok && <ResultLine result={state} />}
+          <div className="flex justify-end">
+            <SubmitButton>Rename</SubmitButton>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /**
- * Edits a connection. The server clears its stored authentication and revokes running leases on any update,
- * which the dialog says before the person saves; a remote connection is then connected again.
+ * Edits a custom connection's server. The server clears its stored authentication and revokes running leases on
+ * any update, which the dialog says before the person saves; a remote connection is then connected again.
  */
 function EditConnectionDialog({
   connection,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
   onResult,
-}: {
-  connection: McpConnection;
-  onResult: (result: ActionResult) => void;
-}) {
-  const [open, setOpen] = useState(false);
+}: ControlledDialog & { connection: McpConnection; onResult: (result: ActionResult) => void }) {
   const [state, formAction] = useActionState(editConnection, null);
   const [generation, setGeneration] = useState(0);
-  const [name, setName] = useState(connection.name);
   const [authType, setAuthType] = useState<ConnectionAuthType>(connection.authType);
   const id = useId();
   useEffect(() => {
     if (!state) return;
     onResult(state);
     if (state.ok) {
-      setOpen(false);
+      onOpenChange(false);
       setGeneration((value) => value + 1);
     }
-  }, [state, onResult]);
+  }, [state, onResult, onOpenChange]);
   const remote = connection.transport !== "stdio";
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`Edit ${connection.name}`}>
-          <PencilIcon /> Edit
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle>Edit {connection.name}</DialogTitle>
           <DialogDescription>{scopeLabel(connection.scope)} connection. Who uses it cannot change.</DialogDescription>
@@ -854,25 +1295,10 @@ function EditConnectionDialog({
           <p className="flex gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-foreground">
             <CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
             <span>
-              Saving replaces the whole definition below. Any saved sign-in, token or headers are deleted, not kept, and
-              sandboxes using the connection lose it now.{" "}
-              {remote
-                ? "Armada connects again right after: enter the token or headers again, or sign in again."
-                : "Armada configures it for launch again; sandboxes launched afterwards use the new command."}
+              Saving replaces the server below. Any saved sign-in, token or headers are deleted, not kept, and sandboxes
+              using the connection lose it now. To change only the name, use Rename.
             </span>
           </p>
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-name`}>Name</Label>
-            <Input
-              id={`${id}-name`}
-              name="name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required
-              maxLength={120}
-              autoComplete="off"
-            />
-          </div>
           {remote ? (
             <RemoteFields
               idPrefix={id}

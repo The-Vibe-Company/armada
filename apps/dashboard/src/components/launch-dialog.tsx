@@ -20,7 +20,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { launchBlocker, type McpConnection, type SandboxVisibility } from "@/lib/connections";
+import { launchBlocker, launchDefaults, type McpConnection, type SandboxVisibility } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { cn } from "@/lib/utils";
@@ -138,8 +138,10 @@ function RepositoryField({ idPrefix, repositories }: { idPrefix: string; reposit
 }
 
 /**
- * Visibility and connections. A personal connection carries its owner's identity, so it can only go into a
- * private sandbox: it is not selectable while Org is chosen, and choosing Org drops it from the selection.
+ * Visibility and connections. The selection starts with the connections marked include-by-default that this
+ * sandbox can use, and follows the visibility until the person changes it; from then on it is exactly what they
+ * ticked, and an empty selection launches with none. A personal connection carries its owner's identity, so it can
+ * only go into a private sandbox: it is not selectable while Org is chosen, and choosing Org drops it.
  */
 function AccessFields({
   idPrefix,
@@ -151,17 +153,20 @@ function AccessFields({
   connections: LaunchConnections;
 }) {
   const [visibility, setVisibility] = useState<SandboxVisibility>(goldenVisibility);
-  const [chosen, setChosen] = useState<string[]>([]);
+  // Null until the person changes the selection: the defaults for the current visibility apply until then.
+  const [picked, setPicked] = useState<string[] | null>(null);
   const [notice, setNotice] = useState("");
   const group = useRef<HTMLDivElement>(null);
   const list = "connections" in connections ? connections.connections : [];
+  const chosen = picked ?? launchDefaults(list, visibility);
+  const setChosen = (next: string[]) => setPicked(next);
 
   // Native reset after a launch attempt empties the DOM; the controlled state must follow it.
   useEffect(() => {
     const form = group.current?.closest("form");
     const reset = () => {
       setVisibility(goldenVisibility);
-      setChosen([]);
+      setPicked(null);
       setNotice("");
     };
     form?.addEventListener("reset", reset);
@@ -170,7 +175,7 @@ function AccessFields({
 
   function choose(next: SandboxVisibility) {
     setVisibility(next);
-    if (next !== "org") return setNotice("");
+    if (next !== "org" || picked === null) return setNotice("");
     const personal = chosen.filter((item) => list.find((connection) => connection.id === item)?.scope === "personal");
     if (personal.length === 0) return setNotice("");
     setChosen(chosen.filter((item) => !personal.includes(item)));
@@ -300,6 +305,11 @@ function ConnectionOption({
             {connection.name}
           </Label>
           <ConnectionStatusBadge connection={connection} />
+          {connection.defaultForLaunch && (
+            <span className="text-xs text-muted-foreground" data-default-for-launch>
+              Default
+            </span>
+          )}
         </div>
         <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
           {blocker ??

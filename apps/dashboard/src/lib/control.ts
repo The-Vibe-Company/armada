@@ -1,8 +1,12 @@
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
 import {
+  type ConnectionMetadataRequest,
   type ConnectionTarget,
   type CreateConnectionRequest,
+  type CreateFromCatalogRequest,
+  type McpCatalogService,
   type McpConnection,
+  parseCatalogService,
   parseConnection,
   safeAuthorizationUrl,
   type UpdateConnectionRequest,
@@ -221,7 +225,20 @@ export function createMcpControl(options: ArmadaApiOptions) {
       // Rows of another org are dropped even if the server sent them: the page shows the selected org only.
       return payload.connections.map(parseConnection).filter((row): row is McpConnection => row?.orgId === org);
     },
+    /**
+     * The curated services this server offers, with their availability here. An older server without the catalog
+     * answers 404, which surfaces as a {@link ControlError} naming the missing feature.
+     */
+    async catalog(org: string): Promise<McpCatalogService[]> {
+      const payload = await controlPost(options, `${MCP_CONTROL_PATH}catalog`, { org }, "the service catalog");
+      if (!Array.isArray(payload.services)) throw new ControlError("The Armada server sent no service catalog.");
+      return payload.services.map(parseCatalogService).filter((row): row is McpCatalogService => row !== null);
+    },
     create: async (request: CreateConnectionRequest) => (await connection("create", request)).connection,
+    /** Creates a connection to a catalog service: only its id travels; the server owns its URL and sign-in. */
+    createFromCatalog: async (request: CreateFromCatalogRequest) => (await connection("create", request)).connection,
+    /** Renames or changes include-by-default, keeping the stored authorization and running sandboxes' access. */
+    metadata: async (request: ConnectionMetadataRequest) => (await connection("metadata", request)).connection,
     update: async (request: UpdateConnectionRequest) => (await connection("update", request)).connection,
     status: async (target: ConnectionTarget) => (await connection("status", target)).connection,
     /** Starts or repeats the connection. An OAuth server answers with the URL the browser signs in at. */
