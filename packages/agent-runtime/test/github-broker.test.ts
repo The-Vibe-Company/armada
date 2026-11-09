@@ -74,13 +74,16 @@ test("existing native children use new GitHub material and register it before gh
       GH_TOKEN: "inherited-stale",
       GITHUB_TOKEN: "inherited-stale",
       GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "armada.probe",
+      GIT_CONFIG_VALUE_0: "preserved",
     };
     const child = Bun.spawn(["bash"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     const reader = child.stdout.getReader();
     let pending = "";
     async function phase() {
       child.stdin.write(
-        "gh auth token --hostname github.com\nprintf 'protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n' | git credential fill\necho PHASE_DONE\n",
+        "gh auth token --hostname github.com\nprintf 'protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n' | git credential fill\ngit config --get armada.probe\necho PHASE_DONE\n",
       );
       while (!pending.includes("PHASE_DONE\n")) {
         const item = await reader.read();
@@ -95,6 +98,7 @@ test("existing native children use new GitHub material and register it before gh
     const first = await phase();
     expect(registered.has(current)).toBe(true);
     expect(first).toContain("password=***");
+    expect(first).toContain("preserved");
     expect(first.split("\n")[0]).toBe(`${createHash("sha256").update(`${current}\n`).digest("hex")}  -`);
     token = next;
     const second = await phase();
@@ -104,9 +108,16 @@ test("existing native children use new GitHub material and register it before gh
     expect(second.split("\n")[0]).toBe(`${createHash("sha256").update(`${next}\n`).digest("hex")}  -`);
     expect(second).not.toContain("inherited-stale");
     expect(second).not.toContain(current);
+    child.stdin.write("gh pr view https://github.com/foreign/repo/pull/1; echo URL_STATUS:$?; echo PHASE_DONE\n");
+    while (!pending.includes("PHASE_DONE\n")) {
+      const item = await reader.read();
+      if (item.done) throw Error("fixture exited");
+      pending += new TextDecoder().decode(item.value);
+    }
+    expect(pending).toContain("URL_STATUS:1");
     child.stdin.end();
     await child.exited;
-    expect(await new Response(child.stderr).text()).toBe("");
+    expect(await new Response(child.stderr).text()).toBe("Managed GitHub credentials unavailable.\n");
   } finally {
     socket.close();
     await rm(root, { recursive: true, force: true });

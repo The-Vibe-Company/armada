@@ -14,7 +14,7 @@ async function main() {
   const journal = new Journal(":memory:", (value) => value);
   const broker = new GitHubBroker((values) => journal.registerSecrets(values));
   broker.configure(input.configuration);
-  const listener = await broker.listen(input.root, (await stat("/home/user")).uid);
+  const listener = await broker.listen(input.root, (await stat(input.homes[0] ?? input.root)).uid);
   try {
     await prepareGitHubTools({
       root: input.root,

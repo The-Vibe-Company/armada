@@ -116,3 +116,22 @@ test("native proxy forwards termination signals and reaps its actual original ch
       }
     }
   }));
+
+// The installed supervisor must preserve binary streams, even with split redaction leaves.
+test("native proxy preserves large newline-free binary output and redacts chunk-spanning leaves", () =>
+  withParents(async ({ base, home, old }) => {
+    const input = Buffer.concat([Buffer.alloc(65530, 0), Buffer.from(old), Buffer.alloc(300000, 1)]);
+    const program = join(base, "binary.py");
+    await writeFile(program, "import sys\nsys.stdout.buffer.write(sys.stdin.buffer.read())\n");
+    const child = Bun.spawn([join(home, ".armada", "github-native-proxy"), "/usr/bin/python3", program], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    child.stdin.write(input);
+    child.stdin.end();
+    const output = Buffer.from(await new Response(child.stdout).arrayBuffer());
+    expect(await child.exited).toBe(0);
+    expect(output).toEqual(Buffer.concat([Buffer.alloc(65530, 0), Buffer.from("***"), Buffer.alloc(300000, 1)]));
+    expect(await new Response(child.stderr).text()).toBe("");
+  }));

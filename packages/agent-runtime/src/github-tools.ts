@@ -68,8 +68,7 @@ export async function installGitHubTools(input: {
     flag: "wx",
   });
   await rename(temporary, client);
-  const privileged =
-    "/usr/bin/sudo -n --preserve-env=HOME,PATH,GH_TOKEN,GITHUB_TOKEN,GH_REPO,GIT_CONFIG_GLOBAL,GIT_SSH_COMMAND,SSH_AUTH_SOCK,LANG,LC_ALL /usr/bin/python3 -I";
+  const privileged = "/usr/bin/sudo -n --preserve-env /usr/bin/python3 -I";
   const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
   if (ghOriginal) {
     const wrapper = `#!/bin/sh\nexec ${privileged} ${q(client)} gh ${q(input.socket)} ${q(ghOriginal)} "$@"\n`;
@@ -157,16 +156,17 @@ def repository(value):
     if value.endswith('.git'): value=value[:-4]
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',value): raise ValueError()
     return value
-def safe(line):
-    for secret in sorted(local_secrets,key=len,reverse=True): line=line.replace(secret,b'***')
+def safe(line,stream=False):
     redaction=os.path.join(os.path.dirname(sys.argv[2]),'redact.sock')
     connection=Connection('private',redaction)
-    connection.request('POST','/redact',line,{'Content-Type':'application/octet-stream'})
+    connection.request('POST','/redact',line,{'Content-Type':'application/octet-stream','X-Armada-Stream':'1' if stream else '0'})
     response=connection.getresponse()
     raw=response.read(262145)
     if response.status!=200 or len(raw)>262144: raise ValueError()
+    consumed=int(response.getheader('X-Armada-Consumed',str(len(line))))
+    if consumed<0 or consumed>len(line): raise ValueError()
     connection.close()
-    return raw
+    return raw,consumed
 def execute(executable,args,env):
     uid=int(os.environ.get('SUDO_UID',os.getuid()))
     gid=int(os.environ.get('SUDO_GID',os.getgid()))
@@ -178,12 +178,16 @@ def execute(executable,args,env):
     failed=[]
     def forward(source,target):
         try:
+            pending=b''
             while True:
-                line=source.readline(262145)
-                if not line: break
-                if len(line)>262144:
-                    raise ValueError()
-                line=safe(line)
+                chunk=source.read1(65536)
+                if not chunk: break
+                pending+=chunk
+                line,consumed=safe(pending,True)
+                pending=pending[consumed:]
+                target.write(line); target.flush()
+            if pending:
+                line,_=safe(pending)
                 target.write(line); target.flush()
         except Exception:
             failed.append(True)
@@ -240,6 +244,10 @@ try:
             if result.returncode: raise ValueError()
             repo=result.stdout
         repo=repository(repo)
+        for arg in args:
+            if arg.startswith('https://github.com/'):
+                selected=re.match(r'^https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',arg)
+                if not selected or repository(selected.group(1)).lower()!=repo.lower(): raise ValueError()
         if args and args[0]=='api':
             for arg in args[1:]:
                 endpoint=arg.removeprefix('https://api.github.com/').lstrip('/')

@@ -68,6 +68,7 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
           store: createSqlVaultStore(
             sqlOver({
               unsafe: (text, params) => one.unsafe(text, params),
+              autonomous: (text, params) => observer.unsafe(text, params),
               begin: (work) => one.begin((tx) => work({ unsafe: (text, params) => tx.unsafe(text, params) })),
             }),
           ),
@@ -115,6 +116,7 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
       const saved = await createSqlVaultStore(
         sqlOver({
           unsafe: (text, params) => one.unsafe(text, params),
+          autonomous: (text, params) => observer.unsafe(text, params),
           begin: (work) => one.begin((tx) => work({ unsafe: (text, params) => tx.unsafe(text, params) })),
         }),
       ).getGitHubConnection(userId);

@@ -563,7 +563,16 @@ function compositionOptions(
     client: f.client,
     artifact: {
       base: `node@sha256:${"a".repeat(64)}`,
-      apt: { git: "1", gh: "1", opensshServer: "1", sudo: "1", caCertificates: "1", curl: "1", unzip: "1" },
+      apt: {
+        git: "1",
+        gh: "1",
+        opensshServer: "1",
+        sudo: "1",
+        caCertificates: "1",
+        curl: "1",
+        unzip: "1",
+        python3: "1",
+      },
       bundle,
       sha256: createHash("sha256").update(bundle).digest("hex"),
     },

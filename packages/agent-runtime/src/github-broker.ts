@@ -143,10 +143,27 @@ export class GitHubBroker {
           if (request.method !== "POST") throw Error("denied");
           if (path === "/register") return await register(request);
           if (path !== "/redact") throw Error("denied");
-          let value = (await body(request, 262144)).toString("latin1");
-          for (const secret of [...this.retired].sort((a, b) => b.length - a.length))
-            value = value.replaceAll(secret, "***");
-          return new Response(Buffer.from(value, "latin1"), { headers: { "cache-control": "no-store" } });
+          const value = (await body(request, 262144)).toString("latin1");
+          const secrets = [...this.retired].sort((a, b) => b.length - a.length);
+          const streaming = request.headers.get("x-armada-stream") === "1";
+          let consumed = 0;
+          const output: string[] = [];
+          while (consumed < value.length) {
+            const tail = value.slice(consumed);
+            // Prefer waiting for a longer possible leaf over publishing its shorter prefix.
+            if (streaming && secrets.some((secret) => secret.length > tail.length && secret.startsWith(tail))) break;
+            const match = secrets.find((secret) => value.startsWith(secret, consumed));
+            if (match) {
+              output.push("***");
+              consumed += match.length;
+            } else {
+              output.push(value[consumed]!);
+              consumed++;
+            }
+          }
+          return new Response(Buffer.from(output.join(""), "latin1"), {
+            headers: { "cache-control": "no-store", "x-armada-consumed": String(consumed) },
+          });
         } catch {
           return new Response(null, { status: 403 });
         }
