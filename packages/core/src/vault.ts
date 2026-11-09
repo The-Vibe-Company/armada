@@ -19,6 +19,13 @@ export interface MemberInfo {
 
 /** What is stored, never the value. An org boat key has no row of its own, so no date. */
 export interface CredentialInfo {
+  id?: string;
+  name?: string;
+  isDefault?: boolean;
+  status?: string;
+  expiresAt?: string | null;
+  updatedAt?: string;
+  version?: number;
   kind: CredentialKind;
   createdAt: string | null;
 }
@@ -32,7 +39,20 @@ export interface OrgCredentials extends OrgSummary {
  * security that decides who may do what here, so every function below checks the caller first.
  * Only the server holds one of these; the CLI reaches it through the control API.
  */
+export interface AccountMutation {
+  expectedVersion?: number;
+  expiresAt?: string | null;
+  action: "set" | "rename" | "default" | "remove";
+  scope: CredentialScope;
+  org?: string;
+  id?: string;
+  name?: string;
+  kind?: CredentialKind;
+  value?: string;
+}
 export interface VaultStore extends CredentialReader, GitHubConnectionStore {
+  mutateAccount?(userId: string, input: AccountMutation, valueEnc?: Uint8Array): Promise<CredentialInfo>;
+
   /** Inserts the org and its first admin together. This is the one way an org is created. */
   createOrg(name: string, adminUserId: string): Promise<{ id: string; name: string }>;
   memberships(userId: string): Promise<OrgSummary[]>;
@@ -198,12 +218,12 @@ export async function listCredentials(
 ): Promise<{ user: CredentialInfo[]; orgs: OrgCredentials[] }> {
   const orgs = ref === undefined ? await store.memberships(userId) : [await resolveOrg(store, userId, ref)];
   return {
-    user: await store.listCredentials("user", userId),
+    user: (await store.listCredentials("user", userId)).filter((row) => row.status !== "deleted"),
     orgs: await Promise.all(
       orgs.map(async (org) => {
         const rows = await store.listCredentials("org", org.id);
         const boat: CredentialInfo[] = (await store.hasOrgBoatKey(org.id)) ? [{ kind: "boat", createdAt: null }] : [];
-        return { ...org, credentials: [...boat, ...rows] };
+        return { ...org, credentials: [...boat, ...rows.filter((row) => row.status !== "deleted")] };
       }),
     ),
   };
@@ -220,4 +240,34 @@ async function findMember(store: VaultStore, email: string): Promise<{ id: strin
     );
   }
   return user;
+}
+
+/** ID mutations are authorized again atomically by the SQL store, including fresh org membership. */
+export async function mutateCredentialAccount(
+  store: VaultStore,
+  key: string | undefined,
+  userId: string,
+  input: AccountMutation,
+): Promise<CredentialInfo> {
+  if (input.id !== undefined && !UUID.test(input.id)) throw new VaultError("invalid", "Account id must be a UUID.");
+  if (!store.mutateAccount) throw new VaultError("unavailable", "Named accounts are unavailable.");
+  if (input.kind === "boat" || input.kind === "modal")
+    throw new VaultError("invalid", "Provider credentials are singletons.");
+  if (input.name !== undefined && (input.name.trim().length < 1 || input.name.trim().length > 120))
+    throw new VaultError("invalid", "An account name is 1 to 120 characters.");
+  const org = input.scope === "org" ? await resolveAdminOrg(store, userId, input.org) : undefined;
+  const valueEnc =
+    input.action === "set" && input.kind && input.value !== undefined
+      ? await encryptSecret(parseCredentialValue(input.kind, input.value), key)
+      : undefined;
+  if (
+    input.id &&
+    input.action === "set" &&
+    (!Number.isSafeInteger(input.expectedVersion) || (input.expectedVersion ?? 0) < 1)
+  )
+    throw new VaultError("invalid", "expectedVersion is required to rotate an account.");
+  if (input.expiresAt != null && !Number.isFinite(Date.parse(input.expiresAt)))
+    throw new VaultError("invalid", "expiresAt must be a timestamp.");
+  if (input.action === "set" && !valueEnc) throw new VaultError("invalid", "Kind and value are required.");
+  return store.mutateAccount(userId, { ...input, ...(org ? { org: org.id } : {}) }, valueEnc);
 }
