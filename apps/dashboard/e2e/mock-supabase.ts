@@ -7,6 +7,8 @@
  * The real rules are tested against Postgres in packages/core/test.
  */
 
+import { credsList, orchestratorRoute, orchestratorTestControl } from "./mock-orchestrators";
+
 type Row = Record<string, unknown>;
 type Fail = { status: number; code: string; message: string };
 
@@ -1413,6 +1415,7 @@ function orgProvider(route: string, body: Row, request: Request): Response {
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
+    orchestratorTestControl("reset", {});
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
@@ -1620,7 +1623,12 @@ const server = Bun.serve({
     const text = hasBody ? await request.text() : "";
     const body = text ? (JSON.parse(text) as Row) : {};
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
+    if (url.pathname.startsWith("/__test/orchestrators/"))
+      return orchestratorTestControl(url.pathname.slice("/__test/orchestrators/".length), body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
+    if (url.pathname === "/api/v1/orchestrators" || url.pathname.startsWith("/api/v1/orchestrators/"))
+      return orchestratorRoute(request, url, body, viewer(request));
+    if (url.pathname === "/api/v1/creds/list" && request.method === "POST") return credsList(viewer(request));
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));

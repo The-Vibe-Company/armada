@@ -1,6 +1,6 @@
 "use client";
 
-import { BoxesIcon, CameraIcon, KeyRoundIcon, PlugIcon, SettingsIcon, UsersIcon } from "lucide-react";
+import { BoxesIcon, CameraIcon, KeyRoundIcon, NetworkIcon, PlugIcon, SettingsIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment } from "react";
@@ -8,13 +8,16 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { cn } from "@/lib/utils";
 
 /**
- * Grouped in the order the work happens: sandboxes are what runs (Run), goldens, keys and connections are set
+ * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), goldens, keys and connections are set
  * up once (Build), and the account pages sit last. The hint, a tooltip, says what each page holds.
  */
 const GROUPS = [
   {
     label: "Run",
-    links: [{ href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon }],
+    links: [
+      { href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon },
+      { href: "/orchestrators", label: "Orchestrators", hint: "Lasting coordinators of workers", icon: NetworkIcon },
+    ],
   },
   {
     label: "Build",
