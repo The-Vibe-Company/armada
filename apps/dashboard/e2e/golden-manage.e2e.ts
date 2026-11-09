@@ -148,7 +148,8 @@ test("the capacity is the number the server reads for the selected org, fetched 
       authorized: true,
       body: { org: "00000000-0000-4000-8000-000000000012", provider: expect.stringMatching(/^(boat|modal)$/) },
     });
-  expect(new Set(capabilityCalls.map((call) => call.body.provider))).toEqual(new Set(["boat", "modal"]));
+  // Nova has connected Boat only: Modal's capacity is not read.
+  expect(new Set(capabilityCalls.map((call) => call.body.provider))).toEqual(new Set(["boat"]));
   // Only the number reached the browser: no provider SDK, no token, no raw answer.
   const html = await page.content();
   expect(html).not.toMatch(/maxGoldens|boatdev|BOAT_API_KEY/);
@@ -305,7 +306,7 @@ test("the main navigation groups Run, Build and Account and marks the current pa
 test("an admin builds a Modal golden: the request names Modal and Modal's unbounded capacity is no limit", async ({
   page,
 }) => {
-  await post("/__test/reset", { novaOrg: true });
+  await post("/__test/reset", { novaOrg: true, novaModal: true });
   await signIn(page, "carol@example.com", "/goldens");
   const modalCard = page.locator('[data-capacity-provider="modal"]');
   await expect(modalCard).toHaveAttribute("data-capacity", "unknown");
@@ -345,40 +346,35 @@ test("an admin builds a Modal golden: the request names Modal and Modal's unboun
   await page.screenshot({ path: "test-results/goldens-modal-desktop.png", fullPage: true });
 });
 
-test("Modal not configured for the org is shown unavailable, and a Modal build is refused, never sent as Boat", async ({
+test("with only Boat connected, Boat is used without a choice and a forged Modal build never reaches the server", async ({
   page,
 }) => {
   await post("/__test/reset", { novaOrg: true });
-  await post("/__test/capabilities", {
-    provider: "modal",
-    fail: { status: 503, code: "provider_not_configured", message: "Modal is not configured for this organization." },
-  });
   await signIn(page, "carol@example.com", "/goldens");
-  const modalCard = page.locator('[data-capacity-provider="modal"][data-capacity="unavailable"]');
-  await expect(modalCard.locator("[data-capacity-reason]")).toHaveText(
-    "Modal is not configured for this organization.",
-  );
-  // The Boat read is separate and still answers.
+  await expect(page.locator("[data-capacity-provider]")).toHaveCount(1);
   await expect(page.locator('[data-capacity-provider="boat"][data-capacity="available"]')).toContainText("0 of 1");
 
   const form = createForm(page);
-  await expect(form.locator('[data-provider-choice="modal"]')).toContainText(
-    "Unavailable: Modal is not configured for this organization.",
-  );
-  await form.getByRole("radio", { name: /Modal/ }).check();
+  await expect(form.locator('[data-provider-fixed="boat"]')).toContainText("Provider: Boat");
+  await expect(form.locator("[data-provider-choice]")).toHaveCount(0);
   await form.getByLabel("Name").fill("nova-docs");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/docs");
+  // A post naming Modal, which Nova has not connected, is refused by the action itself.
+  await form.locator('input[name="provider"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "modal";
+  });
   await form.getByRole("button", { name: "Build golden" }).click();
-  await expect(form.getByRole("alert")).toContainText("Modal is not configured for this organization.");
-  const { goldenCalls } = await mockState();
-  expect(goldenCalls.map((call) => call.body.provider)).toEqual(["modal"]);
+  await expect(form.getByRole("alert")).toContainText(
+    "Modal is not connected for this organization. An admin connects it in Settings.",
+  );
+  expect((await mockState()).goldenCalls).toHaveLength(0);
   await expect(page.locator('[data-golden="nova-docs"]')).toHaveCount(0);
 });
 
 test("same-name goldens on Boat and Modal are listed apart, and rebuild and launch target their own provider", async ({
   page,
 }) => {
-  await post("/__test/reset", { modalTwin: true });
+  await post("/__test/reset", { modalTwin: true, acmeModal: true });
   await signIn(page, "alice@example.com", "/goldens");
   const boat = page.locator('[data-golden-group="boat"] [data-golden="shared-golden"]');
   const modal = page.locator('[data-golden-group="modal"] [data-golden="shared-golden"]');
@@ -494,7 +490,7 @@ test("a status read that fails pauses polling and keeps the job locked; checking
 test("a build is tracked by its own form: never by the twin on the other provider, the create form or another org", async ({
   page,
 }) => {
-  await post("/__test/reset", { modalTwin: true, multiOrg: true });
+  await post("/__test/reset", { modalTwin: true, multiOrg: true, acmeModal: true });
   await post("/__test/golden-gate", { hold: true });
   await signIn(page, "alice@example.com", "/goldens");
   const modal = page.locator('[data-golden-group="modal"] [data-golden="shared-golden"]');
@@ -547,7 +543,7 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   page,
   context,
 }) => {
-  await post("/__test/reset", { multiOrg: true });
+  await post("/__test/reset", { multiOrg: true, acmeModal: true });
   await post("/__test/golden-gate", { hold: true });
   // Poll timers run on a controlled clock, advanced explicitly below instead of waiting.
   await page.clock.install();
