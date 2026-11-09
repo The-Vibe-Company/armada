@@ -872,7 +872,7 @@ function launchText(result: LaunchResult): string {
       ? [
           `Size: ${sandbox.machineSize.effective ?? "unknown (legacy)"} (requested ${sandbox.machineSize.requested ?? "none"}; source ${sandbox.machineSize.source}).`,
         ]
-      : ["Size: unknown (server supplied no size evidence)."]),
+      : []),
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),

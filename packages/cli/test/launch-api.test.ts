@@ -143,7 +143,7 @@ describe("launch through the Armada API", () => {
     );
     expect(code).toBe(0);
     expect(out).toContain("Sandbox: 11111111-1111-4111-8111-111111111111");
-    expect(out).toContain("Size: unknown (server supplied no size evidence).");
+    expect(out).not.toContain("Size:");
     expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
   });
   test("invalid or repeated launch size fails before requesting allocation", async () => {

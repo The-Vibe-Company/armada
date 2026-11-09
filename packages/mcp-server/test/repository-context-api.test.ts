@@ -98,7 +98,10 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     expect(boat.preparations).toEqual([
       { sandboxId: launched.providerSandboxId, harness: "codex", cwd: "/home/user/api" },
     ]);
-    expect(requests[0]).toMatchObject({ path: "/api/v1/sandbox/launch", body: { repo: "api" } });
+    expect(requests[0]).toMatchObject({
+      path: "/api/v1/sandbox/launch-sized-v1",
+      body: { repo: "api", sizePolicyVersion: 1 },
+    });
     expect(boat.prompts).toHaveLength(0);
     expect(
       await run(
