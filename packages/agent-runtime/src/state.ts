@@ -30,6 +30,9 @@ export function createRedactor(values: readonly string[]): Redactor {
         const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         return out.replace(new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "g"), "[REDACTED]");
       }, text)
+      // A restart loses the epoch's memory-only registry before native restore.
+      // Its published opaque format is safe to scrub without reviving authority.
+      .replace(/armada_epoch_[a-f0-9]{64}/g, "[REDACTED]")
       .replace(/(?:sk-|gh[pousr]_)[A-Za-z0-9_-]{12,}/g, "[REDACTED]")
       .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED]");
   const visit = (value: unknown): unknown =>

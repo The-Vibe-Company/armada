@@ -17,10 +17,12 @@ import {
   ProviderError,
   ProviderRoutingError,
   parseGoldenConfig,
+  parseMachineSize,
   resolveModelChoice,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStore,
+  SIZED_LAUNCH_ROUTE_V1,
   VaultError,
   type VaultStore,
   VERSION,
@@ -39,6 +41,8 @@ import {
 } from "./auth-commands.ts";
 import { operation } from "./operations.ts";
 import { orchestratorCommand } from "./orchestrator-commands.ts";
+import { printOptionalResourceAdvice } from "./resource-advice.ts";
+import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
@@ -100,17 +104,29 @@ Usage:
                                            Scan and freeze the master sandbox
   armada golden capabilities [--provider boat|modal] [--org UUID] [--json]
                                            Server-authoritative golden capacity; null means unbounded/unknown
+  armada golden size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
+                                           Inspect defaults, or replace the entire policy from a file/stdin.
+                                           Version 1: {"version":1,"golden":null,"repositories":{}}
+                                           Repository keys are configured directories. null golden and an empty map
+                                           clear defaults. Scoped to this provider golden, future launches only.
   armada golden list [--provider boat|modal] [--json]
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
-                [--visibility private|org] [--connections <id,...> | --no-connections] [--org <org>]
+                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
+                [--connections <id,...> | --no-connections] [--org <org>]
+                Omit connections to request server defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
                                            otherwise use your personal or organization default. --repo owner/repo selects a recorded
                                            golden repository as the native agent's real initial cwd (also when idle);
-                                           omit it to keep legacy launch behavior. Defaults:
+                                           omit it to keep legacy launch behavior. Size resolves on the server:
+                                           --size > selected repository default > golden default > legacy.
+                                           --size or --repo requires the versioned sizing server; --sized requires
+                                           default-policy resolution without overriding size. No downgrade/retry
+                                           to legacy launch on unsupported servers. Bare legacy launches keep their route.
+                                           Size labels do not promise equal performance/billing across providers.
+                                           Defaults:
                                            ${modelDefaults()}
                                            --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
   armada list [--status STATUS] [--agent|--harness claude|codex] [--golden UUID] [--owner UUID|me]
@@ -118,6 +134,10 @@ Usage:
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
+  armada advice <sandbox-id> [--org UUID] [--json]
+                                           Last-10 comparable-session resource evidence; collects one bounded sample.
+                                           Missing/partial evidence abstains. Never resizes or changes defaults.
+                                           Human launch guidance uses stderr only; --json launch never requests advice.
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
@@ -160,6 +180,8 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
+  armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+                                           Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
@@ -229,6 +251,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
+  // Command discovery must work before login or organization selection.
+  if (command === "launch" && original.length === 1 && ["--help", "-h"].includes(original[0] ?? "")) {
+    io.out(HELP);
+    return 0;
+  }
   if (command === "orchestrator") {
     const auth = authOf(io, deps);
     return orchestratorCommand(original, {
@@ -247,6 +274,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "bind-credential",
     "detail",
     "status",
+    "advice",
     "send",
     "steer",
     "interrupt",
@@ -291,6 +319,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "bind-credential":
     case "detail":
     case "status":
+    case "advice":
     case "send":
     case "steer":
     case "interrupt":
@@ -338,6 +367,10 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     io.out(HELP);
     return subcommand === undefined ? 2 : 0;
   }
+  if (subcommand === "size-policy")
+    return sizePolicyCommand(rest, authOf(io, deps), (path) =>
+      path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
+    );
   const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : []);
   providerFlag(args);
   const limits = {
@@ -715,9 +748,25 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv);
+  const args = parseArgs(argv, ["--size"], ["--sized"]);
+  const rawSize = single(args, "--size");
+  const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
     throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
+  const legacyVisibility = single(args, "--visibility");
+  if (legacyVisibility !== undefined) {
+    if (legacyVisibility !== "private" && legacyVisibility !== "org")
+      throw new GoldenError("invalid_config", "Legacy --visibility must be private or org.");
+    io.err(
+      "Warning: --visibility is deprecated and ignored. The server enforces sandbox access and resolves omitted connection defaults.\n",
+    );
+  }
+  const connections = single(args, "--connections");
+  if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
+    throw new GoldenError(
+      "invalid_config",
+      "--connections needs a comma-separated list of nonempty IDs; use --no-connections to opt out.",
+    );
   const [name, prompt, ...extra] = args.positionals;
   if (name === undefined || extra.length > 0) {
     throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
@@ -734,16 +783,18 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
+  const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
-    await client.request<LaunchWireResult>("/api/v1/sandbox/launch", {
+    await client.request<LaunchWireResult>(sized ? SIZED_LAUNCH_ROUTE_V1 : "/api/v1/sandbox/launch", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        ...(single(args, "--visibility") ? { visibility: single(args, "--visibility") } : {}),
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
+        ...(connections === undefined ? {} : { connections: connections.split(",") }),
         credentialId: single(args, "--credential-id"),
         golden: name,
+        ...(sized ? { sizePolicyVersion: 1 } : {}),
+        ...(size === undefined ? {} : { size }),
         ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         harness,
@@ -759,6 +810,22 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     }),
   );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
+  if (
+    size !== undefined &&
+    (result.sandbox.machineSize?.requested !== size ||
+      result.sandbox.machineSize?.effective !== size ||
+      result.sandbox.machineSize?.source !== "override")
+  ) {
+    const message =
+      "The sandbox was created, but the server did not confirm the requested size. Do not retry launch; inspect this sandbox and check server rollout compatibility.";
+    io.err(
+      flag(args, "--json")
+        ? `${JSON.stringify({ warning: { code: "size_unconfirmed", message } })}\n`
+        : `Warning: ${message}\n`,
+    );
+  }
+  if (!flag(args, "--json"))
+    await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
   return 0;
 }
 
@@ -834,10 +901,16 @@ function parseTtl(value: string): number {
 function launchText(result: LaunchResult): string {
   const { sandbox, golden } = result;
   const lines = [
-    `Launched ${sandbox.harness} sandbox (${sandbox.visibility ?? golden.visibility}) from golden ${golden.name}.`,
+    `Launched ${sandbox.harness} sandbox from golden ${golden.name}.`,
+    "Access: enforced by the server; metadata hints do not grant interior access.",
     `Sandbox: ${sandbox.id}`,
     `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
+    ...(sandbox.machineSize
+      ? [
+          `Size: ${sandbox.machineSize.effective ?? "unknown (legacy)"} (requested ${sandbox.machineSize.requested ?? "none"}; source ${sandbox.machineSize.source}).`,
+        ]
+      : []),
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),
@@ -871,7 +944,6 @@ function jsonLaunch(result: LaunchResult) {
     providerSandboxId: sandbox.providerSandboxId,
     boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
     golden: result.golden.name,
-    visibility: sandbox.visibility ?? result.golden.visibility,
     repositoryDir: sandbox.repositoryDir ?? null,
     harness: sandbox.harness,
     model: sandbox.model,
@@ -883,6 +955,7 @@ function jsonLaunch(result: LaunchResult) {
     promptId: result.promptId ?? null,
     ttlSeconds: result.ttlSeconds,
     expiresAt: result.expiresAt ? new Date(result.expiresAt).toISOString() : null,
+    machineSize: sandbox.machineSize ?? null,
     github: {
       status: result.github.status,
       login: result.github.login ?? null,

@@ -16,7 +16,16 @@ import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protoco
 /** One app-server per conversation isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
   private children = new ChildOwner();
-  constructor(private options: { executable: string; cwd: string; env: Record<string, string> }) {}
+  private nativeWriter = false;
+  constructor(
+    private options: {
+      executable: string;
+      cwd: string;
+      env: Record<string, string>;
+      refreshSecrets?: () => void;
+      exclusiveAuth?: boolean;
+    },
+  ) {}
   start(c: DriverContext): Turn {
     return this.open(c, false);
   }
@@ -46,6 +55,8 @@ export class CodexDriver implements Driver {
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
       throw Error("invalid_effort");
+    if (this.options.exclusiveAuth && this.nativeWriter) throw Error("native_auth_writer_busy");
+    if (this.options.exclusiveAuth) this.nativeWriter = true;
     const child = this.children.spawn(
       this.options.executable,
       ["-c", 'cli_auth_credentials_store="file"', "-c", 'mcp_oauth_credentials_store="file"', "app-server"],
@@ -94,6 +105,7 @@ export class CodexDriver implements Driver {
     lines.on("line", (line) => {
       try {
         const m = JSON.parse(line);
+        this.options.refreshSecrets?.();
         if (m.id !== undefined && !m.method) {
           const p = pending.get(m.id);
           if (p) {
@@ -320,6 +332,7 @@ export class CodexDriver implements Driver {
         closed = true;
         lines.close();
         await this.children.release(child);
+        this.nativeWriter = false;
         c.signal.removeEventListener("abort", abort);
       }
     })();

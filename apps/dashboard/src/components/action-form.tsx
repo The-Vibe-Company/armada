@@ -13,27 +13,55 @@ type Props = {
   className?: string;
   /** Empty the fields once the action succeeded (a pasted key must not linger in the page). */
   resetOnSuccess?: boolean;
+  /** Pinned under the fields with the result above it, so the outcome sits next to the action that caused it. */
+  footer?: ReactNode;
+  footerClassName?: string;
+  /** Move focus to a failure, so a person who submitted from a long form lands on what to fix. */
+  focusError?: boolean;
 };
 
 /** A form bound to a server action, with its result shown under the fields. */
-export function ActionForm({ action, children, className, resetOnSuccess = false }: Props) {
+export function ActionForm({
+  action,
+  children,
+  className,
+  resetOnSuccess = false,
+  footer,
+  footerClassName,
+  focusError = false,
+}: Props) {
   const [state, formAction] = useActionState(action, null);
   const form = useRef<HTMLFormElement>(null);
+  const message = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
     if (resetOnSuccess && state?.ok) form.current?.reset();
   }, [state, resetOnSuccess]);
 
+  useEffect(() => {
+    if (focusError && state && !state.ok) message.current?.focus();
+  }, [state, focusError]);
+
+  const result = state && (
+    <p
+      ref={message}
+      tabIndex={focusError && !state.ok ? -1 : undefined}
+      role={state.ok ? "status" : "alert"}
+      className={cn("text-sm outline-none", state.ok ? "text-success" : "text-destructive")}
+    >
+      {state.ok ? state.message : state.error}
+    </p>
+  );
   return (
     <form ref={form} action={formAction} className={className}>
       {children}
-      {state && (
-        <p
-          role={state.ok ? "status" : "alert"}
-          className={cn("text-sm", state.ok ? "text-success" : "text-destructive")}
-        >
-          {state.ok ? state.message : state.error}
-        </p>
+      {footer === undefined ? (
+        result
+      ) : (
+        <div className={footerClassName}>
+          {result}
+          {footer}
+        </div>
       )}
     </form>
   );

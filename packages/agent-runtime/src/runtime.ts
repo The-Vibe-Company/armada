@@ -25,13 +25,16 @@ import { sampleVmResources } from "./resource-sampler.ts";
 export class Runner {
   private active = new Map<
     string,
-    { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt }
+    { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
   >();
   private barrier = false;
   private mcp: McpConfiguration | undefined;
   private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
+  private exclusiveNativeAuth = false;
+  private publishNativeAuth: (() => Promise<void>) | undefined;
+  private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
   private resumingNative = false;
   constructor(
@@ -54,6 +57,9 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.refreshNativeSecrets = execution.refreshNativeSecrets;
+    this.publishNativeAuth = execution.publishNativeAuth;
+    this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
@@ -430,7 +436,7 @@ export class Runner {
       }
       await Promise.all(
         [...this.active.values()].map(async (a) => {
-          await a.turn.interrupt();
+          if (!a.terminal) await a.turn.interrupt();
           await a.done;
         }),
       );
@@ -446,6 +452,7 @@ export class Runner {
     }
     if (this.barrier) throw Error("checkpoint_in_progress");
     if (r.op === "exec") {
+      this.refreshNativeSecrets?.();
       const work = this.exec(r.input);
       this.commands.add(work);
       try {
@@ -457,6 +464,12 @@ export class Runner {
     if (r.op === "prompt") {
       if (this.resumingNative) throw Error("native_resume_in_progress");
       if (this.credentialFreeBuilder) throw Error("builder_model_prompts_forbidden");
+      if (
+        this.exclusiveNativeAuth &&
+        r.input.harness === "codex" &&
+        [...this.active.values()].some((value) => value.prompt.request.harness === "codex")
+      )
+        throw Error("native_auth_writer_busy");
       if (r.input.conversationId) {
         const existing = this.journal.prompts().find((p) => p.conversationId === r.input.conversationId);
         if (existing && existing.request.harness !== r.input.harness) throw Error("conversation_harness_mismatch");
@@ -482,7 +495,7 @@ export class Runner {
     if (r.op === "interrupt") {
       await Promise.all(
         targets.map(async (a) => {
-          await a.turn.interrupt();
+          if (!a.terminal) await a.turn.interrupt();
           await a.done;
         }),
       );
@@ -524,20 +537,27 @@ export class Runner {
             promptId: p.promptId,
           }),
       });
+      const active = { turn, controller, prompt: p, done: Promise.resolve(), terminal: false };
       const done = turn.done
         .then(
-          (status) => {
+          async (status) => {
+            active.terminal = true;
+            await this.publishNativeAuth?.();
             this.journal.transition(p, status);
           },
-          (error: unknown) => {
+          async (error: unknown) => {
+            active.terminal = true;
+            await this.publishNativeAuth?.();
             this.journal.transition(p, "failed", error instanceof HarnessError ? error.code : "harness_failed");
           },
         )
+        .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
         .finally(() => {
           this.active.delete(p.conversationId);
           void this.flushOutbox().catch(() => {});
         });
-      this.active.set(p.conversationId, { turn, controller, prompt: p, done });
+      active.done = done;
+      this.active.set(p.conversationId, active);
     } catch {
       this.journal.transition(p, "failed", "harness_start_failed");
     }
@@ -647,6 +667,21 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
+        try {
+          this.refreshNativeSecrets?.();
+        } catch {
+          const safe: ExecResult = {
+            detached: false,
+            exitCode: null,
+            stdout: "",
+            stderr: "Native auth state could not be safely redacted.",
+            timedOut: false,
+            truncated: true,
+          };
+          save({ pid, status: "exited", identity, ...safe });
+          resolve(safe);
+          return;
+        }
         const result: ExecResult = {
           detached: false,
           exitCode,

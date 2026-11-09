@@ -82,6 +82,8 @@ describe("database", () => {
         "modal_server_apps",
         "modal_server_harnesses",
         "modal_server_scopes",
+        "model_auth_ownership",
+        "model_auth_state",
         "notify_subscriptions",
         "oauth_clients",
         "oauth_codes",
@@ -263,6 +265,7 @@ describe("database", () => {
         "golden_build_jobs.payload_enc",
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
+        "model_auth_state.state_enc",
         "notify_subscriptions.secret_enc",
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
@@ -390,7 +393,7 @@ describe("database", () => {
       ).toEqual([sandbox]);
       expect(
         await asUser(db, people.admin, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
-      ).toEqual([]);
+      ).toEqual([sandbox]);
       await asUser(db, people.admin, () =>
         db.query("update sandboxes set status = 'stopped', stopped_at = now() where id = $1", [sandbox]),
       );
@@ -398,7 +401,7 @@ describe("database", () => {
         await asUser(db, people.owner, () =>
           text(db, "select status::text as value from sandboxes where id = $1", [sandbox]),
         ),
-      ).toBe("ready");
+      ).toBe("stopped");
     });
   });
 

@@ -41,6 +41,7 @@ export interface ModalProviderOptions extends ModalConnection {
   ssh?: SshPreparation;
   /** Trusted server lifecycle hook. Runs after ready/restore OUTSIDE the store lease; may call
    * get/configureMcp. Failure prevents native submission; incarnation is fenced on reacquisition. */
+  beforeResume?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
@@ -388,6 +389,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource(row);
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
+      await options.beforeResume?.(provider, row.info.id);
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
       row.generation++;
       row.quiesced = false;

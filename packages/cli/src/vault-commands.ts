@@ -14,6 +14,7 @@ import { armadaApiUrl } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
+import { nativeCodexLogin } from "./native-model-login.ts";
 
 export interface VaultIo {
   auth: AuthIo;
@@ -157,10 +158,73 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
 
 export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
-  const args = parseArgs(rest);
+  const args = parseArgs(rest, ["--id", "--expected-version"]);
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
   switch (sub) {
+    case "login":
+    case "import": {
+      const [harness] = expect(
+        args.positionals,
+        1,
+        "armada creds import claude|codex --name <name> [--file <path>] [--org <name>]",
+      );
+      if (harness !== "claude" && harness !== "codex") throw usage("Native import supports claude or codex.");
+      const id = single(args, "--id");
+      const revision = single(args, "--expected-version");
+      if (id && (!revision || !/^[1-9][0-9]*$/.test(revision) || !Number.isSafeInteger(Number(revision))))
+        throw usage("Replacing an account requires --expected-version <positive integer>.");
+      if (!id && revision) throw usage("--expected-version requires --id.");
+      const name = single(args, "--name");
+      if (!id && !name?.trim()) throw usage("Creating an account requires --name.");
+      if (sub === "login" && harness !== "codex")
+        throw usage(
+          "For Claude, run claude setup-token locally and import its token securely with armada creds import claude.",
+        );
+      const kind = harness === "claude" ? "claude_oauth" : "codex_auth";
+      let raw: string;
+      if (sub === "login") {
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        process.once("SIGINT", cancel);
+        process.once("SIGTERM", cancel);
+        try {
+          raw = await nativeCodexLogin({
+            path: io.auth.env.PATH ?? "/usr/bin:/bin",
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(300_000)]),
+            device: (url, code) => io.auth.err(`Open ${url} and enter ${code} to authorize native Codex.\n`),
+          });
+        } finally {
+          process.removeListener("SIGINT", cancel);
+          process.removeListener("SIGTERM", cancel);
+        }
+      } else raw = await readValue(args, io);
+      const value = parseCredentialValue(kind, raw);
+      if (kind === "codex_auth") {
+        const native = JSON.parse(value);
+        if (
+          !native.tokens ||
+          typeof native.tokens.access_token !== "string" ||
+          typeof native.tokens.refresh_token !== "string" ||
+          typeof native.tokens.account_id !== "string"
+        )
+          throw usage(
+            "Import the native Codex ChatGPT auth.json, with ChatGPT token fields, using only this tool's own native login.",
+          );
+      }
+      // Native consent occurs locally before import. Only the Armada API receives
+      // this secret; never print its response, which must not become a secret sink.
+      await control(io.auth, "creds/accounts/set", {
+        scope,
+        org,
+        kind: credentialName(kind),
+        name,
+        value,
+        ...(id ? { id, expectedVersion: Number(revision) } : {}),
+      });
+      io.auth.out("Imported native credential account, encrypted. Allowance may be unavailable.\n");
+      return 0;
+    }
     case "set": {
       const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
       const kind = parseCredentialKind(name ?? "");
@@ -224,7 +288,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       return 0;
     }
     default:
-      throw usage("Run armada creds set, list, rename, default, remove or rm.");
+      throw usage("Run armada creds login, import, set, list, rename, default, remove or rm.");
   }
 }
 

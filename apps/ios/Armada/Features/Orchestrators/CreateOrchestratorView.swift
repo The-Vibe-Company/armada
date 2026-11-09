@@ -3,7 +3,7 @@ import SwiftUI
 /// Create an orchestrator: name, golden (which fixes the provider), agent, model and effort, and a
 /// named model account, with sensible defaults. Repository and idle stop sit under More Options.
 /// The request carries an idempotency key; an unconfirmed create locks the form and can only be
-/// retried as the same request.
+/// retried as the same request or explicitly forgotten after a duplicate-effects warning.
 struct CreateOrchestratorView: View {
     let list: OrchestratorListModel
     let onCreated: (String) -> Void
@@ -15,6 +15,7 @@ struct CreateOrchestratorView: View {
     @State private var problem: DraftProblem?
     @State private var showsMore = false
     @State private var customModel = false
+    @State private var confirmingDiscard = false
     @FocusState private var nameFocused: Bool
 
     var body: some View {
@@ -52,12 +53,19 @@ struct CreateOrchestratorView: View {
             }
         }
         .interactiveDismissDisabled(list.createStatus == .sending)
+        .confirmationDialog("Forget this unconfirmed request?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+            Button("Forget Local Tracking", role: .destructive) {
+                Task { await list.discardUnconfirmedCreate() }
+            }
+        } message: {
+            Text("The action may already have happened. This only forgets local tracking; it does not cancel the request. Trying a new request may duplicate its effects.")
+        }
         .task { await loadOptions() }
     }
 
     /// A pending create (sending or unconfirmed) owns the form until it resolves.
     private var isLocked: Bool {
-        list.hasOpenCreate || list.createStatus == .sending
+        list.hasOpenCreate || list.createStatus == .sending || list.isDiscardingCreate
     }
 
     private func form(_ options: CreateOptions) -> some View {
@@ -79,12 +87,25 @@ struct CreateOrchestratorView: View {
                                 }
                             }
                             .buttonStyle(.glassProminent)
+                            if status == .unconfirmed {
+                                Button("Forget Local Tracking…", role: .destructive) { confirmingDiscard = true }
+                                    .accessibilityIdentifier("create.discardUnconfirmed")
+                            }
                         }
+                        .disabled(list.isDiscardingCreate)
                     case .refused(let reason):
                         Text(reason)
                             .font(.footnote)
                             .foregroundStyle(ArmadaTheme.dangerText)
                     }
+                }
+            }
+
+            if let error = list.createRecoveryError {
+                Section {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(ArmadaTheme.dangerText)
                 }
             }
 

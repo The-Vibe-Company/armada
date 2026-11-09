@@ -46,6 +46,29 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
         body: (await response.json()) as { connection: McpConnectionDto; connections: McpConnectionDto[]; ok: boolean },
       };
     };
+    // The production integration route is mounted before the fallback control API.
+    // Prove its own interior gate, not merely the fallback's policy.
+    const sandboxId = crypto.randomUUID(),
+      goldenId = crypto.randomUUID(),
+      member = crypto.randomUUID();
+    await db.query("insert into auth.users(id) values($1)", [member]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [org, member]);
+    await db.query("insert into goldens(id,org_id,owner_id,name,visibility) values($1,$2,$3,'route-test','org')", [
+      goldenId,
+      org,
+      user,
+    ]);
+    await db.query(
+      "insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status) values($1,$2,$3,$4,'bx_route','claude','ready')",
+      [sandboxId, goldenId, org, user],
+    );
+    const memberToken = (await createServiceToken(authStore, { userId: member, now: new Date() })).token;
+    expect((await post("sandbox-connections", { org, id: sandboxId }, memberToken)).status).toBe(403);
+    expect((await post("sandbox-connections", { org, id: sandboxId })).status).toBe(200);
+    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [org, member]);
+    expect((await post("sandbox-connections", { org, id: sandboxId }, memberToken)).status).toBe(200);
+    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [org, member]);
+    expect((await post("sandbox-connections", { org, id: sandboxId }, memberToken)).status).toBe(403);
     const catalog = await post("catalog", { org });
     expect(catalog.status).toBe(200);
     expect(

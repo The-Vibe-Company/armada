@@ -383,6 +383,7 @@ export async function harness(
     log?: (line: string) => void;
     /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
     modalProviderFor?: HandlerOptions["modalProviderFor"];
+    modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
   } = {},
 ): Promise<TestServer> {
   const { db, people } = await database();
@@ -447,6 +448,7 @@ export async function harness(
     encryptionKey: ENCRYPTION_KEY,
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: boat.providerFor,
+    ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
     ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),

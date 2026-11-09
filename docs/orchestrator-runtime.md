@@ -144,7 +144,7 @@ owned nonproduction fixture, never the historical stopped Modal App:
 6. Exercise no-message stop, removed-owner cleanup, lost response/read-only receipt
    recovery, and current/retired-secret redaction with actual auth/lifecycle adapters.
 
-Deploy existing account/foundation schema, runtime210, then native-binding214 in
+Deploy existing account/foundation schema, runtime215, then native-binding216 in
 migration order (plus independently owned lifecycle schema when composing #663).
 Keep feature disabled until that matrix entry's evidence is reviewed. Rollback
 means disable admission, revoke epochs and retain identity/history/native state.
