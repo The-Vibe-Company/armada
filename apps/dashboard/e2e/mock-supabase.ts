@@ -74,8 +74,8 @@ type State = {
   controlCalls: { operation: string; body: Row }[];
   /** Every `org/provider/*` call (#576): its route, the body as sent and whether it carried a session. */
   providerCalls: { route: string; body: Row; authorized: boolean }[];
-  /** While set, `org/provider/status` answers this failure instead of the stored state. */
-  providerStatusFail: { status: number; code?: string; message: string } | null;
+  /** While set, `org/provider/status` answers this failure instead of the stored state; `html` is an edge page body. */
+  providerStatusFail: { status: number; code?: string; message: string; html?: string } | null;
 };
 
 function seed(): State {
@@ -1351,6 +1351,8 @@ function orgProvider(route: string, body: Row, request: Request): Response {
   if (!org || !isMember(org.id, userId)) return controlFail(403, "forbidden", "You are not a member of this org.");
   if (route === "org/provider/status" && state.providerStatusFail) {
     const failure = state.providerStatusFail;
+    if (failure.html !== undefined)
+      return new Response(failure.html, { status: failure.status, headers: { "content-type": "text/html" } });
     return json(
       failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
       failure.status,
@@ -1484,7 +1486,7 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/provider-status-fail") {
-    state.providerStatusFail = body.fail ? (body.fail as { status: number; code?: string; message: string }) : null;
+    state.providerStatusFail = body.fail ? (body.fail as State["providerStatusFail"]) : null;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/golden-gate") {
@@ -1492,7 +1494,7 @@ function control(url: URL, body: Row): Response {
       loseAnswer: body.loseAnswer === true,
       failStatus: body.failStatus === true,
       hold: body.hold === true,
-      fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
+      fail: body.fail ? (body.fail as State["providerStatusFail"]) : null,
     };
     return json({ ok: true });
   }
@@ -1501,7 +1503,7 @@ function control(url: URL, body: Row): Response {
     state.capabilities[provider] = {
       bindings: body.bindings as Row[] | null | undefined,
       maxGoldens: body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1),
-      fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
+      fail: body.fail ? (body.fail as State["providerStatusFail"]) : null,
     };
     return json({ ok: true });
   }
