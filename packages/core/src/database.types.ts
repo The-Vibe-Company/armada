@@ -373,6 +373,7 @@ export type Database = {
           modal_environment: string | null;
           modal_app_id: string | null;
           removed_at: string | null;
+          size_policy: Json | null;
         };
         Insert: {
           id?: string;
@@ -391,6 +392,7 @@ export type Database = {
           modal_environment?: string | null;
           modal_app_id?: string | null;
           removed_at?: string | null;
+          size_policy?: Json | null;
         };
         Update: {
           id?: string;
@@ -409,6 +411,7 @@ export type Database = {
           modal_environment?: string | null;
           modal_app_id?: string | null;
           removed_at?: string | null;
+          size_policy?: Json | null;
         };
         Relationships: [
           {
@@ -1328,6 +1331,7 @@ export type Database = {
           activity_until: string | null;
           reconcile_lease: string | null;
           reconcile_lease_until: string | null;
+          machine_size: Json | null;
         };
         Insert: {
           id?: string;
@@ -1363,6 +1367,7 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          machine_size?: Json | null;
         };
         Update: {
           id?: string;
@@ -1398,6 +1403,7 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          machine_size?: Json | null;
         };
         Relationships: [
           {
