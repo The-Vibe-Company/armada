@@ -59,3 +59,79 @@ test("shared boundary rejects malformed optional configuration and unknown mutat
     ),
   ).rejects.toThrow("invalid_request");
 });
+
+test("requested production pairs stay unavailable and explain their independent native blockers", async () => {
+  const { configFromEnv } = await import("../src/config.ts");
+  const { callOrchestrator } = await import("../src/orchestrator-api.ts");
+  const { ENCRYPTION_KEY } = await import("./support.ts");
+  const config = configFromEnv({
+    ARMADA_DATABASE_URL: "postgres://test.invalid/db",
+    SUPABASE_URL: "https://supabase.invalid",
+    SUPABASE_ANON_KEY: "anon",
+    ARMADA_AUTH_SECRET: "a-test-auth-secret-of-enough-length",
+    ARMADA_PUBLIC_URL: "https://armada.invalid",
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_ORCHESTRATOR_PAIRS: " boat:claude,boat:codex,modal:codex,boat:codex ",
+    ARMADA_ORCHESTRATOR_SKILL_REVISION: "a".repeat(40),
+  });
+  const caller: Caller = { userId: "owner", orgs: [], via: "supabase" };
+  const response = await orchestratorHttp(
+    new Request("https://armada.invalid/api/v1/orchestrators/capabilities"),
+    caller,
+    undefined,
+    config.orchestratorPairs,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const expected = {
+    version: 1,
+    enabled: false,
+    reason: "native_conformance_required",
+    delegatedWaits: { enabled: false, reason: "admit_wait_not_supported" },
+    pairs: [
+      {
+        provider: "boat",
+        harness: "claude",
+        requested: true,
+        enabled: false,
+        reason: "boat_native_checkpoint_restore_unavailable",
+      },
+      {
+        provider: "boat",
+        harness: "codex",
+        requested: true,
+        enabled: false,
+        reason: "boat_native_checkpoint_restore_unavailable",
+      },
+      {
+        provider: "modal",
+        harness: "claude",
+        requested: false,
+        enabled: false,
+        reason: "native_resume_driver_unavailable",
+      },
+      {
+        provider: "modal",
+        harness: "codex",
+        requested: true,
+        enabled: false,
+        reason: "production_runtime_unavailable",
+      },
+    ],
+  };
+  expect(await response.json()).toEqual(expected);
+  // MCP consumes this same dispatcher; no provider or owner identity is needed for diagnostics.
+  expect(await callOrchestrator(undefined, caller, "capabilities", {}, undefined, config.orchestratorPairs)).toEqual(
+    expected,
+  );
+  const mutation = await orchestratorHttp(
+    new Request("https://armada.invalid/api/v1/orchestrators", {
+      method: "POST",
+      body: JSON.stringify({ version: 1 }),
+    }),
+    caller,
+    undefined,
+    config.orchestratorPairs,
+  );
+  expect(mutation.status).toBe(503);
+});

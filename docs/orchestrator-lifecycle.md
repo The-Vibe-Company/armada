@@ -1,9 +1,12 @@
 # Orchestrator lifecycle (#663)
 
-Status: integration candidate, **not enabled**. Ordinary workers retain their
-existing launch, model, TTL and retention behavior. This code does not allocate a
-production provider, issue live grants, enable a backend, or deploy a migration.
-A synthetic test is not provider-native conformance.
+Status: production composition is opt-in for **Modal × Codex** under #717.
+See [enable steps and approved operator postflight](orchestrator-runtime.md#enable-modal--codex-operator-only-default-off).
+`ARMADA_ORCHESTRATOR_PAIRS=modal:codex` selects the real authority/runtime/private
+transport and lifecycle/child workers. With it unset, ordinary workers and the
+legacy disabled response remain unchanged. Boat × Claude/Codex and Modal × Claude
+remain unavailable. Delegated waits remain denied, not a basic-flow prerequisite.
+No implementation-session production call or live-conformance success is claimed.
 
 ## Actual dependencies and ownership
 
@@ -13,8 +16,10 @@ candidate's authority, operation and migration208 bytes match committed #673
 `79472bf3f68f83ab53692a6655c484c9f9431a23`. The current delivery base is origin/main `e5fc554fd778e021f6c84984e8cee8ac4837ec09`, which contains #673, named-account #612 and sizing #658.
 `generation` in this consumer means SQL `lifecycle_generation`, **not** the
 provider's native `physicalGeneration`. Stop receipts bind both independently.
-The producer's outstanding native/SQL generation binding mismatch must be fixed
-before enablement; never cast one to the other.
+The merged authority now binds SQL and native generations separately (migration216
+and `OrchestratorAuthority.installEpoch`/ACK/admission). The former mismatch warning
+is resolved; never cast one identity to the other. Boat-native observation and
+checkpoint/restore are separate unresolved requirements.
 
 `LifecycleRuntimeStore` extends the actual #662 store. An outer SQL transaction
 includes the producer's event/cursor acknowledgement and activity receipt; a
@@ -86,8 +91,8 @@ boundary described later, without an owner-impersonation fallback.
 The reviewed account202/model-auth203/foundation208/runtime215/native-binding216
 migrations precede this branch's lifecycle217 migration. Production applies
 migrations via CI in version order on merge; do not apply or edit already-main
-files here. Combined database types are regenerated. Keep native composition off
-until the operator conformance matrix is independently reviewed.
+files here. Combined database types are regenerated. Modal × Codex uses the
+approved coordinator-run production postflight described in the runtime document.
 Rollback disables/revokes admissions and retains identities, receipts and native
 state; it does not drop tables or bulk-delete user resources.
 
@@ -101,7 +106,7 @@ continuity publication and managed-parent/ordinary-worker separation. Real
 PostgreSQL concurrency and actual provider/native proof are separate requirements;
 serialized PGlite is not row-lock conformance.
 
-`scripts/orchestrator-native-conformance.ts` is an **operator-only supplemental
+The historical `scripts/orchestrator-native-conformance.ts` is an **operator-only supplemental
 API postflight**, never run by verification or by this implementation session.
 It refuses before mutation unless the operator explicitly opts in, supplies a
 fresh owned nonproduction fixture, a matching approved HTTPS origin and an owner
@@ -126,6 +131,10 @@ ARMADA_CONFORMANCE_ORIGIN=https://approved-nonproduction-origin.example \
   bun scripts/orchestrator-native-conformance.ts /path/to/approved-fixture.json
 ```
 
+This historical runner is not the approved #717 rollout procedure (it retains its
+original nonproduction guard). Use `scripts/orchestrator-smoke.ts` and the operator
+evidence checklist in the runtime document for the approved production postflight.
+
 The runner checks a successful exact scoped-tool call after minute15 in the
 same native turn, quiescent owner stop, actual no-text resume with the same
 conversation/logical machine, and a supplemental native-context challenge.
@@ -146,7 +155,9 @@ or snapshot-retirement contracts.
 main's fifth maintenance argument is also preserved; optional managed lifecycle
 lanes are the **sixth** argument. `startServer`'s
 trusted orchestrator factory receives the same SQL/provider registry and supplies
-`runtime`, `lifecycleWorker`, and `childWorker`. No environment flag enables it.
+`runtime`, `lifecycleWorker`, and `childWorker`. The production factory uses the
+same context for Modal × Codex when selected by `ARMADA_ORCHESTRATOR_PAIRS`;
+the other pairs remain unavailable because their native backend is missing.
 
 Child selection now consumes actual `LaunchRequest["size"]` and core
 `parseMachineSize`; the override is included in the idempotency digest and
@@ -235,12 +246,11 @@ reader evidence, not a provider operation or independently performed native
 conformance by this worker. No VM/model was created and the old App stays
 stopped.
 
-Only the historical-reader dependency is cleared. Private grant ACK/scrub,
-long-running native turns, stop/restore with the same native conversation,
-physical-generation binding, and the remaining 203/runtime/auth integrations
-remain activation blockers. Any new actual conformance still requires a newly
-owned operator fixture. The implementer does not reuse the old App or enable
-production operations from this receipt.
+That historical receipt clears only the reader dependency. It is not evidence
+for private epoch ACK/scrub, long turns, native stop/restore or generation fencing.
+The #717 Modal × Codex composition and approved coordinator-run postflight are
+separate: the coordinator uses a newly owned fixture after opt-in, never the old
+App. This implementation session performs no production operation.
 
 ## Owner lifecycle HTTP contracts
 
@@ -289,14 +299,35 @@ main's credential/model-auth context and single managed-lane factory, while the
 full663 bundle adds authenticated owner lifecycle and scoped epoch routes plus
 both lifecycle/child lanes. The sixth worker argument accepts a single lane or
 an array; fourth snapshot retirement and fifth maintenance remain unchanged.
-No environment toggle or default native backend is added.
+The #717 production composition adds the real Modal × Codex backend only when
+explicitly configured; it does not fabricate a backend for the other pairs.
 
 Same-session independent review repaired blocked-parent deadline/removal cleanup
 and runtime failure-reason projection; red/green migrated-schema regressions cover
 both. Provider-native enablement still requires operator-reviewed private epoch
 ACK/scrub, physical-generation binding, checkpoint/no-text continuation and the
-nonproduction conformance matrix. Synthetic tests and green CI are not proof of
+approved operator conformance matrix. Synthetic tests and green CI are not proof of
 live provider behavior. Delegated wait mutation remains explicitly unsupported
 until the actual authority producer supplies its reviewed admission port; owner
-wait/settings HTTP endpoints remain supported. These are feature activation
-prerequisites, not a claim that the feature is currently enabled.
+wait/settings HTTP endpoints remain supported. Delegated waits are unavailable independently of owner create/chat/stop/resume;
+they do not gate the enabled Modal × Codex basic flow.
+
+## #717 activation decision and rollback
+
+`serve` constructs the actual production authority/runtime/lifecycle/child bundle
+for configured Modal × Codex, sharing the ordinary provider/credential plumbing.
+The HTTP and MCP capabilities share that selection and report other pairs as
+unavailable. See the runtime document for the required skill revision, golden and
+credential prerequisites and orderly stop → unset setting → restart rollback.
+Identities and durable history are retained; no automatic bulk deletion occurs.
+
+Delegated waits remain precisely unsupported: the actual authority has `admit`
+for `worker:launch`, `worker:read`, `worker:message`, `worker:stop`, but no
+`admitWait` or `work:wait` scope. The private gateway rejects known wait mutations
+with `admit_wait_not_supported` and does not list them as MCP tools. Owner-only
+wait APIs are not an authority substitute. Supporting delegated waits needs an
+explicit reviewed consent/scope decision, a new migration if required, atomic
+SQL/native-generation-bound reservation, and independently verified evidence
+before reauthorization/persistence. No applied migration or scope was changed.
+The minimal create/chat/stop/resume lane cannot honestly enable until native
+continuity is implemented even if delegated waits remain intentionally absent.

@@ -27,6 +27,7 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
 import type { createOrchestratorServices } from "./orchestrator-composition.ts";
+import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -45,7 +46,7 @@ export { bunSql };
 export async function startServer(
   env: Record<string, string | undefined>,
   options: {
-    /** Trusted composition only; absent until native matrix and producer contracts are verified. */
+    /** Trusted embedding override; otherwise the explicit server pair setting composes Modal Codex. */
     orchestrators?: (context: {
       sql: Sql;
       providers: ProviderRegistry;
@@ -168,6 +169,7 @@ export async function startServer(
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ConfiguredControlOptions = {
+    orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
     modelAuth,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
@@ -215,7 +217,7 @@ export async function startServer(
     { store, app: githubApp },
     Reflect.get(control, "modelAuth"),
   ]) as NamedOrchestratorCredentials;
-  const orchestrators = await options.orchestrators?.({
+  const orchestratorContext = {
     sql,
     providers,
     credentials,
@@ -223,9 +225,18 @@ export async function startServer(
     connections: mcp.connections,
     publicUrl: config.publicUrl,
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
-  });
+  };
+  const orchestrators = options.orchestrators
+    ? await options.orchestrators(orchestratorContext)
+    : createProductionOrchestrators({
+        ...orchestratorContext,
+        encryptionKey: config.encryptionKey,
+        requestedPairs: config.orchestratorPairs,
+        skillRevision: config.orchestratorSkillRevision,
+      });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
+    orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     modelAuth,
     publicUrl: config.publicUrl,

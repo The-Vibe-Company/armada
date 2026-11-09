@@ -1,7 +1,10 @@
 import { resourceUrl } from "@armada/auth";
+import { type OrchestratorPair, orchestratorPairsFromEnv } from "./orchestrator-activation.ts";
 
 export interface ServerConfig {
   port: number;
+  orchestratorPairs: readonly OrchestratorPair[];
+  orchestratorSkillRevision: string | undefined;
   /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
   githubRuntimeEnabled: boolean;
   supabaseUrl: string;
@@ -76,8 +79,14 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   const publicUrl = new URL(resourceUrl(value("ARMADA_PUBLIC_URL"))).origin;
   const development = env.NODE_ENV === "development";
 
+  const orchestratorPairs = orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS);
+  const orchestratorSkillRevision = env.ARMADA_ORCHESTRATOR_SKILL_REVISION?.trim() || undefined;
+  if (orchestratorPairs.includes("modal:codex") && !/^[a-f0-9]{40}$/.test(orchestratorSkillRevision ?? ""))
+    throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
   return {
     port,
+    orchestratorPairs,
+    orchestratorSkillRevision,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),

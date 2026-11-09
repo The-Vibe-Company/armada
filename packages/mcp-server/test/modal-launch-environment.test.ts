@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createSqlVaultStore, encryptSecret, mutateCredentialAccount } from "@armada/core/server";
 import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
+import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { database, ENCRYPTION_KEY, SECRETS } from "./support.ts";
 
 test.each(["claude", "codex"] as const)(
@@ -43,6 +44,7 @@ test.each(["claude", "codex"] as const)(
       }) as typeof fetch;
       const resolver = modalLaunchEnvironment({
         sql: db,
+        modelAuth: createModelAuthOwnership(db, ENCRYPTION_KEY),
         vault: createSqlVaultStore(db),
         encryptionKey: ENCRYPTION_KEY,
         scope,
@@ -67,6 +69,7 @@ test.each(["claude", "codex"] as const)(
           state: "ready",
           providerState: "active",
           labels: {
+            sandbox: crypto.randomUUID(),
             credentialId: account.binding!.credentialId,
             credentialVersion: String(account.binding!.credentialVersion),
           },
@@ -219,6 +222,67 @@ test("Modal bootstrap and restore use the explicit pinned account rather than cu
       id: selected.id!,
     });
     await expect(resolver({ ...machine, generation: 3 }, {})).rejects.toThrow(/No fallback was used/);
+  } finally {
+    await db.close();
+  }
+});
+
+test("Modal native Codex bootstrap still requires actual rotating-account ownership", async () => {
+  const { db, people } = await database();
+  try {
+    const scope: Scope = {
+      orgId: people.org,
+      userId: people.owner,
+      visibility: "private",
+      binding: { workspace: "ws", environment: "main", appId: "ap-bound" },
+    };
+    await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+      scopeKey(scope),
+      JSON.stringify(scope),
+    ]);
+    const account = await mutateCredentialAccount(createSqlVaultStore(db), ENCRYPTION_KEY, people.owner, {
+      action: "set",
+      scope: "user",
+      kind: "codex_auth",
+      name: "Native bootstrap contract",
+      value: JSON.stringify({
+        tokens: {
+          access_token: "synthetic-modal-native-access",
+          refresh_token: "synthetic-modal-native-refresh",
+          account_id: "synthetic-modal-native-account",
+        },
+      }),
+    });
+    const machine: Machine = {
+      info: {
+        id: "native-unclaimed",
+        name: "native",
+        state: "ready",
+        providerState: "active",
+        labels: { sandbox: crypto.randomUUID(), credentialId: account.id!, credentialVersion: String(account.version) },
+      },
+      launchUserId: people.owner,
+      golden: false,
+      phase: "active",
+      generation: 1,
+      ttlSeconds: 60,
+      physicalName: "native",
+    };
+    const resolve = modalLaunchEnvironment({
+      sql: db,
+      vault: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      scope,
+      scopeKey: scopeKey(scope),
+      callerUserId: people.owner,
+      modelAuth: createModelAuthOwnership(db, ENCRYPTION_KEY),
+    });
+    await expect(resolve(machine, { ARMADA_CODEX_AUTH_JSON: "initial-native-selection" })).rejects.toMatchObject({
+      code: "credential_binding_required",
+    });
+    await expect(resolve({ ...machine, generation: 2 }, {})).rejects.toMatchObject({
+      code: "credential_binding_required",
+    });
   } finally {
     await db.close();
   }

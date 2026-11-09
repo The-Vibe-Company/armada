@@ -104,10 +104,12 @@ export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
   orchestrators?: OrchestratorRuntime;
@@ -205,7 +207,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "orchestrators" || route.startsWith("orchestrators/")) {
     try {
       const caller = await authenticatedCaller(request, options);
-      return orchestratorHttp(request, caller, options.orchestrators);
+      return orchestratorHttp(request, caller, options.orchestrators, options.orchestratorPairs);
     } catch (error) {
       return error instanceof AuthUnavailable
         ? fail(503, "unavailable", "Authentication unavailable.")

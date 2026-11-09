@@ -165,18 +165,27 @@ export async function launchOrchestratorChild(input: {
         });
       },
     };
+    // Preserve the actual credential lifecycle (including prototype hooks). Only
+    // selection is pinned here; dropping admit/hydrate/release would bypass native
+    // rotating-account ownership and could fork a second writer on the parent account.
+    const lifecycleCredentials = new Proxy(input.stores.credentials, {
+      get(target, key) {
+        if (key === "resolve")
+          return async (requestActor: GoldenActor, harness: Harness) => {
+            if (requestActor.userId !== op.ownerId || requestActor.orgId !== op.orgId || harness !== selection.harness)
+              throw new Error("Child credential scope changed.");
+            return credentials;
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
     const launched = await launchSandbox(
       routed,
       {
         ...input.stores,
         sandboxes,
-        credentials: {
-          async resolve(requestActor, harness) {
-            if (requestActor.userId !== op.ownerId || requestActor.orgId !== op.orgId || harness !== selection.harness)
-              throw new Error("Child credential scope changed.");
-            return credentials;
-          },
-        },
+        credentials: lifecycleCredentials,
       },
       actor,
       {

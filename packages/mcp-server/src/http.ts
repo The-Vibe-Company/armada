@@ -37,9 +37,11 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
+import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
@@ -168,6 +170,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
         ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
+        ...(options.orchestratorPairs ? { orchestratorPairs: options.orchestratorPairs } : {}),
       },
       VERSION,
     );

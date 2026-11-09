@@ -1,0 +1,299 @@
+import { expect, test } from "bun:test";
+import * as core from "@armada/core/server";
+import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provider-modal";
+import type { Caller } from "../src/caller.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
+import { callOrchestrator } from "../src/orchestrator-api.ts";
+import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
+import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+
+// SQL composition regression, not native conformance. Placement I/O is fake;
+// authority, receipts, lifecycle, account selection and publication are actual.
+test("production Modal Codex bundle owns create/message/checkpoint/resume and private epoch admission", async () => {
+  const { db, people: p } = await database();
+  const sql: core.Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const placement = fakeBoat();
+  const revision = "a".repeat(40);
+  placement.setExecOutput({
+    stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills\n`,
+  });
+  let physical = "1";
+  let grant: string | undefined;
+  let checkpoint: ModalOrchestratorCheckpoint | undefined;
+  let restores = 0;
+  let nativeReads = 0;
+  const provider: core.Provider &
+    Pick<ModalProvider, "checkpointOrchestrator" | "readOrchestratorCheckpoint" | "restoreOrchestratorCheckpoint"> = {
+    ...placement.provider,
+    id: "modal",
+    async get(id, options) {
+      nativeReads++;
+      return {
+        ...(await placement.provider.get(id, options)),
+        physicalGeneration: physical,
+        expiresAt: new Date(Date.now() + 3600_000),
+      };
+    },
+    async installOrchestratorEpoch(request) {
+      grant = request.token;
+      return { acknowledged: true };
+    },
+    async scrubOrchestratorEpoch() {
+      grant = undefined;
+      return { acknowledged: true };
+    },
+    async quiesceOrchestrator() {
+      return { acknowledged: true };
+    },
+    async observeOrchestrator() {
+      return {
+        physicalGeneration: physical,
+        state: "quiescent",
+        evidence: "fixture-native",
+        eventWatermark: 1,
+        acknowledgedSequence: 1,
+        nativeSessionId: "native-thread",
+      };
+    },
+    async verifyOrchestratorSession(request) {
+      return { ...request, verified: true };
+    },
+    async checkpointOrchestrator(request) {
+      checkpoint = {
+        ...request,
+        version: 1,
+        nativeSessionId: "native-thread",
+        eventWatermark: 1,
+        acknowledgedSequence: 1,
+        checkpointId: "saved-image",
+        state: "stopped",
+      };
+      await placement.provider.stop({ sandboxId: request.sandboxId });
+      return checkpoint;
+    },
+    async readOrchestratorCheckpoint() {
+      return checkpoint ?? null;
+    },
+    async restoreOrchestratorCheckpoint(request) {
+      restores++;
+      physical = "2";
+      placement.sandbox(request.sandboxId).info.state = "ready";
+      return {
+        physicalGeneration: physical,
+        conversationId: request.checkpoint.conversationId!,
+        nativeSessionId: request.checkpoint.nativeSessionId!,
+        verified: true,
+      };
+    },
+  };
+  const input = {
+    sql,
+    providers: { resolve: async () => provider },
+    credentials: launchCredentials(core.createSqlVaultStore(sql), ENCRYPTION_KEY),
+    connections: undefined,
+    encryptionKey: ENCRYPTION_KEY,
+    scopedMcpUrl: orchestratorScopedMcpUrl("https://armada.invalid"),
+    skillRevision: revision,
+  };
+  let bundle: ReturnType<typeof createProductionOrchestrators>;
+  try {
+    expect(createProductionOrchestrators({ ...input, requestedPairs: [] })).toBeUndefined();
+    const golden = await core.createSqlGoldenStore(sql).insert({
+      orgId: p.org,
+      ownerId: p.owner,
+      name: "composed-modal",
+      visibility: "org",
+      provider: "modal",
+      modal: { workspace: "fixture", environment: "test", appId: "ap_fixture" },
+      config: { repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }], init: [] },
+    });
+    await core.createSqlGoldenStore(sql).setSnapshot(golden.id, "modal-image");
+    // An explicit golden ID must survive the ordinary launcher's same-name policy.
+    const shadow = await core.createSqlGoldenStore(sql).insert({
+      orgId: p.org,
+      ownerId: p.owner,
+      name: "composed-modal",
+      visibility: "private",
+      provider: "modal",
+      modal: { workspace: "fixture", environment: "test", appId: "ap_fixture" },
+      config: { repos: [{ url: "https://github.com/example/shadow.git", branch: "main", dir: "shadow" }], init: [] },
+    });
+    await core.createSqlGoldenStore(sql).setSnapshot(shadow.id, "wrong-image");
+    const account = (
+      await sql.query<{ id: string; version: number }>(
+        "select id,version from credentials where scope='org' and owner_id=$1 and kind='openai'",
+        [p.org],
+      )
+    ).rows[0];
+    if (!account) throw Error("fixture account missing");
+    bundle = createProductionOrchestrators({ ...input, requestedPairs: ["modal:codex"] });
+    if (!bundle) throw Error("production bundle missing");
+    const caller: Caller = { userId: p.owner, orgs: [{ orgId: p.org, role: "member" }], via: "supabase" };
+    const capabilities = await callOrchestrator(bundle.runtime, caller, "capabilities", {}, undefined, ["modal:codex"]);
+    expect(capabilities).toMatchObject({
+      enabled: true,
+      pairs: [
+        { provider: "boat", enabled: false, reason: "boat_native_checkpoint_restore_unavailable" },
+        { provider: "boat", enabled: false, reason: "boat_native_checkpoint_restore_unavailable" },
+        { provider: "modal", harness: "claude", enabled: false, reason: "native_resume_driver_unavailable" },
+        { provider: "modal", harness: "codex", enabled: true, reason: null },
+      ],
+    });
+    const config: core.OrchestratorCreate = {
+      version: 1,
+      orgId: p.org,
+      name: "production-composed",
+      goldenId: golden.id,
+      provider: "modal",
+      harness: "codex",
+      model: "gpt-6.1-sol",
+      reasoningEffort: "high",
+      modelAccountId: account.id,
+    };
+    await expect(
+      bundle.runtime.create(caller, { ...config, harness: "claude", model: "claude-opus-5-5" }, "unsupported-claude"),
+    ).rejects.toThrow("unavailable");
+    expect(placement.forks).toHaveLength(0);
+    const created = await bundle.runtime.create(caller, config, "production-create");
+    expect(created.state).toBe("succeeded");
+    expect(grant).toMatch(/^armada_epoch_[a-f0-9]{64}$/);
+    const id = created.orchestratorId;
+    const delegation = (
+      await sql.query<{
+        golden_ids: string[];
+        account_ids: string[];
+        native_generation: string;
+        acknowledged_at: string | null;
+      }>(
+        "select golden_ids,account_ids,native_generation,acknowledged_at from orchestrator_delegations where orchestrator_id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(delegation).toMatchObject({ golden_ids: [golden.id], account_ids: [account.id], native_generation: "1" });
+    expect(delegation?.acknowledged_at).not.toBeNull();
+    const sent = await bundle.runtime.mutate(caller, {
+      orgId: p.org,
+      id,
+      action: "message",
+      key: "production-message",
+      expectedRevision: created.revision,
+      text: "hello",
+    });
+    expect(sent.state).toBe("succeeded");
+    const steered = await bundle.runtime.mutate(caller, {
+      orgId: p.org,
+      id,
+      action: "steer",
+      key: "production-steer",
+      expectedRevision: sent.revision,
+      text: "keep it short",
+    });
+    expect(steered.state).toBe("succeeded");
+    placement.finish("bx_1", "prompt_1", "finished");
+    const stopped = await bundle.runtime.mutate(caller, {
+      orgId: p.org,
+      id,
+      action: "stop",
+      key: "production-stop",
+      expectedRevision: steered.revision,
+    });
+    expect(stopped.state).toBe("succeeded");
+    expect(grant).toBeUndefined();
+    expect((await bundle.runtime.detail(caller, p.org, id)).orchestrator).toMatchObject({
+      state: "stopped",
+      continuity: "native",
+    });
+    const resumed = await bundle.runtime.mutate(caller, {
+      orgId: p.org,
+      id,
+      action: "resume",
+      key: "production-resume",
+      expectedRevision: stopped.revision,
+    });
+    expect(resumed.state).toBe("succeeded");
+    expect(restores).toBe(1);
+    expect(placement.prompts).toHaveLength(1); // Resume must not manufacture inference.
+    expect(grant).toMatch(/^armada_epoch_[a-f0-9]{64}$/);
+    expect((await bundle.runtime.detail(caller, p.org, id)).orchestrator).toMatchObject({
+      state: "ready",
+      conversationId: "conv_1",
+      continuity: "native",
+    });
+    const scoped = async (action: string, body: unknown, key = "production-child-read") =>
+      bundle?.scopedToolsRoute(
+        new Request(`https://armada.invalid/api/v1/orchestrator-tools/${action}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${grant}`, "content-type": "application/json", "idempotency-key": key },
+          body: JSON.stringify(body),
+        }),
+      );
+    const childResponse = await scoped(
+      "launch",
+      {
+        selection: {
+          goldenId: golden.id,
+          harness: "codex",
+          credentialId: account.id,
+          credentialVersion: account.version,
+          model: "gpt-6.1-sol",
+        },
+      },
+      "production-child",
+    );
+    expect(childResponse?.status).toBe(200);
+    const childReceipt = (await childResponse?.json()) as { result: { state: string; sandboxId: string } };
+    expect(childReceipt.result.state).toBe("succeeded");
+    expect(
+      (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
+    ).toEqual([{ sandbox_id: childReceipt.result.sandboxId }]);
+    expect(placement.forks.map((fork) => fork.from)).toEqual(["modal-image", "modal-image"]);
+    const messagedChild = await scoped(
+      "message",
+      { sandboxId: childReceipt.result.sandboxId, text: "child hello" },
+      "production-child-message",
+    );
+    expect(await messagedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
+    expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    const childRead = await scoped("read", { sandboxId: childReceipt.result.sandboxId });
+    expect(await childRead?.json()).toMatchObject({
+      result: { status: "stopped", ownerId: p.owner, credentialId: account.id },
+    });
+    const denied = await bundle.scopedToolsRoute(
+      new Request("https://armada.invalid/api/v1/orchestrator-tools/wait_record", {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant}`, "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(denied?.status).toBe(503);
+    expect(await denied?.json()).toEqual({
+      error: { code: "admit_wait_not_supported", message: "admit_wait_not_supported" },
+    });
+    const stoppedAgain = await bundle.runtime.mutate(caller, {
+      orgId: p.org,
+      id,
+      action: "stop",
+      key: "production-stop-again",
+      expectedRevision: resumed.revision,
+    });
+    expect(stoppedAgain.state).toBe("succeeded");
+    expect(checkpoint?.physicalGeneration).toBe("2");
+    expect(grant).toBeUndefined();
+    const readsBeforeHistory = nativeReads;
+    expect((await bundle.runtime.events(caller, p.org, id)).events.some((event) => event.kind === "agent")).toBe(true);
+    expect((await bundle.runtime.detail(caller, p.org, id)).orchestrator).toMatchObject({
+      state: "stopped",
+      continuity: "native",
+    });
+    expect(nativeReads).toBe(readsBeforeHistory);
+  } finally {
+    await bundle?.lifecycleWorker.drain();
+    await bundle?.childWorker.drain();
+    await db.close();
+  }
+});

@@ -45,6 +45,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { callOrchestrator } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
@@ -55,6 +56,7 @@ import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   caller: Caller;
   data: ScopedData;
@@ -275,7 +277,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
       async ({ args, idempotencyKey }) => {
         try {
-          const result = await callOrchestrator(context.orchestrators, context.caller, action, args, idempotencyKey);
+          const result = await callOrchestrator(
+            context.orchestrators,
+            context.caller,
+            action,
+            args,
+            idempotencyKey,
+            context.orchestratorPairs,
+          );
           return {
             structuredContent: result as Record<string, unknown>,
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
