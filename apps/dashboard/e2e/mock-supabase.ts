@@ -35,8 +35,10 @@ type State = {
   githubInstallations: Row[];
   events: Map<string, Row[]>;
   sent: string[];
-  /** The arguments of every launch and send, as the dashboard serialized them. */
+  /** The arguments of every send, steer and interrupt, as the dashboard serialized them. */
   toolCalls: { name: string; args: Row }[];
+  /** The next send, steer or interrupt fails with this message, once. */
+  failNextTool: string | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
   /** Every `POST /api/v1/sandbox/launch` body, as the dashboard sent it. */
@@ -135,6 +137,7 @@ function seed(): State {
     events: new Map(),
     sent: [],
     toolCalls: [],
+    failNextTool: null,
     launches: [],
     goldenCalls: [],
     goldenRemoveCalls: [],
@@ -657,31 +660,70 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
-  if (name === "send") state.toolCalls.push({ name, args });
+  const driving = name === "send" || name === "steer" || name === "interrupt";
+  if (driving) state.toolCalls.push({ name, args });
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
     reply({ content: [{ type: "text", text: JSON.stringify(value) }], isError });
   if (!target || !visible) return text("not found", true);
+  if (driving && state.failNextTool) {
+    const failure = state.failNextTool;
+    state.failNextTool = null;
+    return reply({ content: [{ type: "text", text: failure }], isError: true });
+  }
+  const events = state.events.get(String(target.id)) ?? [];
+  state.events.set(String(target.id), events);
+  const conversations = (target.conversation_ids ?? []) as string[];
 
   switch (message.params?.name) {
     case "logs": {
-      const events = state.events.get(String(target.id)) ?? [];
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
     case "send": {
+      // As the server does: the named conversation, else the latest, else a new one; the sandbox is running after.
       state.sent.push(String(args.prompt));
-      const events = state.events.get(String(target.id)) ?? [];
+      const conversationId =
+        typeof args.conversation_id === "string"
+          ? args.conversation_id
+          : (conversations.at(-1) ?? `conv-${events.length}`);
+      if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
+      target.status = "running";
+      const promptId = `sent-${events.length}`;
       events.push({
-        id: `sent-${events.length}`,
+        id: promptId,
         at: Date.now(),
         kind: "prompt",
         text: String(args.prompt),
-        status: "queued",
+        status: "running",
+        conversationId,
+        promptId,
       });
-      state.events.set(String(target.id), events);
-      return text({ ok: true });
+      return text({ id: target.id, promptId, conversationId, status: "running" });
+    }
+    case "steer": {
+      const conversationId = typeof args.conversation_id === "string" ? args.conversation_id : conversations.at(-1);
+      events.push({
+        id: `steer-${events.length}`,
+        at: Date.now(),
+        kind: "steer",
+        text: String(args.text),
+        conversationId,
+      });
+      const delivery = target.harness === "codex" ? "restart" : "native";
+      return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
+    }
+    case "interrupt": {
+      const running = [...events]
+        .reverse()
+        .find(
+          (event) =>
+            event.kind === "prompt" && event.status === "running" && event.conversationId === args.conversation_id,
+        );
+      if (running)
+        events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
+      return text({ id: target.id, interrupted: true });
     }
     case "stop":
       target.status = "stopped";
@@ -1426,6 +1468,14 @@ function control(url: URL, body: Row): Response {
     const row = state.sandboxes.find((item) => item.id === body.id);
     if (!row) return json({ message: "no sandbox" }, 404);
     Object.assign(row, body.fields as Row);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/sandbox-events") {
+    state.events.set(String(body.sandbox), (body.events as Row[]) ?? []);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-next-tool") {
+    state.failNextTool = String(body.message);
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-sandbox-connections") {

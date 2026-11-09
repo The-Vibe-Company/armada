@@ -59,13 +59,270 @@ test("stopping a sandbox asks first, then stops it", async ({ page }) => {
   await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
 });
 
-test("a message sent from the dashboard reaches the sandbox", async ({ page }) => {
+const at = (seconds: number) => 1_762_596_300_000 + seconds * 1000;
+
+async function sandboxState(fields: Record<string, unknown>, events: Record<string, unknown>[]) {
+  await fetch(`${MOCK}/__test/sandbox-lifecycle`, {
+    method: "POST",
+    body: JSON.stringify({ id: IDS.running, fields }),
+  });
+  await fetch(`${MOCK}/__test/sandbox-events`, {
+    method: "POST",
+    body: JSON.stringify({ sandbox: IDS.running, events }),
+  });
+}
+
+async function toolCalls() {
+  const state = (await (await fetch(`${MOCK}/__test/state`)).json()) as {
+    toolCalls: { name: string; args: unknown }[];
+  };
+  return state.toolCalls;
+}
+
+/** Two conversations; the latest streamed one answer in chunks, ran a failing tool and left a technical event. */
+const CHAT = [
+  {
+    id: "a1",
+    at: at(0),
+    kind: "prompt",
+    text: "Write the release notes",
+    status: "finished",
+    conversationId: "conv-a",
+    promptId: "pa",
+  },
+  {
+    id: "a2",
+    at: at(5),
+    kind: "message",
+    text: "Release notes are drafted.",
+    partial: false,
+    tools: [],
+    conversationId: "conv-a",
+    promptId: "pa",
+  },
+  {
+    id: "b1",
+    at: at(10),
+    kind: "prompt",
+    text: "Fix the failing parser test",
+    status: "running",
+    conversationId: "conv-b",
+    promptId: "pb",
+  },
+  {
+    id: "b2",
+    at: at(11),
+    kind: "message",
+    text: "",
+    partial: true,
+    tools: [{ id: "tool-1", name: "Bash", input: {} }],
+    conversationId: "conv-b",
+    promptId: "pb",
+    messageId: "mb0",
+    textMode: "delta",
+  },
+  {
+    id: "b3",
+    at: at(12),
+    kind: "message",
+    text: "",
+    partial: false,
+    tools: [{ id: "tool-1", name: "Bash", input: { command: "bun test parser" } }],
+    conversationId: "conv-b",
+    promptId: "pb",
+    messageId: "mb0",
+    textMode: "snapshot",
+  },
+  {
+    id: "b4",
+    at: at(13),
+    kind: "message",
+    text: "",
+    partial: false,
+    tools: [
+      {
+        id: "tool-1",
+        name: "tool_result",
+        result: { output: [{ type: "text", text: "1 fail: expected 3, got 2" }], isError: true },
+      },
+    ],
+    conversationId: "conv-b",
+    promptId: "pb",
+  },
+  {
+    id: "b5",
+    at: at(14),
+    kind: "message",
+    text: "The parser drops ",
+    partial: true,
+    tools: [],
+    conversationId: "conv-b",
+    promptId: "pb",
+    messageId: "mb1",
+    textMode: "delta",
+  },
+  {
+    id: "b6",
+    at: at(15),
+    kind: "message",
+    text: "the last token.",
+    partial: true,
+    tools: [],
+    conversationId: "conv-b",
+    promptId: "pb",
+    messageId: "mb1",
+    textMode: "delta",
+  },
+  {
+    id: "b7",
+    at: at(16),
+    kind: "message",
+    text: "The parser drops the last token. Fix:\n\n```ts\nreturn tokens.slice(0, end + 1);\n```\n\nSee [the docs](https://example.com/parser) and [this](javascript:alert(1)).",
+    partial: false,
+    model: "claude-opus-5-5",
+    tools: [],
+    conversationId: "conv-b",
+    promptId: "pb",
+    messageId: "mb1",
+    textMode: "snapshot",
+  },
+  { id: "b8", at: at(17), kind: "other", type: "rate_limits", data: { remaining: 12 }, conversationId: "conv-b" },
+];
+
+test("the conversation reads as a chat: one answer per message, tools expand, technical events stay aside", async ({
+  page,
+}) => {
+  await sandboxState({ conversation_ids: ["conv-a", "conv-b"] }, CHAT);
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
-  await page.getByRole("button", { name: "Send a message" }).click();
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Fix the failing parser test")).toBeVisible();
+  // Streamed chunks and the final text are one message, shown once.
+  await expect(messages.getByText(/The parser drops the last token/)).toHaveCount(1);
+  await expect(messages.getByText("return tokens.slice(0, end + 1);")).toBeVisible();
+  await expect(messages.getByRole("link", { name: "the docs" })).toHaveAttribute("href", "https://example.com/parser");
+  await expect(messages.getByRole("link", { name: "this" })).toHaveCount(0);
+  await expect(messages.getByText("Release notes are drafted.")).toHaveCount(0);
+
+  const tool = messages.getByRole("button", { name: /Bash.*bun test parser/ });
+  await expect(tool).toHaveAttribute("aria-expanded", "false");
+  await expect(messages.locator('[data-tool="Bash"]')).toHaveAttribute("data-tool-state", "error");
+  await tool.click();
+  await expect(tool).toHaveAttribute("aria-expanded", "true");
+  await expect(messages.getByText("1 fail: expected 3, got 2")).toBeVisible();
+  await page.getByText("Technical events (1)").click();
+  await expect(page.getByRole("list", { name: "Technical events" }).getByText("rate_limits")).toBeVisible();
+  await page.screenshot({ path: "test-results/sandbox-chat-desktop.png", fullPage: true, animations: "disabled" });
+
+  await page.getByRole("combobox", { name: "Conversation" }).selectOption("conv-a");
+  await expect(messages.getByText("Release notes are drafted.")).toBeVisible();
+  await expect(messages.getByText("Fix the failing parser test")).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("combobox", { name: "Conversation" }).selectOption("conv-b");
+  await expect(messages.getByText("Fix the failing parser test")).toBeVisible();
+  await page.screenshot({ path: "test-results/sandbox-chat-mobile.png", fullPage: true, animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+});
+
+test("steer, interrupt and send go to the chosen conversation, and a refused message keeps its draft", async ({
+  page,
+}) => {
+  await sandboxState({ conversation_ids: ["conv-a", "conv-b"] }, CHAT);
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const box = page.getByRole("textbox", { name: "Message" });
+  await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeVisible();
+
+  await fetch(`${MOCK}/__test/fail-next-tool`, {
+    method: "POST",
+    body: JSON.stringify({ message: "No turn is running." }),
+  });
+  await box.fill("Keep the old behaviour for empty input");
+  await page.getByRole("button", { name: "Steer", exact: true }).click();
+  await expect(page.locator('form p[role="alert"]')).toHaveText("No turn is running.");
+  await expect(box).toHaveValue("Keep the old behaviour for empty input");
+
+  await box.press("Control+Enter");
+  await expect(page.locator('form p[role="status"]')).toHaveText("Steered.");
+  await expect(box).toHaveValue("");
+  await expect(
+    page.getByRole("log", { name: "Messages" }).getByText("Keep the old behaviour for empty input"),
+  ).toBeVisible();
+
+  // A model change is a new turn: it cannot ride on a steer.
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await page.getByLabel("Reasoning effort").selectOption("high");
+  await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeDisabled();
+  await box.fill("Then add a regression test");
+  await page.getByRole("button", { name: "Send as new turn" }).click();
+  await expect(box).toHaveValue("");
+
+  await page.getByRole("button", { name: "Interrupt" }).click();
+  await expect(page.getByRole("log", { name: "Messages" }).getByText("Interrupted")).toBeVisible();
+
+  expect(await toolCalls()).toEqual([
+    {
+      name: "steer",
+      args: { id: IDS.running, text: "Keep the old behaviour for empty input", conversation_id: "conv-b" },
+    },
+    {
+      name: "steer",
+      args: { id: IDS.running, text: "Keep the old behaviour for empty input", conversation_id: "conv-b" },
+    },
+    {
+      name: "send",
+      args: {
+        id: IDS.running,
+        prompt: "Then add a regression test",
+        conversation_id: "conv-b",
+        reasoning_effort: "high",
+      },
+    },
+    { name: "interrupt", args: { id: IDS.running, conversation_id: "conv-b" } },
+  ]);
+});
+
+test("a first message to an idle sandbox starts its turn without a reload", async ({ page }) => {
+  await sandboxState({ status: "ready", conversation_ids: [] }, []);
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  await expect(page.getByText("No messages yet.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Steer", exact: true })).toHaveCount(0);
   await page.getByRole("textbox", { name: "Message" }).fill("Also update the changelog");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByText("Sent. The reply appears in the logs.")).toBeVisible();
-  await expect(page.getByText("Also update the changelog")).toBeVisible({ timeout: 10_000 });
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Also update the changelog")).toBeVisible();
+  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
+  await expect(page.getByRole("button", { name: "Interrupt" })).toBeVisible();
+  await expect(page.getByTestId("agent-working")).toBeVisible();
+  expect(await toolCalls()).toEqual([{ name: "send", args: { id: IDS.running, prompt: "Also update the changelog" } }]);
+});
+
+test("reading the history is never interrupted by new messages, and the latest is one click away", async ({ page }) => {
+  const history = Array.from({ length: 40 }, (_, index) => ({
+    id: `h${index}`,
+    at: at(index),
+    kind: "message",
+    text: `Step ${index}: checked another file of the parser and its fixtures.`,
+    partial: false,
+    tools: [],
+  }));
+  await sandboxState({}, history);
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Step 39:")).toBeInViewport();
+  await messages.evaluate((element) => element.scrollTo({ top: 0 }));
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
+
+  await fetch(`${MOCK}/__test/append-event`, {
+    method: "POST",
+    body: JSON.stringify({ sandbox: IDS.running, text: "All tests pass now." }),
+  });
+  await expect(page.getByRole("button", { name: "New messages" })).toBeVisible({ timeout: 10_000 });
+  expect(await messages.evaluate((element) => element.scrollTop)).toBe(0);
+  await expect(messages.getByText("Step 0:")).toBeInViewport();
+
+  await page.getByRole("button", { name: "New messages" }).click();
+  await expect(messages.getByText("All tests pass now.")).toBeInViewport();
+  await expect(page.getByRole("button", { name: /New messages|Jump to latest/ })).toHaveCount(0);
 });
 
 test("a launch from a golden sends the chosen model and effort, and a send can override them once", async ({
@@ -102,11 +359,11 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   const facts = page.locator("dl").first();
   await expect(facts.getByText("Repository context")).toBeVisible();
   await expect(facts.getByText("api", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Send a message" }).click();
+  await page.getByRole("button", { name: "Model", exact: true }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("Now the docs");
   await page.getByLabel("Reasoning effort").selectOption("low");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByText("Sent. The reply appears in the logs.")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
 
   await expect(page.getByLabel("Reasoning effort")).toHaveValue("");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
@@ -117,7 +374,7 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
     "Default for selected model (medium)",
   );
   await page.getByRole("textbox", { name: "Message" }).fill("Continue with model default");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByRole("button", { name: "Send as new turn" }).click();
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
 
   const { launches, toolCalls } = (await (await fetch(`${MOCK}/__test/state`)).json()) as {
@@ -138,9 +395,18 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
       repo: "api",
     },
   ]);
+  // The first send opened a conversation; the next one names it.
   expect(toolCalls).toEqual([
     { name: "send", args: { id: expect.any(String), prompt: "Now the docs", reasoning_effort: "low" } },
-    { name: "send", args: { id: expect.any(String), prompt: "Continue with model default", model: "gpt-6.1-terra" } },
+    {
+      name: "send",
+      args: {
+        id: expect.any(String),
+        prompt: "Continue with model default",
+        conversation_id: expect.any(String),
+        model: "gpt-6.1-terra",
+      },
+    },
   ]);
 });
 
