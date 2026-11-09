@@ -30,7 +30,9 @@ export function Terminal({ commands, title }: { commands: TerminalCommand[]; tit
     const el = ref.current;
     if (!el || prefersReducedMotion()) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let state: Shown = { command: 0, typed: 0, lines: 0 };
+    // The replay plays the session's last two commands over the others, already printed: never an empty box.
+    const first = Math.max(0, commands.length - 2);
+    let state: Shown = { command: first, typed: 0, lines: 0 };
     const set = (next: Shown) => {
       state = next;
       setShown(next);
@@ -54,8 +56,8 @@ export function Terminal({ commands, title }: { commands: TerminalCommand[]; tit
           step();
         });
       }
-      const next = state.command < commands.length - 1 ? state.command + 1 : 0;
-      later(next ? 1400 : 4200, () => {
+      const next = state.command < commands.length - 1 ? state.command + 1 : first;
+      later(next !== first ? 1400 : 4200, () => {
         set({ command: next, typed: 0, lines: 0 });
         step();
       });
@@ -63,7 +65,7 @@ export function Terminal({ commands, title }: { commands: TerminalCommand[]; tit
     const unwatch = whileVisible(el, (on) => {
       if (on) {
         setPlaying(true);
-        set({ command: 0, typed: 0, lines: 0 });
+        set({ command: first, typed: 0, lines: 0 });
         step();
       } else if (timer) {
         clearTimeout(timer);
@@ -93,29 +95,45 @@ export function Terminal({ commands, title }: { commands: TerminalCommand[]; tit
       </div>
       {/* The replay is decorative; the whole session is in the text a screen reader gets. */}
       <div className="lp-terminal-body" ref={body} aria-hidden={playing || undefined}>
-        {commands.map((c, k) => {
-          if (k > shown.command) return null;
-          const current = k === shown.command;
-          const typed = current ? c.command.slice(0, shown.typed) : c.command;
-          const lines = c.output.split("\n");
-          const visible = current ? lines.slice(0, shown.lines) : lines;
-          const typing = current && shown.typed < c.command.length;
-          const waiting = current && !typing && shown.lines === 0;
-          return (
+        {/* The whole session, unseen: it holds the box at its full height from the first paint. */}
+        <div className="lp-terminal-ghost" aria-hidden>
+          {commands.map((c) => (
             <div key={c.command} className="lp-terminal-run">
-              <div className="lp-terminal-command">
-                <span className="lp-terminal-prompt">❯</span> {typed}
-                {(typing || waiting) && <span className="lp-caret" />}
-              </div>
-              {visible.map((line, i) => (
+              <div className="lp-terminal-gcmd">❯ {c.command}</div>
+              {c.output.split("\n").map((line, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: the output's lines are fixed and in order
-                <div key={i} className={`lp-terminal-line ${tone(line) ?? ""}`}>
-                  {line || " "}
+                <div key={i} className="lp-terminal-line">
+                  {line || " "}
                 </div>
               ))}
             </div>
-          );
-        })}
+          ))}
+        </div>
+        <div className="lp-terminal-live">
+          {commands.map((c, k) => {
+            if (k > shown.command) return null;
+            const current = k === shown.command;
+            const typed = current ? c.command.slice(0, shown.typed) : c.command;
+            const lines = c.output.split("\n");
+            const visible = current ? lines.slice(0, shown.lines) : lines;
+            const typing = current && shown.typed < c.command.length;
+            const waiting = current && !typing && shown.lines === 0;
+            return (
+              <div key={c.command} className="lp-terminal-run">
+                <div className="lp-terminal-command">
+                  <span className="lp-terminal-prompt">❯</span> {typed}
+                  {(typing || waiting) && <span className="lp-caret" />}
+                </div>
+                {visible.map((line, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: the output's lines are fixed and in order
+                  <div key={i} className={`lp-terminal-line ${tone(line) ?? ""}`}>
+                    {line || " "}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
       </div>
       {playing && <pre className="sr-only">{commands.map((c) => `$ ${c.command}\n${c.output}`).join("\n\n")}</pre>}
     </div>
