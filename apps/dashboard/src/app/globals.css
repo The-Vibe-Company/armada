@@ -155,12 +155,12 @@
       contain: size;
     }
     [data-fit="body"] > [data-fit="side"] {
-      flex: 0 1 auto;
-      min-height: 0;
+      flex: none;
     }
-    [data-fit="side-content"] {
-      min-height: 5rem;
-      overflow-y: auto;
+    /* Open details on a small screen never squeeze the conversation: they follow it, and the page area scrolls. */
+    [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
+      flex: none;
+      height: 100%;
     }
     [data-fit="technical-list"] {
       max-height: 30dvh;
@@ -172,11 +172,14 @@
         display: grid;
         grid-template-rows: minmax(0, 1fr);
       }
-      [data-fit="body"] > [data-fit="side"] {
+      [data-fit="body"] > [data-fit="side"],
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
+        height: auto;
         min-height: 0;
       }
       [data-fit="side-content"] {
         min-height: 0;
+        overflow-y: auto;
       }
     }
   }

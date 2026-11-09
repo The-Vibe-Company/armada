@@ -293,6 +293,19 @@ function Transcript({
     else setUnseen(true);
   }, [signature]);
 
+  // The history's own height changes too (details, the model panel, the keyboard, the window): a pinned view stays on
+  // the latest message, and an unpinned one updates whether it is at the bottom.
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) element.scrollTop = element.scrollHeight;
+      else setAtBottom(element.scrollHeight - element.scrollTop - element.clientHeight <= PINNED_PX);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   function onScroll() {
     const element = scroller.current;
     if (!element) return;

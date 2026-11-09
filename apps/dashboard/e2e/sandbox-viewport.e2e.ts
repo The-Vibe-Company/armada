@@ -57,10 +57,36 @@ for (const [label, size] of [
     await details.getByText("MCP connections", { exact: true }).scrollIntoViewIfNeeded();
     await expect(details.getByText("Launched without MCP connections you can see.")).toBeInViewport();
     expect(await overflow(page)).toEqual({ vertical: 0, horizontal: 0 });
-    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeInViewport();
     await page.screenshot({ path: `test-results/sandbox-viewport-${label}-details.png`, animations: "disabled" });
+    // Beside the conversation the composer never moves; on a phone the details follow it and the composer is a scroll away.
+    const send = page.getByRole("button", { name: "Send", exact: true });
+    if (label === "mobile") await send.scrollIntoViewIfNeeded();
+    await expect(send).toBeInViewport({ ratio: 1 });
   });
 }
+
+test("the history stays on its newest message when its height changes, and open details never squeeze it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Step 39:")).toBeInViewport();
+  const before = await messages.evaluate((element) => element.clientHeight);
+  const atLatest = () =>
+    messages.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+  // The model panel shrinks the history: it stays pinned to the latest message.
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await expect(page.getByLabel("Reasoning effort")).toBeVisible();
+  await expect.poll(atLatest).toBe(true);
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await page.getByRole("button", { name: "Details" }).click();
+  await expect(page.getByRole("region", { name: "Details" }).getByText("Golden", { exact: true })).toBeVisible();
+  expect(await messages.evaluate((element) => element.clientHeight)).toBeGreaterThanOrEqual(before);
+  await expect.poll(atLatest).toBe(true);
+  await expect(messages.getByText("Step 39:")).toBeInViewport({ ratio: 1 });
+  expect((await overflow(page)).vertical).toBe(0);
+});
 
 test("on a phone height where it cannot all fit, the composer and its controls are never cut off", async ({ page }) => {
   // A running turn (Steer and Interrupt show) and a technical event, as real sessions have, at an iPhone's height.
