@@ -8,8 +8,8 @@ export interface ModalOrchestratorCheckpoint {
   operationId: string;
   sandboxId: string;
   physicalGeneration: string;
-  conversationId: string;
-  nativeSessionId: string;
+  conversationId: string | null;
+  nativeSessionId: string | null;
   harness: Harness;
   model: string;
   reasoningEffort?: string;

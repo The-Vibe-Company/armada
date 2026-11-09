@@ -89,7 +89,12 @@ test("production selection pins golden/account/resources and avoids model lookup
         managed: (provider) => ({
           provider,
           mcpUrl: "https://armada.invalid/mcp",
-          observe: async (machine) => ({ ...machine, state: "unknown", evidence: "native:unknown" }),
+          observe: async (machine) => ({
+            ...machine,
+            physicalGeneration: machine.physicalGeneration ?? null,
+            state: "unknown",
+            evidence: "native:unknown",
+          }),
           checkpointAndStop: async () => {
             throw Error("No native operation expected.");
           },

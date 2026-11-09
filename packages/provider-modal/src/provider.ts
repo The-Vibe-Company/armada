@@ -48,7 +48,7 @@ export interface ModalProvider extends Provider {
     sandboxId: string;
     operationId: string;
     physicalGeneration: string;
-    conversationId: string;
+    conversationId: string | null;
     harness: "claude" | "codex";
     model: string;
     reasoningEffort?: string;
@@ -896,7 +896,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.phase !== "active" ||
           String(row.generation) !== request.physicalGeneration ||
           !request.operationId ||
-          !request.conversationId ||
+          (request.conversationId !== null && !request.conversationId) ||
           !request.model ||
           !["claude", "codex"].includes(request.harness)
         )
@@ -907,12 +907,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           nativeSessionId: string | null;
           eventWatermark: number;
           acknowledgedSequence: number;
-        }>(row, "observeOrchestrator", { conversationId: request.conversationId });
+        }>(
+          row,
+          "observeOrchestrator",
+          request.conversationId === null ? {} : { conversationId: request.conversationId },
+        );
         if (
           observed.physicalGeneration !== request.physicalGeneration ||
           observed.state !== "quiescent" ||
-          typeof observed.nativeSessionId !== "string" ||
-          !observed.nativeSessionId ||
+          (request.conversationId === null
+            ? observed.nativeSessionId !== null
+            : typeof observed.nativeSessionId !== "string" || !observed.nativeSessionId) ||
           !Number.isSafeInteger(observed.eventWatermark) ||
           observed.eventWatermark < 0 ||
           observed.acknowledgedSequence !== observed.eventWatermark
@@ -946,7 +951,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
     async restoreOrchestratorCheckpoint(request) {
-      if (request.checkpoint.harness !== "codex")
+      if (
+        !request.checkpoint.conversationId ||
+        !request.checkpoint.nativeSessionId ||
+        request.checkpoint.harness !== "codex"
+      )
         throw refusal("unavailable", "No verified no-text driver for this harness.");
       const activated = await admit(request.sandboxId, async (row, save) => {
         const saved = checkpointReceipt(row, request.checkpoint.operationId);
@@ -974,7 +983,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await options.beforePrompt?.(provider, request.sandboxId);
       return admit(request.sandboxId, async (row, save) => {
         const record = row.orchestratorCheckpoint;
-        if (!record || record.restore?.operationId !== request.operationId || String(row.generation) !== activated)
+        if (
+          !record ||
+          !record.receipt.conversationId ||
+          !record.receipt.nativeSessionId ||
+          record.restore?.operationId !== request.operationId ||
+          String(row.generation) !== activated
+        )
           throw refusal("conflict", "Native restore generation changed.");
         const verified = await verifyNativeSession(row, {
           sandboxId: request.sandboxId,

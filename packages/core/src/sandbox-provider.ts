@@ -49,12 +49,28 @@ export interface ProviderTarget {
   modal: ModalBinding | null;
 }
 
+/** Trusted service-only cleanup identity, never parsed from a public request. */
+export interface OrchestratorCleanupScope {
+  orchestratorId: string;
+  sandboxId: string;
+  providerSandboxId: string;
+  generation: string;
+  physicalGeneration?: string | null;
+  operationId?: string;
+}
+
 /** Builds the provider for one target, for one caller. It resolves that caller's management credential itself. */
-export type ProviderFactory = (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
+export type ProviderFactory = (
+  target: ProviderTarget,
+  caller: { userId: string; orchestratorCleanup?: OrchestratorCleanupScope },
+) => Promise<Provider>;
 
 export interface ProviderRegistry {
   /** The provider of the target's own backend, never another one. */
-  resolve(target: ProviderTarget, caller: { userId: string }): Promise<Provider>;
+  resolve(
+    target: ProviderTarget,
+    caller: { userId: string; orchestratorCleanup?: OrchestratorCleanupScope },
+  ): Promise<Provider>;
 }
 
 export type ProviderRoutingErrorCode =

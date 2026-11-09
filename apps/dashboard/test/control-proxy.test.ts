@@ -421,8 +421,13 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
         body: "",
       });
     }
-    for (const action of ["create", "message", "steer", "stop", "resume"]) {
-      const path = action === "create" ? "orchestrators" : `orchestrators/${id}/${action}`;
+    for (const action of ["create", "message", "steer", "stop", "resume", "reconcile"]) {
+      const path =
+        action === "create"
+          ? "orchestrators"
+          : action === "reconcile"
+            ? "orchestrators/reconcile"
+            : `orchestrators/${id}/${action}`;
       const body = JSON.stringify({ orgId: "org", expectedRevision: 2, size: "small", text: "work" });
       const key = `source-${action}`;
       const count = received.length;

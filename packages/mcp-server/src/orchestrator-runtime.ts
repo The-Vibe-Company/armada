@@ -133,6 +133,8 @@ export class OrchestratorRuntime {
       configuration?: OrchestratorCreate;
     },
   ) {
+    if (input.action === "create" && (!input.configuration || input.configuration.orgId !== input.orgId))
+      throw new OrchestratorRuntimeError("invalid_request");
     const operation = await this.options.store.lookupRequest({
       ownerId: this.owner(caller, input.orgId),
       orgId: input.orgId,
@@ -140,7 +142,7 @@ export class OrchestratorRuntime {
       key: input.key,
       ...(input.id ? { id: input.id } : {}),
       ...(input.action === "create"
-        ? { configuration: input.configuration }
+        ? { configuration: input.configuration! }
         : {
             payload: {
               expectedRevision: input.expectedRevision,

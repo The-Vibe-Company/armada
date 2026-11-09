@@ -3,6 +3,7 @@ import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provide
 import type { OrchestratorNativeAdapter } from "./orchestrator-backend-resolver.ts";
 import type { ManagedMachine, ManagedSelection, ManagedStopReceipt } from "./orchestrator-managed-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
+import { mirrorStoppedHistory } from "./orchestrator-stop-history.ts";
 
 function modal(provider: Provider): ModalProvider {
   const candidate = provider as Partial<ModalProvider>;
@@ -49,7 +50,7 @@ export function createModalOrchestratorNativeAdapter(input: {
       )
     ).rows[0];
     if (
-      !saved?.conversation_id ||
+      !saved ||
       !saved.model ||
       !["claude", "codex"].includes(saved.harness) ||
       (saved.repository_dir !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(saved.repository_dir))
@@ -83,7 +84,7 @@ export function createModalOrchestratorNativeAdapter(input: {
     const verified =
       checkpoint.state === "stopped" &&
       !!checkpoint.checkpointId &&
-      !!checkpoint.nativeSessionId &&
+      (checkpoint.conversationId === null || !!checkpoint.nativeSessionId) &&
       Number.isSafeInteger(checkpoint.eventWatermark) &&
       checkpoint.eventWatermark >= 0 &&
       checkpoint.acknowledgedSequence === checkpoint.eventWatermark;
@@ -91,7 +92,8 @@ export function createModalOrchestratorNativeAdapter(input: {
       ...machine,
       operationId,
       state: verified ? "stopped" : "uncertain",
-      continuity: verified ? "native" : "unverified",
+      physicalGeneration: checkpoint.physicalGeneration,
+      continuity: verified && checkpoint.conversationId !== null ? "native" : "unverified",
     };
   }
   return {
@@ -119,12 +121,22 @@ export function createModalOrchestratorNativeAdapter(input: {
           signal?.throwIfAborted();
           const physical = await provider.get(current.providerSandboxId, { ...(signal ? { signal } : {}) });
           if (!physical.physicalGeneration || !["ready", "running"].includes(physical.state))
-            return { ...current, state: "unknown", evidence: "native:unavailable" };
+            return {
+              ...current,
+              physicalGeneration: physical.physicalGeneration ?? null,
+              state: "unknown",
+              evidence: "native:unavailable",
+            };
           const observed = await native.observeOrchestrator!({
             sandboxId: current.providerSandboxId,
             physicalGeneration: physical.physicalGeneration,
           });
-          return { ...current, state: observed.state, evidence: `native:${observed.evidence}` };
+          return {
+            ...current,
+            physicalGeneration: physical.physicalGeneration,
+            state: observed.state,
+            evidence: `native:${observed.evidence}`,
+          };
         },
         async checkpointAndStop(current, operationId, signal) {
           assertMachine(current);
@@ -141,7 +153,19 @@ export function createModalOrchestratorNativeAdapter(input: {
           selected(checkpoint, pinned);
           if (checkpoint.physicalGeneration !== physical.physicalGeneration)
             throw new OrchestratorRuntimeError("conflict");
+          await mirrorStoppedHistory(
+            input.sql,
+            provider,
+            { ...current, physicalGeneration: checkpoint.physicalGeneration },
+            operationId,
+            pinned.conversationId,
+          );
           return receipt(current, operationId, checkpoint);
+        },
+        async recoverStopHistory(current, operationId) {
+          assertMachine(current);
+          const pinned = await selection(current, owner);
+          await mirrorStoppedHistory(input.sql, provider, current, operationId, pinned.conversationId);
         },
         async readStopReceipt(current, operationId, signal) {
           assertMachine(current);

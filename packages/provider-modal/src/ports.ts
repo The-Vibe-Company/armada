@@ -33,6 +33,8 @@ export interface Scope {
   userId: string;
   visibility: "org" | "private";
   binding: ModalBinding;
+  /** Trusted server-only restriction; never part of a runner claim or scope key. */
+  cleanup?: import("@armada/core").OrchestratorCleanupScope;
 }
 /** Trusted source-connection provenance, independent of resource access visibility. No tokens. */
 export interface ModalManagementProvenance {

@@ -158,7 +158,35 @@ async function composeModalProvider(options: ComposedModalOptions) {
   });
   const ingest = createModalIngestHandler({ sql: options.sql, verifyGrant: grants.verifyGrant });
   return {
-    provider,
+    provider: options.scope.cleanup
+      ? new Proxy(provider, {
+          get(target, key) {
+            const allowed = new Set([
+              "id",
+              "get",
+              "events",
+              "observeOrchestrator",
+              ...(options.scope.cleanup?.operationId
+                ? [
+                    "quiesceOrchestrator",
+                    "scrubOrchestratorEpoch",
+                    "checkpointOrchestrator",
+                    "readOrchestratorCheckpoint",
+                  ]
+                : []),
+            ]);
+            const value = Reflect.get(target, key, target);
+            if (typeof value === "function") {
+              if (!allowed.has(String(key)))
+                return () => {
+                  throw refusal("forbidden", "Cleanup cannot admit native work.");
+                };
+              return value.bind(target);
+            }
+            return value;
+          },
+        })
+      : provider,
     ingest,
     close: () => {
       if (!options.client) client.close();

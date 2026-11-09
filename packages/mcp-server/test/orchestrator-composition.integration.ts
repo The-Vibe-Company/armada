@@ -81,7 +81,12 @@ async function fixture() {
           machine: Parameters<
             NonNullable<ReturnType<typeof createOrchestratorServices>["runtime"]["lifecycleRuntime"]>["observe"]
           >[0],
-        ) => ({ ...machine, state: "active" as const, evidence: "native:active:1" }),
+        ) => ({
+          ...machine,
+          physicalGeneration: machine.physicalGeneration ?? null,
+          state: "active" as const,
+          evidence: "native:active:1",
+        }),
         checkpointAndStop: async () => {
           throw Error("No stop expected.");
         },

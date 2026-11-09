@@ -51,7 +51,9 @@ jobs:
           for migration in supabase/migrations/*.sql; do
             psql -v ON_ERROR_STOP=1 -f "$migration"
           done
-      - run: bun run test
+      - run: |
+          bun run test
+          bun test ./packages/mcp-server/test/orchestrator-runtime-postgres.integration.ts
         env:
           CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
 

@@ -69,7 +69,11 @@ export interface HandlerOptions {
   modalProviderFor?: (
     tokens: ModalTokenPair,
     binding: ModalBinding,
-    context: { target: ProviderTarget; caller: { userId: string }; credentialScope: "user" | "org" },
+    context: {
+      target: ProviderTarget;
+      caller: { userId: string; orchestratorCleanup?: import("@armada/core").OrchestratorCleanupScope };
+      credentialScope: "user" | "org";
+    },
   ) => Provider | Promise<Provider>;
   /** Server-owned persisted credential provenance overrides fallback for an existing Modal binding. */
   modalTokensFor?: (

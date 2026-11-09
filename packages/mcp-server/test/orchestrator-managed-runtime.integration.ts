@@ -73,11 +73,13 @@ async function fixture() {
       expectedRevision: 1,
       payload: { expectedRevision: 1 },
     });
+  await db.query("update sandboxes set orchestrator_native_generation='native-1' where id=$1", [sandbox.id]);
   const machine: ManagedMachine = {
     orchestratorId: created.identity.id,
     sandboxId: sandbox.id,
     providerSandboxId: sandbox.providerSandboxId,
     generation: String(created.identity.generation),
+    physicalGeneration: "native-1",
   };
   return { db, p, sql, authority, store, reserveStop, machine };
 }
@@ -108,7 +110,12 @@ test("trusted removed-owner stop scrubs before checkpoint, persists dispatch, an
       return {
         provider,
         mcpUrl: "https://armada.invalid/private/mcp",
-        observe: async (machine) => ({ ...machine, state: "quiescent", evidence: "native:1" }),
+        observe: async (machine) => ({
+          ...machine,
+          physicalGeneration: machine.physicalGeneration ?? null,
+          state: "quiescent",
+          evidence: "native:1",
+        }),
         checkpointAndStop: async () => {
           calls.push("checkpoint");
           throw Error("lost native response");
@@ -135,7 +142,13 @@ test("trusted removed-owner stop scrubs before checkpoint, persists dispatch, an
     ).rows[0];
     expect(persisted?.runtime_result).toEqual(first);
     const prior = JSON.stringify(persisted);
-    completed = { ...f.machine, operationId: stop.operation.id, state: "stopped", continuity: "native" };
+    completed = {
+      ...f.machine,
+      physicalGeneration: f.machine.physicalGeneration ?? null,
+      operationId: stop.operation.id,
+      state: "stopped",
+      continuity: "native",
+    };
     expect(await runtime.stop(f.machine, "owner_removed", stop.operation.id)).toEqual(completed);
     expect(calls).toEqual(["quiesce", "scrub", "checkpoint", "read-receipt"]);
     const after = (
@@ -166,12 +179,23 @@ test("a replaced generation cannot publish a late managed native receipt", async
     resolveManaged: async () => ({
       provider,
       mcpUrl: "https://armada.invalid/private/mcp",
-      observe: async (machine) => ({ ...machine, state: "quiescent", evidence: "native:quiescent" }),
+      observe: async (machine) => ({
+        ...machine,
+        physicalGeneration: machine.physicalGeneration ?? null,
+        state: "quiescent",
+        evidence: "native:quiescent",
+      }),
       checkpointAndStop: async (machine, operationId) => {
         await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [
           machine.sandboxId,
         ]);
-        return { ...machine, operationId, state: "stopped", continuity: "native" };
+        return {
+          ...machine,
+          physicalGeneration: machine.physicalGeneration ?? null,
+          operationId,
+          state: "stopped",
+          continuity: "native",
+        };
       },
       readStopReceipt: async () => null,
     }),
@@ -219,13 +243,20 @@ test.each(["native", "unknown", "lost"] as const)(
           mcpUrl: "https://armada.invalid/private/mcp",
           observe: async (machine) => ({
             ...machine,
+            physicalGeneration: machine.physicalGeneration ?? null,
             state: mode !== "unknown" ? "quiescent" : "unknown",
             evidence: "native:observation",
           }),
           checkpointAndStop: async (machine, operationId) => {
             checkpoints++;
             physicalStopped = true;
-            return { ...machine, operationId, state: "stopped", continuity: mode === "lost" ? "lost" : "native" };
+            return {
+              ...machine,
+              physicalGeneration: machine.physicalGeneration ?? null,
+              operationId,
+              state: "stopped",
+              continuity: mode === "lost" ? "lost" : "native",
+            };
           },
           readStopReceipt: async () => null,
         }),

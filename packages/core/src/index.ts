@@ -228,6 +228,7 @@ export {
   createProviderRegistry,
   isSandboxProvider,
   type ModalBinding,
+  type OrchestratorCleanupScope,
   PROVIDER_LIMITS,
   type ProviderFactory,
   type ProviderLimits,

@@ -7,9 +7,13 @@ import { createModalOrchestratorNativeAdapter } from "../src/orchestrator-modal-
 import { OrchestratorRuntimeStore } from "../src/orchestrator-runtime-store.ts";
 import { database } from "./support.ts";
 
-test.each([false, true])(
-  "Modal native caller publishes only a matching resume operation and SQL generation (intervening writer=%s)",
-  async (race) => {
+test.each([
+  [false, false],
+  [true, false],
+  [false, true],
+])(
+  "Modal native caller publishes only a matching resume operation and SQL generation (intervening writer=%s, promptless=%s)",
+  async (race, promptless) => {
     const { db, people: p } = await database();
     const sql: core.Sql = {
       query: (q, v) => db.query(q, v),
@@ -61,7 +65,11 @@ test.each([false, true])(
       });
       await db.query("update orchestrators set sandbox_id=$2 where id=$1", [created.identity.id, sandbox.id]);
       created.identity = await store.preparing(created);
-      await store.complete(created, { state: "succeeded", conversationId: "logical", continuity: "native" });
+      await store.complete(created, {
+        state: "succeeded",
+        ...(promptless ? {} : { conversationId: "logical", continuity: "native" as const }),
+      });
+      await db.query("update sandboxes set orchestrator_native_generation=$2 where id=$1", [sandbox.id, generation]);
       const machine = {
         orchestratorId: created.identity.id,
         sandboxId: sandbox.id,
@@ -70,6 +78,57 @@ test.each([false, true])(
       };
       const provider = {
         id: "modal",
+        events: async ({ cursor }: { cursor?: string }) =>
+          cursor === "2"
+            ? {
+                events:
+                  generation === "physical-2"
+                    ? [
+                        {
+                          id: "continuation",
+                          at: 3,
+                          kind: "message",
+                          partial: false,
+                          tools: [],
+                          conversationId: "logical",
+                          text: "continued",
+                        },
+                      ]
+                    : [],
+                hasMore: false,
+                cursor: "3",
+              }
+            : cursor
+              ? {
+                  events: [
+                    {
+                      id: "tail",
+                      at: 2,
+                      kind: "message",
+                      partial: false,
+                      tools: [],
+                      conversationId: "logical",
+                      text: "tail",
+                    },
+                  ],
+                  hasMore: false,
+                  cursor: "2",
+                }
+              : {
+                  events: [
+                    {
+                      id: "first",
+                      at: 1,
+                      kind: "message",
+                      partial: false,
+                      tools: [],
+                      conversationId: "logical",
+                      text: "first",
+                    },
+                  ],
+                  hasMore: true,
+                  cursor: "1",
+                },
         get: async () => ({
           state: stopped ? "stopped" : "ready",
           physicalGeneration: generation,
@@ -92,14 +151,14 @@ test.each([false, true])(
             model: "gpt-6.1-sol",
             reasoningEffort: "high",
             cwd: "/home/user/web",
-            conversationId: "logical",
-            physicalGeneration: "physical-1",
+            conversationId: promptless ? null : "logical",
+            physicalGeneration: generation,
           });
           stopped = true;
           checkpoint = {
             ...request,
             version: 1,
-            nativeSessionId: "native",
+            nativeSessionId: promptless ? null : "native",
             eventWatermark: 0,
             acknowledgedSequence: 0,
             checkpointId: "verified-image",
@@ -152,15 +211,23 @@ test.each([false, true])(
       });
       expect(await runtime.stopOwner(machine, stop.operation.id)).toMatchObject({
         state: "stopped",
-        continuity: "native",
+        continuity: promptless ? "unverified" : "native",
         operationId: stop.operation.id,
       });
       expect(
+        (await store.events(p.owner, p.org, created.identity.id)).events.filter((event) => event.kind === "agent"),
+      ).toHaveLength(promptless ? 0 : 2);
+      expect(
         (await db.query<{ status: string }>("select status from sandboxes where id=$1", [sandbox.id])).rows[0]?.status,
       ).toBe("stopped");
-      expect(await store.complete(stop, { state: "succeeded", parentState: "stopped", continuity: "native" })).toBe(
-        true,
-      );
+      expect(
+        await store.complete(stop, {
+          state: "succeeded",
+          parentState: "stopped",
+          continuity: promptless ? "unverified" : "native",
+        }),
+      ).toBe(true);
+      if (promptless) return;
       const resume = await store.reserve({
         ownerId: p.owner,
         orgId: p.org,
@@ -186,6 +253,36 @@ test.each([false, true])(
       if (!race) {
         resume.identity = await store.preparing(resume);
         expect(await store.complete(resume, { state: "succeeded", parentState: "ready" })).toBe(true);
+        await db.query("update sandboxes set orchestrator_native_generation=$2 where id=$1", [sandbox.id, generation]);
+        const again = await store.reserve({
+          ownerId: p.owner,
+          orgId: p.org,
+          id: created.identity.id,
+          action: "stop",
+          key: "stop-again",
+          expectedRevision: 3,
+          payload: { expectedRevision: 3 },
+        });
+        const nextMachine = {
+          ...machine,
+          generation: String(again.identity.generation),
+          physicalGeneration: generation,
+        };
+        const nextRuntime = createManagedOrchestratorRuntime({
+          sql,
+          authority: new core.OrchestratorAuthority(sql, async () => {
+            throw Error("No model resolution on cleanup.");
+          }),
+          resolveManaged: async () => adapter.managed(provider, nextMachine, owner),
+        });
+        expect(await nextRuntime.stopOwner(nextMachine, again.operation.id)).toMatchObject({
+          state: "stopped",
+          continuity: "native",
+        });
+        const retained = (await store.events(p.owner, p.org, created.identity.id)).events.filter(
+          (event) => event.kind === "agent",
+        );
+        expect(retained).toHaveLength(3);
       }
     } finally {
       await db.close();

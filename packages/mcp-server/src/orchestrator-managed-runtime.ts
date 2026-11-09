@@ -11,12 +11,15 @@ export interface ManagedMachine {
   sandboxId: string;
   providerSandboxId: string;
   generation: string;
+  physicalGeneration?: string | null;
 }
 export interface ManagedObservation extends ManagedMachine {
+  physicalGeneration: string | null;
   state: "active" | "quiescent" | "unknown";
   evidence: string;
 }
 export interface ManagedStopReceipt extends ManagedMachine {
+  physicalGeneration: string | null;
   operationId: string;
   state: "stopped" | "uncertain" | "interrupted";
   continuity: "native" | "unverified" | "lost";
@@ -27,12 +30,15 @@ export interface ManagedSelection {
   ownerId: string;
   goldenId: string;
   provider: SandboxProviderId;
+  operationId?: string;
 }
 export interface ManagedNativeBackend {
   provider: Provider;
   mcpUrl: string;
   observe(machine: ManagedMachine, signal?: AbortSignal): Promise<ManagedObservation>;
   checkpointAndStop(machine: ManagedMachine, operationId: string, signal?: AbortSignal): Promise<ManagedStopReceipt>;
+  /** Durable history recovery only, after a correlated stopped receipt. Never compute I/O. */
+  recoverStopHistory?(machine: ManagedMachine, operationId: string): Promise<void>;
   /** A read-only lookup of this EXACT native operation. Never retries stop/restores/allocates. */
   readStopReceipt(
     machine: ManagedMachine,
@@ -46,7 +52,8 @@ function correlated(machine: ManagedMachine, other: ManagedMachine): boolean {
     machine.orchestratorId === other.orchestratorId &&
     machine.sandboxId === other.sandboxId &&
     machine.providerSandboxId === other.providerSandboxId &&
-    machine.generation === other.generation
+    machine.generation === other.generation &&
+    (machine.physicalGeneration === undefined || machine.physicalGeneration === other.physicalGeneration)
   );
 }
 function receipt(machine: ManagedMachine, operationId: string, value: ManagedStopReceipt): ManagedStopReceipt {
@@ -60,7 +67,13 @@ function receipt(machine: ManagedMachine, operationId: string, value: ManagedSto
   )
     throw new OrchestratorRuntimeError("conflict");
   // Project only the safe receipt, never persist arbitrary provider response properties.
-  return { ...machine, operationId, state: value.state, continuity: value.continuity };
+  return {
+    ...machine,
+    physicalGeneration: value.physicalGeneration ?? null,
+    operationId,
+    state: value.state,
+    continuity: value.continuity,
+  };
 }
 function observation(machine: ManagedMachine, value: ManagedObservation): ManagedObservation {
   if (
@@ -72,10 +85,16 @@ function observation(machine: ManagedMachine, value: ManagedObservation): Manage
     value.evidence.includes("armada_epoch_")
   )
     throw new OrchestratorRuntimeError("conflict");
-  return { ...machine, state: value.state, evidence: value.evidence };
+  return {
+    ...machine,
+    physicalGeneration: value.physicalGeneration ?? null,
+    state: value.state,
+    evidence: value.evidence,
+  };
 }
 const uncertain = (machine: ManagedMachine, operationId: string): ManagedStopReceipt => ({
   ...machine,
+  physicalGeneration: machine.physicalGeneration ?? null,
   operationId,
   state: "uncertain",
   continuity: "unverified",
@@ -125,8 +144,14 @@ export function createManagedOrchestratorRuntime(options: {
     }>(
       `select o.org_id,o.owner_id,o.revision,o.state,s.golden_id,s.provider from public.orchestrators o
       join public.sandboxes s on s.id=o.sandbox_id where o.id=$1 and s.id=$2 and s.provider_sandbox_id=$3
-      and s.lifecycle_generation=$4 ${lock ? "for update of o,s" : ""}`,
-      [machine.orchestratorId, machine.sandboxId, machine.providerSandboxId, machine.generation],
+      and s.lifecycle_generation=$4 and ($5::text is null or s.orchestrator_native_generation=$5) ${lock ? "for update of o,s" : ""}`,
+      [
+        machine.orchestratorId,
+        machine.sandboxId,
+        machine.providerSandboxId,
+        machine.generation,
+        machine.physicalGeneration ?? null,
+      ],
     );
     const row = rows.rows[0];
     if (!row) throw new OrchestratorRuntimeError("conflict");
@@ -201,8 +226,26 @@ export function createManagedOrchestratorRuntime(options: {
     let value = uncertain(machine, operationId);
     try {
       await options.authority.revoke(machine.orchestratorId);
-      const backend = await resolve(machine, claim.selection);
+      const backend = await resolve(machine, { ...claim.selection, operationId });
       const native = await backend.provider.get(machine.providerSandboxId);
+      if (machine.physicalGeneration && native.physicalGeneration !== machine.physicalGeneration)
+        throw new OrchestratorRuntimeError("conflict");
+      if (native.physicalGeneration) {
+        await sql.transaction!(async (tx) => {
+          const current = await bound(machine, operationId, tx, true);
+          if (current.revision !== claim.revision) throw new OrchestratorRuntimeError("conflict");
+          const boundNative = await tx.query(
+            `update public.sandboxes set orchestrator_native_generation=$2 where id=$1 and (orchestrator_native_generation is null or orchestrator_native_generation=$2) returning id`,
+            [machine.sandboxId, native.physicalGeneration],
+          );
+          if (boundNative.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+          machine = { ...machine, physicalGeneration: native.physicalGeneration! };
+          await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
+            operationId,
+            JSON.stringify(uncertain(machine, operationId)),
+          ]);
+        });
+      }
       if (
         !native.physicalGeneration ||
         !["ready", "running"].includes(native.state) ||
@@ -223,6 +266,7 @@ export function createManagedOrchestratorRuntime(options: {
         provider: backend.provider,
         providerSandboxId: machine.providerSandboxId,
         physicalGeneration: native.physicalGeneration,
+        lifecycleGeneration: machine.generation,
         mcpUrl: backend.mcpUrl,
       });
       await options.authority.scrubBeforeCheckpoint(machine.orchestratorId, transport);
@@ -243,7 +287,12 @@ export function createManagedOrchestratorRuntime(options: {
       const after = await bound(machine); // Membership is intentionally not required, but incarnation is.
       if (after.revision !== current.revision || after.state !== current.state)
         throw new OrchestratorRuntimeError("conflict");
-      return { ...machine, state: observed.state, evidence: observed.evidence };
+      return {
+        ...machine,
+        physicalGeneration: observed.physicalGeneration ?? null,
+        state: observed.state,
+        evidence: observed.evidence,
+      };
     },
     stop(
       machine: ManagedMachine,
@@ -267,10 +316,13 @@ export function createManagedOrchestratorRuntime(options: {
       const old = recorded(machine, operationId, current.result);
       if (!old) return uncertain(machine, operationId); // No dispatch fence, no provider lookup or work.
       if (old.state !== "uncertain") return old;
-      const backend = await resolve(machine, current.selection);
+      const backend = await resolve(machine, { ...current.selection, operationId });
       const observed = await readNative(() => backend.readStopReceipt(machine, operationId, signal));
       await bound(machine, operationId);
-      return observed ? receipt(machine, operationId, observed) : old;
+      if (!observed) return old;
+      const reconciled = receipt(machine, operationId, observed);
+      if (reconciled.state === "stopped") await backend.recoverStopHistory?.(reconciled, operationId);
+      return reconciled;
     },
   };
   return runtime;

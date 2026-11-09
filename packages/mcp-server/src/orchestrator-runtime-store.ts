@@ -435,7 +435,7 @@ export class OrchestratorRuntimeStore {
           throw new OrchestratorRuntimeError("conflict");
         await tx.query(
           `insert into public.orchestrator_runtime_events(orchestrator_id,revision,generation,conversation_id,upstream_id,event)
-          values($1,$2,$3,$4,$5,$6::jsonb) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing`,
+          select $1,$2,$3,$4,$5,$6::jsonb where not exists (select 1 from public.orchestrator_runtime_events where orchestrator_id=$1 and conversation_id=$4 and upstream_id=$5) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing`,
           [
             identity.id,
             identity.revision,

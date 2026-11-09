@@ -161,10 +161,11 @@ export async function createModalIntegration(options: {
       userId: context.caller.userId,
       visibility: context.target.visibility,
       binding,
+      ...(context.caller.orchestratorCleanup ? { cleanup: context.caller.orchestratorCleanup } : {}),
     };
     await options.sql.query(
       "insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing",
-      [scopeKey(scope), JSON.stringify(scope)],
+      [scopeKey(scope), JSON.stringify({ ...scope, cleanup: undefined })],
     );
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };

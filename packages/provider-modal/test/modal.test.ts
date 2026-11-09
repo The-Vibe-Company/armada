@@ -2450,3 +2450,133 @@ test("unknown native checkpoint dispatch never repeats snapshot and unacknowledg
   expect(await f.provider.readOrchestratorCheckpoint(request)).toMatchObject({ state: "pending", checkpointId: null });
   expect(f.log.filter((op) => op === "snapshot")).toHaveLength(snapshots);
 });
+
+test("a promptless orchestrator checkpoints and terminates without manufacturing a native session", async () => {
+  const f = fixture();
+  const golden = await f.provider.createGolden({});
+  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `empty-orch-${crypto.randomUUID()}` });
+  const parent = await f.provider.fork({ from: image.name });
+  f.onRpc(async (row, op) =>
+    op === "observeOrchestrator"
+      ? {
+          physicalGeneration: String(row.generation),
+          state: "quiescent",
+          nativeSessionId: null,
+          eventWatermark: 0,
+          acknowledgedSequence: 0,
+        }
+      : undefined,
+  );
+  const operationId = crypto.randomUUID();
+  const receipt = await f.provider.checkpointOrchestrator({
+    sandboxId: parent.id,
+    operationId,
+    physicalGeneration: "1",
+    conversationId: null,
+    harness: "codex",
+    model: "gpt-6.1-sol",
+  });
+  expect(receipt).toMatchObject({ state: "stopped", conversationId: null, nativeSessionId: null, operationId });
+  expect((await f.provider.get(parent.id)).state).toBe("stopped");
+  expect(f.log.filter((op) => ["prompt", "resumeNativeSession"].includes(op))).toHaveLength(0);
+});
+
+test("receipt-bound removed-owner cleanup can drain only its exact Modal machine and generation", async () => {
+  const core = await import("@armada/core/server");
+  const f = fixture();
+  const golden = await f.provider.createGolden({});
+  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `cleanup-${crypto.randomUUID()}` });
+  const parent = await f.provider.fork({ from: image.name });
+  const g = await core.createSqlGoldenStore(db).insert({
+    orgId: scope.orgId,
+    ownerId: scope.userId,
+    name: `cleanup-${crypto.randomUUID()}`,
+    visibility: "private",
+    provider: "modal",
+    modal: scope.binding,
+    config: { repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }], init: [] },
+  });
+  const sandbox = await core.createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "modal",
+    providerSandboxId: parent.id,
+    goldenId: g.id,
+    ownerId: scope.userId,
+    orgId: scope.orgId,
+    harness: "codex",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    status: "ready",
+    visibility: "private",
+  });
+  const id = crypto.randomUUID(),
+    operationId = crypto.randomUUID();
+  await db.query(
+    "insert into orchestrators(id,org_id,owner_id,sandbox_id,state,revision) values($1,$2,$3,$4,'stopping',1)",
+    [id, scope.orgId, scope.userId, sandbox.id],
+  );
+  await db.query("update sandboxes set orchestrator_native_generation='1' where id=$1", [sandbox.id]);
+  const cleanup = {
+    orchestratorId: id,
+    sandboxId: sandbox.id,
+    providerSandboxId: parent.id,
+    generation: String(sandbox.lifecycleGeneration),
+    physicalGeneration: "1",
+    operationId,
+  };
+  // The managed controller's durable dispatch fence is mandatory before any cleanup write.
+  await db.query(
+    "insert into orchestrator_operations(id,orchestrator_id,actor_id,action,idempotency_key,request_digest,revision,runtime_result) values($1,$2,$3,'stop','cleanup',$4,1,$5::jsonb)",
+    [
+      operationId,
+      id,
+      scope.userId,
+      "a".repeat(64),
+      JSON.stringify({ ...cleanup, state: "uncertain", continuity: "unverified" }),
+    ],
+  );
+  await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [
+    scope.orgId,
+    "00000000-0000-0000-0000-000000000004",
+  ]);
+  await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+  try {
+    await expect(f.store.get(parent.id)).rejects.toMatchObject({ code: "forbidden" });
+    const lane = createSqlModalStore(db, { ...scope, cleanup });
+    expect((await lane.get(parent.id)).info.id).toBe(parent.id);
+    await lane.lease(parent.id, async (row, save) => {
+      await save(row);
+    });
+    const { operationId: _operation, ...observeOnly } = cleanup;
+    const observer = createSqlModalStore(db, { ...scope, cleanup: observeOnly });
+    await expect(observer.lease(parent.id, async (row, save) => save(row))).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(
+      createSqlModalStore(db, { ...scope, cleanup: { ...cleanup, physicalGeneration: "2" } }).get(parent.id),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(lane.list()).rejects.toMatchObject({ code: "forbidden" });
+    await expect(lane.get(golden.id)).rejects.toMatchObject({ code: "forbidden" });
+    const event = {
+      id: "final",
+      at: 1,
+      kind: "other" as const,
+      type: "text",
+      data: "tail",
+      conversationId: "logical",
+      text: "tail",
+    };
+    expect(await appendModalEvents(db, scope, parent.id, "1", [{ sequence: 1, event }])).toBe(1);
+    await db.query("update orchestrator_operations set state='succeeded' where id=$1", [operationId]);
+    await expect(lane.get(parent.id)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      appendModalEvents(db, scope, parent.id, "1", [{ sequence: 2, event: { ...event, id: "late" } }]),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [scope.orgId, scope.userId]);
+    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [
+      scope.orgId,
+      "00000000-0000-0000-0000-000000000004",
+    ]);
+  }
+});

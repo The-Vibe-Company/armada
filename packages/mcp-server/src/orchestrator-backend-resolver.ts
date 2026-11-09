@@ -268,7 +268,10 @@ export function createOrchestratorBackendResolver(input: {
     if (!adapter) throw new OrchestratorRuntimeError("unavailable");
     const target = await persistedTarget(machine.sandboxId, selection.ownerId, selection.orgId);
     if (target.provider !== selection.provider) throw new OrchestratorRuntimeError("conflict");
-    const rawProvider = await input.providers.resolve(target, { userId: selection.ownerId });
+    const rawProvider = await input.providers.resolve(target, {
+      userId: selection.ownerId,
+      orchestratorCleanup: { ...machine, ...(selection.operationId ? { operationId: selection.operationId } : {}) },
+    });
     const provider =
       selection.provider === "boat" ? createBoatOrchestratorProvider(rawProvider, input.encryptionKey) : rawProvider;
     const backend = adapter.managed(provider, machine, selection);
@@ -281,12 +284,22 @@ export function createOrchestratorBackendResolver(input: {
             signal?.throwIfAborted();
             const native = await provider.get(current.providerSandboxId, { ...(signal ? { signal } : {}) });
             if (!native.physicalGeneration || !["ready", "running"].includes(native.state))
-              return { ...current, state: "unknown" as const, evidence: "native:unavailable" };
+              return {
+                ...current,
+                physicalGeneration: native.physicalGeneration ?? null,
+                state: "unknown" as const,
+                evidence: "native:unavailable",
+              };
             const observed = await inspect({
               sandboxId: current.providerSandboxId,
               physicalGeneration: native.physicalGeneration,
             });
-            return { ...current, state: observed.state, evidence: `native:${observed.evidence}` };
+            return {
+              ...current,
+              physicalGeneration: native.physicalGeneration,
+              state: observed.state,
+              evidence: `native:${observed.evidence}`,
+            };
           };
         const value = Reflect.get(target, key, target);
         return typeof value === "function" ? value.bind(target) : value;
