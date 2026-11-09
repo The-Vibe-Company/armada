@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.5.0](https://github.com/The-Vibe-Company/armada/compare/v2.4.0...v2.5.0) (2026-11-09)
+
+
+### Features
+
+* durable async golden build jobs ([#551](https://github.com/The-Vibe-Company/armada/issues/551)) ([1891460](https://github.com/The-Vibe-Company/armada/commit/18914609a1e3c6435915b3e2e3d86a178986bd31))
+* **golden:** async build admission and status ([6005b7f](https://github.com/The-Vibe-Company/armada/commit/6005b7fde909416328615d729aa336541846a69f))
+
+
+### Bug Fixes
+
+* **cli:** let explicit API deadlines own the fetch budget ([712bc3e](https://github.com/The-Vibe-Company/armada/commit/712bc3ead775a1b715ce142882206069e75c9266))
+* **golden:** authorize mutations before provider work ([678e2ee](https://github.com/The-Vibe-Company/armada/commit/678e2eefbd52761de57fb400b37338e434c0161d))
+* **golden:** authorize mutations before provider work ([e0dbc21](https://github.com/The-Vibe-Company/armada/commit/e0dbc21167aa209d6d21e4223d94a5a9689685d9))
+* **golden:** bind serialized config as text before jsonb parsing ([6d234bb](https://github.com/The-Vibe-Company/armada/commit/6d234bbcfde814aa4f2d3e9e721b0f17d5be62f4))
+* **golden:** bind serialized config as text before jsonb parsing ([#558](https://github.com/The-Vibe-Company/armada/issues/558)) ([c9b3322](https://github.com/The-Vibe-Company/armada/commit/c9b3322e046227d95f119f3346a57cbaabd09fe7))
+* **golden:** complete production baseline builds ([d25f499](https://github.com/The-Vibe-Company/armada/commit/d25f499186a717a4fd9d140b367d0c15dd78676b))
+* **golden:** complete production baseline builds ([d319e5f](https://github.com/The-Vibe-Company/armada/commit/d319e5f174e7e48c958f8d5326dad0ffec643f27))
+* **golden:** diagnose fenced publication failures without raw errors ([6cebfce](https://github.com/The-Vibe-Company/armada/commit/6cebfced8916cefe18b4d7c0c15afb2b8f5207ce))
+* **golden:** honor Boat scan execution limits ([5548434](https://github.com/The-Vibe-Company/armada/commit/5548434646e14298645f37dd3bd6dab950f1f750))
+* **golden:** honor Boat scan execution limits ([d12bdb7](https://github.com/The-Vibe-Company/armada/commit/d12bdb75640cba1de40f842828ddf8832150d5eb))
+* **golden:** preserve verified provider snapshot references ([9ab0c1c](https://github.com/The-Vibe-Company/armada/commit/9ab0c1ca16b8a716f543710c2cc4c349a9989aaa))
+* **golden:** publish Boat compatibility pointers atomically ([43875ad](https://github.com/The-Vibe-Company/armada/commit/43875adec16f52d1a4747c8b6f8d8a1048c0ce87))
+* **golden:** publish Boat compatibility pointers atomically ([#555](https://github.com/The-Vibe-Company/armada/issues/555)) ([1b972f6](https://github.com/The-Vibe-Company/armada/commit/1b972f61c59fbf1b7ec70bf68a1b658e3a62a9bb))
+* **golden:** remove disposable Prime image tooling before scan ([77dd4a8](https://github.com/The-Vibe-Company/armada/commit/77dd4a8cd439f8cbf686390ad5ebfee2e8509a1b))
+* **golden:** remove disposable Prime image tooling before scan ([#554](https://github.com/The-Vibe-Company/armada/issues/554)) ([b6c972f](https://github.com/The-Vibe-Company/armada/commit/b6c972f66bcda7cdb5b9910eb9d91db5c691b406))
+* **golden:** report capacity conflicts as 409 ([6a69088](https://github.com/The-Vibe-Company/armada/commit/6a690880f22251752a3293a92cc0da15736c0d68))
+* **golden:** report capacity conflicts as 409 ([01c831e](https://github.com/The-Vibe-Company/armada/commit/01c831e161ed6aaacb5555f93f472e0bc811be72))
+* **golden:** retain last-good snapshots during rebuild ([51d2bb6](https://github.com/The-Vibe-Company/armada/commit/51d2bb6f7f43485e89aeb6c7a8f74cac029b176d))
+* **golden:** retain last-good snapshots during rebuild ([aa735b5](https://github.com/The-Vibe-Company/armada/commit/aa735b5ad741f09ec37397263100dc1de96c1ee4))
+* **golden:** safely bind a canonical Boat golden ([d915fc1](https://github.com/The-Vibe-Company/armada/commit/d915fc13a3c64d6c2320b4b055336770892d0882))
+* **golden:** safely bind a canonical Boat golden ([1fbcc28](https://github.com/The-Vibe-Company/armada/commit/1fbcc280e8ae50f78f127d23c6c5a70fc197ca98))
+* **golden:** scrub credential residue and redact scan diagnostics ([c3d4d10](https://github.com/The-Vibe-Company/armada/commit/c3d4d1042bca8d6adab5df46efe39b0174e12522))
+* **golden:** scrub credential residue and redact scan diagnostics ([#552](https://github.com/The-Vibe-Company/armada/issues/552)) ([a33fb6a](https://github.com/The-Vibe-Company/armada/commit/a33fb6a0cff1d6acfda39a295668cda7410d0f8c))
+* **golden:** scrub disposable builder histories before scanning ([b3f9422](https://github.com/The-Vibe-Company/armada/commit/b3f942236e9568ae295edbd6ac9506f8ce6b08b7))
+* **golden:** scrub disposable builder histories before scanning ([#553](https://github.com/The-Vibe-Company/armada/issues/553)) ([60ebd23](https://github.com/The-Vibe-Company/armada/commit/60ebd238da5fbeae0ceb6f0e4f41f1219fa55973))
+
 ## [2.4.0](https://github.com/The-Vibe-Company/armada/compare/v2.3.0...v2.4.0) (2026-11-08)
 
 
