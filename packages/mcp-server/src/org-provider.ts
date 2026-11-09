@@ -47,11 +47,9 @@ export const validateOrgProvider: ProviderValidator = async (provider, value) =>
 export async function orgProviderStatus(store: VaultStore, caller: Caller, ref: string | undefined) {
   const org = await authorizedOrg(store, caller, ref);
   const rows = await store.listCredentials("org", org.id);
+  // The org Boat key is its org's column alone (`credentials_org_boat_chk`): the one launches resolve.
   const providers = [
-    {
-      provider: "boat" as const,
-      configured: (await store.hasOrgBoatKey(org.id)) || rows.some((row) => row.kind === "boat"),
-    },
+    { provider: "boat" as const, configured: await store.hasOrgBoatKey(org.id) },
     { provider: "modal" as const, configured: rows.some((row) => row.kind === "modal") },
   ];
   return { org, ready: providers.some((provider) => provider.configured), providers };
