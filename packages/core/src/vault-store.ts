@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
@@ -307,11 +308,16 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       return readGitHubConnection(sql, userId);
     },
 
+    consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(sql, userId, expected),
+
     async withGitHubConnectionRefresh(userId, work) {
-      if (!sql.transaction) return work(refreshStore(sql), await readGitHubConnection(sql, userId));
+      // A single-connection adapter cannot make an autonomous commit while a transaction holds it.
+      // Its atomic consumed-fence CAS still single-flights refresh; production has a separate pool.
+      if (!sql.transaction || !sql.autonomousQuery)
+        return work(refreshStore(sql), await readGitHubConnection(sql, userId));
       return sql.transaction(async (transaction) => {
         await transaction.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
-        return work(refreshStore(transaction, true), await readGitHubConnection(transaction, userId));
+        return work(refreshStore(transaction, true, sql), await readGitHubConnection(transaction, userId));
       });
     },
 
@@ -423,8 +429,9 @@ async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGit
   };
 }
 
-function refreshStore(sql: Sql, transactional = false): GitHubConnectionStore {
+function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitHubConnectionStore {
   return {
+    consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(durable, userId, expected),
     getGitHubConnection: (userId) => readGitHubConnection(sql, userId),
     withGitHubConnectionRefresh: async () => {
       throw new Error("Nested GitHub refresh transactions are not supported.");
@@ -474,4 +481,18 @@ function refreshStore(sql: Sql, transactional = false): GitHubConnectionStore {
       }
     },
   };
+}
+
+/** Autocommit on the root pool while the separate owner advisory transaction is held.
+ * If HTTP or the later rotation COMMIT is uncertain, this row survives to forbid replay. */
+async function consumeGitHubRefresh(sql: Sql, userId: string, expected: Uint8Array): Promise<boolean> {
+  const hash = createHash("sha256").update(expected).digest("hex");
+  const result = await (sql.autonomousQuery ?? sql.query).call(
+    sql,
+    `insert into public.github_refresh_fences(user_id,refresh_hash)
+ select user_id,$3 from public.github_connections where user_id=$1::uuid and refresh_token_enc=$2::bytea and revoked_at is null
+ on conflict do nothing returning user_id`,
+    [userId, expected, hash],
+  );
+  return result.rows.length === 1;
 }

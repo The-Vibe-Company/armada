@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
+import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
+import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
 import { quiesceNativeCodex, readNativeCodexAuth } from "./native-auth.ts";
@@ -180,6 +182,35 @@ async function main() {
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     if (config.codexAuthJson) await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
+  const github = new GitHubBroker((values) => journal.registerSecrets(values));
+  const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
+  let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
+  let githubConfiguration = Promise.resolve();
+  const configureGitHub = (value: GitHubBrokerConfiguration | null): Promise<void> => {
+    const work = githubConfiguration.then(async () => {
+      github.configure(value);
+      if (!value) return;
+      try {
+        githubSocket ??= await github.listen(githubRoot);
+        const tools: Parameters<typeof installGitHubTools>[0] = {
+          root: githubRoot,
+          socket: githubSocket.socket,
+          gh: "/usr/bin/gh",
+          git: "/usr/bin/git",
+          ghWrapper: "/usr/local/bin/gh",
+          gitWrapper: "/usr/local/bin/git",
+          homes: ["/home/user", config.claudeEnv.HOME!, config.codexEnv.HOME!],
+          activation: githubSocket.activation,
+        };
+        await prepareGitHubTools(tools);
+      } catch {
+        github.configure(null);
+        throw Error("github_configuration_denied");
+      }
+    });
+    githubConfiguration = work.catch(() => {});
+    return work;
+  };
   const runner = new Runner(
     journal,
     config.grant,
@@ -217,6 +248,7 @@ async function main() {
       journal.sanitize();
     },
     {
+      configureGitHub,
       execEnv: fenced ? {} : execEnv,
       refreshNativeSecrets,
       publishNativeAuth,
@@ -236,7 +268,7 @@ async function main() {
     void runner.flushOutbox().catch(() => {});
   }, 1000).unref();
 }
-void main().catch(() => {
+void (process.argv[2] === "github-install" ? runGitHubInstallMode() : main()).catch(() => {
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;
 });

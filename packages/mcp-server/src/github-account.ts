@@ -192,7 +192,7 @@ export function createGitHubAccountApi(options: {
           if (!live.rows.length) throw new Error("Authorization was cancelled.");
           await tx.query(
             `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,refresh_expires_at,access_token_enc,access_expires_at,installations)
-            values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) on conflict(user_id) do update set github_id=excluded.github_id,login=excluded.login,name=excluded.name,refresh_token_enc=excluded.refresh_token_enc,refresh_expires_at=excluded.refresh_expires_at,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at,installations=excluded.installations,revoked_at=null,updated_at=now()`,
+            values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) on conflict(user_id) do update set github_id=excluded.github_id,login=excluded.login,name=excluded.name,refresh_token_enc=excluded.refresh_token_enc,refresh_expires_at=excluded.refresh_expires_at,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at,installations=excluded.installations,revoked_at=null,connection_epoch=gen_random_uuid(),updated_at=now()`,
             [
               flow.user_id,
               user.id,
