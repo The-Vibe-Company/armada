@@ -141,6 +141,8 @@ Usage:
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
                                            Browser authorization waits for real completion; --no-browser prints URL
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
+  armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+                                           Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
   armada creds list [--org <name>]         Kinds and dates, never values

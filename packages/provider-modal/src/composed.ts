@@ -18,6 +18,7 @@ export interface HarnessEnvironment {
   claudeEnv: Record<string, string>;
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
+  nativeAuthRevision?: number;
   mcp?: McpConfiguration;
   /** Fresh exec-only credentials/options. Explicit {} disables launch-env fallback on restore/init. */
   execEnv?: ExecEnvironment;
@@ -34,7 +35,7 @@ export interface ResolvedModalManagementCredentials extends ModalManagementProve
 export interface ComposedModalOptions
   extends Pick<
     ModalProviderOptions,
-    "scope" | "appName" | "client" | "tokenId" | "tokenSecret" | "managementAuthority" | "beforePrompt"
+    "scope" | "appName" | "client" | "tokenId" | "tokenSecret" | "managementAuthority" | "beforeResume" | "beforePrompt"
   > {
   /** Immutable golden visibility/binding, with userId set to the authenticated caller. */
   sourceScope?: Scope;
@@ -134,6 +135,9 @@ async function composeModalProvider(options: ComposedModalOptions) {
         codexEnv: withTrustedHarnessPath(harness.codexEnv),
         ...("codexAuthJson" in harness && harness.codexAuthJson !== undefined
           ? { codexAuthJson: harness.codexAuthJson }
+          : {}),
+        ...("nativeAuthRevision" in harness && harness.nativeAuthRevision !== undefined
+          ? { nativeAuthRevision: harness.nativeAuthRevision }
           : {}),
         ...("mcp" in harness && harness.mcp !== undefined ? { mcp: harness.mcp } : {}),
         credentialFreeBuilder: row.golden,

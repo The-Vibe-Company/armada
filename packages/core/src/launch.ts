@@ -57,6 +57,18 @@ export interface LaunchRequest {
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
   resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials>;
+  /** Server-owned native credential admission, before provider allocation/hydration. */
+  admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  releaseUnallocated?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  /** Validate the pinned native owner without rehydrating imported auth state. */
+  assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
+  assertExec?(actor: GoldenActor, sandboxId: string): Promise<void>;
+  nativeSecrets?(
+    actor: GoldenActor,
+    sandboxId: string,
+    provider: Provider,
+    providerSandboxId: string,
+  ): Promise<string[]>;
 }
 
 export interface LaunchStores {
@@ -150,9 +162,11 @@ export async function launchSandbox(
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const releaseOperation = await stores.goldens.beginOperation?.(golden.id);
   let childRecorded = false;
-  let noAllocation = false;
+  let noAllocation = true;
   let failed = false;
   try {
+    await stores.credentials.admit?.(actor, credentials, id);
+    noAllocation = false;
     const forked = await provider
       .fork({
         from: snapshot,
@@ -292,6 +306,10 @@ export async function launchSandbox(
     failed = true;
     throw error;
   } finally {
+    if (noAllocation)
+      await stores.credentials.releaseUnallocated?.(actor, credentials, id).catch((error) => {
+        if (!failed) throw error;
+      });
     // An unrecorded physical outcome remains owned by this durable fence.
     if (childRecorded || noAllocation) {
       await releaseOperation?.().catch((error) => {

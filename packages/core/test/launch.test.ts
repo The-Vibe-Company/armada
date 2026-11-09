@@ -47,6 +47,42 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  test.each(["invalid_request", "unavailable"] as const)(
+    "native admission releases only a confirmed unallocated fork (%s)",
+    async (code) => {
+      const world = setup({ golden: golden("org") });
+      let released = 0;
+      world.stores.credentials.admit = async () => {};
+      world.stores.credentials.releaseUnallocated = async () => {
+        released++;
+      };
+      world.provider.fork = async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code,
+          message: "fixture refusal",
+          retryable: false,
+        });
+      };
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+      ).rejects.toMatchObject({ code });
+      expect(released).toBe(code === "invalid_request" ? 1 : 0);
+    },
+  );
+  test("native ownership refusal happens before any provider receives credentials", async () => {
+    const world = setup({ golden: golden("org") });
+    world.stores.credentials.admit = async () => {
+      throw Error("credential_busy");
+    };
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "go" }),
+    ).rejects.toThrow("credential_busy");
+    expect(world.forks).toEqual([]);
+    expect(world.execs).toEqual([]);
+    expect(world.prompts).toEqual([]);
+  });
+
   test("MCP prepare runs after binding and init, before first prompt, including idle launches", async () => {
     for (const prompt of [undefined, "start"]) {
       const world = setup({ golden: golden("org") });

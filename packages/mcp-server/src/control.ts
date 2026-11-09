@@ -81,6 +81,7 @@ import { providerRegistry } from "./http.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -98,6 +99,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  modelAuth?: ModelAuthOwnership;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
@@ -508,6 +510,7 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
   if (route.startsWith("github/")) {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
@@ -581,7 +584,7 @@ async function dispatch(
               providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
             }
           : {}),
-        launchCredentials: launchCredentials(options.store, options.encryptionKey),
+        launchCredentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
         now: options.now ?? (() => new Date()),
@@ -970,12 +973,17 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       goldens: data.goldens,
       sandboxes: data.sandboxes,
       ...(options.connections ? { connections: options.connections } : {}),
-      credentials: launchCredentials(options.store, options.encryptionKey, {
-        store: options.store,
-        app: options.github?.app ?? null,
-        ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-        ...(options.github?.now ? { now: options.github.now } : {}),
-      }),
+      credentials: launchCredentials(
+        options.store,
+        options.encryptionKey,
+        {
+          store: options.store,
+          app: options.github?.app ?? null,
+          ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+          ...(options.github?.now ? { now: options.github.now } : {}),
+        },
+        options.modelAuth,
+      ),
     },
     actor,
     {
@@ -1211,6 +1219,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     encryptionKey,
     github: { app: githubApp },
     store,
+    modelAuth: createModelAuthOwnership(sql, encryptionKey),
     providerFor,
     goldenAdoption: createGoldenAdoption(sql),
     providers,

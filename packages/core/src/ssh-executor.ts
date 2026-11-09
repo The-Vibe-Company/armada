@@ -18,6 +18,71 @@ export async function sshStdinCheckout(
   input: { sandboxId: string; token: string; script: string },
   deps: SshExecDeps = {},
 ): Promise<void> {
+  await sshExchange(provider, input, deps, false);
+}
+
+/** Private server-only capture. No caller-selected path, command, or public exec journal. */
+export async function sshPrivateAuthState(
+  provider: Provider,
+  sandboxId: string,
+  deps: SshExecDeps = {},
+): Promise<string> {
+  const path =
+    provider.id === "boat"
+      ? "/home/user/.codex/auth.json"
+      : provider.id === "modal"
+        ? "/home/user/.armada-runtime/codex/auth.json"
+        : undefined;
+  if (!path) throw Error("Private native auth transport is unavailable.");
+  const script = `set +x
+node <<'ARMADA_PRIVATE_AUTH'
+const fs = require('node:fs');
+const path = ${JSON.stringify(path)};
+let fd;
+try {
+  const parts = path.split('/').filter(Boolean);
+  for (let n=1;n<parts.length;n++) {
+    const stat=fs.lstatSync('/'+parts.slice(0,n).join('/'));
+    if(stat.isSymbolicLink() || !stat.isDirectory()) throw Error('unsafe');
+  }
+  fd=fs.openSync(path,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  const stat=fs.fstatSync(fd);
+  if(!stat.isFile() || stat.size>65536 || (stat.mode&0o077)) throw Error('unsafe');
+  const bytes=Buffer.alloc(65537);
+  const length=fs.readSync(fd,bytes,0,bytes.length,0);
+  if(length>65536) throw Error('oversized');
+  const text=bytes.subarray(0,length).toString('utf8'), value=JSON.parse(text);
+  if(!value.tokens || typeof value.tokens.refresh_token!=='string' ||
+     typeof value.tokens.access_token!=='string' || typeof value.tokens.account_id!=='string') throw Error('invalid');
+  process.stdout.write(text);
+} catch { process.exitCode=1; }
+finally {
+  if(fd!==undefined) fs.closeSync(fd);
+  const pub=process.env.ARMADA_SSH_PUBLIC_KEY;
+  if(pub) for(const home of ['/home/user','/root']) {
+    try {
+      const file=home+'/.ssh/authorized_keys', stat=fs.lstatSync(file);
+      if(stat.isSymbolicLink() || !stat.isFile()) continue;
+      const lines=fs.readFileSync(file,'utf8').split('\n');
+      fs.writeFileSync(file,lines.filter(line=>line.trim()!==pub.trim()).join('\n'),{mode:0o600});
+    } catch {}
+  }
+}
+ARMADA_PRIVATE_AUTH
+`;
+  try {
+    return await sshExchange(provider, { sandboxId, token: "", script }, deps, true);
+  } catch {
+    throw Error("Private native auth exchange failed.");
+  }
+}
+
+async function sshExchange(
+  provider: Provider,
+  input: { sandboxId: string; token: string; script: string },
+  deps: SshExecDeps,
+  capture: boolean,
+): Promise<string> {
   const fs = {
     mkdtemp: deps.mkdtemp ?? mkdtemp,
     rm: deps.rm ?? rm,
@@ -45,7 +110,7 @@ export async function sshStdinCheckout(
         (username === "root" ? "export HOME=/home/user; cd /home/user || exit 96; " : "") +
         "bash -s; status=$?; unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; history -c 2>/dev/null || true; exit $status",
     );
-    await command(
+    return await command(
       run,
       "ssh",
       [
@@ -75,6 +140,7 @@ export async function sshStdinCheckout(
         remote,
       ],
       `${input.token}\n${pub.trim()}\n${input.script}`,
+      capture,
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -93,21 +159,36 @@ function knownLine(host: string, port: string, key: string) {
   if (!/^(ssh-|ecdsa-|sk-)/.test(key)) throw new Error("Invalid SSH host key.");
   return `[${host}]:${port} ${key}\n`;
 }
-function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: string) {
-  return new Promise<void>((resolve, reject) => {
+function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: string, capture = false) {
+  return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
     // that resolves to (and whether it still carries EventEmitter's own members) depends on the
     // exact @types/node version a workspace package without its own pin happens to get hoisted.
-    const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", "ignore", "pipe"] });
+    const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", capture ? "pipe" : "ignore", "pipe"] });
     let pending = "";
     let phase = "ssh";
     let exitCode: string | undefined;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      c.kill("SIGKILL");
-    }, 600_000);
+    const output: Buffer[] = [];
+    let bytes = 0,
+      overflow = false;
+    c.stdout?.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > 65536) {
+        overflow = true;
+        output.length = 0;
+        c.kill("SIGKILL");
+      } else if (!overflow) output.push(Buffer.from(chunk));
+    });
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        c.kill("SIGKILL");
+      },
+      capture ? 30_000 : 600_000,
+    );
     c.stderr?.on("data", (d) => {
+      if (capture) return;
       // Stream only fixed protocol records; discard all tool stderr, including arbitrary secrets.
       pending += String(d);
       const lines = pending.split("\n");
@@ -132,10 +213,10 @@ function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: s
     });
     c.on("close", (code: number | null) => {
       clearTimeout(timer);
-      if (code === 0) resolve();
+      if (code === 0 && !overflow) resolve(Buffer.concat(output).toString("utf8"));
       else {
         const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
-        console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
+        if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
         reject(
           new GoldenError(
             "build_failed",

@@ -80,6 +80,8 @@ describe("database", () => {
         "modal_server_apps",
         "modal_server_harnesses",
         "modal_server_scopes",
+        "model_auth_ownership",
+        "model_auth_state",
         "notify_subscriptions",
         "oauth_clients",
         "oauth_codes",
@@ -240,6 +242,7 @@ describe("database", () => {
         "golden_build_jobs.payload_enc",
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
+        "model_auth_state.state_enc",
         "notify_subscriptions.secret_enc",
         "orgs.boat_api_key_enc",
       ]);

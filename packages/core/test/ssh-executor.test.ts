@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { shellQuote, sshStdinCheckout } from "../src/server.ts";
+import { shellQuote, sshPrivateAuthState, sshStdinCheckout } from "../src/server.ts";
 
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
 describe("SSH stdin checkout", () =>
@@ -194,5 +194,62 @@ test.each(["admin", "root; touch /tmp/forged", "", null])(
       ),
     ).rejects.toThrow("Invalid SSH username.");
     expect(sshStarted).toBe(false);
+  },
+);
+
+test.each(["boat", "modal"] as const)(
+  "private %s auth SSH captures only bounded fixed-path stdout, never argv/files/stderr",
+  async (id) => {
+    const secret =
+      '{"tokens":{"access_token":"synthetic-private-access","refresh_token":"synthetic-private-refresh","account_id":"native"}}';
+    const calls: { args: string[]; stdin?: string; stdio: unknown }[] = [];
+    const writes: unknown[] = [];
+    let removed = false,
+      overflow = false;
+    const fakeSpawn: any = (file: string, args: string[], options: { stdio: unknown }) => {
+      const child: any = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      const record = { args, stdin: "", stdio: options.stdio };
+      calls.push(record);
+      child.stdin = {
+        on: () => {},
+        end: (input: string) => {
+          record.stdin = input;
+          queueMicrotask(() => {
+            if (file === "ssh") {
+              child.stderr.emit("data", Buffer.from("untrusted-private-stderr"));
+              child.stdout.emit("data", Buffer.from(overflow ? "x".repeat(65537) : secret));
+            }
+            child.emit("close", 0);
+          });
+        },
+      };
+      return child;
+    };
+    const deps = {
+      spawn: fakeSpawn,
+      mkdtemp: (async () => "/private-fixture") as any,
+      rm: async () => {
+        removed = true;
+      },
+      chmod: async () => {},
+      writeFile: (async (...args: unknown[]) => {
+        writes.push(args);
+      }) as any,
+      readPublicKey: async () => "ssh-ed25519 PUBLIC",
+    };
+    const selected = { ...provider, id };
+    expect(await sshPrivateAuthState(selected, "native", deps)).toBe(secret);
+    expect(calls[1]?.stdio).toEqual(["pipe", "pipe", "pipe"]);
+    expect(calls[1]?.stdin).toContain(
+      id === "boat" ? "/home/user/.codex/auth.json" : "/home/user/.armada-runtime/codex/auth.json",
+    );
+    expect(JSON.stringify(calls.map((call) => call.args))).not.toContain("synthetic-private");
+    expect(JSON.stringify(writes)).not.toContain("synthetic-private");
+    expect(removed).toBe(true);
+    overflow = true;
+    await expect(sshPrivateAuthState(selected, "native", deps)).rejects.toThrow("Private native auth exchange failed.");
   },
 );

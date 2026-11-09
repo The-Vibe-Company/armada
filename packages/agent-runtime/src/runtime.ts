@@ -29,6 +29,8 @@ export class Runner {
   private mcp: McpConfiguration | undefined;
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
+  private publishNativeAuth: (() => Promise<void>) | undefined;
+  private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
   constructor(
     readonly journal: Journal,
@@ -50,6 +52,8 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.refreshNativeSecrets = execution.refreshNativeSecrets;
+    this.publishNativeAuth = execution.publishNativeAuth;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
@@ -239,6 +243,7 @@ export class Runner {
     }
     if (this.barrier) throw Error("checkpoint_in_progress");
     if (r.op === "exec") {
+      this.refreshNativeSecrets?.();
       const work = this.exec(r.input);
       this.commands.add(work);
       try {
@@ -318,13 +323,16 @@ export class Runner {
       });
       const done = turn.done
         .then(
-          (status) => {
+          async (status) => {
+            await this.publishNativeAuth?.();
             this.journal.transition(p, status);
           },
-          (error: unknown) => {
+          async (error: unknown) => {
+            await this.publishNativeAuth?.();
             this.journal.transition(p, "failed", error instanceof HarnessError ? error.code : "harness_failed");
           },
         )
+        .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
         .finally(() => {
           this.active.delete(p.conversationId);
           void this.flushOutbox().catch(() => {});
@@ -426,6 +434,21 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
+        try {
+          this.refreshNativeSecrets?.();
+        } catch {
+          const safe: ExecResult = {
+            detached: false,
+            exitCode: null,
+            stdout: "",
+            stderr: "Native auth state could not be safely redacted.",
+            timedOut: false,
+            truncated: true,
+          };
+          save({ pid, status: "exited", identity, ...safe });
+          resolve(safe);
+          return;
+        }
         const result: ExecResult = {
           detached: false,
           exitCode,

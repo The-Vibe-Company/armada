@@ -13,6 +13,8 @@ import {
   toHarnessCredentials,
 } from "@armada/core";
 
+import type { ModelAuthOwnership } from "./model-auth.ts";
+
 /** The stored kinds whose value must never reach a command's output. */
 const SECRET_KINDS: readonly CredentialKind[] = ["claude_oauth", "anthropic", "openai", "codex_auth"];
 
@@ -34,8 +36,53 @@ export function launchCredentials(
   reader: CredentialReader,
   encryptionKey: string | undefined,
   github?: GitHubLaunchOptions,
+  ownership?: ModelAuthOwnership,
 ): LaunchCredentialResolver {
   return {
+    async admit(actor, credentials, sandboxId) {
+      if (!credentials.codexAuthJson) return;
+      if (!ownership) return; // Embedders without managed auth retain their legacy native path.
+      try {
+        const source = JSON.parse(credentials.env.ARMADA_CODEX_AUTH_JSON ?? "{}");
+        if (typeof source.tokens?.refresh_token !== "string") return;
+      } catch {
+        return;
+      }
+      const binding = "binding" in credentials ? credentials.binding : undefined;
+      if (
+        !binding ||
+        typeof binding !== "object" ||
+        !("credentialId" in binding) ||
+        !("credentialVersion" in binding) ||
+        typeof binding.credentialId !== "string" ||
+        typeof binding.credentialVersion !== "number"
+      )
+        return; // Unknown legacy bindings are not silently claimed or rehydrated.
+      await ownership.claim(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+    },
+    async releaseUnallocated(_actor, credentials, sandboxId) {
+      const binding =
+        "binding" in credentials
+          ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
+          : undefined;
+      if (ownership && binding)
+        await ownership.releaseUnallocated(binding.credentialId, binding.credentialVersion, sandboxId);
+    },
+    async nativeSecrets(actor, sandboxId, provider, providerSandboxId) {
+      if (!ownership) return [];
+      await ownership.assertSandbox(actor, sandboxId, false, true);
+      const managed = await ownership.managed(sandboxId);
+      const values = await ownership.capture(provider, providerSandboxId, { userId: actor.userId, orgId: actor.orgId });
+      if (managed && values.length === 0)
+        throw new Error("Private native auth redaction is unavailable; no output may be returned.");
+      return values;
+    },
+    async assertExec(actor, sandboxId) {
+      if (ownership) await ownership.assertSandbox(actor, sandboxId, false, true);
+    },
+    async assertTurn(actor, sandboxId, resuming) {
+      if (ownership) await ownership.assertSandbox(actor, sandboxId, resuming);
+    },
     async resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials> {
       const resolved = await resolveCredentials(reader, encryptionKey, {
         userId: actor.userId,

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import type { Sql } from "@armada/core";
+import { ProviderError, type Sql } from "@armada/core";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
@@ -43,7 +43,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await db.close();
 });
-function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: ModalProviderOptions["beforePrompt"]) {
+function fixture(
+  accessScope: Scope = scope,
+  sql: Sql = db,
+  beforePrompt?: ModalProviderOptions["beforePrompt"],
+  beforeResume?: ModalProviderOptions["beforeResume"],
+) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
@@ -191,6 +196,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
   const provider = createModalProvider({
     scope: accessScope,
     ...(beforePrompt ? { beforePrompt } : {}),
+    ...(beforeResume ? { beforeResume } : {}),
     tokenId: "synthetic-id",
     tokenSecret: "synthetic-secret",
     appName: "pinned",
@@ -427,6 +433,21 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.snapshot({ sandboxId: row.id, name: crypto.randomUUID() });
     expect(f.log).toContain("snapshot");
     expect(f.provisioned).toBe(false);
+  });
+  test("native resume refusal fences restoration under the provider lifecycle lease", async () => {
+    const f = fixture(scope, db, undefined, async () => {
+      throw new ProviderError({ provider: "modal", code: "conflict", message: "credential_busy", retryable: false });
+    });
+    const builder = await f.provider.createGolden({});
+    const snapshot = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name: snapshot });
+    const row = await f.provider.fork({ from: snapshot });
+    await f.provider.stop({ sandboxId: row.id });
+    const creates = f.creates;
+    await expect(f.provider.exec({ sandboxId: row.id, command: "pwd" })).rejects.toThrow("credential_busy");
+    expect(f.creates).toBe(creates);
+    expect((await f.store.get(row.id)).phase).toBe("stopped");
+    expect((await f.store.get(row.id)).generation).toBe(1);
   });
   test("snapshot failure never terminates or reports a durable stop", async () => {
     const f = fixture();

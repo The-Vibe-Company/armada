@@ -17,6 +17,7 @@ import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelAuthOwnership } from "./model-auth.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -47,6 +48,7 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl);
+  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey);
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
@@ -66,15 +68,26 @@ export async function startServer(
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
+      beforeStop: async (provider, id) => {
+        if (caller) await modelAuth.capture(provider, id, caller);
+      },
+      afterPrompt: async (provider, id) => {
+        if (caller) await modelAuth.capture(provider, id, caller);
+      },
       beforeResume: async (provider, id) => {
         if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
+        await modelAuth.beforeResume(provider, id, caller);
         return mcp.beforeResume(provider, id, caller);
       },
       beforePrompt: async (provider, id) => {
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
         await mcp.beforePrompt(provider, id, caller);
+        await modelAuth.beforePrompt(provider, id, caller);
       },
-      beforeSnapshot: mcp.beforeSnapshot,
+      beforeSnapshot: async (provider, id) => {
+        if (caller) await modelAuth.capture(provider, id, caller);
+        await mcp.beforeSnapshot(provider, id);
+      },
     });
     provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
     return provider;
@@ -86,6 +99,7 @@ export async function startServer(
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
   });
   const modal = await createModalIntegration({
+    beforeResume: (provider, id, caller) => modelAuth.beforeResume(provider, id, caller),
     sql,
     vault: store,
     encryptionKey: config.encryptionKey,
@@ -112,6 +126,7 @@ export async function startServer(
     provider: async (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ControlOptions = {
+    modelAuth,
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -146,6 +161,7 @@ export async function startServer(
     },
   };
   const handler = createHandler({
+    modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
       .split(",")

@@ -786,6 +786,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await provider.get(found.providerSandboxId);
+      await context.launchCredentials.assertTurn?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+        machine.state === "stopped",
+      );
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -907,6 +912,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
+      await context.launchCredentials.assertExec?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+      );
+      const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
+      const nativeBefore =
+        (await context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId)) ??
+        [];
       const result = await provider.exec({
         sandboxId: found.providerSandboxId,
         command: args.command,
@@ -914,7 +927,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         timeoutSeconds: args.timeout_seconds ?? 120,
       });
       if (result.detached) throw new ToolError("unknown", "The command started in the background.");
-      const secrets = await context.exposedSecrets(found.orgId);
+      const nativeAfter =
+        (await context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId)) ??
+        [];
+      const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
       const clip = (text: string) => {
         const safe = redact(text, secrets);
         return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;

@@ -27,6 +27,7 @@ import {
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { redactForLog } from "./log.ts";
+import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createArmadaServer } from "./tools.ts";
 
@@ -37,6 +38,7 @@ export const HEALTH_PATH = "/healthz";
 export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
+  modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
   loginProviders?: ClientConfig["providers"];
@@ -140,7 +142,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         caller,
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(caller),
-        launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github),
+        launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
         ...(options.goldenTarget

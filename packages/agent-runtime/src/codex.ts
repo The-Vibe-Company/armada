@@ -16,7 +16,9 @@ import type { Driver, DriverContext, Turn } from "./protocol.ts";
 /** One app-server per conversation isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
   private children = new ChildOwner();
-  constructor(private options: { executable: string; cwd: string; env: Record<string, string> }) {}
+  constructor(
+    private options: { executable: string; cwd: string; env: Record<string, string>; refreshSecrets?: () => void },
+  ) {}
   start(c: DriverContext): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     const effort = c.request.reasoningEffort ?? "medium";
@@ -70,6 +72,7 @@ export class CodexDriver implements Driver {
     lines.on("line", (line) => {
       try {
         const m = JSON.parse(line);
+        this.options.refreshSecrets?.();
         if (m.id !== undefined && !m.method) {
           const p = pending.get(m.id);
           if (p) {

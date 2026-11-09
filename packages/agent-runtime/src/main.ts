@@ -1,6 +1,7 @@
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
+import { readNativeCodexAuth } from "./native-auth.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
@@ -18,6 +19,7 @@ async function main() {
     mcp?: McpConfiguration;
     ingestUrl: string;
     codexAuthJson?: string;
+    nativeAuthRevision?: number;
     execEnv?: ExecEnvironment;
     credentialFreeBuilder?: boolean;
   };
@@ -73,6 +75,14 @@ async function main() {
     .sort((a, b) => b.length - a.length);
   const redact = createRedactor(secrets);
   const journal = new Journal(`${config.root}/journal.sqlite`, redact);
+  let lastAuth: string | undefined;
+  const refreshNativeSecrets = () => {
+    const current = readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
+    if (current !== lastAuth) {
+      lastAuth = current;
+      journal.sanitize();
+    }
+  };
   const state = new HarnessState(config.root, journal.redact);
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const fenced = journal.checkpointPending(config.grant);
@@ -95,12 +105,53 @@ async function main() {
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     if (config.codexAuthJson) await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
+  const publishNativeAuth = async () => {
+    // Private generation-bound publication must be acknowledged before auth is scrubbed.
+    if (config.nativeAuthRevision !== undefined) {
+      let committed = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const authJson = readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
+        if (!authJson) throw Error("native_auth_publication_missing");
+        const response = await fetch(config.ingestUrl, {
+          redirect: "error",
+          method: "POST",
+          headers: { "content-type": "application/json", "x-armada-runner-grant": config.grant.token },
+          body: JSON.stringify({
+            sandboxId: config.grant.sandboxId,
+            generation: config.grant.generation,
+            events: [],
+            nativeAuth: { authJson, expectedRevision: config.nativeAuthRevision },
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) throw Error("native_auth_publication_unknown");
+        const receipt = (await response.json()) as { authRevision: number; committed: boolean };
+        if (
+          !Number.isSafeInteger(receipt.authRevision) ||
+          receipt.authRevision < config.nativeAuthRevision ||
+          typeof receipt.committed !== "boolean"
+        )
+          throw Error("native_auth_publication_unknown");
+        config.nativeAuthRevision = receipt.authRevision;
+        if (receipt.committed) {
+          committed = true;
+          break;
+        }
+      }
+      if (!committed) throw Error("native_auth_publication_conflict");
+    }
+  };
   const runner = new Runner(
     journal,
     config.grant,
     {
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
-      codex: new CodexDriver({ cwd: config.cwd, executable: config.codexExecutable, env: config.codexEnv }),
+      codex: new CodexDriver({
+        cwd: config.cwd,
+        executable: config.codexExecutable,
+        env: config.codexEnv,
+        refreshSecrets: refreshNativeSecrets,
+      }),
     },
     {
       async append(batch) {
@@ -120,12 +171,15 @@ async function main() {
     },
     fenced ? undefined : config.mcp,
     async () => {
+      await publishNativeAuth();
       await state.checkpoint(config.grant);
       await rm(`${config.root}/exec-transient`, { recursive: true, force: true });
       journal.sanitize();
     },
     {
       execEnv: fenced ? {} : execEnv,
+      refreshNativeSecrets,
+      publishNativeAuth,
       credentialFreeBuilder: config.credentialFreeBuilder ?? false,
       ghConfigDir: `${config.root}/exec-transient/gh`,
     },

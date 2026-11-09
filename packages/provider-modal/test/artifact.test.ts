@@ -57,6 +57,43 @@ const present = await Bun.file(join(dist, "manifest.json")).exists();
       physicalName: "physical",
     };
     const grants = createGenerationGrants(crypto.getRandomValues(new Uint8Array(32)), scope);
+    const initialNative = {
+      tokens: {
+        access_token: "synthetic-artifact-access",
+        refresh_token: "synthetic-artifact-refresh",
+        account_id: "native-artifact",
+      },
+    };
+    const rotatedNative = {
+      tokens: {
+        access_token: "synthetic-rotated-access",
+        refresh_token: "synthetic-rotated-refresh",
+        account_id: "native-artifact",
+      },
+    };
+    let acknowledgeNative = false,
+      nativeRevision = 0,
+      publishedNative: string | undefined;
+    const privateIngest = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const body = (await request.json()) as {
+          generation: string;
+          events: unknown[];
+          nativeAuth?: { authJson: string; expectedRevision: number };
+        };
+        if (body.nativeAuth) {
+          expect(request.headers.get("x-armada-runner-grant")).toBeTruthy();
+          expect(body.generation).toBe(String(row.generation));
+          expect(body.events).toEqual([]);
+          if (!acknowledgeNative) return new Response(null, { status: 503 });
+          publishedNative = body.nativeAuth.authJson;
+          nativeRevision++;
+          return Response.json({ authRevision: nativeRevision, committed: true });
+        }
+        return Response.json({ acknowledgedSequence: 0 });
+      },
+    });
     let port = 0;
     // Start runtime with OS-assigned port reserved below, no model credentials, argv or bootstrap file.
     const reserve = Bun.serve({ port: 0, fetch: () => new Response() });
@@ -83,6 +120,8 @@ const present = await Bun.file(join(dist, "manifest.json")).exists();
           codexExecutable: join(dist, "codex"),
           claudeEnv: { ANTHROPIC_API_KEY: "synthetic-model-env-only" },
           codexEnv: {},
+          codexAuthJson: publishedNative ?? JSON.stringify(initialNative),
+          nativeAuthRevision: nativeRevision,
           credentialFreeBuilder: false,
           execEnv: {
             GH_TOKEN: "synthetic-artifact-github",
@@ -92,7 +131,7 @@ const present = await Bun.file(join(dist, "manifest.json")).exists();
             GIT_CONFIG_GLOBAL: join(root, "fixture-gitconfig"),
             GIT_TERMINAL_PROMPT: "0",
           },
-          ingestUrl: "http://127.0.0.1:1/unused",
+          ingestUrl: `http://127.0.0.1:${privateIngest.port}/native-private`,
         }),
       );
       input.end();
@@ -148,12 +187,26 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
         configuration: { revision: "fixture-empty-config", servers: {} },
       });
       expect(configured).toEqual({ revision: "fixture-empty-config" });
+      const rotated = await transport.call<{ stdout: string; exitCode: number }>(row, "exec", {
+        input: {
+          sandboxId: row.info.id,
+          cwd: root,
+          command: `umask 077; printf '%s' '${JSON.stringify(rotatedNative)}' > codex/auth.json; printf '%s' '${rotatedNative.tokens.refresh_token}'`,
+        },
+      });
+      expect(rotated).toMatchObject({ exitCode: 0, stdout: "[REDACTED]" });
+      await expect(transport.call(row, "checkpoint", {})).rejects.toBeDefined();
+      expect(await Bun.file(join(root, "codex/auth.json")).exists()).toBe(true);
+      expect(publishedNative).toBeUndefined();
+      acknowledgeNative = true;
       const checkpoint = await transport.call<{ generation: string; watermark: number; acknowledgedSequence: number }>(
         row,
         "checkpoint",
         {},
       );
       expect(checkpoint).toMatchObject({ generation: "1", watermark: 0, acknowledgedSequence: 0 });
+      expect(publishedNative).toBe(JSON.stringify(rotatedNative));
+      expect(await Bun.file(join(root, "codex/auth.json")).exists()).toBe(false);
       await expect(
         transport.call(row, "exec", { input: { sandboxId: row.info.id, command: "echo forbidden" } }),
       ).rejects.toMatchObject({ code: "sandbox_not_ready" });
@@ -162,6 +215,14 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
       row.generation = 2;
       transport = await start();
       expect(await transport.call(row, "health", {})).toMatchObject({ generation: "2", ready: true });
+      const nativeRestored = await transport.call<{ stdout: string; exitCode: number }>(row, "exec", {
+        input: {
+          sandboxId: row.info.id,
+          cwd: root,
+          command: `node -e 'const v=JSON.parse(require("fs").readFileSync("codex/auth.json","utf8")); if(v.tokens.refresh_token!=="${rotatedNative.tokens.refresh_token}")process.exit(1); process.stdout.write("current-native-auth")'`,
+        },
+      });
+      expect(nativeRestored).toMatchObject({ exitCode: 0, stdout: "current-native-auth" });
       const resumed = await transport.call<{ stdout: string }>(row, "exec", {
         input: { sandboxId: row.info.id, command: "printf restored" },
       });
@@ -169,6 +230,7 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
     } finally {
       process?.kill();
       await process?.exited;
+      await privateIngest.stop(true);
       await rm(root, { recursive: true, force: true });
     }
   },
