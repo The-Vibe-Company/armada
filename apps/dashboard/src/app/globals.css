@@ -107,6 +107,8 @@
       flex-direction: column;
       min-height: 0;
       overflow-y: auto;
+      /* When main scrolls, an absolutely placed descendant (an sr-only label) stays inside it, not below the document. */
+      position: relative;
     }
     [data-fit-viewport],
     [data-fit="column"],

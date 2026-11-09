@@ -10,9 +10,12 @@ import type { SendArgs } from "./model-choice.ts";
 export class GatewayError extends Error {
   override readonly name = "GatewayError";
   readonly status: number | undefined;
-  constructor(message: string, status?: number) {
+  /** The tool's typed failure (`error code: <code>` in its result), such as `credential_binding_required`. */
+  readonly code: string | undefined;
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -78,17 +81,29 @@ export function createGateway(options: Options): Gateway {
         sessionId,
       );
       const message = await readMessage(response, id);
-      if (isRecord(message.error)) throw toolError(String(message.error.message ?? "The call failed."));
+      if (isRecord(message.error)) throw toolError(String(message.error.message ?? "The call failed."), undefined);
       const result = isRecord(message.result) ? message.result : {};
       const payload = extractPayload(result);
-      if (result.isError === true) throw toolError(typeof payload === "string" ? payload : JSON.stringify(payload));
+      if (result.isError === true)
+        throw toolError(typeof payload === "string" ? payload : JSON.stringify(payload), errorCode(result));
       return payload;
     },
   };
 }
 
-function toolError(text: string): GatewayError {
-  return new GatewayError(describeFailure(text)?.hint ?? text);
+function toolError(text: string, code: string | undefined): GatewayError {
+  return new GatewayError(describeFailure(text)?.hint ?? text, undefined, code);
+}
+
+/** The server adds its typed failure as a separate text part: `error code: <code>`. */
+function errorCode(result: Record<string, unknown>): string | undefined {
+  const content = Array.isArray(result.content) ? result.content : [];
+  for (const part of content) {
+    if (!isRecord(part) || typeof part.text !== "string") continue;
+    const match = /^error code: ([a-z_]+)$/.exec(part.text.trim());
+    if (match) return match[1];
+  }
+  return undefined;
 }
 
 function extractPayload(result: Record<string, unknown>): unknown {

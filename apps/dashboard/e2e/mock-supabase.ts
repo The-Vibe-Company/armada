@@ -41,6 +41,10 @@ type State = {
   toolCalls: { name: string; args: Row }[];
   /** The next send, steer or interrupt fails with this message, once. */
   failNextTool: string | null;
+  /** Named model accounts (#603) as `creds/list` returns them: safe metadata, never a value. */
+  /** Every `sandbox/bind-credential` body, and the next refusal to answer with, once. */
+  bindCalls: Row[];
+  failNextBind: { status: number; code: string; message: string } | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
   /** Every launch body that reached allocation, as the dashboard sent it. */
@@ -185,6 +189,8 @@ function seed(): State {
     sent: [],
     toolCalls: [],
     failNextTool: null,
+    bindCalls: [],
+    failNextBind: null,
     launches: [],
     accountCalls: [],
     legacyAccounts: false,
@@ -743,6 +749,19 @@ function mcp(message: RpcMessage, userId: string | null): Response {
     state.failNextTool = null;
     return reply({ content: [{ type: "text", text: failure }], isError: true });
   }
+  if (driving && target.provider === "modal" && target.credential_id === null) {
+    // As #603's server answers a legacy unbound Modal sandbox: a typed refusal, never a silent default account.
+    return reply({
+      content: [
+        {
+          type: "text",
+          text: "This legacy Modal sandbox needs an explicit account binding by its owner. Stop it safely, then its owner chooses an account on the sandbox's dashboard page or runs 'armada bind-credential <sandbox-id> --credential-id <account-uuid>'. Its workspace and conversations are retained.",
+        },
+        { type: "text", text: "error code: credential_binding_required" },
+      ],
+      isError: true,
+    });
+  }
   const events = state.events.get(String(target.id)) ?? [];
   state.events.set(String(target.id), events);
   const conversations = (target.conversation_ids ?? []) as string[];
@@ -761,6 +780,8 @@ function mcp(message: RpcMessage, userId: string | null): Response {
           : (conversations.at(-1) ?? `conv-${events.length}`);
       if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
       target.status = "running";
+      // A send to a stopped sandbox restores it: the server clears its stop time.
+      target.stopped_at = null;
       const promptId = `sent-${events.length}`;
       events.push({
         id: promptId,
@@ -803,6 +824,45 @@ function mcp(message: RpcMessage, userId: string | null): Response {
     default:
       return text("unknown tool", true);
   }
+}
+
+/**
+ * `POST /api/v1/sandbox/bind-credential`, with the checks #603's server makes: the owner, a stopped Modal sandbox
+ * still unbound, and one of the caller's compatible accounts. The binding is a compare-and-set; nothing restarts.
+ */
+function bindCredential(body: Row, userId: string | null): Response {
+  if (!userId) return json({ error: "Unauthorized." }, 401);
+  state.bindCalls.push({ ...body });
+  const refuse = (status: number, code: string, message: string) => json({ error: { code, message } }, status);
+  if (state.failNextBind) {
+    const failure = state.failNextBind;
+    state.failNextBind = null;
+    return refuse(failure.status, failure.code, failure.message);
+  }
+  const target = state.sandboxes.find((row) => row.id === body.id);
+  if (!target || target.owner_id !== userId || target.provider !== "modal")
+    return refuse(404, "not_found", "Only the sandbox owner can recover its account binding.");
+  if (target.credential_id !== null)
+    return refuse(409, "conflict", "This sandbox is already bound; its account cannot change.");
+  if (target.status !== "stopped")
+    return refuse(
+      409,
+      "credential_binding_unsafe",
+      "Stop the sandbox and finish lifecycle reconciliation before binding.",
+    );
+  const account = state.credentials.find(
+    (row) => row.id === body.credentialId && String(row.kind) in MODEL_KINDS && row.status === "active",
+  );
+  if (!account) return refuse(400, "invalid", "That account cannot be used for this sandbox.");
+  target.credential_id = account.id;
+  target.credential_version = account.version;
+  return json({
+    id: target.id,
+    credentialId: account.id,
+    credentialVersion: account.version,
+    harness: target.harness,
+    status: "bound",
+  });
 }
 
 /**
@@ -1892,6 +1952,26 @@ function control(url: URL, body: Row): Response {
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
     if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
     for (const row of (body.seed as Row[] | undefined) ?? []) state.credentials.push(row);
+    // `{user, org}`: the viewer's and Acme's model accounts as `creds/list` DTOs, replacing the seeded ones.
+    if (body.user !== undefined || body.org !== undefined) {
+      state.credentials = state.credentials.filter((row) => !(String(row.kind) in MODEL_KINDS));
+      const rows = (items: unknown, scope: "user" | "org", owner: string) =>
+        ((items as Row[] | undefined) ?? []).map((dto) => ({
+          id: dto.id,
+          scope,
+          owner_id: owner,
+          kind: dto.kind,
+          value_enc: "\\x0102",
+          created_at: dto.createdAt ?? dto.updatedAt,
+          name: dto.name,
+          is_default: dto.isDefault === true,
+          version: dto.version,
+          status: dto.status ?? "active",
+          expires_at: dto.expiresAt ?? null,
+          updated_at: dto.updatedAt,
+        }));
+      state.credentials.push(...rows(body.user, "user", ALICE), ...rows(body.org, "org", ACME));
+    }
     return json({ calls: state.accountCalls });
   }
   if (url.pathname === "/__test/credentials") {
@@ -1945,6 +2025,10 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/sandbox-events") {
     state.events.set(String(body.sandbox), (body.events as Row[]) ?? []);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-next-bind") {
+    state.failNextBind = body as State["failNextBind"];
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-next-tool") {
@@ -2004,6 +2088,7 @@ function control(url: URL, body: Row): Response {
       otpEmails: state.otpEmails,
       sent: state.sent,
       toolCalls: state.toolCalls,
+      bindCalls: state.bindCalls,
       launches: state.launches,
       goldenCalls: state.goldenCalls,
       goldenStatusCalls: state.goldenStatusCalls,
@@ -2067,6 +2152,7 @@ const server = Bun.serve({
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
       if (route === "creds/list" || route.startsWith("creds/accounts/")) return accounts(route, body, request);
+      if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("org/invitations/"))
         return invitations(route.slice("org/invitations/".length), body, request);
       if (route === "golden/list")
