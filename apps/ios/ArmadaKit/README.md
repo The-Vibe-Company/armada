@@ -21,11 +21,42 @@ needs a separate server contract; no custom scheme is invented here.
 
 Auth source: `packages/cli/src/auth-commands.ts`,
 `packages/mcp-server/src/control.ts` at `2d81b6db290778dbd2bffabc076b757e1c3f74e0`.
-Orchestrator foundation at that ref explicitly calls itself **proposed** and has
-no mounted handlers. #662 has been asked for hash-bound actual runtime routes.
-Native orchestrator continuity remains OFF pending real operator conformance.
-No resume-by-prompt, guessed endpoint, account credential or direct Supabase call
-is permitted. Size must not be added to the proposed create DTO until published.
+Orchestrator adapter now consumes the actual #662 owner HTTP implementation,
+not only the foundation proposal. Delivered source archive SHA256:
+`832312b7086e5b2db2354da70e32f1dba2331506fb24a22d33f2b80ee2e4cb30`.
+The #661 DTO bytes are committed `79472bf` (merged `d748be68`);
+#662 handler is qualified WIP source `f2e3ce4`, file SHA256
+`33b910fa3b67560446485e64c4c561789079c0af45945c786f9bd89a7541e065`.
+These source contracts are NOT deployed runtime/native conformance evidence.
+
+Actual actor surface:
+- `orchestratorCapabilities() -> OrchestratorCapabilities` (GET capabilities).
+- `orchestrators(cursor:limit:) -> OrchestratorList` (GET collection).
+- `orchestratorDetail(id:) -> OrchestratorDetail` (GET id).
+- `orchestratorEvents(id:cursor:limit:) -> OrchestratorEventPage` (GET id/events).
+- `prepareOrchestratorCreate(_:) -> PendingOrchestratorOperation` (local only).
+- `prepareOrchestratorMutation(id:action:expectedRevision:text:)` (local only).
+- `submitOrchestratorOperation(_ UUID) -> OrchestratorOperation`.
+- `pendingOperations` restores durable pending/uncertain commands on startup.
+
+All reads select the authorized `orgId`; cursors pass through URLQueryItem without
+interpretation. Events preserve server order, stable event/message/conversation
+IDs and delta/snapshot mode; native continuity is decoded, never synthesized.
+Mutations persist exact bytes/key/revision BEFORE network side effects, use
+`Idempotency-Key`, and have no automatic retry. The UI prepares once then retries
+only the saved ID. An unresolved create blocks another create in that org; an
+unresolved mutation blocks another mutation on that orchestrator. Ambiguous
+errors/cancellation retain the saved command, not a fabricated failure/success.
+Sign-out clears local commands with the login session.
+
+The actual capability response is `enabled:false` with
+`native_conformance_required`; mutations refuse to send while disabled. A missing
+route is an HTTP error, never permission to fall back to ordinary allocation.
+No settings/wait mutations or private delegated/native RPC routes are exposed:
+those public routes are unwired in the delivered snapshot. Size is intentionally
+absent from `OrchestratorCreate` until #662 publishes canonical optional size
+validation and parent mapping. Operator native proof and deployment remain
+external prerequisites, not implied by client tests.
 
 ## Mac validation checkpoint
 

@@ -154,3 +154,73 @@ private actor RefreshTransport: ArmadaTransport {
     try await restored.restore()
     #expect(await restored.selectedOrgID == "org-a")
 }
+
+@Test func uncertainMutationRestoresExactKeyRevisionAndBytes() async throws {
+    let configuration = OrchestratorCreate(orgId: "org-a", name: "Coordinator", goldenId: "golden-a",
+        provider: .boat, harness: .codex, model: "model-a", modelAccountId: "account-a")
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 503, body: #"{"error":{"code":"unavailable","message":"unavailable"}}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 202, body: #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"create","state":"succeeded","revision":1,"errorCode":null}"#)
+    ])
+    let storage = MemoryStorage()
+    let client = try ArmadaClient(transport: transport, storage: storage)
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorCreate(configuration)
+    await #expect(throws: ArmadaError.unavailable) { _ = try await client.submitOrchestratorOperation(command.id) }
+    await #expect(throws: ArmadaError.conflict) { _ = try await client.prepareOrchestratorCreate(configuration) }
+    let restored = try ArmadaClient(transport: transport, storage: storage)
+    try await restored.restore()
+    #expect(await restored.pendingOperations.first?.state == .uncertain)
+    let receipt = try await restored.submitOrchestratorOperation(command.id)
+    #expect(receipt.id == "operation-a")
+    let posts = await transport.requests.filter { $0.url!.path == "/api/v1/orchestrators" }
+    #expect(posts.count == 2)
+    #expect(posts[0].httpBody == posts[1].httpBody)
+    #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") == posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
+    #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") != nil)
+}
+
+@Test func disabledNativeCapabilityCannotSubmitOrAllocate() async throws {
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":false,"reason":"native_conformance_required"}"#)
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .resume, expectedRevision: 7)
+    await #expect(throws: ArmadaError.unavailable) { _ = try await client.submitOrchestratorOperation(command.id) }
+    #expect(await transport.requests.last?.url?.path == "/api/v1/orchestrators/capabilities")
+    #expect(await transport.requests.count == 3)
+    #expect(await client.pendingOperations.first?.state == .pending)
+}
+
+@Test func eventCursorAndNativeMessageIdentitySurviveTransport() async throws {
+    let page = #"{"version":1,"events":[{"id":"outer-2","orchestratorId":"parent-a","at":"2026-11-09T00:00:00Z","revision":7,"kind":"agent","event":{"id":"native-event-9","at":99,"conversationId":"conversation-native","promptId":"turn-native","kind":"message","text":"delta","partial":true,"messageId":"message-native","textMode":"delta","tools":[]}},{"id":"outer-1","orchestratorId":"parent-a","at":"2026-11-09T00:00:01Z","revision":7,"kind":"state","state":"ready","continuity":"native"}],"cursor":"opaque+/=?&next","hasMore":true}"#
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: page)
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let result = try await client.orchestratorEvents(id: "parent-a", cursor: "opaque+/=?&prior")
+    #expect(result.events.map(\.id) == ["outer-2", "outer-1"])
+    #expect(result.cursor == "opaque+/=?&next")
+    guard case .agent(let event) = result.events[0].body,
+          case .message(_, _, let messageId, let mode, _, _) = event.body else {
+        Issue.record("Typed native message was lost"); return
+    }
+    #expect(event.conversationId == "conversation-native")
+    #expect(messageId == "message-native")
+    #expect(mode == "delta")
+    let url = await transport.requests.last!.url!
+    #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value == "opaque+/=?&prior")
+}

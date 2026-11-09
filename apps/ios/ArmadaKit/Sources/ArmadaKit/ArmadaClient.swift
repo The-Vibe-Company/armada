@@ -20,6 +20,7 @@ private struct StoredSession: Codable {
     let origin: String
     let session: ArmadaSession
     let selectedOrgID: String?
+    let operations: [PendingOrchestratorOperation]?
 }
 
 /// API-only authority owner. No Supabase configuration, provider key or browser callback.
@@ -33,6 +34,7 @@ public actor ArmadaClient {
     private var generation = 0
     private var refreshing: Task<ArmadaSession, Error>?
     private var refreshID: UUID?
+    public private(set) var pendingOperations: [PendingOrchestratorOperation] = []
     public private(set) var selectedOrgID: String?
 
     public init(origin: URL = productionOrigin, transport: any ArmadaTransport = URLSessionTransport(),
@@ -53,7 +55,7 @@ public actor ArmadaClient {
             guard let data = try storage.load() else { return }
             let stored = try JSONDecoder().decode(StoredSession.self, from: data)
             guard stored.origin == origin.absoluteString else { return }
-            session = stored.session; selectedOrgID = stored.selectedOrgID; generation += 1
+            session = stored.session; selectedOrgID = stored.selectedOrgID; pendingOperations = stored.operations ?? []; generation += 1
         } catch { throw ArmadaError.secureStorage }
     }
 
@@ -78,9 +80,9 @@ public actor ArmadaClient {
         let fence = generation
         let next: ArmadaSession = try await post("auth/email/verify", Verify(email: email, code: code), authenticated: false)
         guard generation == fence else { throw CancellationError() }
-        try persist(next, org: nil)
+        try persist(next, org: nil, operations: [])
         refreshing?.cancel(); refreshing = nil; refreshID = nil; generation += 1
-        session = next; selectedOrgID = nil
+        session = next; selectedOrgID = nil; pendingOperations = []
     }
     public func organizations() async throws -> [Organization] {
         let result: Organizations = try await post("org/list", Empty())
@@ -97,12 +99,12 @@ public actor ArmadaClient {
     /// so the UI must not claim remote sign-out succeeded while offline.
     public func signOut() async throws {
         let token = session?.accessToken
-        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil
+        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil; pendingOperations = []
         do { try storage.remove() } catch { throw ArmadaError.secureStorage }
         if let token { let _: OK = try await wire("account/logout", Empty(), token: token) }
     }
-    private func persist(_ next: ArmadaSession, org: String?) throws {
-        do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org))) }
+    private func persist(_ next: ArmadaSession, org: String?, operations: [PendingOrchestratorOperation]? = nil) throws {
+        do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org, operations: operations ?? pendingOperations))) }
         catch { throw ArmadaError.secureStorage }
     }
     private func authority() async throws -> String {
@@ -142,18 +144,44 @@ public actor ArmadaClient {
     func post<Response: Decodable & Sendable, Body: Encodable & Sendable>(
         _ route: String, _ body: Body, authenticated: Bool = true
     ) async throws -> Response {
+        let fence = generation
         let token = authenticated ? try await authority() : nil
         try Task.checkCancellation()
-        return try await wire(route, body, token: token)
+        let result: Response = try await wire(route, body, token: token)
+        if authenticated, generation != fence { throw CancellationError() }
+        return result
     }
     private func wire<Response: Decodable & Sendable, Body: Encodable & Sendable>(
         _ route: String, _ body: Body, token: String?
     ) async throws -> Response {
-        var request = URLRequest(url: origin.appendingPathComponent("api/v1/" + route))
-        request.httpMethod = "POST"; request.timeoutInterval = 30
+        return try await request(route, method: "POST", body: JSONEncoder().encode(body), token: token)
+    }
+    func authenticatedRequest<Response: Decodable & Sendable>(
+        _ route: String, method: String, query: [URLQueryItem] = [], body: Data? = nil, key: String? = nil
+    ) async throws -> Response {
+        let fence = generation
+        let token = try await authority()
+        let response: Response = try await request(route, method: method, query: query, body: body, token: token, key: key)
+        guard fence == generation else { throw CancellationError() }
+        return response
+    }
+    func saveOperations(_ operations: [PendingOrchestratorOperation]) throws {
+        guard let session else { throw ArmadaError.signedOut }
+        try persist(session, org: selectedOrgID, operations: operations)
+        pendingOperations = operations
+    }
+    private func request<Response: Decodable & Sendable>(
+        _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
+    ) async throws -> Response {
+        var components = URLComponents(url: origin.appendingPathComponent("api/v1/" + route), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { components.queryItems = query }
+        guard let url = components.url else { throw ArmadaError.invalidResponse }
+        var request = URLRequest(url: url)
+        request.httpMethod = method; request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
-        request.httpBody = try JSONEncoder().encode(body)
+        if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
+        request.httpBody = body
         let data: Data; let response: HTTPURLResponse
         do { (data, response) = try await transport.send(request) }
         catch is CancellationError { throw CancellationError() }
