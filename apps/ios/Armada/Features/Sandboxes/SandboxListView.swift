@@ -98,9 +98,11 @@ struct SandboxListView: View {
         }
         .task(id: app.organization?.id) {
             guard let orgID = app.organization?.id else { return }
-            let next = SandboxListModel(service: app.sandboxes, orgID: orgID) { app.sessionEnded() }
-            model = next
-            await next.load()
+            // Rebuilt only when the organization changes; a reappearing tab just refreshes.
+            if model?.orgID != orgID {
+                model = SandboxListModel(service: app.sandboxes, orgID: orgID) { app.sessionEnded() }
+            }
+            await model?.load()
         }
     }
 

@@ -147,6 +147,8 @@ struct SandboxConversationView: View {
                         return OrchestratorEventPage(events: interior.events, cursor: interior.cursor, hasMore: false)
                     }
                     await feed.follow(fetch) { app.sessionEnded() }
+                    // A later refusal (access revoked, capability withdrawn) replaces the stale interior.
+                    if case .stopped(let failure) = feed.connection { phase = .refused(failure) }
                 }
             }
         }

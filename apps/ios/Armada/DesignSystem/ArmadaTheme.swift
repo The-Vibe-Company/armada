@@ -13,7 +13,9 @@ enum ArmadaTheme {
     static let userBubble = adaptive(light: 0x0B0B0F, dark: 0xFFFFFF)
     static let userBubbleText = adaptive(light: 0xFFFFFF, dark: 0x000000)
     static let textPrimary = adaptive(light: 0x111111, dark: 0xF2F2F7)
-    static let textSecondary = color(0x8E8E93)
+    /// Companion's #8E8E93 in dark mode; darkened in light mode so small text keeps 4.5:1 on the
+    /// canvas and cards.
+    static let textSecondary = adaptive(light: 0x6A6A6F, dark: 0x8E8E93)
     static let separator = adaptive(light: 0xE5E5EA, dark: 0x38383A)
     static let primaryCTA = adaptive(light: 0x0B0B0F, dark: 0xFFFFFF)
     static let primaryCTAText = adaptive(light: 0xFFFFFF, dark: 0x000000)

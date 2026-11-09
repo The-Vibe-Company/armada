@@ -50,10 +50,13 @@ struct OrchestratorListView: View {
         }
         .task(id: app.organization?.id) {
             guard let orgID = app.organization?.id else { return }
-            let next = OrchestratorListModel(service: app.orchestrators, orgID: orgID) { app.sessionEnded() }
-            model = next
-            path = []
-            await next.load()
+            // `.task` also restarts when the tab reappears: keep the model (and any unconfirmed
+            // create with its key) unless the organization itself changed.
+            if model?.orgID != orgID {
+                model = OrchestratorListModel(service: app.orchestrators, orgID: orgID) { app.sessionEnded() }
+                path = []
+            }
+            await model?.load()
         }
     }
 
@@ -217,11 +220,11 @@ private struct PendingCreateRow: View {
             case .unconfirmed:
                 Button("Retry the Same Request", action: retry)
                     .buttonStyle(.glassProminent)
-                    .controlSize(.small)
+                    .frame(minHeight: 44)
             case .refused:
                 Button("Dismiss", action: dismiss)
                     .buttonStyle(.glass)
-                    .controlSize(.small)
+                    .frame(minHeight: 44)
             case .sending:
                 EmptyView()
             }

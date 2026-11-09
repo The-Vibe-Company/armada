@@ -156,7 +156,7 @@ struct ConversationTranscript: View {
             )
             if bubble.status == .unconfirmed {
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("Armada did not confirm delivery. Retrying sends the same request.")
+                    Text("Armada did not confirm delivery. Retry sends the same request again; Dismiss only hides it here, and it still appears if Armada received it.")
                         .font(.caption)
                         .foregroundStyle(ArmadaTheme.dangerText)
                         .multilineTextAlignment(.trailing)
@@ -164,13 +164,14 @@ struct ConversationTranscript: View {
                         if let onDismissPending {
                             Button("Dismiss") { onDismissPending(bubble) }
                                 .buttonStyle(.glass)
+                                .frame(minHeight: 44)
                         }
                         if let onRetryPending {
                             Button("Retry") { onRetryPending(bubble) }
                                 .buttonStyle(.glassProminent)
+                                .frame(minHeight: 44)
                         }
                     }
-                    .controlSize(.small)
                 }
                 .padding(.trailing, 4)
             }

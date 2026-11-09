@@ -24,11 +24,13 @@ struct OrchestratorConversationView: View {
         .toolbarBackground(ArmadaTheme.canvas, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task(id: orchestratorID) {
-            let next = OrchestratorConversationModel(service: app.orchestrators, orchestratorID: orchestratorID) {
-                app.sessionEnded()
+            // Keep pending messages, stop/resume keys and the draft when the screen reappears.
+            if model?.orchestratorID != orchestratorID {
+                model = OrchestratorConversationModel(service: app.orchestrators, orchestratorID: orchestratorID) {
+                    app.sessionEnded()
+                }
             }
-            model = next
-            await next.load()
+            await model?.load()
         }
     }
 
@@ -181,6 +183,8 @@ private struct HeaderPill: View {
         .padding(.horizontal, 12)
         .frame(minHeight: 36)
         .background(ArmadaTheme.card, in: Capsule())
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel([summary?.name, summary?.state.label].compactMap { $0 }.joined(separator: ", "))
     }

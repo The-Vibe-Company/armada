@@ -41,14 +41,17 @@ final class ConversationFeed {
         var failures = 0
         while !Task.isCancelled {
             do throws(ServiceFailure) {
+                let previous = cursor
                 let page = try await fetch(cursor)
                 guard !Task.isCancelled else { return }
                 if let next = page.cursor { cursor = next }
+                // Only read again at once when the cursor moved; otherwise poll normally.
+                let advanced = cursor != previous
                 await ingest(page.events)
                 hasLoaded = true
                 connection = .live
                 failures = 0
-                if page.hasMore { continue }
+                if page.hasMore, advanced { continue }
                 try? await Task.sleep(for: conversation.running ? .seconds(2) : .seconds(6))
             } catch {
                 switch error {

@@ -21,11 +21,14 @@ struct OrganizationPickerView: View {
                             InlineBanner(text: error, style: .error)
                         }
                         if model.organizations.isEmpty {
-                            SurfaceStateView(state: .empty(
-                                title: "No organization",
-                                message: "Your account is not a member of an organization yet. Ask an admin to invite you, or create one from the dashboard.",
-                                symbol: "building.2"
-                            ))
+                            SurfaceStateView(
+                                state: .empty(
+                                    title: "No organization",
+                                    message: "Your account is not a member of an organization yet. Ask an admin to invite you, or create one from the dashboard.",
+                                    symbol: "building.2"
+                                ),
+                                action: (title: "Check Again", run: { Task { await model.retry() } })
+                            )
                         } else {
                             SheetCard {
                                 ForEach(Array(model.organizations.enumerated()), id: \.element.id) { index, choice in

@@ -35,6 +35,9 @@ final class OrchestratorConversationModel {
 
     @ObservationIgnored private var mutations: [String: PendingMutation<ActionRequest>] = [:]
     @ObservationIgnored private var lifecycleMutation: PendingMutation<ActionRequest>?
+    /// The revision each accepted message's receipt reserved, to retire its bubble once the stream
+    /// has moved past it even if the shown text differs.
+    @ObservationIgnored private var acceptedRevisions: [String: Int] = [:]
     @ObservationIgnored private let service: any OrchestratorService
     @ObservationIgnored let orchestratorID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
@@ -93,7 +96,8 @@ final class OrchestratorConversationModel {
             switch failure {
             case .noAccess: phase = .noAccess
             case .unavailable(let reason): phase = .unavailable(reason)
-            default: break
+            case .rejected(let reason): notice = ("The conversation stopped updating: \(reason)", true)
+            case .signedOut, .staleRevision, .uncertain, .offline: break
             }
         }
     }
@@ -126,21 +130,28 @@ final class OrchestratorConversationModel {
         Task { await perform(mutation) }
     }
 
-    /// Hides an unconfirmed bubble and returns its text to the draft. The server may still have
-    /// accepted it; the conversation shows it if so.
+    /// Hides an unconfirmed bubble. Its text is NOT returned to the draft: the server may still have
+    /// accepted it under its key, and resending it as a new message could deliver it twice. If it
+    /// was accepted, the conversation shows it.
     func dismiss(_ bubble: PendingBubble) {
-        removeBubble(bubble.id, restoreDraft: true)
+        removeBubble(bubble.id, restoreDraft: false)
     }
 
     private func perform(_ mutation: PendingMutation<ActionRequest>) async {
         do throws(ServiceFailure) {
-            _ = try await service.perform(
+            let receipt = try await service.perform(
                 mutation.request.action,
                 orchestratorID: orchestratorID,
                 expectedRevision: mutation.request.expectedRevision,
                 idempotencyKey: mutation.idempotencyKey
             )
-            setStatus(.accepted, for: mutation.idempotencyKey)
+            if receipt.state == .failed {
+                removeBubble(mutation.idempotencyKey, restoreDraft: true)
+                notice = (Self.failedMessage(receipt), true)
+            } else {
+                setStatus(.accepted, for: mutation.idempotencyKey)
+                acceptedRevisions[mutation.idempotencyKey] = receipt.revision
+            }
             await load()
         } catch {
             switch error {
@@ -190,13 +201,14 @@ final class OrchestratorConversationModel {
     private func performLifecycle(_ mutation: PendingMutation<ActionRequest>) async {
         let kind = mutation.request.action.kind
         do throws(ServiceFailure) {
-            _ = try await service.perform(
+            let receipt = try await service.perform(
                 mutation.request.action,
                 orchestratorID: orchestratorID,
                 expectedRevision: mutation.request.expectedRevision,
                 idempotencyKey: mutation.idempotencyKey
             )
             finishLifecycle()
+            if receipt.state == .failed { notice = (Self.failedMessage(receipt), true) }
             await load()
         } catch {
             switch error {
@@ -234,6 +246,7 @@ final class OrchestratorConversationModel {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         let bubble = pending.remove(at: index)
         mutations[id] = nil
+        acceptedRevisions[id] = nil
         if restoreDraft {
             draft = draft.isEmpty ? bubble.text : bubble.text + "\n" + draft
         }
@@ -241,19 +254,35 @@ final class OrchestratorConversationModel {
 
     private func reconcilePending() {
         let shown = feed.conversation.items
+        let latestRevision = feed.latestRevision
         pending.removeAll { bubble in
             guard bubble.status == .accepted else { return false }
-            let delivered = shown.contains { item in
-                guard item.at >= bubble.sentAt.addingTimeInterval(-60) else { return false }
+            let recent = shown.filter { $0.at >= bubble.sentAt.addingTimeInterval(-60) }
+            let sameText = recent.contains { item in
                 switch item.kind {
                 case .user(let text, _, _): return bubble.intent == .message && text == bubble.text
                 case .steer(let text, _): return bubble.intent == .steer && text == bubble.text
                 default: return false
                 }
             }
-            if delivered { mutations[bubble.id] = nil }
+            let streamPassed = (acceptedRevisions[bubble.id]).map { latestRevision > $0 } == true
+                && recent.contains { item in
+                    switch item.kind {
+                    case .user, .steer: return true
+                    default: return false
+                    }
+                }
+            let delivered = sameText || streamPassed
+            if delivered {
+                mutations[bubble.id] = nil
+                acceptedRevisions[bubble.id] = nil
+            }
             return delivered
         }
+    }
+
+    private static func failedMessage(_ receipt: OperationSummary) -> String {
+        receipt.errorCode.map { "\(receipt.kind.label) failed (\($0))." } ?? "\(receipt.kind.label) failed."
     }
 
     private func handleReadFailure(_ error: ServiceFailure) {

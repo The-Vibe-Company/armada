@@ -34,6 +34,7 @@ protocol SandboxService: Sendable {
 /// Concise, safe failure categories. No raw response body or transport error reaches a view.
 enum ServiceFailure: Error, Hashable, Sendable {
     /// The server or this client does not offer the capability. Shown as such; not retried in a loop.
+    /// Never used for a mutation that may have been sent (that is `.uncertain`).
     case unavailable(String)
     /// The session ended. The app returns to sign-in.
     case signedOut

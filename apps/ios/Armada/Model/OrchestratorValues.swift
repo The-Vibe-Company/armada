@@ -337,8 +337,6 @@ struct OrchestratorDraft: Hashable, Sendable {
     var repository: String?
     var idleSeconds = IdlePolicy.defaultSeconds
 
-    static let maximumNameLength = 80
-
     /// Applies the harness defaults and the first compatible default account.
     mutating func adopt(harness: Harness, options: CreateOptions) {
         self.harness = harness
@@ -357,7 +355,6 @@ struct OrchestratorDraft: Hashable, Sendable {
     func request(orgID: String, options: CreateOptions) -> Result<OrchestratorCreateRequest, DraftProblem> {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return .failure(.missingName) }
-        guard trimmedName.count <= Self.maximumNameLength else { return .failure(.nameTooLong) }
         guard let goldenID, let golden = options.goldens.first(where: { $0.id == goldenID }) else {
             return .failure(.missingGolden)
         }
@@ -394,7 +391,6 @@ struct OrchestratorDraft: Hashable, Sendable {
 
 enum DraftProblem: Error, Hashable, Sendable {
     case missingName
-    case nameTooLong
     case missingGolden
     case goldenNotReady
     case missingModel
@@ -406,7 +402,6 @@ enum DraftProblem: Error, Hashable, Sendable {
     var message: String {
         switch self {
         case .missingName: "Name the orchestrator."
-        case .nameTooLong: "Use a name of at most \(OrchestratorDraft.maximumNameLength) characters."
         case .missingGolden: "Choose a golden."
         case .goldenNotReady: "This golden has no saved snapshot yet."
         case .missingModel: "Choose a model."

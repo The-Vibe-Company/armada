@@ -86,69 +86,73 @@ struct CreateOrchestratorView: View {
                 }
             }
 
-            Section {
-                TextField("Name", text: $draft.name)
-                    .focused($nameFocused)
-                    .submitLabel(.done)
-                    .accessibilityIdentifier("create.name")
-            } footer: {
-                Text("For example, the project or release it coordinates.")
-            }
+            // Only the inputs lock while a create is pending; its status and Retry above stay live.
+            Group {
+                Section {
+                    TextField("Name", text: $draft.name)
+                        .focused($nameFocused)
+                        .submitLabel(.done)
+                        .accessibilityIdentifier("create.name")
+                } footer: {
+                    Text("For example, the project or release it coordinates.")
+                }
 
-            Section("Golden") {
-                if options.goldens.isEmpty {
-                    Text("No golden in this organization yet. Create one from the dashboard or the CLI.")
-                        .font(.footnote)
-                        .foregroundStyle(ArmadaTheme.textSecondary)
-                } else {
-                    Picker("Golden", selection: $draft.goldenID) {
-                        Text("Choose").tag(String?.none)
-                        ForEach(options.goldens) { golden in
-                            Text(golden.isReady ? "\(golden.name) · \(golden.provider.label)" : "\(golden.name) · no snapshot")
-                                .tag(Optional(golden.id))
-                                .selectionDisabled(!golden.isReady)
+                Section("Golden") {
+                    if options.goldens.isEmpty {
+                        Text("No golden in this organization yet. Create one from the dashboard or the CLI.")
+                            .font(.footnote)
+                            .foregroundStyle(ArmadaTheme.textSecondary)
+                    } else {
+                        Picker("Golden", selection: $draft.goldenID) {
+                            Text("Choose").tag(String?.none)
+                            ForEach(options.goldens) { golden in
+                                Text(golden.isReady ? "\(golden.name) · \(golden.provider.label)" : "\(golden.name) · no snapshot")
+                                    .tag(Optional(golden.id))
+                                    .selectionDisabled(!golden.isReady)
+                            }
                         }
-                    }
-                    .accessibilityIdentifier("create.golden")
-                    if let golden = selectedGolden(options) {
-                        LabeledContent("Provider") {
-                            ProviderBadge(provider: golden.provider)
+                        .accessibilityIdentifier("create.golden")
+                        if let golden = selectedGolden(options) {
+                            LabeledContent("Provider") {
+                                ProviderBadge(provider: golden.provider)
+                            }
                         }
                     }
                 }
-            }
 
-            Section("Agent") {
-                Picker("Agent", selection: harnessBinding(options)) {
-                    ForEach(Harness.allCases) { harness in
-                        Text(harness.label).tag(harness)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("create.agent")
-                modelFields(options)
-                accountField(options)
-            }
-
-            Section {
-                DisclosureGroup("More Options", isExpanded: $showsMore) {
-                    Picker("Repository", selection: $draft.repository) {
-                        Text("None").tag(String?.none)
-                        ForEach(selectedGolden(options)?.repositories ?? [], id: \.self) { repository in
-                            Text(repository).tag(Optional(repository))
+                Section("Agent") {
+                    Picker("Agent", selection: harnessBinding(options)) {
+                        ForEach(Harness.allCases) { harness in
+                            Text(harness.label).tag(harness)
                         }
                     }
-                    .disabled(selectedGolden(options)?.repositories.isEmpty ?? true)
-                    Picker("Stop when idle for", selection: $draft.idleSeconds) {
-                        ForEach(IdlePolicy.choices, id: \.self) { seconds in
-                            Text(IdlePolicy.label(seconds)).tag(seconds)
-                        }
-                    }
-                    .accessibilityIdentifier("create.idle")
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("create.agent")
+                    modelFields(options)
+                    accountField(options)
                 }
-            } footer: {
-                Text("Compute stops after this long without real activity (running turns, tools, reviews, CI and active workers count). The conversation stays and can resume. Default: \(IdlePolicy.label(IdlePolicy.defaultSeconds)).")
+
+                Section {
+                    DisclosureGroup("More Options", isExpanded: $showsMore) {
+                        Picker("Repository", selection: $draft.repository) {
+                            Text("None").tag(String?.none)
+                            ForEach(selectedGolden(options)?.repositories ?? [], id: \.self) { repository in
+                                Text(repository).tag(Optional(repository))
+                            }
+                        }
+                        .disabled(selectedGolden(options)?.repositories.isEmpty ?? true)
+                        Picker("Stop when idle for", selection: $draft.idleSeconds) {
+                            ForEach(IdlePolicy.choices, id: \.self) { seconds in
+                                Text(IdlePolicy.label(seconds)).tag(seconds)
+                            }
+                        }
+                        .accessibilityIdentifier("create.idle")
+                    }
+                } footer: {
+                    Text("Compute stops after this long without real activity (running turns, tools, reviews, CI and active workers count). The conversation stays and can resume. Default: \(IdlePolicy.label(IdlePolicy.defaultSeconds)).")
+                }
             }
+            .disabled(isLocked)
 
             if let problem {
                 Section {
@@ -159,7 +163,6 @@ struct CreateOrchestratorView: View {
                 }
             }
         }
-        .disabled(isLocked)
         .scrollDismissesKeyboard(.interactively)
         .onChange(of: draft.goldenID) { _, _ in
             if let repository = draft.repository, selectedGolden(options)?.repositories.contains(repository) != true {

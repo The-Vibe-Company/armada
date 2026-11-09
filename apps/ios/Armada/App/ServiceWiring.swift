@@ -8,6 +8,11 @@ import ArmadaKit
 /// app therefore reports both capabilities as unavailable at runtime. When ArmadaKit publishes
 /// those requests, adapt them here (DTO -> `OrchestratorSummary`, `SandboxSummary`,
 /// `OrchestratorEventPage`; `ArmadaError` -> `ServiceFailure`) and nowhere else.
+///
+/// Error mapping rule for that adapter: once a mutation may have reached the server, a transport
+/// failure, timeout or 5xx is `.uncertain` (retry with the same key), never `.unavailable`.
+/// `.unavailable` is reserved for a capability known to be absent before anything was sent (the
+/// route or feature is not offered), because the presentation then forgets the pending key.
 enum ServiceWiring {
     static func orchestrators(client: ArmadaClient) -> any OrchestratorService {
         UnavailableServices.orchestrators
