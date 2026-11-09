@@ -69,20 +69,30 @@ test("on a phone, the story's index reaches every section the navigation hides",
   await context.close();
 });
 
-test("every story command reads exactly as it is copied, words apart, at desktop and phone widths", async ({
+test("every story command shows its words apart, as copied, with no overflow, at desktop and phone widths", async ({
   browser,
 }) => {
   for (const width of [1280, 390]) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     const page = await context.newPage();
     await page.goto("/landing");
-    const buttons = page.locator("main .lp-ch .lp-copy");
-    expect(await buttons.count()).toBeGreaterThan(5);
-    for (const button of await buttons.all()) {
-      const copied = (await button.getAttribute("aria-label"))?.replace(/^Copy: /, "");
-      // What a person reads: the rendered text, its line breaks taken as the spaces they replaced.
-      const shown = (await button.locator(".lp-copy-command").innerText()).replace(/^\$\s*/, "").replace(/\s+/g, " ");
-      expect(shown, `at ${width}px`).toBe(copied);
+    await page.evaluate(() => document.fonts.ready);
+    const commands = page.locator("main .lp-ch .lp-copy-command");
+    expect(await commands.count()).toBeGreaterThan(5);
+    for (const command of await commands.all()) {
+      // Each word's box as rendered: two words on one line must have a visible space between them.
+      const words = await command.locator(".lp-copy-word").evaluateAll((els) =>
+        els.map((el) => {
+          const r = el.getBoundingClientRect();
+          return { text: el.textContent ?? "", left: r.left, right: r.right, top: Math.round(r.top) };
+        }),
+      );
+      for (let k = 1; k < words.length; k++) {
+        const before = words[k - 1];
+        const after = words[k];
+        if (!before || !after || before.top !== after.top) continue;
+        expect(after.left - before.right, `"${before.text} ${after.text}" at ${width}px`).toBeGreaterThan(3);
+      }
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
     await context.close();

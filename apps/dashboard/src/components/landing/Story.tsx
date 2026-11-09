@@ -11,11 +11,8 @@ import { TRANSCRIPT } from "./transcript";
 // it. The anchors are the nav's and the README's (#method, #fleet, #cli,
 // #keys, #install): they move with their chapter, never away.
 
-type Tone = "lime" | "night" | "sky" | "orange" | "paper";
-
 function Chapter({
   id,
-  tone,
   flip = false,
   wide = false,
   title,
@@ -24,7 +21,6 @@ function Chapter({
   children,
 }: {
   id: string;
-  tone: Tone;
   flip?: boolean;
   /** The title across the whole chapter, a poster that breaks the rhythm of the two columns. */
   wide?: boolean;
@@ -41,7 +37,7 @@ function Chapter({
   return (
     <section
       id={id}
-      className={`lp-ch is-${tone}${flip ? " is-flip" : ""}${wide ? " is-wide" : ""}`}
+      className={`lp-ch${flip ? " is-flip" : ""}${wide ? " is-wide" : ""}`}
       aria-labelledby={`${id}-title`}
     >
       <div className="lp-ch-inner">
@@ -86,7 +82,7 @@ export function Story() {
           </Link>
         </div>
       </nav>
-      <Chapter id="method" tone="lime" title="Set up your repos once." command={STORY.golden} figure={<GoldenFigure />}>
+      <Chapter id="method" title="Set up your repos once." command={STORY.golden} figure={<GoldenFigure />}>
         <p>
           A golden is your repositories, cloned over your own GitHub connection, set up by your script and saved as a
           snapshot on the provider you build it for, Boat or Modal. Every agent starts there, already set up, instead of
@@ -98,14 +94,7 @@ export function Story() {
         </p>
       </Chapter>
 
-      <Chapter
-        id="fleet"
-        tone="night"
-        flip
-        title="Launch one agent, or ten."
-        command={STORY.launch}
-        figure={<FleetFigure />}
-      >
+      <Chapter id="fleet" flip title="Launch one agent, or ten." command={STORY.launch} figure={<FleetFigure />}>
         <p>
           Each launch forks the golden into a sandbox of its own: its own machine, its own files, and of your stored
           keys only its agent's. Run four fixes at once and none of them touches another's checkout.
@@ -115,7 +104,7 @@ export function Story() {
         </p>
       </Chapter>
 
-      <Chapter id="tools" tone="sky" title="Hand them your tools." command={STORY.tools} figure={<ToolsFigure />}>
+      <Chapter id="tools" title="Hand them your tools." command={STORY.tools} figure={<ToolsFigure />}>
         <p>
           Register an MCP server once, for yourself or for your org: over HTTP, SSE or stdio, with OAuth, a bearer token
           or headers. Pick which connections a launch gets, from the dashboard or with <code>--connections</code>.
@@ -125,7 +114,6 @@ export function Story() {
 
       <Chapter
         id="resume"
-        tone="orange"
         flip
         title="Stop the machine. Keep the thread."
         command={STORY.resume}
@@ -140,7 +128,6 @@ export function Story() {
 
       <Chapter
         id="cli"
-        tone="paper"
         wide
         title="Drive it from the browser, the terminal or your agent."
         command={STORY.watch}
@@ -156,14 +143,7 @@ export function Story() {
         </p>
       </Chapter>
 
-      <Chapter
-        id="keys"
-        tone="night"
-        flip
-        title="Your keys stay in Armada."
-        command={STORY.keys}
-        figure={<KeysFigure />}
-      >
+      <Chapter id="keys" flip title="Your keys stay in Armada." command={STORY.keys} figure={<KeysFigure />}>
         <p>
           Store each agent's key once, for you or your org, sealed with {CIPHER}. It goes in through stdin or a file,
           never an argument, and no page or command shows it again. Terminals hold only their Armada session.
@@ -182,7 +162,7 @@ export function Story() {
 
 function Install() {
   return (
-    <section id="install" className="lp-ch is-lime lp-try" aria-labelledby="install-title">
+    <section id="install" className="lp-ch lp-try" aria-labelledby="install-title">
       <div className="lp-ch-inner">
         <div className="lp-ch-words">
           <h2 id="install-title" className="lp-ch-title">

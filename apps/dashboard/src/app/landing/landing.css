@@ -770,7 +770,7 @@ html:has(> body .lp) {
   height: 15px;
   margin-left: 2px;
   vertical-align: -2px;
-  background: var(--frontier);
+  background: var(--done);
   animation: lp-caret 1s steps(1) infinite;
 }
 @keyframes lp-caret {
@@ -1093,11 +1093,15 @@ html:has(> body .lp) {
   stroke: var(--ch-ink);
   stroke-width: 4;
 }
-.lp-fig-node {
-  fill: var(--ch-ink);
+/* A step on a timeline: filled in the hero's text, or hollow, ringed in it (#628). */
+.lp-fig .lp-fig-node {
+  fill: var(--text);
+  stroke: none;
 }
-.lp-fig-node.is-hollow {
+.lp-fig .lp-fig-node.is-hollow {
   fill: var(--ch-bg);
+  stroke: var(--text);
+  stroke-width: 2;
 }
 .lp-fig .lp-fig-ship {
   stroke: none;
@@ -1327,7 +1331,7 @@ html:has(> body .lp) {
   }
   .lp-try-terminal .lp-terminal {
     box-shadow:
-      0 0 0 3px var(--ch-ink),
-      6px 6px 0 var(--ch-ink);
+      0 0 0 1px var(--line-2),
+      0 20px 50px -24px rgba(0, 0, 0, 0.9);
   }
 }

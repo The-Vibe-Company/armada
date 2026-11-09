@@ -4,7 +4,7 @@ The landing below the hero (`apps/dashboard/src/components/landing`, the story r
 
 ## #628: the story continues the hero
 
-The split-diff page of run-20261109-1256 (#610, #623, below) was rejected: its pastel review panels broke the dark hero's continuity. #628 restores the story's structure and copy from the accepted landing (`501ee88`), then re-skins every chapter with the hero's tokens (surface, text, hairlines, glow, Geist and Geist Mono, lime), keeps the story index under the hero that the key journeys use, and rewrites the standard with `aeom standard` (night-continuity). Measured with `aeom review --base origin/main`: the four key journeys reach their end and nothing is outside the standard. The hero's DOM, computed styles and pixels are unchanged at 1440 and 390 px.
+The split-diff page of run-20261109-1256 (#610, #623, below) was rejected: its pastel review panels broke the dark hero's continuity. #628 restores the story's structure and copy from the accepted landing (`501ee88`), then re-skins every chapter with the hero's tokens (surface, text, hairlines, glow, Geist and Geist Mono, lime), keeps the story index under the hero that the key journeys use, and rewrites the standard with `aeom standard` (night-continuity). Measured with `aeom review --base origin/main` on the branch: the four key journeys reach their end and nothing is outside the standard (the base app could not start in AEOM's temporary worktree, so the journeys were replayed on the branch alone). The hero's DOM, computed styles and pixels are unchanged at 1440 and 390 px.
 
 ## Reproduce
 

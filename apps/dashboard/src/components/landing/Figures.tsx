@@ -213,12 +213,12 @@ export function ResumeFigure() {
             height={148}
             rx={26}
           />
-          <text className={`lp-fig-t ${s.machine === "gone" ? "" : "is-on-ink"}`} x={182} y={s.y + 50}>
+          <text className="lp-fig-t is-on-ink" x={182} y={s.y + 50}>
             {s.title}
           </text>
           <Kept x={440} y={s.y + 50} fresh={k === 2} />
           {s.machine === "gone" ? (
-            <text className="lp-fig-s" x={182} y={s.y + 84}>
+            <text className="lp-fig-s is-on-ink" x={182} y={s.y + 84}>
               no machine, no cost
             </text>
           ) : (
@@ -230,10 +230,10 @@ export function ResumeFigure() {
       <circle className="lp-fig-node" cx={70} cy={90} r={12} />
       <circle className="lp-fig-node is-hollow" cx={70} cy={270} r={12} />
       <circle className="lp-fig-node" cx={70} cy={450} r={12} />
-      <text className="lp-fig-t" x={92} y={190} textAnchor="end" transform="rotate(-90 92 190)">
+      <text className="lp-fig-t is-on-ink" x={92} y={190} textAnchor="end" transform="rotate(-90 92 190)">
         stop
       </text>
-      <text className="lp-fig-t" x={92} y={370} textAnchor="end" transform="rotate(-90 92 370)">
+      <text className="lp-fig-t is-on-ink" x={92} y={370} textAnchor="end" transform="rotate(-90 92 370)">
         send
       </text>
     </Figure>

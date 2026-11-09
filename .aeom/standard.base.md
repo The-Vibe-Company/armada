@@ -60,12 +60,12 @@ night-continuity: the story continues the accepted hero (#628). Below the hero, 
 - `--ch-orange: #d97757` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-amber: #10a37f` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-night: #060709` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
-- `--ch-card: #15161b` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-card: #0f1013` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-accent: var(--done)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-bg: var(--bg)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-fg: var(--text)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-fg-2: var(--text-2)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
-- `--ch-line: var(--ch-paper)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-line: rgba(255, 255, 255, 0.16)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-chip: var(--ch-accent)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-chip-fg: var(--ch-ink)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 - `--ch-chip-dim: rgba(6, 7, 9, 0.6)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
