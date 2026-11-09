@@ -38,6 +38,13 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
       }
       await prepare(request);
     };
+    const account = (
+      await db.query<{ id: string; version: number }>(
+        "select id, version from credentials where scope = 'org' and owner_id = $1 and kind = 'openai'",
+        [people.org],
+      )
+    ).rows[0];
+    if (!account) throw new Error("Missing model account fixture.");
     const token = await server.token(people.member);
     const store = createSqlVaultStore(db);
     const options: ControlOptions = {
@@ -90,6 +97,8 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     const launched = JSON.parse(output);
     expect(launched).toMatchObject({
       repositoryDir: "api",
+      credentialId: account.id,
+      credentialVersion: account.version,
       model: "gpt-6.1-terra",
       reasoningEffort: "high",
       status: "ready",
@@ -98,7 +107,10 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     expect(boat.preparations).toEqual([
       { sandboxId: launched.providerSandboxId, harness: "codex", cwd: "/home/user/api" },
     ]);
-    expect(requests[0]).toMatchObject({ path: "/api/v1/sandbox/launch", body: { repo: "api" } });
+    expect(requests[0]).toMatchObject({
+      path: "/api/v1/sandbox/launch-sized-v1",
+      body: { repo: "api", sizePolicyVersion: 1 },
+    });
     expect(boat.prompts).toHaveLength(0);
     expect(
       await run(
@@ -109,9 +121,18 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     ).toBe(2);
     expect(requests).toHaveLength(1);
     expect(
-      (await db.query<{ repository_dir: string }>("select repository_dir from sandboxes where id = $1", [launched.id]))
-        .rows[0]?.repository_dir,
-    ).toBe("api");
+      (
+        await db.query(
+          "select repository_dir, credential_id, credential_version, resource_project from sandboxes where id = $1",
+          [launched.id],
+        )
+      ).rows[0],
+    ).toEqual({
+      repository_dir: "api",
+      credential_id: account.id,
+      credential_version: account.version,
+      resource_project: { version: 1, url: "https://github.com/example/api.git", branch: "main", dir: "api" },
+    });
     await expect(db.query("update sandboxes set repository_dir = 'web' where id = $1", [launched.id])).rejects.toThrow(
       "immutable",
     );
@@ -155,7 +176,7 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
       reasoningEffort: "high",
     });
     expect((await call(client, "list")).data.sandboxes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: launched.id, repositoryDir: "api" })]),
+      expect.arrayContaining([expect.objectContaining({ id: launched.id, canOpen: true })]),
     );
     // MCP first-prompt launch uses the identical persisted field and native preparation.
     const immediate = await call(client, "launch", {

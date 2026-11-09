@@ -26,6 +26,10 @@ test("the launch shows the repository then golden default, keeps an override and
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog");
+  // The size starts on its default, summarized on the collapsed Advanced area where it is overridden.
+  const summary = dialog.locator("[data-launch-summary]");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Medium machine · Org · No MCP");
+  await dialog.locator("[data-launch-advanced] > summary").click();
   const size = dialog.getByLabel("Machine size");
   const hint = dialog.locator("[data-size-source]");
   await expect(size.locator("option")).toHaveText([
@@ -36,15 +40,17 @@ test("the launch shows the repository then golden default, keeps an override and
     "Extra large · 16 vCPU · 32 GiB",
   ]);
   await expect(hint).toHaveAttribute("data-size-source", "golden");
-  await dialog.getByLabel("Working directory").selectOption("api");
+  await dialog.getByLabel("Project").selectOption("api");
   await expect(hint).toHaveAttribute("data-size-source", "repository");
   await expect(hint).toContainText("Large, the default for api. 8 vCPU · 16 GiB · 111 GB disk.");
   await expect(size.locator("option").first()).toHaveText("Default · Large (repository)");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Large machine · Org · No MCP");
 
   await size.selectOption("small");
-  await dialog.getByLabel("Working directory").selectOption("web");
+  await dialog.getByLabel("Project").selectOption("web");
   await expect(size).toHaveValue("small");
   await expect(hint).toContainText("Overrides the default (Medium, the golden's default).");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Small machine · Org · No MCP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "test-results/machine-size-launch-mobile.png",
@@ -70,6 +76,7 @@ test("the launch shows the repository then golden default, keeps an override and
   await page.goto("/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   const modal = page.getByRole("dialog");
+  await expect(modal.locator("[data-launch-summary]")).toContainText("Default machine");
   await expect(modal.getByLabel("Machine size").locator("option")).toHaveText([
     "Default (Modal decides)",
     "Small · 1 physical core · 4 GiB",
@@ -147,6 +154,8 @@ test("a refused size says what can be changed, and an older server allocates not
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Task").fill("Profile the slow build");
+  await dialog.locator("[data-launch-advanced] > summary").click();
   await dialog.getByLabel("Machine size").selectOption("xlarge");
   await expect(dialog.locator("[data-size-source]")).toContainText("Extra large needs a Boat plan that includes it.");
   await dialog.getByRole("button", { name: "Launch" }).click();
@@ -154,6 +163,23 @@ test("a refused size says what can be changed, and an older server allocates not
     "Requested size cannot be allocated. If Boat refused Extra large, choose another size or the default.",
   );
   expect((await mockState()).launches.at(-1)).toMatchObject({ size: "xlarge" });
+  // The refusal keeps every choice as it was: no select falls back to its first option (effort Low) or the default
+  // size, and launching again sends exactly what is shown.
+  await expect(dialog.getByLabel("Task")).toHaveValue("Profile the slow build");
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("claude-opus-5-5");
+  await expect(dialog.getByLabel("Reasoning effort")).toHaveValue("medium");
+  await expect(dialog.getByLabel("Machine size")).toHaveValue("xlarge");
+  await expect(dialog.locator("[data-launch-summary]")).toHaveText(
+    "Claude Opus 5.5 · Medium · Extra large machine · Org · No MCP",
+  );
+  await page.setViewportSize({ width: 390, height: 664 });
+  await page.screenshot({ path: "test-results/launch-refused-size-kept-mobile.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await dialog.getByRole("button", { name: "Launch" }).click();
+  await expect.poll(async () => (await mockState()).launches.length).toBe(2);
+  const [first, again] = (await mockState()).launches;
+  expect(again).toEqual(first);
+  expect(again).toMatchObject({ reasoningEffort: "medium", size: "xlarge", prompt: "Profile the slow build" });
 
   // The database has the columns but this replica predates #653: the sized route is unknown there, so the launch
   // fails before allocation and is never retried on the legacy route, whether a size was chosen or a default kept.
@@ -163,6 +189,7 @@ test("a refused size says what can be changed, and an older server allocates not
   for (const choice of ["large", ""]) {
     await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
     const launch = page.getByRole("dialog");
+    await launch.locator("[data-launch-advanced] > summary").click();
     await launch.getByLabel("Machine size").selectOption(choice);
     await launch.getByRole("button", { name: "Launch" }).click();
     await expect(launch.getByRole("alert")).toHaveText(

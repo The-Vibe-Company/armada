@@ -1,4 +1,5 @@
 import {
+  canAccessSandboxInterior,
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
@@ -35,6 +36,17 @@ export function createMcpLifecycle(options: {
   };
   const hash = async (v: string) =>
     Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v))).toString("hex");
+  async function authorizePersonalBindings(db: Sql, sandboxId: string, callerId: string) {
+    const personal = await db.query(
+      `select c.id from public.mcp_bindings b
+      join public.sandboxes s on s.id=b.sandbox_id
+      join public.mcp_connections c on c.id=b.connection_id
+      where s.id=$1::uuid and c.scope='personal' and
+        (c.org_id<>s.org_id or c.owner_id<>s.owner_id or c.owner_id<>$2::uuid)`,
+      [sandboxId, callerId],
+    );
+    if (personal.rows.length) throw Error("Not authorized to bootstrap another owner's personal MCP connection.");
+  }
   async function physicalIdentity(provider: Provider, id: string, physical: SandboxInfo): Promise<string> {
     if (physical.physicalGeneration) {
       if (physical.physicalGeneration.length > 512) throw Error("Invalid provider physical generation.");
@@ -267,20 +279,25 @@ export function createMcpLifecycle(options: {
       if (!sql.transaction) throw Error("MCP resume fencing requires transactional SQL.");
       return sql.transaction(async (tx) => {
         const member = (
-          await tx.query<{ user_id: string }>(
-            "select user_id from public.members where user_id=$1::uuid and org_id=$2::uuid for share",
+          await tx.query<{ user_id: string; role: "admin" | "member" }>(
+            "select user_id,role from public.members where user_id=$1::uuid and org_id=$2::uuid for share",
             [caller.userId, caller.orgId],
           )
         ).rows[0];
         if (!member) throw Error("No authorized Armada sandbox for this resume.");
         const sandbox = (
-          await tx.query<{ id: string }>(
-            `select id from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
-          and (visibility='org' or access_owner_id=$4::uuid) and status not in ('deleted','failed') and deleted_at is null for update`,
+          await tx.query<{ id: string; owner_id: string }>(
+            `select id,owner_id from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
+          and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
             [provider.id, providerSandboxId, caller.orgId, caller.userId],
           )
         ).rows[0];
-        if (!sandbox) throw Error("No authorized Armada sandbox for this resume.");
+        if (
+          !sandbox ||
+          !canAccessSandboxInterior({ ownerId: sandbox.owner_id }, { userId: caller.userId, currentRole: member.role })
+        )
+          throw Error("No authorized Armada sandbox for this resume.");
+        await authorizePersonalBindings(tx, sandbox.id, caller.userId);
         // Serialize a FRESH physical observation with fencing and config publication.
         // A caller's earlier stopped sample can predate another replica's completed
         // resume/configure; it must not fence that replica's newly active leases.
@@ -307,12 +324,17 @@ export function createMcpLifecycle(options: {
       });
     },
     async beforePrompt(provider: Provider, providerSandboxId: string, caller: { userId: string; orgId: string }) {
-      const r = await sql.query<{ id: string; org_id: string; owner_id: string }>(
-        `select s.id,s.org_id,s.owner_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.visibility='org' or s.access_owner_id=$3::uuid)`,
+      const r = await sql.query<{ id: string; org_id: string; owner_id: string; role: "admin" | "member" }>(
+        `select s.id,s.org_id,s.owner_id,m.role from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
         [provider.id, providerSandboxId, caller.userId, caller.orgId],
       );
       const row = r.rows[0];
-      if (!row) throw Error("No authorized Armada sandbox for this native turn.");
+      if (
+        !row ||
+        !canAccessSandboxInterior({ ownerId: row.owner_id }, { userId: caller.userId, currentRole: row.role })
+      )
+        throw Error("No authorized Armada sandbox for this native turn.");
+      await authorizePersonalBindings(sql, row.id, caller.userId);
       await reconcile(provider, { id: row.id, orgId: row.org_id, ownerId: row.owner_id, providerSandboxId });
       return row.id;
     },
@@ -353,7 +375,7 @@ export function createMcpLifecycle(options: {
         and l.revoked_at is null and l.expires_at>now() and g.revoked_at is null and g.status='connected' and not c.disabled
         and not(g.refresh_consumed and g.refresh_until<=now()) and s.status not in ('stopped','deleted','failed')
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-        and (c.scope='org' or (s.visibility='private' and c.owner_id=s.owner_id and s.access_owner_id=s.owner_id))`,
+        and c.org_id=s.org_id and g.connection_id=c.id and (c.scope='org' or c.owner_id=s.owner_id)`,
         [sandboxId, row.mcp_generation, expiresAt, row.physical_generation],
       );
     },

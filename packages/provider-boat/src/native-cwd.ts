@@ -109,7 +109,7 @@ function quote(value: string): string {
 
 /** Transparent stdio bridge: only private reload replies are consumed; peer traffic and stderr are preserved. */
 const codexCwdBridge = `
-import json, os, signal, stat, subprocess, sys, threading, uuid, socket, http.client
+import fcntl, json, os, signal, stat, subprocess, sys, threading, time, uuid, socket, http.client
 
 class ManagedMcpOverridesError(Exception):
     pass
@@ -163,13 +163,128 @@ for i, arg in enumerate(args):
         sys.exit("Armada repository cwd requires Codex stdio transport")
     if arg == "--listen" and (i + 1 >= len(args) or args[i + 1] != "stdio://"):
         sys.exit("Armada repository cwd requires Codex stdio transport")
-child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+native_home = os.path.join(os.path.expanduser("~"), ".codex")
+managed_marker = os.path.join(native_home, ".armada-managed-native")
+managed = os.path.lexists(managed_marker)
+writer_fd = None
+def admission():
+    info = os.lstat(managed_marker)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+        raise ValueError("Unsafe native admission")
+    fd = os.open(managed_marker, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        return os.read(fd, 7) == b"active"
+    finally:
+        os.close(fd)
+if managed:
+    info = os.lstat(native_home)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        sys.exit("Unsafe native home")
+    writer_fd = os.open(os.path.join(native_home, ".armada-native-writer.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(writer_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+        sys.exit("Unsafe native writer lock")
+    try:
+        fcntl.flock(writer_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("native_auth_writer_busy")
+    if not admission():
+        sys.exit("native_auth_state_sync_pending")
+native_secrets = set()
+def native_registry():
+    if not managed:
+        return
+    try:
+        fd = os.open(os.path.join(native_home, "auth.json"), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > 65536:
+            raise ValueError("Unsafe native auth")
+        raw = os.read(fd, 65537)
+        if len(raw) > 65536:
+            raise ValueError("Unsafe native auth")
+        value = json.loads(raw)
+        tokens = value.get("tokens")
+        if not isinstance(tokens, dict) or any(not isinstance(tokens.get(key),str) for key in ("access_token","refresh_token","account_id")):
+            raise ValueError("Unsafe native auth")
+        def leaves(item):
+            if isinstance(item,str) and item:
+                native_secrets.add(item)
+            elif isinstance(item,dict):
+                for child in item.values(): leaves(child)
+            elif isinstance(item,list):
+                for child in item: leaves(child)
+        leaves(tokens)
+        native_secrets.add(raw.decode())
+    finally:
+        os.close(fd)
+def native_safe(value):
+    if isinstance(value,str):
+        for secret in sorted(native_secrets,key=len,reverse=True): value = value.replace(secret,"***")
+        return value
+    if isinstance(value,list): return [native_safe(item) for item in value]
+    if isinstance(value,dict): return {native_safe(key):native_safe(item) for key,item in value.items()}
+    return value
+native_registry()
+child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL if managed else subprocess.PIPE, start_new_session=managed,
+                         pass_fds=(writer_fd,) if managed else ())
+if managed:
+    # The native group retains flock even if this bridge is SIGKILLed. Record its
+    # physical identity so private pause can safely quiesce that orphan group.
+    with open("/proc/" + str(child.pid) + "/stat") as source:
+        native_start = source.read().rsplit(")", 1)[1].strip().split()[19]
+    with open("/proc/sys/kernel/random/boot_id") as source:
+        native_boot = source.read().strip()
+    record_fd = os.open(os.path.join(native_home, ".armada-native-writer.json"), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(record_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+        os.killpg(child.pid, signal.SIGKILL)
+        sys.exit("Unsafe native writer identity")
+    try:
+        os.ftruncate(record_fd, 0)
+        os.write(record_fd, json.dumps({"pid":child.pid,"start":native_start,"boot":native_boot}).encode())
+        os.fsync(record_fd)
+    finally:
+        os.close(record_fd)
+if managed:
+    def watch_admission():
+        while child.poll() is None:
+            try:
+                if admission():
+                    time.sleep(0.05)
+                    continue
+            except Exception:
+                pass
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            return
+    threading.Thread(target=watch_admission, daemon=True).start()
 output_lock = threading.Lock()
 pending_reload = {}
 def output(line):
+    if managed:
+        try:
+            native_registry()
+            try:
+                line = (json.dumps(native_safe(json.loads(line))) + "\\n").encode()
+            except (ValueError, UnicodeDecodeError):
+                line = native_safe(line.decode()).encode()
+        except Exception:
+            try: os.killpg(child.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            return
     try: line=github_safe(line)
     except Exception:
-        child.terminate();return
+        if managed:
+            try: os.killpg(child.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+        else: child.terminate()
+        return
     with output_lock:
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
@@ -267,10 +382,13 @@ def relay():
                         output((json.dumps({"id":message["id"],"error":{"code":-32603,"message":"Native MCP configuration refresh failed; retry the turn."}})+"\\n").encode())
                     continue
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
+            native_registry()
             child.stdin.write(line)
             child.stdin.flush()
-    except (BrokenPipeError, OSError):
-        pass
+    except Exception:
+        if managed:
+            try: os.killpg(child.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
     finally:
         try:
             child.stdin.close()
@@ -278,6 +396,27 @@ def relay():
             pass
 threading.Thread(target=relay, daemon=True).start()
 code = child.wait()
+if managed:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    # Keep the OS admission lock until all members of the isolated native group
+    # are gone. A stuck writer makes private capture time out, never falsely ACK.
+    def group_live():
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                with open("/proc/" + name + "/stat") as source:
+                    fields = source.read().rsplit(")", 1)[1].strip().split()
+                if int(fields[2]) == child.pid and fields[0] not in ("Z", "X"):
+                    return True
+            except FileNotFoundError:
+                continue
+        return False
+    while group_live():
+        time.sleep(0.01)
 receiver.join(timeout=2)
 github_errors.join(timeout=2)
 if code < 0:

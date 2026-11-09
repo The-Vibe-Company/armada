@@ -118,11 +118,16 @@ function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
 }
 
 export interface BoatProviderOptions {
+  /** Server-owned output boundary; rejection releases no provider event bodies. */
+  sanitizeEvents?: (provider: Provider, sandboxId: string, events: EventPage["events"]) => Promise<EventPage["events"]>;
+
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
   /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
   beforeResume?: (provider: Provider, sandboxId: string) => Promise<boolean>;
   /** Called only after explicit physical readiness, before Boat creates the native turn. */
+  beforeStop?: (provider: Provider, sandboxId: string) => Promise<void>;
+  afterPrompt?: (provider: Provider, sandboxId: string) => Promise<void>;
   beforePrompt?: (provider: Provider, sandboxId: string) => Promise<void>;
   /** Scrub Armada-owned transient configuration before the snapshot request, fail closed on I/O. */
   beforeSnapshot?: (provider: Provider, sandboxId: string) => Promise<void>;
@@ -427,6 +432,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       const run = response.promptRun;
       const status = promptStatus(run?.status);
       if (!run || status === undefined) throw unexpectedAnswer("prompt status");
+      if (run.done) await options.afterPrompt?.(provider, request.sandboxId);
       return {
         promptId: run.promptId,
         status,
@@ -510,13 +516,16 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       const last = raw.at(-1);
       const cursor = (last && eventCursor(last)) ?? response.pageInfo?.nextCursor ?? request.cursor;
       return {
-        events: raw.map(normalizeEvent),
+        events: options.sanitizeEvents
+          ? await options.sanitizeEvents(provider, request.sandboxId, raw.map(normalizeEvent))
+          : raw.map(normalizeEvent),
         ...(cursor ? { cursor } : {}),
         hasMore: response.pageInfo?.hasMore === true,
       };
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {
+      await options.beforeStop?.(provider, request.sandboxId);
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
     },
 

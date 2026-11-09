@@ -24,18 +24,22 @@ export function MachineSizeField({
   provider,
   policy,
   repositoryDir,
+  onSize,
 }: {
   idPrefix: string;
   provider: SandboxProviderId;
   policy: MachineSizePolicy | null;
   /** The selected working directory, empty for none. */
   repositoryDir: string;
+  /** The size that will be requested as it changes, null while the provider decides: what a summary shows. */
+  onSize?: (size: MachineSize | null) => void;
 }) {
   const [override, setOverride] = useState<MachineSize | typeof DEFAULT_SIZE>(DEFAULT_SIZE);
   const group = useRef<HTMLDivElement>(null);
   const resolved = launchDefault(provider, policy, repositoryDir);
   const chosen = override || resolved.effective;
   const caveat = sizeCaveat(provider, chosen);
+  useEffect(() => onSize?.(chosen || null), [onSize, chosen]);
 
   // Native reset after a launch attempt empties the DOM; the controlled state must follow it.
   useEffect(() => {

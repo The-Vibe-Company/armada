@@ -16,7 +16,7 @@ import { serviceGoldenOperations } from "./support/service-golden-operations.ts"
 const TOKEN = "sk-ant-oat01-database-test-token";
 
 describe("launch database", () => {
-  test("a sandbox of a private golden is the owner's alone, and one of an org golden is the org's", async () => {
+  test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
     const db = await openDatabase();
     try {
       await applyMigrations(db);
@@ -87,14 +87,13 @@ describe("launch database", () => {
           await asUser(db, people[who], async () =>
             (await sandboxes.listBefore("2100-01-01T00:00:00Z")).some((s) => s.id === sandboxId),
           ),
-        ).toBe(false);
-        expect(
-          await serviceData({
-            userId: people[who],
-            orgs: [{ orgId: people.org, role: who === "admin" ? "admin" : "member" }],
-            via: "supabase",
-          }).sandboxes.get(sandboxId),
-        ).toBeNull();
+        ).toBe(who === "admin");
+        const found = await serviceData({
+          userId: people[who],
+          orgs: [{ orgId: people.org, role: who === "admin" ? "admin" : "member" }],
+          via: "supabase",
+        }).sandboxes.get(sandboxId);
+        expect(!!found).toBe(who === "admin");
       }
       expect(
         await serviceData({ userId: people.member, orgs: [], via: "supabase" }).sandboxes.get(sandboxId),
@@ -114,9 +113,11 @@ describe("launch database", () => {
 
       const visible = (userId: string) =>
         asUser(db, userId, async () => (await sandboxes.listBefore("2100-01-01T00:00:00Z")).map((row) => row.id));
-      expect(await visible(people.owner)).toEqual(expect.arrayContaining([mine.sandbox.id, shared.sandbox.id]));
+      expect(await visible(people.owner)).toEqual(expect.arrayContaining([mine.sandbox.id]));
       expect(await visible(people.member)).toEqual(expect.arrayContaining([shared.sandbox.id, sandboxId]));
-      expect(await visible(people.admin)).toEqual([shared.sandbox.id]);
+      expect(await visible(people.admin)).toEqual(
+        expect.arrayContaining([mine.sandbox.id, shared.sandbox.id, sandboxId]),
+      );
 
       await db.query("delete from members where user_id=$1 and org_id=$2", [people.member, people.org]);
       expect(await visible(people.member)).toEqual([]);

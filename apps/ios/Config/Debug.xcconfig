@@ -1,0 +1,4 @@
+PRODUCT_BUNDLE_IDENTIFIER = co.thevibecompany.armada.dev
+// Keep the same service contract in both variants; no provider/Supabase config.
+ARMADA_API_URL = https:/$()/armada.thevibecompany.co
+SWIFT_OPTIMIZATION_LEVEL = -Onone

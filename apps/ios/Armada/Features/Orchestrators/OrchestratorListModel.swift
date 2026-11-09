@@ -18,7 +18,7 @@ final class OrchestratorListModel {
         case sending
         /// Accepted by the server and still being created; another create waits for it.
         case inProgress
-        /// Sent, outcome unknown. Only a retry of the same saved command is offered.
+        /// Sent, outcome unknown. Retry the same command or explicitly forget local tracking.
         case unconfirmed
         /// Saved but not sent, because the capability is off. Retrying sends the same command.
         case notSent(String)
@@ -30,6 +30,8 @@ final class OrchestratorListModel {
     private(set) var loadingMore = false
     private(set) var refreshError: String?
     private(set) var createStatus: CreateStatus?
+    private(set) var isDiscardingCreate = false
+    private(set) var createRecoveryError: String?
     /// The name of the pending create when this launch made it; nil when recovered from an earlier one.
     private(set) var pendingCreateName: String?
 
@@ -83,7 +85,7 @@ final class OrchestratorListModel {
     /// Saves a new create command and sends it. Nothing new is saved while one is open.
     /// Returns the new orchestrator's id when the server accepted it.
     func create(_ request: OrchestratorCreateRequest) async -> String? {
-        guard pendingCreateHandle == nil else { return nil }
+        guard !isDiscardingCreate, pendingCreateHandle == nil else { return nil }
         createStatus = .sending
         pendingCreateName = request.name
         do throws(ServiceFailure) {
@@ -101,12 +103,29 @@ final class OrchestratorListModel {
 
     /// Resends exactly the saved command.
     func retryCreate() async -> String? {
-        guard pendingCreateHandle != nil, createStatus != .sending else { return nil }
+        guard !isDiscardingCreate, pendingCreateHandle != nil, createStatus != .sending else { return nil }
         return await submit()
     }
 
-    /// Clears a refused create. An unconfirmed or unsent command stays saved: only its own key
-    /// can reconcile it.
+    /// Called only after the person confirms that forgetting tracking can lead to duplicate effects.
+    func discardUnconfirmedCreate() async {
+        guard !isDiscardingCreate, createStatus == .unconfirmed, let handle = pendingCreateHandle else { return }
+        isDiscardingCreate = true
+        createRecoveryError = nil
+        defer { isDiscardingCreate = false }
+        do throws(ServiceFailure) {
+            try await service.discardUncertain(handle: handle)
+            pendingCreateHandle = nil
+            pendingCreateName = nil
+            createStatus = nil
+            await load()
+        } catch {
+            if error == .signedOut { onSignedOut() }
+            createRecoveryError = error.message
+        }
+    }
+
+    /// Clears a refused create. Unknown outcomes require the separate, explicitly confirmed path.
     func clearRefusedCreate() {
         guard case .refused = createStatus else { return }
         createStatus = nil
@@ -120,6 +139,7 @@ final class OrchestratorListModel {
     private func submit() async -> String? {
         guard let handle = pendingCreateHandle else { return nil }
         createStatus = .sending
+        createRecoveryError = nil
         do throws(ServiceFailure) {
             let operation = try await service.submit(handle: handle)
             if operation.state == .failed {
@@ -152,21 +172,36 @@ final class OrchestratorListModel {
     }
 
     private func recoverOpenCreate() async {
-        guard pendingCreateHandle == nil, createStatus != .sending,
-              let open = await service.unresolved(orgID: orgID, orchestratorID: nil) else { return }
+        guard createStatus != .sending, !isDiscardingCreate else { return }
+        let trackedHandle = pendingCreateHandle
+        guard let open = await service.unresolved(orgID: orgID, orchestratorID: nil) else {
+            if let trackedHandle, pendingCreateHandle == trackedHandle {
+                pendingCreateHandle = nil
+                pendingCreateName = nil
+                createStatus = nil
+            }
+            return
+        }
         if refusedHandles.contains(open.handle) {
             pendingCreateHandle = open.handle
             createStatus = .refused(
-                "Armada refused this create, and it is still saved on this device, so another can't start yet. Signing out clears it."
+                "Armada refused this create, and it is still saved on this device, so another can't start yet. Refresh and try dismissing it again."
             )
             return
         }
-        if let receipt = open.receipt {
+        if let receipt = open.receipt, receipt.state != .uncertain {
             // Accepted: once the orchestrator is listed past creating, read its final receipt so
             // the saved command is forgotten; until then it is in progress, not unknown.
             if items.contains(where: { $0.id == receipt.orchestratorID && $0.state != .creating }) {
                 await service.settle(handle: open.handle)
-                if await service.unresolved(orgID: orgID, orchestratorID: nil)?.handle != open.handle { return }
+                if await service.unresolved(orgID: orgID, orchestratorID: nil)?.handle != open.handle {
+                    if pendingCreateHandle == open.handle {
+                        pendingCreateHandle = nil
+                        pendingCreateName = nil
+                        createStatus = nil
+                    }
+                    return
+                }
             }
             pendingCreateHandle = open.handle
             pendingCreateName = items.first { $0.id == receipt.orchestratorID }?.name
@@ -174,7 +209,7 @@ final class OrchestratorListModel {
             return
         }
         pendingCreateHandle = open.handle
-        pendingCreateName = nil
+        if trackedHandle != open.handle { pendingCreateName = nil }
         createStatus = .unconfirmed
     }
 

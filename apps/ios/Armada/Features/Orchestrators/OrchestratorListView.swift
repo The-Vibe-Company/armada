@@ -12,6 +12,7 @@ struct OrchestratorListView: View {
     @State private var path: [OrchestratorRoute] = []
     @State private var showingCreate = false
     @State private var showingAccount = false
+    @State private var confirmingDiscard = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -47,6 +48,13 @@ struct OrchestratorListView: View {
             .sheet(isPresented: $showingAccount) {
                 AccountView()
             }
+        }
+        .confirmationDialog("Forget this unconfirmed request?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+            Button("Forget Local Tracking", role: .destructive) {
+                Task { await model?.discardUnconfirmedCreate() }
+            }
+        } message: {
+            Text("The action may already have happened. This only forgets local tracking; it does not cancel the request. Trying a new request may duplicate its effects.")
         }
         .task(id: app.organization?.id) {
             guard let orgID = app.organization?.id else { return }
@@ -94,7 +102,15 @@ struct OrchestratorListView: View {
                         }
                     } dismiss: {
                         model.clearRefusedCreate()
+                    } discard: {
+                        confirmingDiscard = true
                     }
+                    .disabled(model.isDiscardingCreate)
+                }
+            }
+            if let error = model.createRecoveryError {
+                Section {
+                    InlineBanner(text: error, style: .error)
                 }
             }
             if let refreshError = model.refreshError {
@@ -204,6 +220,7 @@ private struct PendingCreateRow: View {
     let name: String
     let retry: () -> Void
     let dismiss: () -> Void
+    let discard: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -222,6 +239,11 @@ private struct PendingCreateRow: View {
                     Text("Retry the Same Request").frame(minHeight: 44)
                 }
                 .buttonStyle(.glassProminent)
+                if status == .unconfirmed {
+                    Button("Forget Local Tracking…", role: .destructive, action: discard)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("orchestrators.discardUnconfirmedCreate")
+                }
             case .refused:
                 Button(action: dismiss) {
                     Text("Dismiss").frame(minHeight: 44)

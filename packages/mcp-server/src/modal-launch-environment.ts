@@ -10,8 +10,10 @@ import {
 import type { HarnessEnvironment, Machine, Scope } from "@armada/provider-modal";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
+import type { ModelAuthOwnership } from "./model-auth.ts";
 
 export interface ModalLaunchEnvironmentOptions {
+  modelAuth?: ModelAuthOwnership;
   sql: Sql;
   vault: CredentialReader;
   encryptionKey: string | undefined;
@@ -89,6 +91,20 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
         ? { credentialId: stored.credential_id, credentialVersion: stored.credential_version ?? 0 }
         : {}),
     });
+    const binding =
+      "binding" in credentials
+        ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
+        : undefined;
+    const publicId = machine.info.labels.sandbox;
+    const native =
+      binding && publicId && options.modelAuth && stored.harness === "codex"
+        ? await options.modelAuth.bootstrap(
+            { userId, orgId: options.scope.orgId, role: "member" },
+            binding.credentialId,
+            binding.credentialVersion,
+            publicId,
+          )
+        : undefined;
     const execEnv: ExecEnvironment = {
       HOME: "/home/user",
       PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -111,13 +127,16 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     // Only the selected harness receives it; exec remains free of every model/provider credential.
     const githubEnv = execEnv.GH_TOKEN ? { GH_TOKEN: execEnv.GH_TOKEN, GITHUB_TOKEN: execEnv.GH_TOKEN } : {};
     return {
+      ...(native ? { nativeAuthRevision: native.revision, nativeAuthSecrets: native.secrets } : {}),
       claudeEnv:
         stored.harness === "claude"
           ? { HOME: "/home/user", PATH: execEnv.PATH!, ...credentials.env, ...githubEnv }
           : {},
       codexEnv:
         stored.harness === "codex" ? { HOME: "/home/user", PATH: execEnv.PATH!, ...credentials.env, ...githubEnv } : {},
-      ...(stored.harness === "codex" && credentials.files[0] ? { codexAuthJson: credentials.files[0].content } : {}),
+      ...(stored.harness === "codex" && credentials.files[0]
+        ? { codexAuthJson: native?.authJson ?? credentials.files[0].content }
+        : {}),
       execEnv,
     };
   };

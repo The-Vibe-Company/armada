@@ -30,7 +30,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
         <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
-        <NavLinks className="grid grid-cols-3 gap-1 px-3 pb-3 md:flex md:flex-col md:gap-0.5 md:overflow-y-auto md:pb-4" />
+        <NavLinks className="grid grid-cols-4 gap-1 px-3 pb-3 md:flex md:flex-col md:gap-0.5 md:overflow-y-auto md:pb-4" />
         <div className="mt-auto hidden border-t px-3 py-3 md:block">
           <p className="truncate px-2 pb-1 text-xs text-muted-foreground" title={viewer.email}>
             Signed in as {viewer.email}
