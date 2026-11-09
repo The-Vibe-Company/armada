@@ -303,6 +303,7 @@ describe("tools", () => {
         "launch_sized_v1",
         "list",
         "logs",
+        "resource_advice",
         "send",
         "status",
         "steer",

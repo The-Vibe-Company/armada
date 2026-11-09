@@ -194,12 +194,28 @@ export {
 } from "./provider.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
+  RESOURCE_ADVICE_VERSION,
+  type ResourceAdvice,
+  type ResourceAdviceRequest,
+  type ResourceAdviceResponse,
+  type ResourceAdviceScope,
+} from "./resource-advice.ts";
+export {
+  type ProviderResourceObservation,
+  RESOURCE_OBSERVATION_VERSION,
+  type ResourceCounters,
+  type ResourceInterval,
+  resourceInterval,
+  type VmResourceReading,
+} from "./resource-observation.ts";
+export {
   type CleanupResult,
   cleanupSandboxes,
   createSqlSandboxStore,
   DEFAULT_SANDBOX_RETENTION_DAYS,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
+  type ResourceProject,
   type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,

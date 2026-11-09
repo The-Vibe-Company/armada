@@ -54,6 +54,7 @@ const PRIVATE_POST_PATHS = new Set([
   "sandbox/list",
   "sandbox/detail",
   "sandbox/status",
+  "sandbox/advice",
   "sandbox/send",
   "sandbox/stop",
   "sandbox/wait",

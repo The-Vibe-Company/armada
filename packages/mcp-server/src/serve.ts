@@ -20,6 +20,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { pruneResourceObservations } from "./resource-store.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
@@ -183,7 +184,9 @@ export async function startServer(
     workerDone: Promise.resolve(),
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
-  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError, goldenRetirements);
+  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError, goldenRetirements, () =>
+    pruneResourceObservations(sql, new Date()),
+  );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
       ? startInvitationWorker(control.invitations)
