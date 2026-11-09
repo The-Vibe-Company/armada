@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 export const MOCK = "http://127.0.0.1:54399";
 export const IDS = {
@@ -27,4 +27,12 @@ export async function signIn(page: Page, email: string, next = "/sandboxes"): Pr
   await page.getByLabel("Code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL(`**${next}`);
+}
+
+/** Opens the launch dialog of a golden and its Advanced area, where the overrides live. */
+export async function openLaunch(page: Page, golden: string, { advanced = true } = {}): Promise<Locator> {
+  await page.getByRole("button", { name: `Launch from ${golden}` }).click();
+  const dialog = page.getByRole("dialog");
+  if (advanced) await dialog.locator("[data-launch-advanced] > summary").click();
+  return dialog;
 }

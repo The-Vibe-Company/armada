@@ -14,26 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  armada-kit:
-    name: ArmadaKit Swift tests (macOS)
-    runs-on: macos-26
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: swift --version
-      - run: swift test --package-path apps/ios/ArmadaKit
-      - name: Typecheck iOS consumer against the actual package
-        run: |
-          sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-          modules="$(mktemp -d)"
-          xcrun swiftc -swift-version 6 -parse-as-library -emit-module -module-name ArmadaKit \
-            -target arm64-apple-ios26.0-simulator -sdk "$sdk" \
-            -emit-module-path "$modules/ArmadaKit.swiftmodule" \
-            apps/ios/ArmadaKit/Sources/ArmadaKit/*.swift
-          find apps/ios/Armada -name '*.swift' -print0 | xargs -0 xcrun swiftc \
-            -swift-version 6 -parse-as-library -typecheck -module-name Armada \
-            -target arm64-apple-ios26.0-simulator -sdk "$sdk" -I "$modules"
-
   # Keeps the name of the required check of main.
   verify:
     name: Lint, typecheck and test

@@ -1,0 +1,15 @@
+# Deterministically regenerated from project.yml; never hand edit.
+*.xcodeproj/
+*.xcworkspace/
+.build/
+.swiftpm/
+DerivedData/
+build/
+*.xcarchive/
+*.ipa
+*.dSYM/
+*.dSYM.zip
+*.xcresult/
+*.mobileprovision
+*.p12
+*.p8

@@ -114,7 +114,7 @@ test("exec command text after -- cannot bypass persisted selected-org HTTP scope
     expect(executed).toEqual([]);
     expect(out).toBe("");
     expect(statuses).toEqual([404, 404]);
-    expect(err).toContain("No sandbox with id");
+    expect(err).toContain("Sandbox not found or not accessible");
     for (const explicit of [["--org", orgB], [`--org=${orgB}`]]) {
       expect(
         await run(["exec", sandboxB, ...explicit, "--", "printf", "--org"], { out: auth.out, err: auth.err }, { auth }),
