@@ -85,6 +85,7 @@ describe("database", () => {
         "notify_subscriptions",
         "oauth_clients",
         "oauth_codes",
+        "organization_invitations",
         "orgs",
         "sandboxes",
         "service_tokens",
@@ -243,6 +244,7 @@ describe("database", () => {
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
         "notify_subscriptions.secret_enc",
+        "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
       ]);
 
