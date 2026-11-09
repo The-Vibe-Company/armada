@@ -60,16 +60,16 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
-  g.modal_environment, g.modal_app_id, g.config, g.created_at`;
+  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.created_at`;
 const SANDBOX_COLUMNS = `s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
+  s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
   g.modal_environment, g.modal_app_id`;
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `s.org_id = g.org_id and s.org_id=any($1::uuid[]) and (s.visibility='org' or s.access_owner_id=$2::uuid)
+const SANDBOX_VISIBLE = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.org_id = g.org_id and s.org_id=any($1::uuid[]) and (s.visibility='org' or s.access_owner_id=$2::uuid)
   and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 
 type SandboxViewRow = SandboxRow & {
@@ -112,8 +112,23 @@ export function createSqlData(sql: Sql): DataSource {
       if (!result.rows.length) throw new GoldenError("forbidden", "You cannot change this golden.");
     };
     const goldens: GoldenStore = {
+      async setSizePolicy(golden, actor, policy) {
+        if (actor.userId !== caller.userId) throw new GoldenError("forbidden", "Caller mismatch.");
+        const result = await sql.query(
+          `update public.goldens g set size_policy=$4::text::jsonb where ${GOLDEN_VISIBLE}
+           and g.id=$3::uuid and g.removed_at is null
+           and not exists(select 1 from jsonb_object_keys(($4::text::jsonb)->'repositories') k
+             where not exists(select 1 from jsonb_array_elements(g.config->'repos') r where r->>'dir'=k))
+           and exists(
+             select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid
+             and ((g.visibility='private' and g.owner_id=$2::uuid) or (g.visibility='org' and m.role='admin')))
+           returning g.id`,
+          [...scope, golden.id, JSON.stringify(policy)],
+        );
+        if (!result.rows.length) throw new GoldenError("forbidden", "You cannot change this golden's size policy.");
+      },
       reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
-      beginOperation: (id) => beginGoldenOperation(sql, id),
+      beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
@@ -193,12 +208,12 @@ export function createSqlData(sql: Sql): DataSource {
         const result = await sql.query<SandboxViewRow>(
           `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until)
+             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, machine_size)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,coalesce($12::public.visibility,visible.visibility),$2::uuid,$13::text,$14::integer,$15::integer,now()+$15 * interval '1 second',$16::uuid,case when $16::uuid is not null then now()+interval '2 minutes' else null end from visible
+             $9::text, $10::text, $11::public.sandbox_provider,coalesce($12::public.visibility,visible.visibility),$2::uuid,$13::text,$14::integer,$15::integer,now()+$15 * interval '1 second',$16::uuid,case when $16::uuid is not null then now()+interval '2 minutes' else null end,$17::text::jsonb from visible
            where visible.visibility='org' or coalesce($12::public.visibility,visible.visibility)='private'
            returning id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
             ...scope,
             input.goldenId,
@@ -215,6 +230,7 @@ export function createSqlData(sql: Sql): DataSource {
             input.requestedTtlSeconds ?? null,
             input.effectiveTtlSeconds ?? 14400,
             input.activityLeaseId ?? null,
+            JSON.stringify(input.machineSize ?? null),
           ],
         );
         const row = result.rows[0];

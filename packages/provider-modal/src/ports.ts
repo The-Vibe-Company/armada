@@ -1,4 +1,12 @@
-import type { AgentEvent, EventPage, HarnessCapabilities, ModalBinding, SandboxInfo, SnapshotInfo } from "@armada/core";
+import type {
+  AgentEvent,
+  EventPage,
+  HarnessCapabilities,
+  MachineSize,
+  ModalBinding,
+  SandboxInfo,
+  SnapshotInfo,
+} from "@armada/core";
 import type { Image, ModalClient, Sandbox } from "modal";
 
 /** Structural protocol1 type until the shared core optional configureMcp method is merged. */
@@ -76,6 +84,8 @@ export interface Machine {
   freshStatePreparedGeneration?: number;
   golden: boolean;
   ttlSeconds: number;
+  /** Immutable explicit resource selection, retained across physical restorations. Undefined preserves legacy defaults. */
+  size?: MachineSize;
   physicalName: string;
 }
 /** Server/owner-only provenance receipt. No labels, prompts, config, auth or raw SDK errors. */
