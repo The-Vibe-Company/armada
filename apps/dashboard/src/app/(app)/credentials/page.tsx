@@ -1,19 +1,31 @@
+import type { Harness } from "@armada/core";
 import { encryptionKey } from "@armada/core";
+import { CircleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { removeCredential, saveCredential } from "@/app/actions/credentials";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { PageHeader } from "@/components/page-header";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AddAccountDialog, HarnessAccounts } from "@/components/model-accounts";
+import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { CREDENTIAL_KINDS, SINGLE_VALUE_KINDS } from "@/lib/credentials";
 import { type CredentialRow, listCredentials } from "@/lib/data/credentials";
+import {
+  type AccountList,
+  listSelectedAccounts,
+  readAccountUsage,
+  readAuthCapabilities,
+} from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { requireViewer } from "@/lib/data/viewer";
+import { HARNESS_LABELS } from "@/lib/labels";
+import { accountsFor, launchDefault, type ModelAccount } from "@/lib/model-accounts";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
@@ -24,45 +36,138 @@ export default async function CredentialsPage() {
   const viewer = await requireViewer();
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [memberships, credentials] = await Promise.all([
-    listMemberships(supabase, viewer.id).then((items) => items.filter((item) => item.org.id === selected?.org.id)),
+  const [credentials, accounts, capabilities] = await Promise.all([
     listCredentials(supabase),
+    listSelectedAccounts(),
+    selected ? readAuthCapabilities(selected.org.id) : null,
   ]);
   const personal = credentials.filter((item) => item.scope === "user" && item.owner_id === viewer.id);
+  const now = Date.now();
 
   return (
     <>
-      <PageHeader title="Credentials" description="Yours are used before your org's." />
-      {!encryptionKey() && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            Credential encryption is not configured on this server: credentials cannot be saved.
-          </AlertDescription>
-        </Alert>
-      )}
+      <PageHeader title="Credentials" description="The accounts your agents run on, and your own hosting keys.">
+        {selected && accounts.state === "ready" && (
+          <AddAccountDialog
+            orgId={selected.org.id}
+            orgName={selected.org.name}
+            isAdmin={selected.role === "admin"}
+            capabilities={capabilities}
+          />
+        )}
+      </PageHeader>
 
-      <CredentialSection
-        title="Your credentials"
-        description="Only you see these."
-        scope="user"
-        owner={viewer.id}
-        rows={personal}
-        canManage
-      />
+      <ModelAccounts list={accounts} selected={selected} now={now} />
 
-      {memberships.map(({ org, role }) => (
+      <section className="space-y-3" aria-labelledby="hosting">
+        <SectionHeader id="hosting" title="Hosting" description="Pays for and runs sandboxes. Never enters one." />
+        {!encryptionKey() && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              Credential encryption is not configured on this server: hosting keys cannot be saved.
+            </AlertDescription>
+          </Alert>
+        )}
+
         <CredentialSection
-          key={org.id}
-          title={`${org.name} (org)`}
-          description={
-            role === "admin"
-              ? "Shared with every member. You manage them."
-              : "Shared with every member. Only an admin changes them."
-          }
-          scope="org"
-          owner={org.id}
-          rows={credentials.filter((item) => item.scope === "org" && item.owner_id === org.id)}
-          canManage={role === "admin"}
+          title="Your hosting keys"
+          description="Only you see these. They host your private goldens."
+          scope="user"
+          owner={viewer.id}
+          rows={personal}
+          canManage
+        />
+
+        {selected && (
+          <p className="text-sm text-muted-foreground" data-org-hosting>
+            Boat and Modal for {selected.org.name} are its{" "}
+            <Link className="underline underline-offset-4" href={PROVIDER_SETTINGS_PATH}>
+              sandbox providers in Settings
+            </Link>
+            .
+          </p>
+        )}
+      </section>
+    </>
+  );
+}
+
+const HARNESS_ORDER: Harness[] = ["claude", "codex"];
+
+/** Defaults first, then yours before the org's, then by name: the order a person scans for "which one bills". */
+function ordered(accounts: ModelAccount[]): ModelAccount[] {
+  return [...accounts].sort(
+    (a, b) =>
+      Number(b.isDefault) - Number(a.isDefault) ||
+      (a.scope === b.scope ? 0 : a.scope === "user" ? -1 : 1) ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+async function ModelAccounts({
+  list,
+  selected,
+  now,
+}: {
+  list: AccountList;
+  selected: Awaited<ReturnType<typeof selectedOrganization>>;
+  now: number;
+}) {
+  if (list.state === "no-org" || !selected)
+    return (
+      <Empty title="No organization yet">
+        <Link className="underline" href="/orgs">
+          Create an organization
+        </Link>{" "}
+        to add model accounts.
+      </Empty>
+    );
+  if (list.state === "not-configured")
+    return (
+      <Alert variant="destructive">
+        <CircleAlertIcon />
+        <AlertDescription>The Armada server is not configured: model accounts cannot be managed here.</AlertDescription>
+      </Alert>
+    );
+  if (list.state === "legacy")
+    return (
+      <Alert data-accounts="legacy">
+        <CircleAlertIcon />
+        <AlertTitle>This Armada server predates named accounts</AlertTitle>
+        <AlertDescription>
+          Your saved model keys still launch. Update the server to name them, add more and choose one per launch.
+        </AlertDescription>
+      </Alert>
+    );
+  if (list.state === "error")
+    return (
+      <Alert variant="destructive" data-accounts="error">
+        <CircleAlertIcon />
+        <AlertTitle>Model accounts could not be loaded</AlertTitle>
+        <AlertDescription>
+          <p>{list.message}</p>
+          <Button asChild variant="outline" size="sm" className="mt-2">
+            <Link href="/credentials">Try again</Link>
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+
+  const usage = await readAccountUsage(list.accounts);
+  return (
+    <>
+      {HARNESS_ORDER.map((harness) => (
+        <HarnessAccounts
+          key={harness}
+          harness={harness}
+          harnessLabel={HARNESS_LABELS[harness]}
+          resolved={launchDefault(list.accounts, harness, now)}
+          accounts={ordered(accountsFor(list.accounts, harness))}
+          orgId={selected.org.id}
+          orgName={selected.org.name}
+          isAdmin={selected.role === "admin"}
+          usage={usage}
+          now={now}
         />
       ))}
     </>
@@ -79,31 +184,27 @@ function CredentialSection({
 }: {
   title: string;
   description: string;
-  scope: "user" | "org";
+  /** Only the viewer's own: an organization's hosting is its providers in Settings. */
+  scope: "user";
   owner: string;
   rows: CredentialRow[];
   canManage: boolean;
 }) {
   const byKind = new Map(rows.map((row) => [row.kind, row]));
-  // An organization's hosting (Boat, Modal) is its sandbox providers, connected in Settings; personal keys stay here.
-  const hosting = scope === "user";
-  const kinds = CREDENTIAL_KINDS.filter((info) => hosting || info.use !== "hosting");
-  const singleKinds = SINGLE_VALUE_KINDS.filter((info) => hosting || info.use !== "hosting");
   return (
-    <Card data-credentials={scope === "user" ? "user" : title}>
+    <Card data-credentials={scope}>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         <ul className="divide-y rounded-lg border">
-          {kinds.map((info) => {
+          {CREDENTIAL_KINDS.map((info) => {
             const row = byKind.get(info.kind);
             return (
               <li key={info.kind} className="flex flex-wrap items-center justify-between gap-3 p-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{info.label}</p>
-                  {info.use === "hosting" && <p className="text-xs text-muted-foreground">Hosting</p>}
                 </div>
                 {row ? (
                   <div className="flex items-center gap-3">
@@ -128,16 +229,6 @@ function CredentialSection({
           })}
         </ul>
 
-        {!hosting && (
-          <p className="text-sm text-muted-foreground" data-org-hosting>
-            Boat and Modal for this organization are its{" "}
-            <Link className="underline underline-offset-4" href={PROVIDER_SETTINGS_PATH}>
-              sandbox providers in Settings
-            </Link>
-            .
-          </p>
-        )}
-
         {canManage && (
           <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3 sm:max-w-xl">
             <input type="hidden" name="scope" value={scope} />
@@ -145,8 +236,8 @@ function CredentialSection({
             <div className="grid gap-3 sm:grid-cols-[14rem_1fr]">
               <div className="space-y-2">
                 <Label htmlFor={`kind-${owner}`}>Kind</Label>
-                <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="claude_oauth">
-                  {singleKinds.map((info) => (
+                <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
+                  {SINGLE_VALUE_KINDS.map((info) => (
                     <option key={info.kind} value={info.kind}>
                       {info.label}
                     </option>
@@ -170,7 +261,7 @@ function CredentialSection({
           </ActionForm>
         )}
 
-        {canManage && hosting && (
+        {canManage && (
           <div data-modal-token className="border-t pt-6">
             <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3 sm:max-w-xl">
               <input type="hidden" name="scope" value={scope} />

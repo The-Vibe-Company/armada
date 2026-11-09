@@ -1,5 +1,6 @@
 "use server";
 
+import type { Harness } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
@@ -9,6 +10,7 @@ import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listGoldens } from "@/lib/data/goldens";
+import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
@@ -18,6 +20,7 @@ import { GatewayError } from "@/lib/gateway";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { launchSandbox } from "@/lib/launch";
 import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
+import { checkAccountChoice } from "@/lib/model-accounts";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -173,6 +176,8 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     matches.flatMap((golden) => goldenRepositoryDirs(golden.config)),
   );
   if (!repository.ok) return fail(repository.error);
+  const account = await accountChoice(parsed.args.harness, formString(data, "credential"));
+  if (!account.ok) return fail(account.error);
 
   let id: string;
   try {
@@ -182,6 +187,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
         ...parsed.args,
         ...selection.value,
         ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+        ...(account.id === undefined ? {} : { credentialId: account.id }),
         // Stored defaults are a promise only the versioned sized route keeps; without any, legacy is the same launch.
         ...(matches.some((golden) => policyHasDefaults(golden.size_policy)) ? { sizePolicy: true } : {}),
       },
@@ -205,4 +211,17 @@ function modelFields(data: FormData): ModelFields {
     otherModel: formString(data, "other_model"),
     reasoningEffort: formString(data, "reasoning_effort"),
   };
+}
+
+/**
+ * The model account a launch bills, checked against what the viewer may use now. With compatible accounts listed
+ * the person must have chosen one; it is sent as an explicit id, never left for the server to pick. A server older
+ * than named accounts gets none and resolves its own. Accounts that cannot be read block the launch.
+ */
+async function accountChoice(
+  harness: Harness,
+  requested: string,
+): Promise<{ ok: true; id: string | undefined } | { ok: false; error: string }> {
+  if (requested && !isUuid(requested)) return { ok: false, error: "That request is not valid." };
+  return checkAccountChoice(await listSelectedAccounts(), harness, requested, Date.now());
 }

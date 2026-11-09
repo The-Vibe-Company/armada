@@ -69,3 +69,18 @@ test("a provider refusal keeps the server's code, whatever its status", async ()
     code: "payment_required",
   });
 });
+
+test("the chosen model account is pinned on every launch route, sized or not, alongside the size", async () => {
+  const routes: string[] = [];
+  const ok = { sandbox: { id: "s1" } };
+  const credentialId = "00000000-0000-4000-8000-000000000041";
+  await launchSandbox(answeringAt(routes, ok), { ...args, credentialId, size: "large" });
+  await launchSandbox(answeringAt(routes, ok), { ...args, credentialId, sizePolicy: true });
+  await launchSandbox(answeringAt(routes, ok), { ...args, credentialId });
+  const sent = routes.map((route) => [route.split(" ")[0], JSON.parse(route.slice(route.indexOf(" ") + 1))]);
+  expect(sent).toEqual([
+    [SIZED_LAUNCH_ROUTE_V1, expect.objectContaining({ credentialId, size: "large", sizePolicyVersion: 1 })],
+    [SIZED_LAUNCH_ROUTE_V1, expect.objectContaining({ credentialId, sizePolicyVersion: 1 })],
+    ["/api/v1/sandbox/launch", expect.objectContaining({ credentialId })],
+  ]);
+});
