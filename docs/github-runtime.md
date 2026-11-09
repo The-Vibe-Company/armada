@@ -114,3 +114,16 @@ non-production environment with disposable repositories and credentials:
 Record the server/runtime revision, gate setting, provider, harness, operation exit
 statuses, renewal outcome, and harness survival. Keep token values and private socket
 responses out of the evidence. A failure in either harness blocks enablement.
+
+The #719 repair separates ordinary Git execution from credential acquisition: ordinary
+Git runs directly as the caller, with inherited GitHub token variables removed; HTTPS
+Git asks the installed helper for authorization only when needed. Explicit `git credential` output (including Git aliases) and arbitrary shell aliases
+remain supervised so `credential fill` does not publish managed token bytes.
+Like stock Git, ordinary local Git output is not an arbitrary-secret redaction boundary.
+Native harness output and gh output retain broker redaction. Native output is held with
+pipe backpressure while the redactor is unavailable, not forwarded unfiltered and not
+used as a reason to terminate the harness. This can pause visible turn output until
+recovery; it does not provide uninterrupted output during a total redactor outage.
+Diagnostics expose only fixed stage/reason labels, never exception text, socket paths,
+credential responses or environment values. A missing socket reports `socket_missing`;
+permission errors, refused connections and timeouts have distinct labels.
