@@ -2,9 +2,20 @@
 
 // A command to copy (THE-887): the whole row is the button, and its icon
 // cross-fades to a check (better-ui: scale 0.25 to 1, blur 4px to 0).
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
-export function CopyCommand({ command, note, size = "md" }: { command: string; note?: string; size?: "md" | "lg" }) {
+export function CopyCommand({
+  command,
+  note,
+  size = "md",
+  words = false,
+}: {
+  command: string;
+  note?: string;
+  size?: "md" | "lg";
+  /** Wrap only between words, never after a flag's hyphens (#587); a word breaks only when it cannot fit. */
+  words?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
@@ -32,7 +43,15 @@ export function CopyCommand({ command, note, size = "md" }: { command: string; n
           <span className="lp-prompt" aria-hidden>
             $
           </span>
-          {command}
+          {words
+            ? command.split(" ").map((word, k) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: a command's words are fixed and may repeat
+                <Fragment key={k}>
+                  {k > 0 && " "}
+                  <span className="lp-copy-word">{word}</span>
+                </Fragment>
+              ))
+            : command}
         </span>
         {note && <span className="lp-copy-note">{note}</span>}
       </span>

@@ -88,490 +88,6 @@ html:has(> body .lp) {
   }
 }
 
-/* ------------------------------------------------- the replica's dashboard */
-/* Restored by #564. In armada-v1-final the replica was the v1 dashboard's own
-   sidebar and overview, styled by its globals.css; neither is on main. These
-   are the rules of that stylesheet the replica matched, verbatim, scoped to
-   its window so they reach nothing else. */
-:where(.lp-replica-window) .tnum {
-  font-variant-numeric: tabular-nums;
-}
-:where(.lp-replica-window) .ui-steady {
-  display: inline-grid;
-  text-align: end;
-}
-:where(.lp-replica-window) :is(.ui-steady-ghost, .ui-steady-now) {
-  grid-area: 1 / 1;
-}
-:where(.lp-replica-window) .ui-steady-ghost {
-  visibility: hidden;
-}
-:where(.lp-replica-window) .spacer {
-  flex: 1;
-}
-:where(.lp-replica-window) .sh-side {
-  flex: none;
-  width: var(--sidebar);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 10px;
-  background: var(--side);
-  border-right: 1px solid var(--line);
-  overflow: hidden auto;
-}
-:where(.lp-replica-window) .sh-brand {
-  height: 36px;
-  padding: 4px 6px 10px;
-}
-:where(.lp-replica-window) :is(.sh-brand, .sh-brand-home) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-:where(.lp-replica-window) .sh-brand-home {
-  min-width: 24px;
-  min-height: 24px;
-}
-:where(.lp-replica-window) .sh-logo {
-  flex: none;
-}
-:where(.lp-replica-window) .sh-brand-name {
-  font-weight: 600;
-  font-size: 13.5px;
-}
-:where(.lp-replica-window) .sh-search {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  margin-bottom: 10px;
-  padding: 0 8px;
-  border: 1px solid #1f2125;
-  border-radius: var(--r-sm);
-  background: #121316;
-  color: var(--text-3);
-  font-size: 12.5px;
-  text-align: left;
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .sh-search-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-:where(.lp-replica-window) .sh-search-key {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-3);
-}
-:where(.lp-replica-window) :is(.sh-nav, .sh-projects) {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-:where(.lp-replica-window) .sh-heading {
-  padding: 18px 8px 6px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-3);
-}
-:where(.lp-replica-window) .sh-item {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 8px;
-  border-radius: var(--r-sm);
-  color: var(--text-2);
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .sh-item[aria-current="page"] {
-  background: #17181c;
-  color: var(--text);
-}
-:where(.lp-replica-window) .sh-item-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-:where(.lp-replica-window) .sh-count {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-3);
-  font-variant-numeric: tabular-nums;
-}
-:where(.lp-replica-window) .sh-count.is-hot {
-  color: var(--amber);
-}
-:where(.lp-replica-window) .sh-count.is-blocked {
-  color: var(--red);
-}
-:where(.lp-replica-window) .sh-diamond {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-  rotate: 45deg;
-}
-:where(.lp-replica-window) .sh-live {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 8px 2px;
-  font-size: 11.5px;
-  color: var(--text-3);
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .sh-live-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-}
-:where(.lp-replica-window) .sh-main {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-}
-:where(.lp-replica-window) .sh-crumb {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  white-space: nowrap;
-  font-size: 13px;
-  color: var(--text-3);
-}
-:where(.lp-replica-window) .sh-crumb [aria-current="page"] {
-  color: var(--text);
-}
-:where(.lp-replica-window) .ui-header {
-  position: relative;
-  z-index: 3;
-  height: 44px;
-  flex: none;
-  padding: 0 24px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
-}
-:where(.lp-replica-window) :is(.ui-header, .ui-header-actions) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-:where(.lp-replica-window) .ui-header-actions {
-  min-width: 0;
-}
-:where(.lp-replica-window) .ov {
-  container: ov / inline-size;
-  min-width: 0;
-}
-:where(.lp-replica-window) :is(.ov, .ov-head) {
-  display: flex;
-  flex-direction: column;
-}
-:where(.lp-replica-window) .ov-head {
-  gap: 6px;
-  padding: 28px 32px 18px;
-}
-:where(.lp-replica-window) .ov-headline {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
-  text-wrap: pretty;
-}
-:where(.lp-replica-window) .ov-subline {
-  margin: 0;
-  font-size: 13.5px;
-  color: var(--text-2);
-}
-:where(.lp-replica-window) .ov-projects {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 1px;
-  margin: 0 32px 20px;
-  padding: 0;
-  list-style: none;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  overflow: hidden;
-}
-:where(.lp-replica-window) .ov-project {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  height: 100%;
-  padding: 14px 16px;
-  outline: 1px solid var(--line);
-  background: var(--card);
-}
-:where(.lp-replica-window) :is(.ov-project-facts, .ov-project-head) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-:where(.lp-replica-window) .ov-project-name {
-  font-weight: 600;
-}
-:where(.lp-replica-window) .ov-project-n {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-project-bar {
-  height: 3px;
-  border-radius: 2px;
-  background: var(--track);
-  overflow: hidden;
-}
-:where(.lp-replica-window) .ov-project-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--text-2);
-}
-:where(.lp-replica-window) .ov-project-facts {
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-:where(.lp-replica-window) .ov-project-coord {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-diamond {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
-  rotate: 45deg;
-  background: currentColor;
-}
-:where(.lp-replica-window) .ov-bar {
-  align-items: center;
-  padding: 0 32px 10px;
-}
-:where(.lp-replica-window) :is(.ov-bar, .ov-chips) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-:where(.lp-replica-window) .ov-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid #1f2125;
-  border-radius: var(--r-sm);
-  font-size: 12px;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-chip[aria-current] {
-  border-color: #2e3036;
-  background: #1f2125;
-  color: var(--text);
-}
-:where(.lp-replica-window) .ov-chip-n {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-3);
-}
-:where(.lp-replica-window) .ov-chip[aria-current] .ov-chip-n {
-  color: var(--text-2);
-}
-:where(.lp-replica-window) .ov-groupby {
-  font-size: 12px;
-  color: var(--text-3);
-}
-:where(.lp-replica-window) .ov-views {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-}
-:where(.lp-replica-window) .ov-view {
-  display: flex;
-  align-items: center;
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 5px;
-  font-size: 12px;
-  color: var(--text-3);
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-view[aria-current] {
-  background: var(--raised);
-  color: var(--text);
-}
-:where(.lp-replica-window) .ov-list {
-  flex: 1;
-  min-width: 0;
-  padding-bottom: 48px;
-  border-top: 1px solid var(--line);
-}
-:where(.lp-replica-window) .ov-group-h {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 34px;
-  margin: 0;
-  padding: 0 32px;
-  background: var(--band);
-  border-bottom: 1px solid var(--line);
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-:where(.lp-replica-window) .ov-group-n {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-:where(.lp-replica-window) :is(.ov-group-hint, .ov-group-n) {
-  font-weight: 400;
-  color: var(--text-3);
-}
-:where(.lp-replica-window) .ov-group-hint {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12px;
-}
-:where(.lp-replica-window) .ov-row {
-  display: grid;
-  grid-template-columns: 8px 64px minmax(0, 1fr) 72px 64px 52px;
-  align-items: center;
-  gap: 14px;
-  min-height: 48px;
-  padding: 6px 32px;
-  border-bottom: 1px solid var(--line-soft);
-}
-:where(.lp-replica-window) .ov-id {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-:where(.lp-replica-window) :is(.ov-proj, .ov-reason, .ov-title) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-:where(.lp-replica-window) .ov-reason {
-  font-size: 12px;
-}
-:where(.lp-replica-window) .ov-proj {
-  font-size: 12px;
-  color: var(--text-2);
-}
-:where(.lp-replica-window) .ov-steps {
-  display: flex;
-  gap: 2px;
-}
-:where(.lp-replica-window) .ov-steps > span {
-  flex: 1;
-  height: 4px;
-  border-radius: 1px;
-}
-:where(.lp-replica-window) .ov-last {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-3);
-  text-align: right;
-  white-space: nowrap;
-}
-@media (max-width: 947px) {
-  :where(.lp-replica-window) .ov-views {
-    display: none;
-  }
-}
-/* v1's phone shell (under 720 px), which the landing's own rules above partly undo, as they did in v1. */
-@media (max-width: 719px) {
-  :where(.lp-replica-window) .sh-side {
-    width: auto;
-    height: 52px;
-    flex: none;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 36px;
-    align-items: center;
-    column-gap: 6px;
-    padding: 0 12px 0 16px;
-    overflow: visible;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  :where(.lp-replica-window) .sh-side > :is(.sh-item, .sh-live, .sh-nav, .sh-projects, .spacer) {
-    display: none;
-  }
-  :where(.lp-replica-window) .sh-brand {
-    min-width: 0;
-    height: 32px;
-    padding: 0;
-  }
-  :where(.lp-replica-window) .sh-brand > .sh-brand-home {
-    margin-right: auto;
-  }
-  :where(.lp-replica-window) .sh-search {
-    width: 36px;
-    height: 36px;
-    margin: 0;
-    padding: 0;
-    justify-content: center;
-  }
-  :where(.lp-replica-window) .sh-search-key {
-    display: none;
-  }
-  :where(.lp-replica-window) .sh-search-text {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  :where(.lp-replica-window) .ui-header {
-    height: auto;
-    min-height: 48px;
-    row-gap: 6px;
-    padding-top: 8px;
-    padding-bottom: 8px;
-  }
-  :where(.lp-replica-window) :is(.ui-header, .ui-header-actions) {
-    flex-wrap: wrap;
-  }
-}
-
 .lp {
   --lp-ease: cubic-bezier(0.23, 1, 0.32, 1);
   --lp-ease-io: cubic-bezier(0.77, 0, 0.175, 1);
@@ -1193,1076 +709,7 @@ html:has(> body .lp) {
   }
 }
 
-/* --------------------------------------------------------------- shared */
-
-.lp-eyebrow {
-  font: 500 12px / 1 var(--font-mono);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-.lp-eyebrow.is-lime {
-  color: var(--done);
-}
-.lp-eyebrow.is-blue {
-  color: var(--frontier);
-}
-.lp-eyebrow.is-amber {
-  color: var(--active);
-}
-.lp-dim {
-  color: var(--lp-dim);
-}
-.lp-h2 {
-  margin: 0;
-  font-size: var(--lp-h2);
-  line-height: 0.98;
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  text-wrap: balance;
-}
-.lp-body {
-  margin: 0;
-  font-size: clamp(16px, 1.35vw, 18px);
-  line-height: 1.55;
-  color: var(--text-2);
-  text-wrap: pretty;
-}
-.lp-window {
-  position: relative;
-  border-radius: 20px;
-  background: linear-gradient(180deg, #141416, #0e0e10);
-  box-shadow:
-    0 0 0 1px oklch(1 0 0 / 0.08),
-    0 1px 0 oklch(1 0 0 / 0.05) inset,
-    0 60px 120px -40px rgba(0, 0, 0, 0.9);
-  overflow: hidden;
-}
-.lp-window-bar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 42px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--line);
-}
-.lp-window-dots {
-  display: flex;
-  gap: 7px;
-}
-.lp-window-dots i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--fill-3);
-}
-.lp-window-titles {
-  position: relative;
-  flex: 1;
-  height: 16px;
-  font: 12px / 16px var(--font-mono);
-  color: var(--lp-dim);
-  text-align: right;
-}
-.lp-window-titles span {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  transition: opacity 300ms var(--lp-ease);
-}
-.lp-tag {
-  flex: none;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--fill);
-  color: var(--text-2);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.lp-tag.is-blue {
-  background: var(--frontier-dim);
-  color: var(--frontier);
-}
-.lp-check-icon {
-  flex: none;
-}
-
-/* ---------------------------------------------------------------- method */
-
-/* The method (THE-1049): a section like the others, never pinned. Its
-   steps are tabs, and each scene's story runs on `--l` (0 to 1): its last
-   frame by default, played from 0 by an animation while its step is shown. */
-@property --l {
-  syntax: "<number>";
-  inherits: true;
-  initial-value: 1;
-}
-.lp-method {
-  --lp-scene-time: 7s;
-  /* The scenes' play state: paused until MethodSteps says the section is on screen. */
-  --lp-play: paused;
-  position: relative;
-  padding: clamp(80px, 10vw, 128px) 0;
-  /* Laid out as it comes near the screen, as the sections below (THE-892). */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 760px;
-}
-.lp-method-inner {
-  width: 100%;
-  max-width: var(--lp-max);
-  margin: 0 auto;
-  padding: 0 var(--lp-pad);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 540px);
-  gap: clamp(32px, 6vw, 80px);
-  align-items: center;
-}
-.lp-method-words {
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-  min-width: 0;
-}
-/* Every step's words in one cell: the block keeps the tallest one's height, so changing step moves nothing. */
-.lp-method-steps {
-  display: grid;
-}
-.lp-method-step {
-  grid-area: 1 / 1;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity 200ms var(--lp-ease),
-    visibility 0s 200ms;
-}
-.lp-method-step.is-active {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity 400ms var(--lp-ease);
-}
-.lp-method-title {
-  margin: 0;
-  font-size: clamp(40px, 5.4vw, 80px);
-  line-height: 0.96;
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  text-wrap: balance;
-}
-.lp-method-body {
-  margin: 0;
-  max-width: 470px;
-  font-size: clamp(16px, 1.35vw, 18px);
-  line-height: 1.55;
-  color: var(--text-2);
-  text-wrap: pretty;
-}
-
-/* The steps: one segment each, full once passed, filling while its scene plays. */
-.lp-method-rail {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-  max-width: 460px;
-}
-.lp-method-tab {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  min-height: 44px;
-  margin: 0;
-  padding: 0 0 6px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--lp-dim);
-  font: 13px var(--font-sans);
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color 150ms ease;
-}
-.lp-method-tab .lp-mono {
-  font-size: 11px;
-  color: var(--lp-dim);
-}
-.lp-method-tab[data-state="done"] {
-  color: var(--text-2);
-}
-.lp-method-tab[aria-selected="true"] {
-  color: var(--text);
-}
-@media (hover: hover) and (pointer: fine) {
-  .lp-method-tab:hover {
-    color: var(--text);
-  }
-}
-.lp-method-tab:focus-visible {
-  outline: 2px solid var(--frontier);
-  outline-offset: 4px;
-}
-.lp-method-seg {
-  position: relative;
-  height: 2px;
-  margin-bottom: 10px;
-  border-radius: 1px;
-  background: var(--track);
-  overflow: hidden;
-}
-/* One gradient across the five segments, from the frontier's blue to the merge's lime. */
-.lp-method-fill {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, var(--frontier), var(--done)) calc(var(--i) * 25%) 0 / 500% 100%;
-  transform: scaleX(0);
-  transform-origin: 0 50%;
-}
-.lp-method-tab:is([data-state="done"], [data-state="active"]) .lp-method-fill {
-  transform: none;
-}
-
-.lp-method-window {
-  width: 100%;
-  justify-self: center;
-}
-.lp-window-body {
-  position: relative;
-  height: 460px;
-}
-
-/* The scene of the step shown; the others fade out on their last frame. */
-.lp-scene {
-  position: absolute;
-  inset: 0;
-  padding: 26px;
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity 200ms var(--lp-ease),
-    visibility 0s 200ms;
-}
-.lp-method[data-step="0"] .lp-scene.is-0,
-.lp-method[data-step="1"] .lp-scene.is-1,
-.lp-method[data-step="2"] .lp-scene.is-2,
-.lp-method[data-step="3"] .lp-scene.is-3,
-.lp-method[data-step="4"] .lp-scene.is-4 {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity 300ms var(--lp-ease);
-}
-.lp-method[data-step="0"] .lp-window-titles [data-index="0"],
-.lp-method[data-step="1"] .lp-window-titles [data-index="1"],
-.lp-method[data-step="2"] .lp-window-titles [data-index="2"],
-.lp-method[data-step="3"] .lp-window-titles [data-index="3"],
-.lp-method[data-step="4"] .lp-window-titles [data-index="4"] {
-  color: var(--text);
-  opacity: 1;
-}
-
-/* Played: the scene of the step shown runs its story, then holds its last frame
-   until the next step (its end is MethodSteps' cue); its segment fills meanwhile.
-   Paused while the section is off screen. Never under reduced motion. */
-.lp-method[data-playing] {
-  --lp-play: running;
-}
-@keyframes lp-scene-play {
-  from {
-    --l: 0;
-  }
-  75%,
-  to {
-    --l: 1;
-  }
-}
-@keyframes lp-seg-fill {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: none;
-  }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .lp-method[data-motion] .lp-method-step {
-    transform: translateY(8px);
-    transition:
-      opacity 200ms var(--lp-ease),
-      transform 200ms var(--lp-ease),
-      visibility 0s 200ms;
-  }
-  .lp-method[data-motion] .lp-method-step.is-active {
-    transform: none;
-    transition:
-      opacity 400ms var(--lp-ease),
-      transform 400ms var(--lp-ease);
-  }
-  .lp-method[data-motion][data-step="0"] .lp-scene.is-0,
-  .lp-method[data-motion][data-step="1"] .lp-scene.is-1,
-  .lp-method[data-motion][data-step="2"] .lp-scene.is-2,
-  .lp-method[data-motion][data-step="3"] .lp-scene.is-3,
-  .lp-method[data-motion][data-step="4"] .lp-scene.is-4 {
-    animation: lp-scene-play var(--lp-scene-time) linear both var(--lp-play);
-  }
-  .lp-method[data-motion] .lp-method-tab[data-state="active"] .lp-method-fill {
-    animation: lp-seg-fill var(--lp-scene-time) linear both var(--lp-play);
-  }
-}
-.lp-k {
-  --k: clamp(0, calc((var(--l) - var(--t)) / var(--span)), 1);
-  opacity: var(--k);
-  transform: translateY(calc((1 - var(--k)) * 10px));
-}
-
-.lp-chat {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.lp-bubble {
-  margin: 0;
-  max-width: 82%;
-  padding: 12px 15px;
-  border-radius: 16px 16px 16px 4px;
-  background: var(--fill-2);
-  font-size: 15px;
-  line-height: 1.45;
-}
-.lp-bubble.is-you {
-  align-self: flex-end;
-  border-radius: 16px 16px 4px 16px;
-  background: var(--frontier);
-  color: var(--bg);
-  font-weight: 500;
-}
-
-.lp-spec {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  font-size: 15px;
-}
-.lp-spec-title {
-  font-size: 26px;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-}
-.lp-spec-meta {
-  font: 12px var(--font-mono);
-  color: var(--lp-dim);
-}
-.lp-spec-head {
-  margin-top: 10px;
-  font: 500 11.5px var(--font-mono);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--done);
-}
-.lp-spec-head.is-out,
-.lp-spec-text.is-out {
-  color: var(--lp-dim);
-}
-.lp-spec-text {
-  color: var(--text-2);
-}
-.lp-spec-decision {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.lp-spec-decision .lp-check-icon {
-  color: var(--done);
-}
-
-.lp-cut {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.lp-cut-spec {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 46px;
-  padding: 0 14px;
-  border-radius: 12px;
-  background: var(--fill);
-  font-size: 14.5px;
-  font-weight: 500;
-}
-.lp-cut-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1.5px solid var(--active);
-  background: conic-gradient(var(--active) 25%, transparent 0);
-}
-.lp-tickets {
-  margin: 0 0 0 22px;
-  padding: 0 0 0 18px;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-left: 1px dashed var(--line-strong);
-}
-.lp-ticket,
-.lp-claim {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 48px;
-  padding: 0 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.035);
-  box-shadow: inset 0 0 0 1px var(--line);
-  font-size: 14px;
-}
-/* A ticket splits off the spec: from under it, up and to the left. */
-.lp-ticket.is-split {
-  transform: translate(calc((1 - var(--k)) * -18px), calc((1 - var(--k)) * -28px)) scale(calc(0.96 + var(--k) * 0.04));
-}
-.lp-ticket-ring {
-  flex: none;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 1.5px solid var(--text-3);
-}
-.lp-ticket-ring.is-ready {
-  border-color: var(--frontier);
-}
-.lp-ticket-title {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lp-cut-note {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--lp-dim);
-}
-
-.lp-ship-scene {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  height: 100%;
-  container-type: inline-size;
-}
-.lp-claim {
-  position: relative;
-  padding-left: 46px;
-  box-shadow: inset 0 0 0 1px rgba(126, 166, 255, calc(0.15 + var(--l) * 0.3));
-}
-.lp-claim-phases {
-  position: relative;
-  flex: none;
-  width: 118px;
-  height: 22px;
-}
-/* One phase at a time: each shows from its own mark until the next one's. */
-.lp-claim-phases > span {
-  --next: clamp(0, calc((var(--l) - var(--tn, 2)) / var(--span)), 1);
-  opacity: min(var(--k), 1 - var(--next));
-  position: absolute;
-  right: 0;
-  top: 0;
-  height: 22px;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  border-radius: 6px;
-  background: #1b1d24;
-  color: var(--frontier);
-  font: 12px var(--font-mono);
-}
-.lp-claim-phases > span.is-lime {
-  background: #1c2412;
-  color: var(--done);
-}
-/* The worker's ship: flies in from the left on an arc and docks on its ticket; lime once it is green. */
-.lp-worker-ship {
-  --fly: clamp(0, calc(var(--l) / 0.2), 1);
-  --green: clamp(0, calc((var(--l) - 0.86) / 0.06), 1);
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 24px;
-  height: 16px;
-  /* From below the left of the window, up on an arc, docking at the start of its ticket. */
-  transform: translate(
-      calc(-60px + var(--fly) * 74px + sin(calc(var(--fly) * 180deg)) * 70px),
-      calc(300px - var(--fly) * 284px)
-    )
-    rotate(calc(-80deg + var(--fly) * 80deg));
-}
-.lp-worker-ship svg {
-  position: absolute;
-  inset: 0;
-  filter: drop-shadow(0 0 8px rgba(126, 166, 255, 0.5));
-}
-.lp-worker-ship .is-green {
-  opacity: var(--green);
-  filter: drop-shadow(0 0 10px rgba(182, 241, 90, 0.6));
-}
-.lp-pr {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.03);
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-.lp-pr-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12.5px;
-  min-width: 0;
-}
-.lp-pr-head .lp-mono {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lp-pill-open {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: var(--done-dim);
-  color: var(--done);
-  font-size: 12px;
-  font-weight: 600;
-}
-.lp-pr-title {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-}
-.lp-checks {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-/* A check: amber and running, then green, as the scroll passes it. */
-.lp-check {
-  --k: clamp(0, calc((var(--l) - var(--t)) / var(--span)), 1);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 40px;
-  padding: 0 12px;
-  font-size: 13.5px;
-  color: color-mix(in oklab, var(--text) calc(var(--k) * 100%), var(--lp-dim));
-}
-.lp-check + .lp-check {
-  border-top: 1px solid var(--line);
-}
-.lp-light {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: color-mix(in oklab, var(--done-dim) calc(var(--k) * 100%), var(--active-dim));
-  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, transparent calc(var(--k) * 100%), var(--active));
-  color: var(--done);
-}
-.lp-light .lp-check-icon {
-  width: 11px;
-  opacity: var(--k);
-  transform: scale(calc(0.25 + var(--k) * 0.75));
-}
-.lp-pipe {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 4px;
-  margin-top: auto;
-}
-.lp-pipe-step {
-  --k: clamp(0, calc((var(--l) - var(--t)) / var(--span)), 1);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--lp-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lp-pipe-step i {
-  height: 4px;
-  border-radius: 2px;
-  background: color-mix(in oklab, rgba(182, 241, 90, 0.8) calc(var(--k) * 100%), var(--fill-2));
-}
-
-.lp-merge {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font: 13px / 1.55 var(--font-mono);
-}
-.lp-merge-line.is-out {
-  color: var(--text-2);
-}
-.lp-merged {
-  margin-top: 16px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 18px;
-  border-radius: 14px;
-  background: rgba(182, 241, 90, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(182, 241, 90, 0.25);
-  font-family: var(--font-sans);
-  transform: translateY(calc((1 - var(--k)) * 10px)) scale(calc(0.96 + var(--k) * 0.04));
-}
-.lp-merged > span:last-child {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.lp-merged strong {
-  font-size: 17px;
-  font-weight: 600;
-}
-.lp-merged .lp-dim {
-  font-size: 13px;
-}
-.lp-merged-badge {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--done);
-  color: var(--bg);
-}
-.lp-merged-badge .lp-check-icon {
-  width: 20px;
-  height: 20px;
-}
-
-@media (max-width: 860px) {
-  .lp-method {
-    contain-intrinsic-size: auto 870px;
-  }
-  .lp-method-inner {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 18px;
-  }
-  .lp-method-words {
-    gap: 14px;
-  }
-  .lp-method-words .lp-eyebrow {
-    order: -2;
-  }
-  .lp-method-step {
-    gap: 10px;
-  }
-  .lp-method-title {
-    font-size: clamp(30px, 8.4vw, 44px);
-  }
-  .lp-method-body {
-    font-size: 14.5px;
-  }
-  /* The five steps: a compact row above the words and the window. */
-  .lp-method-rail {
-    order: -1;
-    max-width: none;
-  }
-  .lp-window-body {
-    height: 440px;
-  }
-  .lp-scene {
-    padding: 18px;
-  }
-  .lp-bubble {
-    font-size: 14px;
-  }
-}
-
-/* -------------------------------------------------------------- sections */
-
-.lp-section {
-  position: relative;
-  padding: clamp(96px, 12vw, 150px) var(--lp-pad);
-  /* Below the hero (THE-892): laid out and painted as they come near the
-     screen, not all before the first paint. */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 900px;
-}
-.lp-head {
-  position: relative;
-  max-width: var(--lp-max);
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-.lp-head.is-center {
-  align-items: center;
-  text-align: center;
-}
-.lp-head.is-center .lp-h2 {
-  max-width: 900px;
-}
-.lp-head.is-center .lp-body {
-  max-width: 620px;
-}
-.lp-glow {
-  position: absolute;
-  left: 50%;
-  top: 160px;
-  width: min(1100px, 100%);
-  height: 700px;
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-.lp-glow.is-blue {
-  background: radial-gradient(closest-side, rgba(126, 166, 255, 0.11), transparent);
-}
-
-/* Scroll-driven reveals where the browser has them: never hidden without them. */
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .lp-reveal {
-      animation: lp-reveal linear both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 70%;
-    }
-    .lp-reveal.is-tilt {
-      animation-name: lp-tilt;
-      animation-range: entry 0% cover 40%;
-    }
-  }
-}
-@keyframes lp-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(32px);
-    filter: blur(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-    filter: none;
-  }
-}
-@keyframes lp-tilt {
-  from {
-    opacity: 0.2;
-    transform: perspective(1800px) rotateX(18deg) scale(0.94) translateY(40px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* ------------------------------------------------------------ the fleet */
-
-.lp-fleet-stage {
-  position: relative;
-  max-width: 1200px;
-  margin: 64px auto 0;
-  transform-origin: 50% 0;
-}
-.lp-replica {
-  position: relative;
-}
-.lp-replica-window {
-  /* The dashboard's planes and ink (globals.css), not the landing's night sky. */
-  --bg: #0f1012;
-  --surface: #0f1012;
-  --card: #121316;
-  --text: #e6e7e9;
-  --text-2: #a3a6ad;
-  --text-3: #84888f;
-  --line: #1c1d21;
-  --line-strong: #24262b;
-  --fill: rgba(255, 255, 255, 0.035);
-  --fill-2: rgba(255, 255, 255, 0.06);
-  --fill-3: rgba(255, 255, 255, 0.09);
-  --track: #24262b;
-  display: flex;
-  height: 900px;
-  border-radius: 14px;
-  background: var(--bg);
-  box-shadow:
-    0 0 0 1px oklch(1 0 0 / 0.08),
-    0 1px 0 oklch(1 0 0 / 0.06) inset,
-    0 80px 160px -50px rgba(0, 0, 0, 0.95);
-  overflow: hidden;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: left;
-  user-select: none;
-}
-.lp-replica-org {
-  font-size: 12px;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-.lp-replica-main {
-  flex: 1;
-  min-width: 0;
-}
-.lp-replica-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(180deg, #000 85%, transparent);
-  mask-image: linear-gradient(180deg, #000 85%, transparent);
-}
-/* A row that changes state (the hand-back's merge, THE-931) fades in where it lands. */
-.lp-replica .ov-row {
-  @starting-style {
-    opacity: 0;
-  }
-  transition: opacity 400ms var(--lp-ease);
-}
-/* The sidebar stays the desk's whatever the screen: the window is a desk's, shrunk. */
-@media (max-width: 719px) {
-  .lp-replica .sh-side {
-    width: var(--sidebar);
-    height: auto;
-    display: flex;
-    padding: 12px 10px;
-    border-right: 1px solid var(--line);
-    border-bottom: 0;
-  }
-  .lp-replica .sh-side > :is(.sh-nav, .sh-projects, .sh-live) {
-    display: flex;
-  }
-  .lp-replica .sh-side > .sh-item {
-    display: flex;
-  }
-  .lp-replica .sh-side > .spacer {
-    display: block;
-  }
-  .lp-replica .sh-search {
-    width: auto;
-    height: 30px;
-    margin-bottom: 10px;
-    padding: 0 8px;
-    justify-content: flex-start;
-  }
-  .lp-replica .sh-search-key {
-    display: inline;
-  }
-  .lp-replica .sh-search-text {
-    position: static;
-    width: auto;
-    height: auto;
-    clip: auto;
-  }
-}
-.lp-pointer {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 3;
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    transform 900ms var(--lp-ease-io),
-    opacity 250ms ease;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6));
-}
-.lp-pointer[data-on] {
-  opacity: 1;
-}
-.lp-fleet-beats {
-  max-width: 1200px;
-  margin: 28px auto 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-.lp-fleet-beats li {
-  display: flex;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 2px solid var(--track);
-  font-size: 14px;
-  color: var(--lp-dim);
-  transition:
-    color 300ms ease,
-    border-color 300ms ease;
-}
-.lp-fleet-beats .lp-mono {
-  font-size: 12px;
-  color: var(--lp-dim);
-}
-.lp-fleet:has([data-stage="delivered"]) [data-beat="delivered"],
-.lp-fleet:has([data-stage="handed-back"]) [data-beat="handed-back"],
-.lp-fleet:has([data-stage="to-validate"]) [data-beat="to-validate"] {
-  color: var(--text);
-  border-color: var(--frontier);
-}
-.lp-fleet-note {
-  max-width: 1200px;
-  margin: 18px auto 0;
-  font-size: 13px;
-  color: var(--lp-dim);
-}
-
-/* On a phone, the dashboard at its own size would not fit: a faithful miniature of it instead. */
-@media (max-width: 860px) {
-  .lp-replica {
-    overflow: hidden;
-  }
-  .lp-replica-window {
-    width: 820px;
-    zoom: 0.8;
-  }
-  .lp-fleet-beats {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-  }
-}
-@media (max-width: 680px) {
-  .lp-replica-window {
-    zoom: 0.62;
-  }
-}
-@media (max-width: 540px) {
-  .lp-replica-window {
-    zoom: 0.43;
-  }
-}
-@media (max-width: 380px) {
-  .lp-replica-window {
-    zoom: 0.39;
-  }
-}
-
-/* ------------------------------------------------- split sections, crew */
-
-.lp-split {
-  max-width: var(--lp-max);
-  margin: 0 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  gap: clamp(40px, 6vw, 80px);
-  align-items: center;
-}
-.lp-split.is-reverse {
-  grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
-}
-.lp-split-words {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-  min-width: 0;
-}
-.lp-split-media {
-  min-width: 0;
-}
-.lp-roles {
-  margin: 10px 0 0;
-  border-top: 1px solid var(--line-2);
-}
-.lp-roles > div {
-  display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
-  align-items: center;
-  gap: 14px;
-  padding: 15px 0;
-  border-bottom: 1px solid var(--line-2);
-}
-.lp-roles dt {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-weight: 500;
-}
-.lp-roles dd {
-  margin: 0;
-  color: var(--text-2);
-  font-size: 14px;
-}
-.lp-role-mark {
-  width: 0;
-  height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 10px solid var(--done);
-}
-.lp-role-mark.is-worker {
-  border-bottom-color: var(--frontier);
-  transform: rotate(90deg);
-}
-.lp-role-mark.is-you {
-  width: 10px;
-  height: 10px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.lp-crew {
-  position: relative;
-  height: 540px;
-  border-radius: 24px;
-  background: radial-gradient(circle at 50% 55%, #121214, #0b0b0d 70%);
-  box-shadow: 0 0 0 1px var(--line);
-  overflow: hidden;
-}
-.lp-crew-sky {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-.lp-crew-legend {
-  position: absolute;
-  left: 20px;
-  bottom: 16px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  font-size: 12px;
-  color: var(--lp-dim);
-}
-.lp-crew-legend li {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.lp-crew-legend i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-/* ------------------------------------------------------------------ cli */
+/* ------------------------------------------------------------- terminal */
 
 .lp-terminal {
   border-radius: 18px;
@@ -2315,6 +762,9 @@ html:has(> body .lp) {
 }
 .lp-terminal-command {
   color: var(--text);
+  /* A command wraps rather than lose its end (#587): it is what you would type. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .lp-terminal-prompt {
   color: var(--done);
@@ -2355,206 +805,405 @@ html:has(> body .lp) {
 .lp-terminal-line.is-blue {
   color: var(--frontier);
 }
-.lp-commands {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-top: 6px;
-}
-.lp-command-group {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
-  gap: 12px;
-  align-items: baseline;
-}
-.lp-command-role {
-  font-size: 12.5px;
-  color: var(--lp-dim);
-}
-.lp-command-group ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.lp-command {
+
+/* ---------------------------------------------------------------- story */
+
+/* The story below the hero (#587): one chapter per thing you do with Armada,
+   each a full-bleed panel of one flat colour with heavy, tight type beside a
+   diagram drawn in one outline weight. The hero's night and lime carry on;
+   the sky, the orange and the paper are its other hues, opened up. */
+.lp-ch {
+  --ch-ink: #060709;
+  --ch-paper: #f6f4ee;
+  --ch-lime: var(--done);
+  --ch-sky: #a9c4ff;
+  --ch-orange: var(--accent);
+  --ch-amber: var(--active);
+  --ch-night: #060709;
+  --ch-card: #15161b;
+  /* What a chapter draws with: its background, its ink, its quiet ink, and its command's chip. */
+  --ch-bg: var(--ch-paper);
+  --ch-fg: var(--ch-ink);
+  --ch-fg-2: rgba(6, 7, 9, 0.78);
+  --ch-line: var(--ch-ink);
+  --ch-chip: var(--ch-ink);
+  --ch-chip-fg: var(--ch-paper);
+  --ch-chip-dim: rgba(246, 244, 238, 0.62);
   position: relative;
+  padding: clamp(88px, 11vw, 168px) var(--lp-pad);
+  background: var(--ch-bg);
+  color: var(--ch-fg);
 }
-.lp-command code {
-  display: inline-flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  box-shadow: inset 0 0 0 1px var(--line);
-  font: 12.5px var(--font-mono);
-  color: var(--text-2);
-  transition:
-    color var(--t-fast) ease,
-    box-shadow var(--t-fast) ease;
+.lp-ch.is-lime {
+  --ch-bg: var(--ch-lime);
 }
-/* What a command does, on hover: a tip over it. */
-.lp-command::after {
-  content: attr(data-what);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  z-index: 5;
-  width: max-content;
-  max-width: 260px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  background: var(--overlay);
-  box-shadow:
-    0 0 0 1px var(--line-strong),
-    0 12px 30px -10px rgba(0, 0, 0, 0.8);
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: var(--text);
-  opacity: 0;
-  transform: translate(-50%, 4px) scale(0.97);
-  transform-origin: 50% 100%;
-  pointer-events: none;
-  transition:
-    opacity 125ms var(--lp-ease),
-    transform 125ms var(--lp-ease);
+.lp-ch.is-sky {
+  --ch-bg: var(--ch-sky);
 }
-@media (hover: hover) and (pointer: fine) {
-  .lp-command:hover code {
-    color: var(--done);
-    box-shadow: inset 0 0 0 1px rgba(182, 241, 90, 0.35);
-  }
-  .lp-command:hover::after {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
+.lp-ch.is-orange {
+  --ch-bg: var(--ch-orange);
 }
-
-/* ----------------------------------------------------------------- keys */
-
-.lp-keys {
-  max-width: var(--lp-max);
+.lp-ch.is-night {
+  --ch-bg: var(--ch-night);
+  --ch-fg: var(--ch-paper);
+  --ch-fg-2: rgba(246, 244, 238, 0.74);
+  --ch-line: var(--ch-paper);
+  --ch-chip: var(--ch-paper);
+  --ch-chip-fg: var(--ch-ink);
+  --ch-chip-dim: rgba(6, 7, 9, 0.6);
+}
+.lp-ch :focus-visible {
+  outline-color: var(--ch-fg);
+}
+.lp-ch ::selection {
+  background: var(--ch-fg);
+  color: var(--ch-bg);
+}
+.lp-ch-inner {
+  max-width: 1320px;
   margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 11fr) minmax(0, 10fr);
+  gap: clamp(48px, 7vw, 120px);
+  align-items: center;
+}
+.lp-ch-words {
   display: flex;
   flex-direction: column;
-  gap: 56px;
+  align-items: flex-start;
+  gap: clamp(24px, 2.4vw, 34px);
+  min-width: 0;
+  /* The title scales with its column, so its longest word always fits. */
+  container-type: inline-size;
 }
-.lp-keys-head {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  gap: 24px 64px;
-  align-items: end;
+.lp-ch.is-flip .lp-ch-words {
+  order: 2;
 }
-.lp-facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: 1px solid var(--line-2);
+.lp-ch-title {
+  margin: 0;
+  font-size: clamp(40px, 15.4cqi, 112px);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: -0.062em;
+  text-wrap: balance;
+  /* Tight tracking eats the last glyph's overhang. */
+  padding-right: 0.04em;
 }
-.lp-fact {
+.lp-ch.is-wide .lp-ch-inner {
+  container-type: inline-size;
+  align-items: start;
+}
+.lp-ch.is-wide .lp-ch-title {
+  grid-column: 1 / -1;
+  max-width: 13em;
+  font-size: clamp(40px, 8.6cqi, 136px);
+}
+.lp-ch-body {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 34px 32px 34px 0;
-  border-bottom: 1px solid var(--line-2);
+  max-width: 34em;
+  font-size: clamp(17px, 1.42vw, 20px);
+  line-height: 1.5;
+  font-weight: 450;
+  letter-spacing: -0.008em;
+  color: var(--ch-fg-2);
 }
-.lp-fact + .lp-fact {
-  padding-left: 32px;
-  border-left: 1px solid var(--line-2);
-}
-.lp-fact-figure {
-  font-size: clamp(44px, 5vw, 64px);
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  line-height: 1;
-}
-.lp-fact-figure.is-mono {
-  font: 500 clamp(30px, 3.2vw, 42px) / 1.25 var(--font-mono);
-  letter-spacing: -0.03em;
-}
-.lp-fact p {
+.lp-ch-body p {
   margin: 0;
-  font-size: 15px;
-  line-height: 1.55;
-  color: var(--text-2);
   text-wrap: pretty;
 }
+.lp-ch-body p:first-child {
+  color: var(--ch-fg);
+}
+.lp-ch-body code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ch-fg) 9%, transparent);
+  font: 0.86em var(--font-mono);
+  color: var(--ch-fg);
+}
 
-/* -------------------------------------------------------------- install */
-
-.lp-install {
-  overflow: hidden;
-}
-.lp-install::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(800px 480px at 50% 30%, rgba(182, 241, 90, 0.07), transparent 70%);
-}
-.lp-install-inner {
-  position: relative;
-  max-width: 760px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 28px;
-  text-align: center;
-}
-.lp-install-title {
-  margin: 0;
-  font-size: clamp(54px, 9vw, 124px);
-  line-height: 0.92;
-  font-weight: 600;
-  letter-spacing: -0.06em;
-}
-.lp-install-steps {
-  width: 100%;
-  max-width: 660px;
-  margin: 8px 0 0;
-  padding: 8px;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  border-radius: 20px;
-  background: rgba(17, 17, 19, 0.85);
-  box-shadow: 0 0 0 1px oklch(1 0 0 / 0.08);
-  text-align: left;
-}
-.lp-install-steps li {
-  display: flex;
-  align-items: center;
+/* A chapter's command: a solid chip, the whole of it the copy button. */
+.lp-ch .lp-copy {
+  height: auto;
+  min-height: 0;
+  max-width: 100%;
   gap: 12px;
-  padding-left: 12px;
-}
-.lp-install-n {
-  flex: none;
-  width: 20px;
-  font-size: 12px;
-  color: var(--lp-dim);
-}
-.lp-install-steps .lp-copy {
-  flex: 1;
-  height: 62px;
-  background: transparent;
+  padding: 10px 8px 10px 16px;
+  border-radius: 14px;
+  background: var(--ch-chip);
+  color: var(--ch-chip-fg);
   box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  font-size: 14px;
+  transition: transform 160ms var(--lp-ease);
+}
+.lp-ch .lp-copy-command {
+  white-space: normal;
+  /* Break between words; inside one (a UUID, a URL) only when it cannot fit. */
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+/* A word of a command is one piece: it breaks inside only when it is wider than the chip. */
+.lp-copy-word {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.lp-ch .lp-prompt,
+.lp-ch .lp-copy-note {
+  color: var(--ch-chip-dim);
+}
+/* The icon sits 8 px inside the chip's 14 px corner: 6 px of its own. */
+.lp-ch .lp-copy-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ch-chip-fg) 12%, transparent);
+  color: var(--ch-chip-fg);
+}
+.lp-ch .lp-copy-icon svg {
+  inset: 8px;
+}
+.lp-ch .lp-copy-icon .is-done {
+  color: currentColor;
 }
 @media (hover: hover) and (pointer: fine) {
-  .lp-install-steps .lp-copy:hover {
-    background: rgba(255, 255, 255, 0.04);
-    box-shadow: none;
+  .lp-ch .lp-copy:hover {
+    background: var(--ch-chip);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ch-chip) 22%, transparent);
   }
 }
-.lp-install-actions {
+
+/* ------------------------------------------------------------- diagrams */
+
+.lp-ch-figure {
+  min-width: 0;
+}
+.lp-fig {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  font-family: var(--font-sans);
+}
+.lp-fig :is(rect, path, circle) {
+  stroke: var(--ch-line);
+  stroke-width: 3.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.lp-fig-card {
+  fill: var(--ch-paper);
+}
+.lp-fig-card.is-lime {
+  fill: var(--ch-lime);
+}
+.lp-fig-card.is-sky {
+  fill: var(--ch-sky);
+}
+.lp-fig-card.is-orange {
+  fill: var(--ch-orange);
+}
+.lp-fig-card.is-night {
+  fill: var(--ch-card);
+}
+.lp-fig-ink {
+  fill: var(--ch-ink);
+}
+.lp-fig-ghost {
+  fill: none;
+  stroke-dasharray: 2 12;
+}
+.lp-fig-wire {
+  fill: none;
+  stroke-dasharray: 1 9;
+}
+.lp-fig-wire.is-thick {
+  stroke-dasharray: none;
+}
+.lp-fig-wire.is-cut {
+  stroke-dasharray: 10 10;
+}
+.lp-fig-line,
+.lp-fig-prong {
+  fill: none;
+}
+.lp-fig-plug {
+  fill: var(--ch-ink);
+}
+.lp-fig-dot {
+  fill: var(--ch-ink);
+}
+.lp-fig .lp-fig-prompt {
+  fill: none;
+  stroke: var(--ch-lime);
+}
+.lp-fig .lp-fig-shackle {
+  fill: none;
+  stroke-width: 7;
+}
+.lp-fig-node {
+  fill: var(--ch-ink);
+}
+.lp-fig-node.is-hollow {
+  fill: var(--ch-bg);
+}
+.lp-fig .lp-fig-ship {
+  stroke: var(--ch-ink);
+  stroke-width: 3;
+}
+.lp-fig-ship.is-lime {
+  fill: var(--ch-lime);
+}
+.lp-fig-ship.is-sky {
+  fill: var(--ch-sky);
+}
+.lp-fig-ship.is-orange {
+  fill: var(--ch-orange);
+}
+.lp-fig-ship.is-amber {
+  fill: var(--ch-amber);
+}
+.lp-fig-ship.is-paper {
+  fill: var(--ch-paper);
+}
+.lp-fig-ship.is-ink {
+  fill: var(--ch-ink);
+}
+.lp-fig-check circle {
+  fill: var(--ch-lime);
+  stroke: none;
+}
+.lp-fig .lp-fig-check path {
+  fill: none;
+  stroke: var(--ch-ink);
+  stroke-width: 3;
+}
+.lp-fig-pill {
+  fill: var(--ch-paper);
+}
+.lp-fig .lp-fig-pill {
+  stroke: none;
+}
+.lp-fig-pill.is-key {
+  fill: var(--ch-lime);
+}
+.lp-fig-stop {
+  fill: var(--critical);
+}
+.lp-fig .lp-fig-stop-x {
+  fill: none;
+  stroke: var(--ch-ink);
+  stroke-width: 4;
+}
+.lp-fig text {
+  stroke: none;
+  fill: var(--ch-ink);
+}
+.lp-fig-t {
+  font-size: 28px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+.lp-fig-t.is-big {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+}
+.lp-fig-s {
+  font-size: 23px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.lp-fig-s.is-mono {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+.lp-fig-xs {
+  font-size: 20px;
+  font-weight: 650;
+}
+.lp-fig text.is-on-ink {
+  fill: var(--ch-paper);
+}
+.lp-fig text.is-on-ink.lp-fig-s {
+  fill: rgba(246, 244, 238, 0.74);
+}
+.lp-fig text.is-running {
+  fill: var(--ch-lime);
+}
+.lp-fig text.is-ready {
+  fill: var(--ch-sky);
+}
+/* On a night chapter the wires and outlines are paper; text on paper shapes stays ink. */
+.lp-ch.is-night .lp-fig :is(.lp-fig-card.is-night, .lp-fig-ink) {
+  stroke: rgba(246, 244, 238, 0.9);
+}
+
+/* ------------------------------------------------------------------ try */
+
+.lp-try-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-  margin-top: 6px;
+  align-items: center;
+  gap: 14px 28px;
+}
+.lp-try-primary {
+  display: inline-flex;
+  align-items: center;
+  height: 64px;
+  padding: 0 30px;
+  border-radius: 18px;
+  background: var(--ch-ink);
+  color: var(--ch-paper);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: 6px 6px 0 rgba(6, 7, 9, 0.24);
+  transition:
+    transform 160ms var(--lp-ease),
+    box-shadow 160ms var(--lp-ease);
+}
+.lp-try-primary:active {
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 rgba(6, 7, 9, 0.24);
+}
+.lp-try-link {
+  font-size: 17px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+.lp-try-sub {
+  margin: 12px 0 0;
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+.lp-try-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  margin: -12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.lp-try-steps .lp-copy {
+  width: 100%;
+}
+.lp-try-terminal {
+  position: relative;
+}
+.lp-try-terminal .lp-terminal {
+  box-shadow:
+    0 0 0 3.5px var(--ch-ink),
+    12px 12px 0 var(--ch-ink);
 }
 
 /* --------------------------------------------------------------- footer */
@@ -2582,7 +1231,7 @@ html:has(> body .lp) {
   align-items: center;
   gap: 7px;
   color: var(--text-2);
-  transition: color var(--t-fast) ease;
+  transition: color var(--t-fast) var(--lp-ease);
 }
 @media (hover: hover) and (pointer: fine) {
   .lp-footer-link:hover {
@@ -2591,34 +1240,22 @@ html:has(> body .lp) {
 }
 
 @media (max-width: 860px) {
-  .lp-split,
-  .lp-split.is-reverse,
-  .lp-keys-head {
+  .lp-ch-inner {
     grid-template-columns: minmax(0, 1fr);
   }
-  .lp-crew {
-    height: 460px;
+  .lp-ch.is-flip .lp-ch-words {
+    order: 0;
+  }
+  .lp-ch .lp-copy {
+    font-size: 12.5px;
   }
   .lp-terminal-body {
-    height: 380px;
-    font-size: 11px;
+    height: 440px;
+    font-size: 12px;
   }
-  .lp-facts {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .lp-fact,
-  .lp-fact + .lp-fact {
-    padding: 26px 0;
-    border-left: 0;
-  }
-  .lp-roles > div {
-    grid-template-columns: 120px minmax(0, 1fr);
-  }
-  .lp-command-group {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-  }
-  .lp-install-steps .lp-copy {
-    font-size: 12.5px;
+  .lp-try-terminal .lp-terminal {
+    box-shadow:
+      0 0 0 3px var(--ch-ink),
+      6px 6px 0 var(--ch-ink);
   }
 }

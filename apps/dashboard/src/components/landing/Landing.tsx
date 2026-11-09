@@ -1,10 +1,8 @@
-import { Cli } from "./Cli";
-import { FleetLive } from "./FleetLive";
 import { Hero, Nav } from "./Hero";
-import { Method } from "./Method";
-import { Crew, Footer, Install, Keys } from "./Sections";
+import { Footer } from "./Sections";
+import { Story } from "./Story";
 
-// The landing's sections, top to bottom (THE-887).
+// The landing's sections, top to bottom (THE-887): the hero, then the story (#587).
 export function Landing() {
   return (
     <div className="lp">
@@ -14,12 +12,7 @@ export function Landing() {
       <Nav />
       <main id="main">
         <Hero />
-        <Method />
-        <FleetLive />
-        <Crew />
-        <Cli />
-        <Keys />
-        <Install />
+        <Story />
       </main>
       <Footer />
     </div>
