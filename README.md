@@ -1,6 +1,9 @@
 <p align="center">
   <a href="https://armada.thevibecompany.co">
-    <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code and Codex in Boat or Modal sandboxes, built from your repositories.">
+    <picture>
+      <source media="(max-width: 600px)" srcset="docs/images/armada-masthead-mobile.svg">
+      <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code and Codex in Boat or Modal sandboxes, built from your repositories.">
+    </picture>
   </a>
 </p>
 
@@ -25,57 +28,26 @@ Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and ag
 
 ## Why Armada
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### Start from a ready workspace
-A golden holds your repositories, branches and setup, scanned for secrets and snapshotted on the provider. Every launch forks it and pulls the latest commits instead of starting from an empty machine.
-
-</td>
-<td width="50%" valign="top">
-
-### Choose the agent and the brain
-Claude Code or Codex, with an explicit model and reasoning effort. The choice is saved with the sandbox, so later turns keep it; a single prompt can override it. Armada never swaps in another model.
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### One task, one sandbox
-Each launch is its own Boat or Modal machine with a lifetime you set. It receives only the chosen agent's credentials, and `git` and `gh` act as you once you connect GitHub.
-
-</td>
-<td width="50%" valign="top">
-
-### See and steer every move
-Read the agent's events live, send the next prompt, steer the running turn, interrupt it or run a command beside it. Stop removes the machine but keeps the disk and the conversation; the next prompt resumes it.
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### Bring your tools
-Register the MCP servers your agents need, personal or shared with your org, connect them once, and attach the connected ones to a launch.
-
-</td>
-<td width="50%" valign="top">
-
-### Built for teams and bots
-Organizations with admin and member roles, private goldens and sandboxes, write-only encrypted credentials, and service tokens for orchestrators and CI.
-
-</td>
-</tr>
-</table>
+- **Start from a ready workspace.** A golden snapshots your repositories, branches and setup after a secret scan; every launch forks it and pulls the latest commits.
+- **Choose the agent and the brain.** Claude Code or Codex, with the exact model and reasoning effort you name. Armada never swaps in another model.
+- **One task, one sandbox.** Each launch gets its own Boat or Modal machine, only that agent's credentials, and your GitHub identity once you connect it.
+- **See and steer every move.** Follow events live, send the next prompt, steer or interrupt the running turn, run a command beside it.
+- **Stop without losing work.** Stopping removes the machine but keeps the disk and the conversation; the next prompt resumes it.
+- **Bring your tools and your team.** Attach the MCP servers you connected, share goldens with your org or keep them private, and give bots a service token.
 
 ## How it works
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
-  <img src="docs/images/armada-how-it-works-light.svg" width="100%" alt="How Armada works, in four steps. Golden: your repositories are cloned over your GitHub connection, set up, scanned for secrets and snapshotted per provider. Launch: Claude Code or Codex with an explicit model and effort, on Boat or Modal, with your connected MCP servers. Sandbox: a fresh fork where git acts as you and only that agent's keys are present. Drive: follow events, send, steer, interrupt, exec, stop and resume. The web dashboard, the armada CLI and the Armada MCP server go through the same server and the same rules.">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
+    <img src="docs/images/armada-how-it-works-light.svg" width="720" alt="How Armada works, in four steps. 1 Golden: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.">
+  </picture>
+</p>
+
+1. **Golden**: build once from your repositories (`armada golden create`).
+2. **Launch**: pick Claude Code or Codex, the model, the effort and the provider (`armada launch`).
+3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
+4. **Drive**: follow, steer, stop and resume (`armada logs --follow`, `armada send`).
 
 The dashboard, the `armada` CLI and Armada's MCP server all call the same Armada server, so a sandbox launched from one is visible and controllable from the others, under the same permissions.
 
@@ -177,7 +149,7 @@ MCP clients sign in with OAuth; bots and CI use a service token bound to one org
 armada token create --org acme --label ci   # printed once; Armada keeps only its hash
 ```
 
-Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+Your orchestrator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
 
 ## Teams
 
@@ -188,10 +160,6 @@ Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding
 | Change organization goldens, members and provider keys | ✓ | |
 
 A private golden or sandbox is visible only to its owner, not even to admins. Members are people who have signed in once; there are no pending invitations.
-
-## What Armada is not
-
-Armada is a launcher, not an orchestrator. It does not split work into tasks, read your issue tracker, review code or merge pull requests: point your own orchestrator at its MCP server for that. It does not host machines or models either; sandboxes and agents run, and are billed, on the provider and model accounts you connect.
 
 ## Documentation
 

@@ -10,6 +10,10 @@ Armada has three deployable parts:
 | `armada-server` | The control API (`/api/v1/`), the OAuth authorization server and the remote MCP server (`/mcp`). It holds the database connection, the encryption key and talks to Boat and Modal. | `packages/mcp-server`, compiled by `scripts/build.ts`, shipped by `Dockerfile` |
 | Dashboard | The web app (Next.js App Router). It acts as the signed-in user over Supabase, so row level security decides what each person sees. | `apps/dashboard` |
 
+## Scope
+
+Armada is a launcher, not an orchestrator. It does not split work into tasks, read issue trackers, review code or merge pull requests; an external orchestrator does that through Armada's MCP server. It does not host machines or models either: sandboxes and agents run, and are billed, on the Boat, Modal and model accounts an organization connects.
+
 The specification is issue [#455](https://github.com/The-Vibe-Company/armada/issues/455); `AGENTS.md` maps every package.
 
 ## Database

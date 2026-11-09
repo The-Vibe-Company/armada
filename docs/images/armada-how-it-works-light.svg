@@ -1,77 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="588" viewBox="0 0 1280 588" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1040" viewBox="0 0 960 1040" role="img" aria-labelledby="t d">
 <title id="t">How Armada works</title>
-<desc id="d">Four steps. Golden: your repositories are cloned over your GitHub connection, set up, scanned for secrets and snapshotted per provider. Launch: Claude Code or Codex with an explicit model and effort, on Boat or Modal, with your connected MCP servers. Sandbox: a fresh fork where git acts as you and only that agent's keys are present. Drive: follow events, send, steer, interrupt, exec, stop and resume. The web dashboard, the armada CLI and the Armada MCP server all go through the same server policies.</desc>
-<rect width="1280" height="588" rx="24" fill="#fbfbf9"/>
-<rect x="0.5" y="0.5" width="1279" height="587" rx="23.5" fill="none" stroke="#dcdcd6"/>
-<g transform="translate(48 48)">
-<rect width="272" height="392" rx="16" fill="#ffffff" stroke="#dcdcd6"/>
-<path d="M36 22L54 52H18Z" fill="#b6f15a"/>
-<text x="70" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#6b6d74">01</text>
-<text x="24" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="-0.6" fill="#111214">Golden</text>
-<text x="24" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#3f6b00">Build once, reuse</text>
-<text x="24" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Your repos, cloned over</text>
-<text x="24" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">your GitHub connection</text>
-<text x="24" y="244" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Setup script, then a</text>
-<text x="24" y="278" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">fail-closed secret scan</text>
-<text x="24" y="312" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Snapshot per provider</text>
-<rect x="16" y="332" width="240" height="40" rx="10" fill="#f1f1ec"/>
-<text x="30" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada golden create</text>
-</g>
-<path d="M324 244.0H346" stroke="#6b6d74" stroke-width="2" stroke-dasharray="3 4"/>
-<path d="M344 238.0L352 244.0L344 250.0Z" fill="#6b6d74"/>
-<g transform="translate(352 48)">
-<rect width="272" height="392" rx="16" fill="#ffffff" stroke="#dcdcd6"/>
-<path d="M36 22L54 52H18Z" fill="#b6f15a"/>
-<text x="70" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#6b6d74">02</text>
-<text x="24" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="-0.6" fill="#111214">Launch</text>
-<text x="24" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#3f6b00">Pick the agent and brain</text>
-<text x="24" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Claude Code or Codex</text>
-<text x="24" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Explicit model and effort</text>
-<text x="24" y="244" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Boat or Modal sandbox</text>
-<text x="24" y="278" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Your connected MCPs</text>
-<text x="24" y="312" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Prompt now, or later</text>
-<rect x="16" y="332" width="240" height="40" rx="10" fill="#f1f1ec"/>
-<text x="30" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada launch</text>
-</g>
-<path d="M628 244.0H650" stroke="#6b6d74" stroke-width="2" stroke-dasharray="3 4"/>
-<path d="M648 238.0L656 244.0L648 250.0Z" fill="#6b6d74"/>
-<g transform="translate(656 48)">
-<rect width="272" height="392" rx="16" fill="#ffffff" stroke="#dcdcd6"/>
-<path d="M36 22L54 52H18Z" fill="#b6f15a"/>
-<text x="70" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#6b6d74">03</text>
-<text x="24" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="-0.6" fill="#111214">Sandbox</text>
-<text x="24" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#3f6b00">An isolated workspace</text>
-<text x="24" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Fresh fork of the golden</text>
-<text x="24" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Repos pulled, init run</text>
-<text x="24" y="244" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">git and gh act as you</text>
-<text x="24" y="278" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Only that agent's keys</text>
-<text x="24" y="312" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Private or org-shared</text>
-<rect x="16" y="332" width="240" height="40" rx="10" fill="#f1f1ec"/>
-<text x="30" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada detail</text>
-</g>
-<path d="M932 244.0H954" stroke="#6b6d74" stroke-width="2" stroke-dasharray="3 4"/>
-<path d="M952 238.0L960 244.0L952 250.0Z" fill="#6b6d74"/>
-<g transform="translate(960 48)">
-<rect width="272" height="392" rx="16" fill="#ffffff" stroke="#dcdcd6"/>
-<path d="M36 22L54 52H18Z" fill="#b6f15a"/>
-<text x="70" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#6b6d74">04</text>
-<text x="24" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="-0.6" fill="#111214">Drive</text>
-<text x="24" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#3f6b00">Watch, redirect, resume</text>
-<text x="24" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Live event log</text>
-<text x="24" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">send · steer · interrupt</text>
-<text x="24" y="244" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">exec a command</text>
-<text x="24" y="278" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">Stop keeps the disk</text>
-<text x="24" y="312" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#3d3f45">A later send resumes</text>
-<rect x="16" y="332" width="240" height="40" rx="10" fill="#f1f1ec"/>
-<text x="30" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada logs --follow</text>
-</g>
-<g transform="translate(48 468)">
-<rect width="1184" height="72" rx="16" fill="#ffffff" stroke="#dcdcd6"/>
-<text x="28" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111214">Same server, same rules, three ways in</text>
-<rect x="919" y="16" width="237" height="40" rx="20" fill="#f1f1ec" stroke="#dcdcd6"/>
-<text x="1037" y="42" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#3d3f45">MCP for orchestrators</text>
-<rect x="773" y="16" width="134" height="40" rx="20" fill="#f1f1ec" stroke="#dcdcd6"/>
-<text x="840" y="42" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#3d3f45">armada CLI</text>
-<rect x="598" y="16" width="162" height="40" rx="20" fill="#f1f1ec" stroke="#dcdcd6"/>
-<text x="680" y="42" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#3d3f45">Web dashboard</text>
-</g></svg>
+<desc id="d">Four steps. 1 Golden: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.</desc>
+<rect width="960" height="1040" rx="28" fill="#fbfbf9"/><rect x="0.5" y="0.5" width="959" height="1039" rx="27.5" fill="none" stroke="#d6d6cf"/>
+<g transform="translate(40 40)"><rect width="420" height="392" rx="20" fill="#ffffff" stroke="#d6d6cf"/>
+<path d="M48 26L70 62H26Z" fill="#9bd63f"/><text x="88" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#6b6d74">01</text>
+<text x="28" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="-0.8" fill="#111214">Golden</text>
+<text x="28" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="600" fill="#3f6b00">Build once, reuse</text>
+<text x="28" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Repos and setup script</text>
+<text x="28" y="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Fail-closed secret scan</text>
+<text x="28" y="290" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Snapshot per provider</text>
+<rect x="20" y="322" width="380" height="52" rx="12" fill="#f1f1ec"/>
+<text x="38" y="357" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada golden create</text></g>
+<g transform="translate(500 40)"><rect width="420" height="392" rx="20" fill="#ffffff" stroke="#d6d6cf"/>
+<path d="M48 26L70 62H26Z" fill="#9bd63f"/><text x="88" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#6b6d74">02</text>
+<text x="28" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="-0.8" fill="#111214">Launch</text>
+<text x="28" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="600" fill="#3f6b00">Agent and brain</text>
+<text x="28" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Claude Code or Codex</text>
+<text x="28" y="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Your model and effort</text>
+<text x="28" y="290" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Boat or Modal, your MCPs</text>
+<rect x="20" y="322" width="380" height="52" rx="12" fill="#f1f1ec"/>
+<text x="38" y="357" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada launch</text></g>
+<g transform="translate(40 472)"><rect width="420" height="392" rx="20" fill="#ffffff" stroke="#d6d6cf"/>
+<path d="M48 26L70 62H26Z" fill="#9bd63f"/><text x="88" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#6b6d74">03</text>
+<text x="28" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="-0.8" fill="#111214">Sandbox</text>
+<text x="28" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="600" fill="#3f6b00">Isolated workspace</text>
+<text x="28" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Fresh fork, repos pulled</text>
+<text x="28" y="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">git and gh act as you</text>
+<text x="28" y="290" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Only that agent's keys</text>
+<rect x="20" y="322" width="380" height="52" rx="12" fill="#f1f1ec"/>
+<text x="38" y="357" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada detail</text></g>
+<g transform="translate(500 472)"><rect width="420" height="392" rx="20" fill="#ffffff" stroke="#d6d6cf"/>
+<path d="M48 26L70 62H26Z" fill="#9bd63f"/><text x="88" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#6b6d74">04</text>
+<text x="28" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="-0.8" fill="#111214">Drive</text>
+<text x="28" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="600" fill="#3f6b00">Watch, steer, resume</text>
+<text x="28" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Follow live events</text>
+<text x="28" y="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">send · steer · interrupt</text>
+<text x="28" y="290" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" fill="#33353b">Stop, then resume</text>
+<rect x="20" y="322" width="380" height="52" rx="12" fill="#f1f1ec"/>
+<text x="38" y="357" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#111214"><tspan fill="#3f6b00">$</tspan>&#160;armada logs --follow</text></g>
+<g transform="translate(40 904)"><rect width="880" height="96" rx="20" fill="#ffffff" stroke="#d6d6cf"/>
+<text x="440" y="44" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="600" fill="#111214">One server, same rules</text>
+<text x="440" y="78" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" fill="#6b6d74">Web dashboard  ·  armada CLI  ·  MCP clients</text></g></svg>
