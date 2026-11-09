@@ -48,7 +48,7 @@ export interface Provider {
   /** Starts a sandbox from a snapshot. */
   fork(request: ForkRequest): Promise<SandboxInfo>;
 
-  get(sandboxId: string): Promise<SandboxInfo>;
+  get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
   list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
   /** Queues work for a harness. Without `conversationId` it opens a new conversation. */
@@ -116,6 +116,8 @@ export interface SandboxInfo {
   labels: Readonly<Record<string, string>>;
   createdAt?: Date;
   stoppedAt?: Date;
+  /** SDK-confirmed physical exit, without claiming a fresh resumable checkpoint. */
+  physicalExitConfirmed?: boolean;
   /** When the provider stops it by itself (the TTL). */
   expiresAt?: Date;
   /** `host:port` of the SSH server when the machine has no public IPv4. */
@@ -178,6 +180,8 @@ export interface ListRequest {
 }
 
 export interface PromptRequest {
+  /** Trusted server cancellation, never persisted or sent as model input. */
+  signal?: AbortSignal;
   sandboxId: string;
   harness: Harness;
   text: string;
@@ -196,6 +200,8 @@ export function isFinalPromptStatus(status: PromptStatus): boolean {
 }
 
 export interface PromptReceipt {
+  /** This admission restored a physically stopped machine; renew the durable lease. */
+  resumed?: boolean;
   promptId: string;
   conversationId: string;
   status: PromptStatus;

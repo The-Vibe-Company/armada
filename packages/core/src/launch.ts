@@ -24,6 +24,7 @@ import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
+import { sandboxActivity } from "./sandbox-activity.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
@@ -170,6 +171,7 @@ export async function launchSandbox(
         throw error;
       });
 
+    const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
     try {
       record = await stores.sandboxes.insert({
@@ -181,7 +183,10 @@ export async function launchSandbox(
         ownerId: actor.userId,
         harness,
         status: "starting",
+        ...(activityLeaseId ? { activityLeaseId } : {}),
         repositoryDir,
+        ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
+        effectiveTtlSeconds: ttlSeconds,
         model: choice.model,
         reasoningEffort: choice.reasoningEffort,
         visibility,
@@ -192,7 +197,7 @@ export async function launchSandbox(
       throw error;
     }
 
-    try {
+    const start = async (signal: AbortSignal) => {
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });
         throw new LaunchError(
@@ -212,20 +217,23 @@ export async function launchSandbox(
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
       await stores.connections?.prepare?.(provider, record, actor);
       if (prompt === undefined) {
-        await stores.sandboxes.update(record.id, { status: "ready" });
-        return finish(
-          record,
-          golden,
-          launchGithub,
-          ttlSeconds,
-          ready.expiresAt ?? forked.expiresAt,
-          "ready",
-          [],
-          undefined,
-        );
+        signal.throwIfAborted();
+        return {
+          patch: { status: "ready" as const },
+          result: finish(
+            record,
+            golden,
+            launchGithub,
+            ttlSeconds,
+            ready.expiresAt ?? forked.expiresAt,
+            "ready",
+            [],
+            undefined,
+          ),
+        };
       }
       const receipt = await provider
-        .prompt({ sandboxId: ready.id, harness, text: prompt, ...choice })
+        .prompt({ sandboxId: ready.id, harness, text: prompt, signal, ...choice })
         .catch((error: unknown) => {
           throw new LaunchError(
             "prompt_failed",
@@ -235,23 +243,45 @@ export async function launchSandbox(
             },
           );
         });
-      await stores.sandboxes.update(record.id, { status: "running", conversationIds: [receipt.conversationId] });
-      return finish(
-        record,
-        golden,
-        launchGithub,
-        ttlSeconds,
-        ready.expiresAt ?? forked.expiresAt,
-        "running",
-        [receipt.conversationId],
-        {
-          conversationId: receipt.conversationId,
-          promptId: receipt.promptId,
-        },
-      );
+      return {
+        patch: { status: "running" as const, conversationIds: [receipt.conversationId] },
+        result: finish(
+          record,
+          golden,
+          launchGithub,
+          ttlSeconds,
+          ready.expiresAt ?? forked.expiresAt,
+          "running",
+          [receipt.conversationId],
+          {
+            conversationId: receipt.conversationId,
+            promptId: receipt.promptId,
+          },
+        ),
+      };
+    };
+    try {
+      if (activityLeaseId)
+        return await sandboxActivity(stores.sandboxes, record, {}, start, {
+          initialLeaseId: activityLeaseId,
+          // Preserve each sequential pull/init command's existing timeout, plus bounded
+          // physical readiness, native preparation, credential setup and prompt overhead.
+          deadlineMs:
+            15 * 60_000 +
+            1000 *
+              (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
+                golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
+          failurePatch: (error) => ({ status: "failed", statusReason: withSandbox(error, record.id, secrets).message }),
+        });
+      // Caller-role legacy stores cannot mutate server coordination columns. Keep their
+      // original RLS-only flow; the deployed server always uses the owned scoped store.
+      const completed = await start(new AbortController().signal);
+      await stores.sandboxes.update(record.id, completed.patch);
+      return completed.result;
     } catch (error) {
       const failure = withSandbox(error, record.id, secrets);
-      await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
+      if (!activityLeaseId)
+        await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
       await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }

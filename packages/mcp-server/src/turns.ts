@@ -84,8 +84,13 @@ export async function readStatus(
   const next = nextStatus(sandbox.status, info, prompt);
   const reason = next === "failed" ? (failureReason(info, prompt) ?? sandbox.statusReason) : null;
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
-    const patch: SandboxPatch = { status: next, statusReason: reason };
-    if (next === "stopped") patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+    const patch: SandboxPatch = {
+      status: next,
+      statusReason: reason,
+      ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
+    };
+    if (next === "failed" && info.physicalExitConfirmed) patch.stoppedAt = options.now.toISOString();
+    else if (next === "stopped") patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     await store.update(sandbox.id, patch);
   }
@@ -100,7 +105,7 @@ function failureReason(info: SandboxInfo, prompt: PromptReport | null): string |
 
 function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptReport | null): SandboxStatus {
   if (info.state === "stopped") return current === "failed" ? "failed" : "stopped";
-  if (info.state === "stopping") return "stopping";
+  if (info.state === "stopping") return current === "failed" ? "failed" : "stopping";
   if (info.state === "failed") return "failed";
   if (info.state === "starting") return current === "running" ? "running" : "starting";
   if (!prompt) return current === "starting" ? "ready" : current === "running" ? "running" : current;

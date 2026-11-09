@@ -6,6 +6,12 @@ import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
 export interface SandboxRecord {
+  expiresAt?: string;
+  effectiveTtlSeconds?: number;
+  requestedTtlSeconds?: number | null;
+  lastObservedAt?: string | null;
+  lifecycleError?: string | null;
+  lifecycleGeneration?: number;
   id: string;
   /** Its golden's provider: where it runs, for good. */
   provider: SandboxProviderId;
@@ -32,6 +38,14 @@ export interface SandboxRecord {
 }
 
 export interface SandboxPatch {
+  renewLifecycle?: boolean;
+  expectedGeneration?: number;
+  advanceGeneration?: boolean;
+  finishActivity?: boolean;
+  activityToken?: string;
+  renewActivity?: boolean;
+  rearmDeadline?: boolean;
+  stopRequested?: boolean;
   status?: SandboxStatus;
   conversationIds?: string[];
   /** ISO timestamp. */
@@ -47,6 +61,8 @@ export interface SandboxPatch {
  * exactly when its golden is, so a private golden's sandboxes are the owner's alone.
  */
 export interface SandboxStore {
+  /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
+  activityOwnership?: true;
   insert(input: {
     id: string;
     /** Must be the golden's provider: the database refuses another. */
@@ -57,6 +73,9 @@ export interface SandboxStore {
     ownerId: string;
     harness: Harness;
     status: SandboxStatus;
+    activityLeaseId?: string;
+    requestedTtlSeconds?: number;
+    effectiveTtlSeconds?: number;
     repositoryDir?: string | null;
     model: string;
     reasoningEffort: string;
@@ -128,21 +147,27 @@ export interface SandboxRow {
   reasoning_effort: string | null;
   repository_dir: string | null;
   visibility?: "private" | "org";
+  expires_at?: string | Date;
+  effective_ttl_seconds?: number;
+  requested_ttl_seconds?: number | null;
+  last_observed_at?: string | Date | null;
+  lifecycle_error?: string | null;
+  lifecycle_generation?: number;
 }
 
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, visibility, repository_dir`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text)
+           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -157,6 +182,9 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
           input.provider,
           input.visibility ?? null,
           input.repositoryDir ?? null,
+          input.requestedTtlSeconds ?? null,
+          input.effectiveTtlSeconds ?? 14400,
+          input.activityLeaseId ?? null,
         ],
       );
       const row = result.rows[0];
@@ -201,6 +229,16 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
   if (row.harness !== "claude" && row.harness !== "codex") throw new Error("Sandbox row harness is invalid.");
   if (!isSandboxProvider(row.provider)) throw new Error("Sandbox row provider is invalid.");
   return {
+    ...(row.expires_at
+      ? {
+          expiresAt: iso(row.expires_at),
+          effectiveTtlSeconds: row.effective_ttl_seconds ?? 14400,
+          requestedTtlSeconds: row.requested_ttl_seconds ?? null,
+          lastObservedAt: row.last_observed_at ? iso(row.last_observed_at) : null,
+          lifecycleError: row.lifecycle_error ?? null,
+          lifecycleGeneration: row.lifecycle_generation ?? 1,
+        }
+      : {}),
     id: row.id,
     provider: row.provider,
     providerSandboxId: row.provider_sandbox_id,

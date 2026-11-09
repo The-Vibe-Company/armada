@@ -1254,6 +1254,18 @@ export type Database = {
           access_owner_id: string;
           mcp_generation: number;
           repository_dir: string | null;
+          requested_ttl_seconds: number | null;
+          effective_ttl_seconds: number;
+          expires_at: string;
+          lifecycle_generation: number;
+          last_observed_at: string | null;
+          lifecycle_error: string | null;
+          reconcile_after: string;
+          stop_requested_at: string | null;
+          activity_lease_id: string | null;
+          activity_until: string | null;
+          reconcile_lease: string | null;
+          reconcile_lease_until: string | null;
         };
         Insert: {
           id?: string;
@@ -1277,6 +1289,18 @@ export type Database = {
           access_owner_id: string;
           mcp_generation?: number;
           repository_dir?: string | null;
+          requested_ttl_seconds?: number | null;
+          effective_ttl_seconds?: number;
+          expires_at?: string;
+          lifecycle_generation?: number;
+          last_observed_at?: string | null;
+          lifecycle_error?: string | null;
+          reconcile_after?: string;
+          stop_requested_at?: string | null;
+          activity_lease_id?: string | null;
+          activity_until?: string | null;
+          reconcile_lease?: string | null;
+          reconcile_lease_until?: string | null;
         };
         Update: {
           id?: string;
@@ -1300,6 +1324,18 @@ export type Database = {
           access_owner_id?: string;
           mcp_generation?: number;
           repository_dir?: string | null;
+          requested_ttl_seconds?: number | null;
+          effective_ttl_seconds?: number;
+          expires_at?: string;
+          lifecycle_generation?: number;
+          last_observed_at?: string | null;
+          lifecycle_error?: string | null;
+          reconcile_after?: string;
+          stop_requested_at?: string | null;
+          activity_lease_id?: string | null;
+          activity_until?: string | null;
+          reconcile_lease?: string | null;
+          reconcile_lease_until?: string | null;
         };
         Relationships: [
           {

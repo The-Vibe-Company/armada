@@ -42,6 +42,7 @@ import { describeFailure } from "./caller.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
+import { sandboxActivity } from "./sandbox-activity.ts";
 import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -159,6 +160,11 @@ const sandbox = z.object({
   conversationIds: z.array(z.string()),
   createdAt: z.string(),
   stoppedAt: z.string().nullable(),
+  expiresAt: z.string().nullable(),
+  effectiveTtlSeconds: z.number().nullable(),
+  requestedTtlSeconds: z.number().nullable(),
+  lastObservedAt: z.string().nullable(),
+  lifecycleError: z.string().nullable(),
 });
 
 const prompt = z.object({
@@ -660,6 +666,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           conversationIds: row.conversationIds,
           createdAt: row.createdAt,
           stoppedAt: row.stoppedAt,
+          expiresAt: row.expiresAt ?? null,
+          effectiveTtlSeconds: row.effectiveTtlSeconds ?? null,
+          requestedTtlSeconds: row.requestedTtlSeconds ?? null,
+          lastObservedAt: row.lastObservedAt ?? null,
+          lifecycleError: row.lifecycleError ?? null,
         })),
       };
     },
@@ -763,28 +774,44 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
-      const receipt = await provider.prompt({
-        sandboxId: found.providerSandboxId,
-        harness: found.harness,
-        text: args.prompt,
-        ...(conversation ? { conversationId: conversation } : {}),
-        ...(choice ?? {}),
-      });
-      const conversationIds = found.conversationIds.includes(receipt.conversationId)
-        ? found.conversationIds
-        : [...found.conversationIds, receipt.conversationId];
-      await data.sandboxes.update(found.id, {
-        status: "running",
-        statusReason: null,
-        conversationIds,
-        ...(found.stoppedAt === null ? {} : { stoppedAt: null }),
-      });
-      return {
-        id: found.id,
-        promptId: receipt.promptId,
-        conversationId: receipt.conversationId,
-        status: receipt.status,
-      };
+      const machine = await provider.get(found.providerSandboxId);
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        {
+          renewLifecycle: machine.state === "stopped",
+          stopRequested: false,
+          ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
+        },
+        async (signal) => {
+          const receipt = await provider.prompt({
+            sandboxId: found.providerSandboxId,
+            harness: found.harness,
+            text: args.prompt,
+            signal,
+            ...(conversation ? { conversationId: conversation } : {}),
+            ...(choice ?? {}),
+          });
+          const conversationIds = found.conversationIds.includes(receipt.conversationId)
+            ? found.conversationIds
+            : [...found.conversationIds, receipt.conversationId];
+          return {
+            patch: {
+              status: "running",
+              statusReason: null,
+              conversationIds,
+              stoppedAt: null,
+              rearmDeadline: receipt.resumed === true,
+            },
+            result: {
+              id: found.id,
+              promptId: receipt.promptId,
+              conversationId: receipt.conversationId,
+              status: receipt.status,
+            },
+          };
+        },
+      );
     },
   );
 
@@ -905,10 +932,28 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      await provider.stop({ sandboxId: found.providerSandboxId });
-      const status: SandboxStatus = found.status === "failed" ? "failed" : "stopped";
-      await data.sandboxes.update(found.id, { status, stoppedAt: context.now().toISOString() });
-      return { id: found.id, status };
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        { status: found.status === "failed" ? "failed" : "stopping", stoppedAt: null, stopRequested: true },
+        async (signal) => {
+          signal.throwIfAborted();
+          await provider.stop({ sandboxId: found.providerSandboxId });
+          signal.throwIfAborted();
+          const observed = await provider.get(found.providerSandboxId);
+          const terminal = observed.state === "stopped";
+          const status: SandboxStatus = found.status === "failed" ? "failed" : terminal ? "stopped" : "stopping";
+          return {
+            result: { id: found.id, status },
+            patch: {
+              status,
+              stopRequested: !terminal,
+              ...(status === "failed" ? { statusReason: found.statusReason } : {}),
+              ...(terminal ? { stoppedAt: context.now().toISOString() } : {}),
+            },
+          };
+        },
+      );
     },
   );
 

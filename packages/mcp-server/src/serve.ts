@@ -11,13 +11,14 @@ import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
-import { startGoldenWorker } from "./golden-worker.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
@@ -160,16 +161,22 @@ export async function startServer(
     routes: [modal.route, mcp.route, (request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),
   });
-  const server = Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler });
-  const worker = startGoldenWorker(goldenBuilds, options.logError);
+  const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {
+    workerDone: Promise.resolve(),
+  });
+  const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
+  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError);
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
-    worker.stop();
-    void mcp.close();
-    return stop(closeActiveConnections);
+    workers.stop();
+    const closed = mcp.close();
+    const stopped = stop(closeActiveConnections);
+    server.workerDone = Promise.all([workers.done, closed, stopped]).then(() => {});
+    return stopped;
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.
-  Object.assign(server, { goldenWorker: worker });
+  Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });
+  server.workerDone = workers.done;
   (options.log ?? console.log)(`armada serve: listening on port ${server.port}, public URL ${config.publicUrl}`);
   return server;
 }
