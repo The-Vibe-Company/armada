@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { chosenConversation, INCOMPLETE_MODEL, modelChange, STEER_KEEPS_MODEL } from "@/lib/composer";
-import { launchSelection, type McpConnection } from "@/lib/connections";
+import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
 import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { viewerGateway } from "@/lib/data/gateway";
@@ -136,18 +136,24 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       golden.org_id === parsed.args.org,
   );
   if (matches.length === 0) return fail("That golden is not available in this organization.");
+  // Who may open the sandbox is its owner and the org's admins (#680); the launch no longer chooses a visibility.
+  // Connections go only when the person chose them; otherwise the server applies and checks the defaults (#681).
+  let connections: string[] | undefined;
   const requested = data.getAll("connections").map(String);
-  let available: McpConnection[] = [];
-  if (requested.length > 0) {
+  // A deliberate empty selection needs no candidates, so it does not depend on the registry list.
+  if (data.get(CONNECTION_CHOICE_FIELD) === "explicit" && requested.length === 0) connections = [];
+  else if (data.get(CONNECTION_CHOICE_FIELD) === "explicit") {
     const listed = await listSelectedConnections();
     if (listed.state !== "ready") {
       return fail(listed.state === "error" ? listed.message : "Connections are not available right now.");
     }
-    available = listed.connections;
+    const selection = launchSelection({
+      connections: requested,
+      available: listed.connections,
+    });
+    if (!selection.ok) return fail(selection.error);
+    connections = selection.value.connections;
   }
-  // Who may open the sandbox is its owner and the org's admins (#680); the launch no longer chooses a visibility.
-  const selection = launchSelection({ connections: requested, available });
-  if (!selection.ok) return fail(selection.error);
   const repository = repositoryChoice(
     formString(data, "repo"),
     matches.flatMap((golden) => goldenRepositoryDirs(golden.config)),
@@ -158,7 +164,11 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   try {
     ({ id } = await launchSandbox(
       { serverUrl, token: viewer.token },
-      { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
+      {
+        ...parsed.args,
+        ...(connections === undefined ? {} : { connections }),
+        ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+      },
     ));
   } catch (error) {
     if (error instanceof ControlError) return fail(error.message);

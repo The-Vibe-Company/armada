@@ -378,6 +378,9 @@ test("a launch picks personal and org connections alike, from any golden, with n
       forged.name = "connections";
       forged.value = "00000000-0000-4000-8000-000000000063";
       input.after(forged);
+      // An explicit choice: an untouched form names no connections and leaves the defaults to the server.
+      const choice = input.closest("form")?.querySelector<HTMLInputElement>('input[name="connections-choice"]');
+      if (choice) choice.value = "explicit";
     });
   await page.getByRole("dialog").getByRole("button", { name: "Launch", exact: true }).click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText("Acme Sentry: Needs reconnect.");
@@ -544,26 +547,44 @@ test("rename and include-by-default change metadata only, and an unreachable ser
   await expect(search.getByRole("button", { name: "Retry Acme Search" })).toBeHidden();
 });
 
-test("a launch starts with the defaults and sends exactly what is ticked, even nothing", async ({ page }) => {
+test("only a deliberate choice sends connections, even none; otherwise the server applies the defaults", async ({
+  page,
+}) => {
   await signIn(page, "alice@example.com", "/goldens");
   const open = async () => {
     await page.getByRole("button", { name: "Launch from shared-golden" }).click();
     return page.getByRole("dialog");
   };
 
+  // Deliberately unticking the default sends an explicit empty selection.
   let dialog = await open();
   await expect(dialog.getByRole("checkbox", { name: "Alice Linear" })).toBeChecked();
   await dialog.getByRole("checkbox", { name: "Alice Linear" }).uncheck();
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
 
+  // Untouched, the launch names no connections: the server snapshots the defaults, personal ones included (#681).
   await page.goto("/goldens");
   dialog = await open();
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  await expect(page.getByRole("list", { name: "Applied connections" })).toContainText("Alice Linear");
+
+  // A list that could not be loaded is not a choice of none: the launch still leaves the defaults to the server. (Only
+  // the dashboard's list read fails here; in a full registry outage the server refuses the launch instead.)
+  await fetch(`${MOCK}/__test/fail-connection-list`, { method: "POST" });
+  await page.goto("/goldens");
+  dialog = await open();
+  await expect(dialog.getByRole("alert")).toContainText("A launch uses your default connections");
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
 
   const launches = (await mockState()).launches;
-  expect(launches.map((launch) => launch.connections)).toEqual([[], [ALICE_LINEAR]]);
+  expect(launches.map((launch) => ("connections" in launch ? launch.connections : "server defaults"))).toEqual([
+    [],
+    "server defaults",
+    "server defaults",
+  ]);
 });
 
 test("a default that is not connected holds the launch until it is reconnected or left out", async ({ page }) => {

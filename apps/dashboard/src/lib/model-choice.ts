@@ -21,7 +21,7 @@ export type LaunchArgs = {
   model: string;
   reasoning_effort: string;
   /** Connection ids (never names) whose MCP servers the sandbox gets. */
-  connections: string[];
+  connections?: string[];
   /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
   repo?: string;
   prompt?: string;

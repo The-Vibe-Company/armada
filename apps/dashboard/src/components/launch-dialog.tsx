@@ -20,7 +20,13 @@ import {
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { launchBlocker, launchDefaults, type McpConnection, unreadyDefaults } from "@/lib/connections";
+import {
+  CONNECTION_CHOICE_FIELD,
+  launchBlocker,
+  launchDefaults,
+  type McpConnection,
+  unreadyDefaults,
+} from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { cn } from "@/lib/utils";
@@ -196,6 +202,12 @@ function AccessFields({
     <div ref={group} className="space-y-4">
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">MCP connections</legend>
+        {/* Untouched, or not listed: the launch names no connections and the server applies the defaults. */}
+        <input
+          type="hidden"
+          name={CONNECTION_CHOICE_FIELD}
+          value={picked !== null && "connections" in connections ? "explicit" : "defaults"}
+        />
         {unready.length > 0 && (
           <div
             role="alert"
@@ -218,7 +230,8 @@ function AccessFields({
         )}
         {"unavailable" in connections ? (
           <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
-            Connections could not be loaded: {connections.unavailable} You can still launch without them.
+            Connections could not be loaded: {connections.unavailable} A launch uses your default connections, and is
+            refused if one of them is not connected.
           </p>
         ) : list.length === 0 ? (
           <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">

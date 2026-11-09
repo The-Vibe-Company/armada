@@ -285,6 +285,13 @@ export function unreadyDefaults(available: readonly McpConnection[]): McpConnect
 }
 
 /**
+ * The launch form field that says whether the person chose the connections (`explicit`). Anything else, including
+ * a form whose connections could not be listed, means they did not: the launch then omits `connections` and the
+ * server snapshots and checks the defaults itself (#681). An empty selection is sent only when it was chosen.
+ */
+export const CONNECTION_CHOICE_FIELD = "connections-choice";
+
+/**
  * The launch's explicit connections, checked against what the control API listed for the selected org: each must
  * be listed and connected. The server enforces the same rules and the grant ownership; this explains them first.
  */

@@ -842,11 +842,21 @@ function launchRoute(body: Row, userId: string | null): Response {
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
   }
-  const ids = Array.isArray(body.connections) ? body.connections.map(String) : [];
+  // #681: omitted connections are the caller's enabled defaults, snapshotted here; every one must be connected.
+  const ids = Array.isArray(body.connections)
+    ? body.connections.map(String)
+    : visibleConnections(String(body.org), userId)
+        .filter((row) => row.defaultForLaunch && row.status !== "disabled")
+        .map((row) => String(row.id));
   for (const cid of ids) {
     const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
     if (!connection) return controlFail(404, "not_found", "A connection is not available.");
-    if (connection.status !== "connected") return controlFail(400, "invalid", "A connection is not connected.");
+    if (connection.status !== "connected")
+      return controlFail(
+        403,
+        "forbidden",
+        "Please reconnect every selected MCP connection before launching, or explicitly select connections to continue without it.",
+      );
   }
   const row = sandbox(
     crypto.randomUUID(),
@@ -873,6 +883,7 @@ const OAUTH_HOST = "oauth.test";
 const ISSUER = `http://127.0.0.1:${PORT}`;
 /** Pending browser sign-ins by state: the API, not the URL, knows which user and connection a state is for. */
 let failSandboxConnections = false;
+let failConnectionList = false;
 const pendingOAuth = new Map<string, { connection: string; user: string; code: string | null }>();
 
 function visibleConnections(orgId: string, userId: string): Row[] {
@@ -984,7 +995,10 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
   if (operation === "oauth/callback") return oauthCallback(body, userId);
   const org = String(body.org ?? "");
   if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
-  if (operation === "list") return json({ connections: visibleConnections(org, userId).map(connectionDto) });
+  if (operation === "list") {
+    if (failConnectionList) return controlFail(503, "unavailable", "The registry is unavailable.");
+    return json({ connections: visibleConnections(org, userId).map(connectionDto) });
+  }
   if (operation === "catalog") {
     if (failCatalog) return controlFail(404, "not_found", "Unknown route.");
     return json({ services: CATALOG });
@@ -1493,6 +1507,7 @@ function control(url: URL, body: Row): Response {
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
+    failConnectionList = false;
     failCatalog = false;
     failConnect = false;
     if (body.multiOrg) {
@@ -1666,6 +1681,10 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/fail-next-tool") {
     state.failNextTool = String(body.message);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-connection-list") {
+    failConnectionList = true;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-sandbox-connections") {
