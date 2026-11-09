@@ -13,18 +13,20 @@ public struct PendingOrchestratorOperation: Codable, Sendable, Identifiable {
     let route: String
     let body: Data
     let key: String
+    let attempts: Int?
+    var dispatchCount: Int { attempts ?? (state == .pending && receipt == nil ? 0 : 1) }
     init(orgId: String, orchestratorId: String?, action: OrchestratorAction, route: String, body: Data) {
         self.id = UUID(); self.orgId = orgId; self.orchestratorId = orchestratorId
         self.action = action; self.route = route; self.body = body
-        self.key = UUID().uuidString; self.state = .pending; self.receipt = nil
+        self.key = UUID().uuidString; self.state = .pending; self.receipt = nil; self.attempts = 0
     }
-    private init(_ prior: Self, state: OrchestratorOperationState, receipt: OrchestratorOperation?) {
+    private init(_ prior: Self, state: OrchestratorOperationState, receipt: OrchestratorOperation?, attempts: Int?) {
         id = prior.id; orgId = prior.orgId; orchestratorId = prior.orchestratorId
         action = prior.action; route = prior.route; body = prior.body; key = prior.key
-        self.state = state; self.receipt = receipt
+        self.state = state; self.receipt = receipt; self.attempts = attempts ?? prior.attempts
     }
-    func updating(state: OrchestratorOperationState, receipt: OrchestratorOperation? = nil) -> Self {
-        Self(self, state: state, receipt: receipt)
+    func updating(state: OrchestratorOperationState, receipt: OrchestratorOperation? = nil, attempts: Int? = nil) -> Self {
+        Self(self, state: state, receipt: receipt, attempts: attempts)
     }
 }
 
@@ -85,9 +87,11 @@ extension ArmadaClient {
         guard capabilities.enabled else { throw ArmadaError.unavailable }
         // Recheck after suspension: signout/account switching cannot submit old work.
         guard pendingOperations.contains(where: { $0.id == operationID }), selectedOrgID == pending.orgId else { throw CancellationError() }
-        if let current = pendingOperations.first(where: { $0.id == operationID })?.receipt,
-           current.state == .succeeded || current.state == .failed { return current }
-        try update(pending.updating(state: .uncertain)) // persist BEFORE external effects
+        guard let current = pendingOperations.first(where: { $0.id == operationID }) else { throw CancellationError() }
+        if let receipt = current.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
+        guard current.state != .failed else { throw ArmadaError.http(400) }
+        let attempt = current.dispatchCount + 1
+        try update(current.updating(state: .uncertain, attempts: attempt)) // persist BEFORE external effects
         do {
             let receipt: OrchestratorOperation = try await authenticatedRequest(pending.route, method: "POST", body: pending.body, key: pending.key)
             guard receipt.version == 1, receipt.kind == pending.action,
@@ -97,7 +101,7 @@ extension ArmadaClient {
         } catch let error as ArmadaError where error == .http(400) {
             // The actual handler's invalid_request response is pre-effect rejection.
             // Preserve any concurrent terminal receipt; otherwise allow explicit discard.
-            if pending.state == .pending, pending.receipt == nil {
+            if attempt == 1, pendingOperations.first(where: { $0.id == operationID })?.dispatchCount == attempt {
                 try update(pending.updating(state: .failed))
             }
             // A refused retry cannot establish the earlier unknown outcome.
@@ -124,7 +128,9 @@ extension ArmadaClient {
     private func update(_ operation: PendingOrchestratorOperation) throws {
         guard let prior = pendingOperations.first(where: { $0.id == operation.id }) else { throw CancellationError() }
         if prior.state == .succeeded || prior.state == .failed { return }
-        try saveOperations(pendingOperations.map { $0.id == operation.id ? operation : $0 })
+        let monotonic = operation.updating(state: operation.state, receipt: operation.receipt,
+            attempts: max(prior.dispatchCount, operation.dispatchCount))
+        try saveOperations(pendingOperations.map { $0.id == operation.id ? monotonic : $0 })
     }
     private func selectedOrganization() throws -> String {
         guard isSignedIn else { throw ArmadaError.signedOut }

@@ -255,6 +255,8 @@ private actor RefreshTransport: ArmadaTransport {
 }
 
 private actor SubmissionRaceTransport: ArmadaTransport {
+    private let firstMutationSucceeds: Bool
+    init(firstMutationSucceeds: Bool = true) { self.firstMutationSucceeds = firstMutationSucceeds }
     private var capabilityCount = 0
     private var releases: [Int: CheckedContinuation<Void, Never>] = [:]
     private var entered: [Int: CheckedContinuation<Void, Never>] = [:]
@@ -279,10 +281,13 @@ private actor SubmissionRaceTransport: ArmadaTransport {
             body = #"{"version":1,"enabled":true}"#
         default:
             mutationCount += 1
-            if mutationCount == 1 {
+            if mutationCount == 1, firstMutationSucceeds {
                 status = 202
                 body = #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"stop","state":"succeeded","revision":8,"errorCode":null}"#
-            } else { status = 503; body = #"{"error":{"code":"unavailable"}}"# }
+            } else {
+                status = mutationCount == 1 ? 503 : 400
+                body = #"{"error":{"code":"unavailable"}}"#
+            }
         }
         return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
     }
@@ -304,4 +309,22 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     #expect(try await second.value.state == .succeeded)
     #expect(await transport.mutationCount == 1)
     #expect(await client.pendingOperations.first?.state == .succeeded)
+}
+
+@Test func concurrentRejectedRetryCannotMakeEarlierUnknownEffectDiscardable() async throws {
+    let transport = SubmissionRaceTransport(firstMutationSucceeds: false)
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    let first = Task { try await client.submitOrchestratorOperation(command.id) }
+    await transport.waitForCapability(1)
+    let second = Task { try await client.submitOrchestratorOperation(command.id) }
+    await transport.waitForCapability(2)
+    await transport.releaseCapability(1)
+    await #expect(throws: ArmadaError.unavailable) { _ = try await first.value }
+    await transport.releaseCapability(2)
+    await #expect(throws: ArmadaError.http(400)) { _ = try await second.value }
+    #expect(await client.pendingOperations.first?.state == .uncertain)
+    await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
 }
