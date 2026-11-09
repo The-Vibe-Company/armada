@@ -136,7 +136,7 @@ function SwitchAccount({ label, primary = false }: { label: string; primary?: bo
 
 const SignedInAs = ({ email }: { email: string }) => (
   <p className="text-xs">
-    Signed in as <span className="break-all text-foreground">{email}</span>
+    Signed in as <span className="break-words text-foreground">{email}</span>
   </p>
 );
 
@@ -261,8 +261,8 @@ export function AcceptInvitation({ state, accept, confirmLink, now }: AcceptProp
         <InvitationShell title="Signed in with another account" alert>
           <p>
             This invitation was sent to a different address than{" "}
-            <strong className="break-all text-foreground">{signedInAs}</strong>. Sign in with the address that received
-            the email.
+            <strong className="break-words text-foreground">{signedInAs}</strong>. Sign in with the address that
+            received the email.
           </p>
           <SwitchAccount label="Use another account" primary />
         </InvitationShell>

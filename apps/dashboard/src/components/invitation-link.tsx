@@ -83,22 +83,22 @@ export function EmailLinkBridge({ children }: { children: ReactNode }) {
   return (
     <InvitationShell title={`Continue as ${check.email}?`}>
       <p>
-        This sign-in link is for <strong className="break-all text-foreground">{check.email}</strong>, invited to{" "}
+        This sign-in link is for <strong className="break-words text-foreground">{check.email}</strong>, invited to{" "}
         <strong className="text-foreground">{check.orgName}</strong>. Signing in lets you review the invitation; it does
         not join the organization.
       </p>
       {check.currentEmail && (
         <p role="note">
-          This browser is signed in as <strong className="break-all text-foreground">{check.currentEmail}</strong>.
+          This browser is signed in as <strong className="break-words text-foreground">{check.currentEmail}</strong>.
           Continuing signs it in as {check.email} instead.
         </p>
       )}
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Button onClick={continueAs} disabled={phase.kind === "signing_in"} className="w-full sm:w-auto">
+      <div className="flex flex-col gap-2">
+        <Button onClick={continueAs} disabled={phase.kind === "signing_in"} className="w-full">
           {phase.kind === "signing_in" && <Loader2Icon className="animate-spin" />}
           Continue as {check.email}
         </Button>
-        <Button variant="outline" onClick={() => setPhase({ kind: "idle" })} className="w-full sm:w-auto">
+        <Button variant="outline" onClick={() => setPhase({ kind: "idle" })} className="w-full">
           {check.currentEmail ? `Stay as ${check.currentEmail}` : "Not now"}
         </Button>
       </div>
