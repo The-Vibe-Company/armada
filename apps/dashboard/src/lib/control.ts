@@ -11,6 +11,13 @@ import {
   safeAuthorizationUrl,
   type UpdateConnectionRequest,
 } from "./connections.ts";
+import {
+  type InvitationView,
+  type InviteRole,
+  parseInvitation,
+  parsePreview,
+  type RecipientPreview,
+} from "./invitations.ts";
 
 /**
  * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
@@ -23,10 +30,20 @@ export class ControlError extends Error {
   override readonly name = "ControlError";
   readonly status: number | undefined;
   readonly code: string | undefined;
-  constructor(message: string, status?: number, code?: string) {
+  /** The server's machine-readable `error.reason`, when it sends one (organization invitations do). */
+  readonly reason: string | undefined;
+  readonly retryAfterSeconds: number | undefined;
+  constructor(
+    message: string,
+    status?: number,
+    code?: string,
+    detail?: { reason?: string | undefined; retryAfterSeconds?: number | undefined },
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.reason = detail?.reason;
+    this.retryAfterSeconds = detail?.retryAfterSeconds;
   }
 }
 
@@ -309,15 +326,24 @@ async function readMcpJson(response: Response): Promise<Record<string, unknown> 
 
 /** The server's `{error: {code, message}}`, in words for the person. Its message is already sanitized. */
 function failure(status: number, payload: Record<string, unknown> | null, feature: string): ControlError {
-  const error = payload && typeof payload.error === "object" && payload.error !== null ? payload.error : null;
-  const message = error && "message" in error && typeof error.message === "string" ? error.message.slice(0, 300) : null;
-  if (status === 401) return new ControlError("The Armada server refused this session. Sign in again.", status);
-  if (status === 403) return new ControlError(message ?? "You are not allowed to do that.", status);
-  if ((status === 404 || status === 405) && (!message || message === "Unknown route.")) {
-    return new ControlError(`This Armada server does not offer ${feature} yet.`, status);
+  const error = payload && isRecord(payload.error) ? payload.error : null;
+  const message = typeof error?.message === "string" ? error.message.slice(0, 300) : null;
+  const code = typeof error?.code === "string" ? error.code : undefined;
+  const detail = {
+    reason: typeof error?.reason === "string" ? error.reason : undefined,
+    retryAfterSeconds:
+      typeof error?.retryAfterSeconds === "number" && Number.isFinite(error.retryAfterSeconds)
+        ? error.retryAfterSeconds
+        : undefined,
+  };
+  const make = (text: string, withCode = true) => new ControlError(text, status, withCode ? code : undefined, detail);
+  if (status === 401) return make("The Armada server refused this session. Sign in again.", false);
+  if (status === 403) return make(message ?? "You are not allowed to do that.");
+  if ((status === 404 || status === 405) && (!message || message === "Unknown route.") && !detail.reason) {
+    return make(`This Armada server does not offer ${feature} yet.`, false);
   }
-  if (status >= 500) return new ControlError(message ?? "The Armada server could not complete the request.", status);
-  return new ControlError(message ?? `The Armada server answered ${status}.`, status);
+  if (status >= 500) return make(message ?? "The Armada server could not complete the request.");
+  return make(message ?? `The Armada server answered ${status}.`);
 }
 
 /** A golden build job receipt or status (`golden/create`, `golden/update`, `golden/build/status`). */
@@ -342,4 +368,45 @@ export function isGoldenRemoval(value: unknown): value is GoldenRemoval {
     typeof value.removedAt === "string" &&
     value.artifacts === "retained"
   );
+}
+
+/**
+ * Organization invitations, control API v1 (#640): `org/invitations/{create,list,resend,revoke,accept}`, POST with
+ * the viewer's bearer. The server checks the admin role, the recipient's verified email and the token; the
+ * dashboard relays and parses. The accept token is a request body field only, never part of a URL or an error.
+ */
+export function createInvitationControl(options: ArmadaApiOptions) {
+  const post = (operation: string, body: object) =>
+    controlPost(options, `/api/v1/org/invitations/${operation}`, body, "organization invitations");
+
+  async function one(operation: string, body: object): Promise<InvitationView> {
+    const invitation = parseInvitation((await post(operation, body)).invitation);
+    if (!invitation) throw new ControlError("The Armada server sent an unexpected invitation.");
+    return invitation;
+  }
+
+  return {
+    create: (request: { org: string; email: string; role: InviteRole }) => one("create", request),
+    /** Every invitation of the org the server returns; the page keeps the pending ones. */
+    async list(org: string): Promise<unknown[]> {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.invitations)) throw new ControlError("The Armada server sent no invitation list.");
+      return payload.invitations;
+    },
+    resend: (target: { org: string; id: string }) => one("resend", target),
+    revoke: (target: { org: string; id: string }) => one("revoke", target),
+    /** What the signed-in recipient may see of the invitation before consenting. Reads only; never joins. */
+    async preview(token: string): Promise<RecipientPreview> {
+      const preview = parsePreview(await post("preview", { token }));
+      if (!preview) throw new ControlError("The Armada server sent an unexpected invitation preview.");
+      return preview;
+    },
+    /** The explicit join. Answers the org now joined. */
+    async accept(token: string): Promise<{ orgId: string }> {
+      const payload = await post("accept", { token });
+      if (payload.accepted !== true || typeof payload.orgId !== "string")
+        throw new ControlError("The Armada server did not confirm the invitation.");
+      return { orgId: payload.orgId };
+    },
+  };
 }

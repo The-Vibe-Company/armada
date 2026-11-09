@@ -9,3 +9,9 @@ major_version = 15
 
 [db.migrations]
 enabled = true
+
+# Local template source only. Do not config-push this sparse file to production;
+# see docs/auth-email-template.md for the two-field hosted deployment.
+[auth.email.template.magic_link]
+subject = "Your Armada sign-in code and link"
+content_path = "./supabase/templates/magic-link.html"

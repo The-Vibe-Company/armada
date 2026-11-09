@@ -676,3 +676,18 @@ test("resource collection uses bounded fixed file reads, boot fencing and no com
   expect(await stopped.provider.observeResources?.(ID)).toBeNull();
   expect(stopped.requests).toHaveLength(1);
 });
+
+test("quota event cancellation reaches the actual SDK fetch without entering request data", async () => {
+  const controller = new AbortController();
+  let propagated = false;
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    fetch: (async (_input, init) => {
+      controller.abort();
+      propagated = init?.signal?.aborted === true;
+      return Response.json({ events: [], hasMore: false });
+    }) as typeof fetch,
+  });
+  await expect(provider.events({ sandboxId: ID, signal: controller.signal })).rejects.toBeDefined();
+  expect(propagated).toBe(true);
+});

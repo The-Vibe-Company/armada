@@ -10,6 +10,8 @@ const response = {
     goldenId: "golden",
     orgId: "org",
     ownerId: "owner",
+    credentialId: "33333333-3333-4333-8333-333333333333",
+    credentialVersion: 7,
     harness: "codex",
     status: "running",
     conversationIds: ["conversation"],
@@ -63,6 +65,7 @@ describe("launch through the Armada API", () => {
           "--org",
           "org",
           "--json",
+          ...(repo === undefined ? ["--credential-id", "33333333-3333-4333-8333-333333333333"] : []),
           ...(repo === undefined ? [] : repo === "defaults-only" ? ["--sized"] : ["--repo", repo, "--size", "large"]),
         ],
         { out: (text) => (out += text), err: () => undefined },
@@ -93,6 +96,8 @@ describe("launch through the Armada API", () => {
       expect(JSON.parse(out)).toMatchObject({
         machineSize,
         golden: "web",
+        credentialId: "33333333-3333-4333-8333-333333333333",
+        credentialVersion: 7,
         harness: "codex",
         promptId: "prompt",
         provider: "boat",
@@ -110,7 +115,7 @@ describe("launch through the Armada API", () => {
       expect(await launchRequest?.json()).toEqual({
         golden: "web",
         ...(repo === undefined
-          ? {}
+          ? { credentialId: "33333333-3333-4333-8333-333333333333" }
           : repo === "defaults-only"
             ? { sizePolicyVersion: 1 }
             : { repo, size: "large", sizePolicyVersion: 1 }),

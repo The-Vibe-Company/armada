@@ -1,6 +1,7 @@
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
+export type { CredentialBinding } from "./credentials.ts";
 export {
   CODEX_AUTH_ENV,
   CODEX_AUTH_PATH,
@@ -238,6 +239,7 @@ export {
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
 export {
+  type AccountMutation,
   addMember,
   type CredentialInfo,
   createOrg,
@@ -245,6 +247,7 @@ export {
   listMembers,
   listOrgs,
   type MemberInfo,
+  mutateCredentialAccount,
   type OrgCredentials,
   type OrgSummary,
   parseOrgName,

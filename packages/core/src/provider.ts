@@ -295,6 +295,8 @@ export type ExecResult =
   | { detached: true; processId: number };
 
 export interface EventsRequest {
+  /** Server-side read cancellation; no prompt or mutation is implied. */
+  signal?: AbortSignal;
   sandboxId: string;
   /** From the previous page's `cursor`; absent reads from the start. */
   cursor?: string;
