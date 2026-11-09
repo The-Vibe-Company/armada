@@ -2225,28 +2225,51 @@ test("private orchestrator transport requires exact active incarnation and ACK, 
   const scrub = f.provider.scrubOrchestratorEpoch;
   const quiesce = f.provider.quiesceOrchestrator;
   const observe = f.provider.observeOrchestrator;
-  if (!install || !scrub || !quiesce || !observe) throw Error("missing private native authority port");
+  const verify = f.provider.verifyOrchestratorSession;
+  const resumeRequest = {
+    sandboxId: parent.id,
+    physicalGeneration: binding.physicalGeneration,
+    conversationId: "logical",
+    nativeSessionId: "native",
+    harness: "codex" as const,
+    model: "gpt-6.1-sol",
+  };
+  if (!install || !scrub || !quiesce || !observe || !verify) throw Error("missing private native authority port");
   await expect(install(request)).rejects.toMatchObject({ code: "unavailable" });
   await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
     { code: "unavailable" },
   );
+  let nativeReply = {
+    physicalGeneration: binding.physicalGeneration,
+    conversationId: "logical",
+    nativeSessionId: "replacement",
+    verified: true as const,
+  };
   f.onRpc(async (_row, op) =>
-    op === "observeOrchestrator"
-      ? {
-          physicalGeneration: binding.physicalGeneration,
-          state: "quiescent",
-          evidence: "a".repeat(64),
-          eventWatermark: 0,
-          acknowledgedSequence: 0,
-          nativeSessionId: null,
-        }
-      : ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op)
-        ? { acknowledged: true }
-        : undefined,
+    op === "resumeNativeSession"
+      ? nativeReply
+      : op === "observeOrchestrator"
+        ? {
+            physicalGeneration: binding.physicalGeneration,
+            state: "quiescent",
+            evidence: "a".repeat(64),
+            eventWatermark: 0,
+            acknowledgedSequence: 0,
+            nativeSessionId: null,
+          }
+        : ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op)
+          ? { acknowledged: true }
+          : undefined,
   );
   expect((await observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).state).toBe(
     "quiescent",
   );
+  await expect(verify(resumeRequest)).rejects.toMatchObject({ code: "conflict" });
+  nativeReply = { ...nativeReply, nativeSessionId: "native" };
+  expect(await verify(resumeRequest)).toEqual(nativeReply);
+  await expect(verify({ ...resumeRequest, physicalGeneration: "stale-native" })).rejects.toMatchObject({
+    code: "conflict",
+  });
   expect(await install(request)).toEqual({ acknowledged: true });
   await expect(install({ ...request, binding: { ...binding, physicalGeneration: "old" } })).rejects.toMatchObject({
     code: "conflict",
@@ -2270,6 +2293,7 @@ test("private orchestrator transport requires exact active incarnation and ACK, 
   await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
     { code: "conflict" },
   );
+  await expect(verify(resumeRequest)).rejects.toMatchObject({ code: "conflict" });
   expect(f.creates).toBe(created);
   expect(f.log.length).toBe(calls);
 });

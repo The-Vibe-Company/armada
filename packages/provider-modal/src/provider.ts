@@ -750,6 +750,41 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return observed;
       });
     },
+    async verifyOrchestratorSession(request) {
+      return admit(request.sandboxId, async (row) => {
+        if (row.golden || row.phase !== "active" || request.physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Native session verification requires the bound active incarnation.");
+        const result = await runner.call<{
+          physicalGeneration: string;
+          conversationId: string;
+          nativeSessionId: string;
+          verified: boolean;
+        }>(row, "resumeNativeSession", {
+          conversationId: request.conversationId,
+          expectedSessionId: request.nativeSessionId,
+          input: {
+            sandboxId: request.sandboxId,
+            harness: request.harness,
+            model: request.model,
+            ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
+            ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+          },
+        });
+        if (
+          result?.physicalGeneration !== request.physicalGeneration ||
+          result.conversationId !== request.conversationId ||
+          result.nativeSessionId !== request.nativeSessionId ||
+          result.verified !== true
+        )
+          throw refusal("conflict", "Native session verification did not match the persisted identity.");
+        return {
+          physicalGeneration: request.physicalGeneration,
+          conversationId: request.conversationId,
+          nativeSessionId: request.nativeSessionId,
+          verified: true as const,
+        };
+      });
+    },
     async quiesceOrchestrator({ sandboxId, physicalGeneration }) {
       return admit(sandboxId, async (row, save) => {
         if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))

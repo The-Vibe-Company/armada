@@ -51,6 +51,18 @@ export interface Provider {
     acknowledgedSequence: number;
     nativeSessionId: string | null;
   }>;
+  /** Private no-text native handshake on an ALREADY active incarnation. This does
+   * not restore compute or prove a checkpoint. Unsupported harnesses must refuse. */
+  verifyOrchestratorSession?(request: {
+    sandboxId: string;
+    physicalGeneration: string;
+    conversationId: string;
+    nativeSessionId: string;
+    harness: Harness;
+    model: string;
+    reasoningEffort?: string;
+    cwd?: string;
+  }): Promise<{ physicalGeneration: string; conversationId: string; nativeSessionId: string; verified: true }>;
   /** Private active-incarnation interrupt; never activates stopped compute. */
   quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
   scrubOrchestratorEpoch?(request: {

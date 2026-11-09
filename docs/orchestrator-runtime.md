@@ -266,3 +266,21 @@ runner generation are native incarnation identities. They are never compared as
 if equivalent or inferred from labels. The current transport fails closed on this
 mismatch. A reviewed two-fence binding/rebind contract is still required before
 native activation; implementing private delivery does not by itself resolve it.
+
+## No-text native handshake (not restore enablement)
+
+The private `Provider.verifyOrchestratorSession` port verifies an **already active**
+native incarnation. Modal holds its native-generation lease while the Runner
+checks the journal's exact conversation/harness/native-session binding. The
+Codex driver uses its existing JSONL `thread/resume` handshake, verifies the
+returned thread and model, and closes without `thread/start` or `turn/start`.
+No prompt/event is manufactured; missing sessions, changed native identities and
+unsupported drivers fail closed. Prompts and epoch mutation serialize against
+this handshake, and checkpoint waits for it to quiesce.
+
+Claude does not advertise this port: no equivalent no-text identity handshake has
+been verified against the installed SDK. This is neither provider activation nor
+a checkpoint/restore proof, and does not enable either harness/provider matrix.
+The production adapter must still restore a verified checkpoint with current
+native-auth lifecycle hooks and compare the restored native identity before
+installing new authority. No ordinary-worker capability is changed.

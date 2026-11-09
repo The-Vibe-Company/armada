@@ -32,6 +32,7 @@ export class Runner {
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
   private commands = new Set<Promise<unknown>>();
+  private resumingNative = false;
   constructor(
     readonly journal: Journal,
     readonly grant: Grant,
@@ -68,7 +69,12 @@ export class Runner {
       grant.generation,
       journal,
       checkpointIdentityKey(grant),
-      () => this.active.size === 0 && !this.barrier && !this.journal.checkpointPending(this.grant),
+      () =>
+        this.active.size === 0 &&
+        this.commands.size === 0 &&
+        !this.resumingNative &&
+        !this.barrier &&
+        !this.journal.checkpointPending(this.grant),
       () => this.mcp,
       (configuration) => {
         this.configureMcp(configuration, true);
@@ -259,6 +265,70 @@ export class Runner {
         nativeSessionId: r.conversationId ? (this.journal.session(r.conversationId) ?? null) : null,
       };
     }
+    if (r.op === "resumeNativeSession") {
+      if (this.credentialFreeBuilder || this.barrier || this.active.size || this.commands.size || this.resumingNative)
+        throw Error("native_resume_unavailable");
+      if (
+        Object.keys(r).some(
+          (key) =>
+            !["version", "requestId", "sandboxId", "op", "conversationId", "expectedSessionId", "input"].includes(key),
+        ) ||
+        !r.input ||
+        typeof r.input !== "object" ||
+        Array.isArray(r.input) ||
+        typeof r.input.model !== "string" ||
+        !r.input.model ||
+        r.input.model.length > 256 ||
+        (r.input.reasoningEffort !== undefined && typeof r.input.reasoningEffort !== "string") ||
+        Object.keys(r.input).some(
+          (key) => !["sandboxId", "harness", "model", "reasoningEffort", "cwd"].includes(key),
+        ) ||
+        r.input.sandboxId !== this.grant.sandboxId ||
+        !["claude", "codex"].includes(r.input.harness) ||
+        typeof r.conversationId !== "string" ||
+        !r.conversationId ||
+        r.conversationId.length > 256 ||
+        typeof r.expectedSessionId !== "string" ||
+        !r.expectedSessionId ||
+        r.expectedSessionId.length > 256
+      )
+        throw Error("invalid_native_resume");
+      const saved = this.journal.db
+        .query("SELECT harness,session FROM sessions WHERE conversation=?")
+        .get(r.conversationId) as { harness: string; session: string } | null;
+      if (!saved || saved.harness !== r.input.harness || saved.session !== r.expectedSessionId)
+        throw Error("native_session_identity_changed");
+      const resume = this.drivers[r.input.harness].resumeSession?.bind(this.drivers[r.input.harness]);
+      if (!resume) throw Error("native_resume_unsupported");
+      this.resumingNative = true;
+      const work = Promise.resolve().then(() =>
+        resume({
+          request: r.input,
+          sessionId: saved.session,
+          signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
+          ...(this.mcp ? { mcp: this.mcp } : {}),
+        }),
+      );
+      this.commands.add(work);
+      try {
+        const result = await work;
+        if (
+          result.sessionId !== saved.session ||
+          this.journal.session(r.conversationId) !== saved.session ||
+          Date.now() >= this.grant.expiresAt
+        )
+          throw Error("native_session_identity_changed");
+        return {
+          physicalGeneration: this.grant.generation,
+          conversationId: r.conversationId,
+          nativeSessionId: saved.session,
+          verified: true,
+        };
+      } finally {
+        this.commands.delete(work);
+        this.resumingNative = false;
+      }
+    }
     if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier };
     if (r.op === "getPrompt") {
       const p = this.journal.get(r.promptId);
@@ -338,6 +408,7 @@ export class Runner {
       }
     }
     if (r.op === "prompt") {
+      if (this.resumingNative) throw Error("native_resume_in_progress");
       if (this.credentialFreeBuilder) throw Error("builder_model_prompts_forbidden");
       if (r.input.conversationId) {
         const existing = this.journal.prompts().find((p) => p.conversationId === r.input.conversationId);

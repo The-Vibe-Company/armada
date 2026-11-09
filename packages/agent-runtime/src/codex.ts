@@ -12,12 +12,36 @@ import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError } from "./errors.ts";
-import type { Driver, DriverContext, Turn } from "./protocol.ts";
+import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 /** One app-server per conversation isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
   private children = new ChildOwner();
   constructor(private options: { executable: string; cwd: string; env: Record<string, string> }) {}
   start(c: DriverContext): Turn {
+    return this.open(c, false);
+  }
+  async resumeSession(c: DriverResumeContext): Promise<{ sessionId: string }> {
+    if (!c.sessionId || c.sessionId.length > 256 || !c.request.model || c.signal.aborted)
+      throw Error("invalid_native_resume");
+    let confirmed = false;
+    const connection = this.open(
+      {
+        ...c,
+        request: { ...c.request, text: "" },
+        emit: () => {},
+        session: (id) => {
+          if (id !== c.sessionId) throw Error("native_session_identity_changed");
+          confirmed = true;
+        },
+      },
+      true,
+    );
+    await connection.done;
+    c.signal.throwIfAborted();
+    if (!confirmed) throw Error("native_session_unverified");
+    return { sessionId: c.sessionId };
+  }
+  private open(c: DriverContext, resumeOnly: boolean): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
@@ -182,7 +206,7 @@ export class CodexDriver implements Driver {
       if (early) terminalResolve?.(early);
       return { terminal };
     };
-    let current: Promise<{ terminal: Promise<TurnCompletedNotification> }>;
+    let current!: Promise<{ terminal: Promise<TurnCompletedNotification> }>;
     const initialized = (async () => {
       await rpc("initialize", {
         clientInfo: { name: "armada-runner", version: "1.0.0" },
@@ -220,13 +244,19 @@ export class CodexDriver implements Driver {
         c.sessionId ? { ...config, threadId: c.sessionId } : config,
       );
       if (typeof result.thread?.id !== "string") throw new HarnessError("invalid_harness_protocol");
+      if (resumeOnly && result.model !== c.request.model) throw Error("native_session_model_changed");
       threadId = result.thread.id;
+      if (c.sessionId && threadId !== c.sessionId) throw Error("native_session_identity_changed");
       c.session(threadId);
     })();
-    current = initialized.then(() => begin(c.request.text));
+    if (!resumeOnly) current = initialized.then(() => begin(c.request.text));
     const interrupt = async () => {
       stopping = true;
       await initialized;
+      if (resumeOnly) {
+        await this.children.release(child);
+        return;
+      }
       const active = await current;
       await rpc("turn/interrupt", { threadId, turnId });
       try {
@@ -243,8 +273,12 @@ export class CodexDriver implements Driver {
     let steerFinished: Promise<void> = Promise.resolve();
     const done = (async () => {
       try {
+        if (resumeOnly) {
+          await initialized;
+          return "finished" as const;
+        }
         for (;;) {
-          const active = current;
+          const active: Promise<{ terminal: Promise<TurnCompletedNotification> }> = current;
           const { terminal } = await active;
           const result = await terminal;
           if (steering) {
@@ -280,7 +314,7 @@ export class CodexDriver implements Driver {
       done,
       interrupt,
       steer: async (text) => {
-        if (closed || steering || stopping) throw Error("no_running_turn");
+        if (resumeOnly || closed || steering || stopping) throw Error("no_running_turn");
         steering = true;
         steerFinished = (async () => {
           try {
