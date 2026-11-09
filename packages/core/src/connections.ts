@@ -1,10 +1,13 @@
 import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
+import { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 import { McpStdioError, parsePinnedMcpStdio } from "./mcp-stdio.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface McpConnectionDto {
   id: string;
+  catalogId?: McpCatalogId | null;
+  defaultForLaunch?: boolean;
   name: string;
   orgId: string;
   scope: "personal" | "org";
@@ -21,6 +24,7 @@ export interface McpConnectionDto {
   lastError?: string;
 }
 export interface McpConnectionInput {
+  serviceId?: McpCatalogId;
   name: string;
   scope: McpConnectionDto["scope"];
   transport: McpConnectionDto["transport"];
@@ -54,12 +58,20 @@ export interface McpRegistry {
   list(userId: string, orgId: string): Promise<McpConnectionDto[]>;
   get(userId: string, orgId: string, id: string): Promise<McpConnectionDto>;
   save(userId: string, orgId: string, input: McpConnectionInput, id?: string): Promise<McpConnectionDto>;
+  metadata(
+    userId: string,
+    orgId: string,
+    id: string,
+    input: { name?: string; defaultForLaunch?: boolean },
+  ): Promise<McpConnectionDto>;
   configureStdio(userId: string, orgId: string, id: string): Promise<McpConnectionDto>;
   setEnabled(userId: string, orgId: string, id: string, enabled: boolean): Promise<McpConnectionDto>;
   sandboxConnections(userId: string, orgId: string, sandboxId: string): Promise<McpConnectionDto[]>;
   revoke(userId: string, orgId: string, id: string, remove?: boolean): Promise<void>;
 }
 type Row = {
+  catalog_id: McpCatalogId | null;
+  default_for_launch: boolean;
   id: string;
   org_id: string;
   name: string;
@@ -73,9 +85,11 @@ type Row = {
   disabled: boolean;
 };
 const columns =
-  "c.id,c.org_id,c.name,c.scope,c.transport,c.url,c.command,c.args,c.auth_type,c.disabled,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status";
+  "c.catalog_id,c.default_for_launch,c.id,c.org_id,c.name,c.scope,c.transport,c.url,c.command,c.args,c.auth_type,c.disabled,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status";
 function dto(r: Row): McpConnectionDto {
   return {
+    catalogId: r.catalog_id,
+    defaultForLaunch: r.default_for_launch,
     id: r.id,
     orgId: r.org_id,
     name: r.name,
@@ -120,6 +134,28 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
       return dto(await get(user, org, id));
     },
     async save(user, org, input, id) {
+      if (id) {
+        const old = await get(user, org, id, true);
+        if (old.catalog_id && input.serviceId !== old.catalog_id)
+          throw new VaultError("invalid", "Catalog service identity is immutable.");
+      }
+      if (input.serviceId !== undefined) {
+        const service = MCP_CATALOG.find((s) => s.id === input.serviceId);
+        if (!service) throw new VaultError("invalid", "Unknown MCP service.");
+        if (service.id === "slack")
+          throw new VaultError(
+            "unavailable",
+            "Slack requires a registered confidential OAuth client; deployment setup required.",
+          );
+        input = {
+          name: input.name,
+          scope: input.scope,
+          serviceId: service.id,
+          transport: "http",
+          url: service.url,
+          authType: "oauth",
+        };
+      }
       input = { ...input, authType: input.authType ?? (input.transport === "stdio" ? "none" : "auto") };
       await member(user, org, input.scope === "org");
       if (id) {
@@ -136,10 +172,10 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
       // One statement: changing a definition invalidates every old lease via grant generation.
       await sql.query(
         `with saved as (
-        insert into public.mcp_connections(id,org_id,owner_id,scope,name,transport,url,command,args,auth_type)
-        values($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9::jsonb,$10)
+        insert into public.mcp_connections(id,org_id,owner_id,scope,name,transport,url,command,args,auth_type,catalog_id)
+        values($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9::jsonb,$10,$13)
         on conflict(id) do update set name=excluded.name,transport=excluded.transport,url=excluded.url,
-        command=excluded.command,args=excluded.args,auth_type=excluded.auth_type returning id)
+        command=excluded.command,args=excluded.args,auth_type=excluded.auth_type,catalog_id=excluded.catalog_id returning id)
         insert into public.mcp_grants(connection_id,value_enc,status) select id,$11::bytea,$12 from saved
         on conflict(connection_id) do update set value_enc=excluded.value_enc,status=excluded.status,
         generation=mcp_grants.generation+1,version=mcp_grants.version+1,revoked_at=null,
@@ -157,9 +193,24 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
           input.authType,
           enc,
           input.transport === "stdio" ? "connected" : "not_connected",
+          input.serviceId ?? null,
         ],
       );
       return dto(await get(user, org, connectionId));
+    },
+    async metadata(user, org, id, input) {
+      await get(user, org, id, true);
+      if (
+        (input.name !== undefined &&
+          (typeof input.name !== "string" || !input.name.trim() || input.name.length > 200)) ||
+        (input.defaultForLaunch !== undefined && typeof input.defaultForLaunch !== "boolean")
+      )
+        throw new VaultError("invalid", "Invalid MCP metadata.");
+      await sql.query(
+        "update public.mcp_connections set name=coalesce($2,name),default_for_launch=coalesce($3,default_for_launch) where id=$1::uuid",
+        [id, input.name ?? null, input.defaultForLaunch ?? null],
+      );
+      return dto(await get(user, org, id));
     },
     async configureStdio(user, org, id) {
       const row = await get(user, org, id, true);
@@ -451,13 +502,18 @@ export function createSqlMcpLeasePort(sql: Sql) {
 }
 export function createSqlMcpLaunchPort(sql: Sql, registry: McpRegistry) {
   return {
+    async defaults(actor: { userId: string; orgId: string }, visibility: "private" | "org") {
+      return (await registry.list(actor.userId, actor.orgId))
+        .filter((c) => c.defaultForLaunch && c.status !== "disabled" && (visibility === "private" || c.scope === "org"))
+        .map((c) => c.id);
+    },
     async validate(actor: { userId: string; orgId: string }, ids: string[], visibility: "private" | "org") {
       for (const id of ids) {
         const c = await registry.get(actor.userId, actor.orgId, id);
         if (c.status !== "connected" || (visibility === "org" && c.scope !== "org"))
           throw new VaultError(
             "forbidden",
-            "Personal grants require a private sandbox; every connection must be connected.",
+            "Personal grants require a private sandbox; reconnect every selected MCP connection before launching.",
           );
       }
     },

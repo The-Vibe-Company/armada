@@ -410,3 +410,24 @@ test("CLI launch JSON and text report persisted private sandbox visibility, not 
     await f.close();
   }
 });
+
+test("CLI catalog service create and metadata actions use the API and preserve UUID identity", async () => {
+  const f = await fixture();
+  f.options.mcp = { registry: createSqlMcpRegistry(f.db, key) };
+  try {
+    const catalog = await f.cli(["mcp", "catalog", "--json"]);
+    expect(catalog.code).toBe(0);
+    expect(JSON.parse(catalog.out).services.find((s: { id: string }) => s.id === "slack").availability).toBe(
+      "setup_required",
+    );
+    const added = await f.cli(["mcp", "add", "Work", "--service", "linear", "--json"]);
+    expect(added.code).toBe(0);
+    const id = JSON.parse(added.out).connection.id;
+    const renamed = await f.cli(["mcp", "rename", id, "Second account", "--json"]);
+    expect(JSON.parse(renamed.out).connection).toMatchObject({ id, name: "Second account", catalogId: "linear" });
+    const defaults = await f.cli(["mcp", "default", id, "on", "--json"]);
+    expect(JSON.parse(defaults.out).connection).toMatchObject({ id, defaultForLaunch: true });
+  } finally {
+    await f.close();
+  }
+});
