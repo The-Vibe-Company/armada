@@ -48,6 +48,7 @@ export async function scanGoldenSandbox(
     // Classify paths in memory; only fixed labels and counts leave this process.
     "scan_location() {",
     '  case "$1" in',
+    "    /root/.prime/*|/home/user/.prime/*) location=image_prime_tooling ;;",
     "    */.git/config) location=git_config ;;",
     "    */.git/objects/*) location=git_storage ;;",
     "    */.git/*) location=git_metadata ;;",
@@ -70,9 +71,21 @@ export async function scanGoldenSandbox(
     "  local -A counts=()",
     "  while IFS= read -r -d '' path; do",
     '    scan_location "$path"',
+    // For an otherwise unclassified root-home content hit, distinguish GNU grep's binary
+    // heuristic from text without emitting file names or bytes. This is diagnostic only:
+    // both classes still reject, and a failed classification fails the scan closed.
+    '    if [ "$surface" = file_content ] && [ "$location" = root_home ]; then',
+    '      LC_ALL=C grep -IqE "$pattern" "$path" 2>/dev/null',
+    "      local kind_status=$?",
+    '      case "$kind_status" in',
+    "        0) location=root_home_text ;;",
+    "        1) location=root_home_binary ;;",
+    "        *) return 95 ;;",
+    "      esac",
+    "    fi",
     "    counts[$location]=$(( ${counts[$location]:-0} + 1 ))",
     "  done",
-    "  for location in git_config git_storage git_metadata credential_file package_cache environment_file shell_history git_global_config shell_startup tool_config application_state user_home root_home temporary other; do",
+    "  for location in image_prime_tooling git_config git_storage git_metadata credential_file package_cache environment_file shell_history git_global_config shell_startup tool_config application_state user_home root_home root_home_text root_home_binary temporary other; do",
     "    count=${counts[$location]:-0}",
     '    if [ "$count" -gt 0 ]; then printf "ARMADA_SCAN_MATCH %s %s %s\n" "$surface" "$location" "$count"; fi',
     "  done",
@@ -170,7 +183,7 @@ function reportScanMatches(stdout: string, buildId?: string): void {
   let reported = false;
   for (const line of stdout.slice(0, 8192).split("\n").slice(0, 64)) {
     const match =
-      /^ARMADA_SCAN_MATCH (file_content|path_name|git_object) (git_config|git_storage|git_metadata|credential_file|package_cache|environment_file|shell_history|git_global_config|shell_startup|tool_config|application_state|user_home|root_home|temporary|other) ([1-9][0-9]{0,8})$/.exec(
+      /^ARMADA_SCAN_MATCH (file_content|path_name|git_object) (image_prime_tooling|git_config|git_storage|git_metadata|credential_file|package_cache|environment_file|shell_history|git_global_config|shell_startup|tool_config|application_state|user_home|root_home|root_home_text|root_home_binary|temporary|other) ([1-9][0-9]{0,8})$/.exec(
         line,
       );
     if (!match) continue;

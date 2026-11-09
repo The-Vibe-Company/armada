@@ -331,7 +331,10 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
 }
 
 /** Disposable builders must not retain standard credential stores or interactive histories from the image or setup.
- * Remove only these exact authentication files, never repositories, caches or whole directories.
+ * Remove exact authentication/history files and the unused Prime image tooling tree only.
+ * Armada goldens use Claude/Codex, not Prime; the image's Prime runtime can carry token-shaped
+ * binary material. Remove the whole exact disposable tool installation, not bytes within a
+ * binary, and still scan every home afterward. Never remove arbitrary repositories or caches.
  * An unexpected directory/permission failure aborts the build rather than bypassing the scan.
  */
 const CREDENTIAL_CLEANUP = [
@@ -339,6 +342,8 @@ const CREDENTIAL_CLEANUP = [
   "for home in /home/user /root; do",
   '  rm -f -- "$home/.git-credentials" "$home/.config/git/credentials" "$home/.netrc" "$home/.config/gh/hosts.yml"',
   '  rm -f -- "$home/.bash_history" "$home/.zsh_history" "$home/.python_history" "$home/.node_repl_history" "$home/.local/share/fish/fish_history"',
+  '  rm -rf -- "$home/.prime"',
+  '  if [ -e "$home/.prime" ] || [ -L "$home/.prime" ]; then exit 96; fi',
   "done",
 ].join("\n");
 

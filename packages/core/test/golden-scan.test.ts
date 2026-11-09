@@ -68,10 +68,11 @@ function innerScript(script: string): string {
 }
 
 function withIsolatedRoots(script: string, roots: { home: string; root: string; tmp: string }): string {
-  return innerScript(script).replace(
-    "roots='/home/user /root /tmp'",
-    `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
-  );
+  return innerScript(script)
+    .replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)
+    .replace("    /root/*)", `    ${roots.root}/*)`)
+    .replaceAll("/root/.prime/", `${roots.root}/.prime/`)
+    .replaceAll("/home/user/.prime/", `${roots.home}/.prime/`);
 }
 
 /** Runs the exact generated script against isolated scratch roots instead of the real filesystem. */
@@ -361,20 +362,24 @@ test("credential cleanup fails closed on an unexpected directory instead of recu
 });
 
 test.each([
-  { directory: ".npm", location: "package_cache" },
-  { directory: ".config/tool", location: "tool_config" },
-  { directory: ".local/state/tool", location: "application_state" },
+  { directory: ".npm", location: "package_cache", root: false, binary: false },
+  { directory: ".config/tool", location: "tool_config", root: false, binary: false },
+  { directory: ".local/state/tool", location: "application_state", root: false, binary: false },
+  { directory: ".prime/tool/deep", location: "image_prime_tooling", root: true, binary: true },
+  { directory: "unmanaged/deep", location: "root_home_text", root: true, binary: false },
+  { directory: "unmanaged/deep", location: "root_home_binary", root: true, binary: true },
 ])(
   "real scan rejection logs only bounded metadata ($location), never values, names or arbitrary provider output",
-  async ({ directory, location }) => {
+  async ({ directory, location, root, binary }) => {
     const { base, roots } = sandbox();
     const token = "ghu_" + "L".repeat(36);
     const marker = "private-filename-not-for-logs";
     const buildId = crypto.randomUUID();
     const log = spyOn(console, "error").mockImplementation(() => {});
     try {
-      mkdirSync(join(roots.home, directory), { recursive: true });
-      writeFileSync(join(roots.home, directory, marker), token);
+      const home = root ? roots.root : roots.home;
+      mkdirSync(join(home, directory), { recursive: true });
+      writeFileSync(join(home, directory, marker), binary ? Buffer.from("\0" + token + "\0") : token);
       const executor = {
         exec: async (request: ExecRequest) => {
           const result = spawnSync("bash", ["-c", withIsolatedRoots(request.command, roots)], { encoding: "utf8" });
@@ -438,6 +443,48 @@ test("disposable history cleanup preserves startup/config files and still reject
     writeFileSync(join(roots.root, "unmanaged.dat"), "safe");
     writeFileSync(join(roots.root, ".gitconfig"), "[credential]\nhelper = " + token + "\n");
     expect(runAgainst(script, roots).status).toBe(97);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("disposable Prime tooling removal leaves safe fixtures and unmanaged root-home material subject to scan", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  const token = "ghs_" + "N".repeat(36);
+  try {
+    for (const home of [roots.home, roots.root]) {
+      mkdirSync(join(home, ".prime", "tool", "deep"), { recursive: true });
+      writeFileSync(join(home, ".prime", "tool", "deep", "runtime"), Buffer.from("\x7fELF\0" + token));
+      writeFileSync(join(home, "safe.ts"), 'const token = "ghs_test_secret";');
+    }
+    expect(runAgainst(script, roots).status).toBe(97);
+    expect(cleanCredentials(base, roots)).toBe(0);
+    for (const home of [roots.home, roots.root]) {
+      expect(existsSync(join(home, ".prime"))).toBe(false);
+      expect(readFileSync(join(home, "safe.ts"), "utf8")).toContain("ghs_test_secret");
+    }
+    expect(runAgainst(script, roots).status).toBe(0);
+    writeFileSync(join(roots.root, "unmanaged.bin"), Buffer.from("\0" + token));
+    expect(runAgainst(script, roots).status).toBe(97);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("disposable Prime cleanup fails closed when removal is unavailable", () => {
+  const { base, roots } = sandbox();
+  try {
+    mkdirSync(join(roots.root, ".prime"));
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "rm"),
+      '#!/bin/sh\nfor arg; do case "$arg" in */.prime) exit 13 ;; esac; done\nexec /bin/rm "$@"\n',
+      { mode: 0o700 },
+    );
+    expect(cleanCredentials(base, roots)).not.toBe(0);
+    expect(existsSync(join(roots.root, ".prime"))).toBe(true);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
