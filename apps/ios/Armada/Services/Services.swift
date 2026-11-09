@@ -1,0 +1,134 @@
+import Foundation
+
+/// The presentation's only route to orchestrators and sandboxes. Views never hold a token,
+/// build a request or decide authorization: they call these services, which `ArmadaKitServices`
+/// implements over the actual `ArmadaKit` client (#690). Mutations follow ArmadaKit's durable
+/// command model: prepare once, then submit (and retry) only that handle. In-memory preview data
+/// exists only inside `#Preview` blocks and is never selected at runtime.
+protocol OrchestratorService: Sendable {
+    func list(orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorPage
+    func detail(id: String) async throws(ServiceFailure) -> OrchestratorDetail
+    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage
+    func createOptions(orgID: String) async throws(ServiceFailure) -> CreateOptions
+    /// Records a create command durably before anything is sent and returns its handle
+    /// (ArmadaKit `prepareOrchestratorCreate`): its bytes and idempotency key are fixed here.
+    func prepareCreate(_ request: OrchestratorCreateRequest) async throws(ServiceFailure) -> String
+    /// Records a message, steer, stop or resume fenced by `expectedRevision`; returns its handle.
+    func prepareMutation(
+        _ action: OrchestratorAction,
+        orchestratorID: String,
+        expectedRevision: Int
+    ) async throws(ServiceFailure) -> String
+    /// Sends, or resends, exactly the prepared command. Never mints a new key.
+    func submit(handle: String) async throws(ServiceFailure) -> OperationSummary
+    /// A command saved on this device whose outcome is still open, including one from an earlier
+    /// launch. `orchestratorID` nil means a create in the organization.
+    func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation?
+    /// Forgets a command only when its outcome is final; otherwise does nothing.
+    func discard(handle: String) async
+    /// For a command the server already ACCEPTED (it has a receipt), resends exactly it to read its
+    /// current receipt and forgets it once final. Never sends a command without a receipt: an
+    /// unknown outcome is retried only by the person.
+    func settle(handle: String) async
+}
+
+protocol SandboxService: Sendable {
+    /// `POST /api/v1/sandbox/list`: allowlisted metadata for every current member.
+    func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage
+    /// Interior for the owner or a current admin; the server reauthorizes and may refuse.
+    func interior(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> SandboxInterior
+}
+
+/// A saved command whose outcome is still open.
+struct UnresolvedOperation: Hashable, Sendable {
+    let handle: String
+    let kind: OperationKind
+    /// The server's receipt when it accepted the command: in progress rather than unknown.
+    let receipt: OperationSummary?
+}
+
+/// Concise, safe failure categories. No raw response body or transport error reaches a view.
+enum ServiceFailure: Error, Hashable, Sendable {
+    /// The server or this client does not offer the capability. Shown as such; not retried in a loop.
+    /// Never used for a command that may have been sent (that is `.uncertain`).
+    case unavailable(String)
+    /// The session ended. The app returns to sign-in.
+    case signedOut
+    /// Missing or concealed (403/404). Never pre-authorized client-side.
+    case noAccess
+    /// Another change won the revision fence; refresh and keep the draft.
+    case staleRevision
+    /// A command was sent but its outcome is unknown. Retry the SAME handle.
+    case uncertain
+    /// A read could not reach Armada. Safe to retry.
+    case offline
+    /// The server or the client refused the request with a safe, presentable reason.
+    case rejected(String)
+
+    var message: String {
+        switch self {
+        case .unavailable(let reason): reason
+        case .signedOut: "Your session ended. Sign in again."
+        case .noAccess: "You don't have access to this, or it no longer exists."
+        case .staleRevision: "This orchestrator changed elsewhere. The latest state is shown; your draft is kept."
+        case .uncertain: "Armada did not confirm this request. Retrying sends the same request again."
+        case .offline: "Armada can't be reached. Check your connection."
+        case .rejected(let reason): reason
+        }
+    }
+}
+
+/// Services for a build with no usable client (for example, a missing `ARMADA_API_URL`). Every
+/// call reports the explicit unavailable capability; nothing is simulated.
+struct UnavailableServices: OrchestratorService, SandboxService {
+    let reason: String
+
+    static let orchestrators = UnavailableServices(reason: "Orchestrators aren't available in this build.")
+    static let sandboxes = UnavailableServices(reason: "Sandboxes aren't available in this build.")
+
+    func list(orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorPage {
+        throw .unavailable(reason)
+    }
+
+    func detail(id: String) async throws(ServiceFailure) -> OrchestratorDetail {
+        throw .unavailable(reason)
+    }
+
+    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+        throw .unavailable(reason)
+    }
+
+    func createOptions(orgID: String) async throws(ServiceFailure) -> CreateOptions {
+        throw .unavailable(reason)
+    }
+
+    func prepareCreate(_ request: OrchestratorCreateRequest) async throws(ServiceFailure) -> String {
+        throw .unavailable(reason)
+    }
+
+    func prepareMutation(
+        _ action: OrchestratorAction,
+        orchestratorID: String,
+        expectedRevision: Int
+    ) async throws(ServiceFailure) -> String {
+        throw .unavailable(reason)
+    }
+
+    func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
+        throw .unavailable(reason)
+    }
+
+    func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation? { nil }
+
+    func discard(handle: String) async {}
+
+    func settle(handle: String) async {}
+
+    func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage {
+        throw .unavailable(reason)
+    }
+
+    func interior(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> SandboxInterior {
+        throw .unavailable(reason)
+    }
+}

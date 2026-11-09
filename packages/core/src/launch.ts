@@ -135,6 +135,7 @@ export async function launchSandbox(
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
   const repositoryDir = resolveRepositoryDir(golden, request.repo);
+  const resourceProject = golden.config.repos.find((repo) => repo.dir === repositoryDir);
   const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
   if (repositoryDir !== null && !prepareNativeCwd)
@@ -210,6 +211,16 @@ export async function launchSandbox(
         ...(activityLeaseId ? { activityLeaseId } : {}),
         repositoryDir,
         machineSize,
+        ...(resourceProject
+          ? {
+              resourceProject: {
+                version: 1 as const,
+                url: resourceProject.url,
+                branch: resourceProject.branch,
+                dir: resourceProject.dir,
+              },
+            }
+          : {}),
         ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
         effectiveTtlSeconds: ttlSeconds,
         model: choice.model,
