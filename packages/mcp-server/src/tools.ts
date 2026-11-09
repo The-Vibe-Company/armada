@@ -147,32 +147,25 @@ const golden = z.object({
   }),
 });
 
-const sandbox = z.object({
+const sandboxListMetadata = z.object({
+  providerSandboxId: z.string().nullable(),
+  boatId: z.string().nullable(),
   id: z.string(),
-  provider: providerOutput,
-  providerSandboxId: z.string(),
-  boatId: compat("providerSandboxId"),
-  golden: z.string(),
-  visibility: z.enum(["org", "private"]),
-  harness: z.enum(HARNESSES),
-  repositoryDir: z
-    .string()
-    .nullable()
-    .describe("Configured directory used to prepare native agent cwd; not confinement."),
-  ...modelOutput,
-  machineSize: z.unknown().nullable(),
-  status: z.enum(SANDBOX_STATUSES),
-  statusReason: z.string().nullable(),
   orgId: z.string(),
   ownerId: z.string(),
-  conversationIds: z.array(z.string()),
+  provider: providerOutput,
+  harness: z.enum(HARNESSES),
+  model: modelOutput.model,
+  reasoningEffort: modelOutput.reasoningEffort,
+  status: z.enum(SANDBOX_STATUSES),
   createdAt: z.string(),
   stoppedAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
   effectiveTtlSeconds: z.number().nullable(),
-  requestedTtlSeconds: z.number().nullable(),
-  lastObservedAt: z.string().nullable(),
-  lifecycleError: z.string().nullable(),
+  machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
+  displayLabel: z.string(),
+  canOpen: z.boolean(),
+  canManage: z.boolean(),
 });
 
 const prompt = z.object({
@@ -684,7 +677,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "List sandboxes",
       description:
-        "Sandboxes you can see, newest first: those of your org's goldens, and of your own private goldens. " +
+        "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
         "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
       input: {
         harness: z.enum(HARNESSES).optional(),
@@ -695,7 +688,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
       },
       output: {
-        sandboxes: z.array(sandbox),
+        sandboxes: z.array(sandboxListMetadata),
         total: z.number().int(),
         page: z.number().int(),
         limit: z.number().int(),
@@ -723,31 +716,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         limit,
         hasMore,
         nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-        sandboxes: rows.map((row) => ({
-          id: row.id,
-          ...sandboxIds(row),
-          golden: row.golden,
-          visibility: row.visibility,
-          harness: row.harness,
-          repositoryDir: row.repositoryDir ?? null,
-          model: row.model,
-          reasoningEffort: row.reasoningEffort,
-          credentialId: row.credentialId ?? null,
-          credentialVersion: row.credentialVersion ?? null,
-          machineSize: row.machineSize ?? null,
-          status: row.status,
-          statusReason: row.statusReason,
-          orgId: row.orgId,
-          ownerId: row.ownerId,
-          conversationIds: row.conversationIds,
-          createdAt: row.createdAt,
-          stoppedAt: row.stoppedAt,
-          expiresAt: row.expiresAt ?? null,
-          effectiveTtlSeconds: row.effectiveTtlSeconds ?? null,
-          requestedTtlSeconds: row.requestedTtlSeconds ?? null,
-          lastObservedAt: row.lastObservedAt ?? null,
-          lifecycleError: row.lifecycleError ?? null,
-        })),
+        sandboxes: rows,
       };
     },
   );
@@ -891,7 +860,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
       if (found.credentialId)
         await context.launchCredentials.resolve(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
@@ -967,11 +936,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
         );
+      const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
+      if (!member) throw new ToolError("forbidden", "No current organization membership.");
+      await context.connections?.prepare?.(provider, found, {
+        userId: caller.userId,
+        orgId: found.orgId,
+        role: member.role,
+      });
       const receipt = await provider.steer({
         sandboxId: found.providerSandboxId,
         text: args.text,
@@ -1037,6 +1013,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         found.id,
       );
       const execute = async () => {
+        const membership = caller.orgs.find((member) => member.orgId === found.orgId);
+        if (!membership) throw new ToolError("forbidden", "No current organization membership.");
+        await context.connections?.prepare?.(provider, found, {
+          userId: caller.userId,
+          orgId: found.orgId,
+          role: membership.role,
+        });
         const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
         const nativeBefore =
           (await context.launchCredentials.nativeSecrets?.(

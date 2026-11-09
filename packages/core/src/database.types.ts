@@ -1,4 +1,6 @@
 // Generated from supabase/migrations by `bun run db:types`. Do not edit.
+import type { SandboxListMetadata } from "./sandbox-access.ts";
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 export type Database = {
@@ -95,6 +97,7 @@ export type Database = {
           installations: Json | null;
           access_token_enc: string | null;
           access_expires_at: string | null;
+          connection_epoch: string;
         };
         Insert: {
           user_id: string;
@@ -109,6 +112,7 @@ export type Database = {
           installations?: Json | null;
           access_token_enc?: string | null;
           access_expires_at?: string | null;
+          connection_epoch?: string;
         };
         Update: {
           user_id?: string;
@@ -123,6 +127,7 @@ export type Database = {
           installations?: Json | null;
           access_token_enc?: string | null;
           access_expires_at?: string | null;
+          connection_epoch?: string;
         };
         Relationships: [
           {
@@ -130,6 +135,100 @@ export type Database = {
             columns: ["user_id"];
             isOneToOne: true;
             referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      github_refresh_fences: {
+        Row: {
+          user_id: string;
+          refresh_hash: string;
+        };
+        Insert: {
+          user_id: string;
+          refresh_hash: string;
+        };
+        Update: {
+          user_id?: string;
+          refresh_hash?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "github_refresh_fences_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      github_runtime_capabilities: {
+        Row: {
+          revision: number;
+          hash: string;
+          sandbox_id: string;
+          binding: Json;
+          expires_at: string;
+        };
+        Insert: {
+          revision?: number;
+          hash: string;
+          sandbox_id: string;
+          binding: Json;
+          expires_at: string;
+        };
+        Update: {
+          revision?: number;
+          hash?: string;
+          sandbox_id?: string;
+          binding?: Json;
+          expires_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "github_runtime_capabilities_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      github_runtime_issued: {
+        Row: {
+          sandbox_id: string;
+          owner_id: string;
+          physical_generation: string;
+          hash: string;
+          token_enc: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          owner_id: string;
+          physical_generation: string;
+          hash: string;
+          token_enc: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          owner_id?: string;
+          physical_generation?: string;
+          hash?: string;
+          token_enc?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "github_runtime_issued_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "github_runtime_issued_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
         ];
@@ -2014,7 +2113,8 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      sandbox_list_metadata: { Args: Record<string, never>; Returns: SandboxListMetadata[] };
+      can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
       credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal";
@@ -2035,6 +2135,9 @@ export type Database = {
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
+export type GitHubRefreshFence = Database["public"]["Tables"]["github_refresh_fences"]["Row"];
+export type GitHubRuntimeCapability = Database["public"]["Tables"]["github_runtime_capabilities"]["Row"];
+export type GitHubRuntimeIssued = Database["public"]["Tables"]["github_runtime_issued"]["Row"];
 export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoption_receipts"]["Row"];
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type GoldenBuildJob = Database["public"]["Tables"]["golden_build_jobs"]["Row"];

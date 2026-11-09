@@ -7,6 +7,7 @@ import {
   createSqlMcpRegistry,
   type Sql,
 } from "@armada/core";
+import { createSqlData } from "../src/data.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
 test("registry separates personal grants, fences leases on revoke, and refuses shared impersonation", async () => {
@@ -41,7 +42,7 @@ test("registry separates personal grants, fences leases on revoke, and refuses s
     expect(await grants.discovered(shared.id, sharedProbe.generation, "oauth")).toBe(true);
     expect(await registry.get(p.admin, p.org, shared.id)).toMatchObject({ authType: "oauth", status: "not_connected" });
     const launch = createSqlMcpLaunchPort(db, registry);
-    await expect(launch.validate({ userId: p.owner, orgId: p.org }, [c.id], "org")).rejects.toThrow(/private/);
+    await launch.validate({ userId: p.owner, orgId: p.org }, [c.id], "org");
     await launch.validate({ userId: p.owner, orgId: p.org }, [c.id], "private");
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
     if (!golden) throw new Error("Missing shared fixture");
@@ -50,9 +51,18 @@ test("registry separates personal grants, fences leases on revoke, and refuses s
       "insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,visibility) values($1,'bx_registry',$2,$3,$4,'claude','ready','org')",
       [sandbox, golden.id, p.org, p.owner],
     );
-    await expect(launch.bind(sandbox, [c.id])).rejects.toThrow(/cannot be bound/);
-    await db.query("update sandboxes set visibility='private' where id=$1", [sandbox]);
+
     await launch.bind(sandbox, [c.id]);
+    await db.query("update sandboxes set access_owner_id=$2 where id=$1", [sandbox, p.admin]);
+    await expect(launch.validate({ userId: p.admin, orgId: p.org }, [c.id], "org")).rejects.toThrow();
+    expect(await registry.sandboxConnections(p.admin, p.org, sandbox)).toEqual([]);
+    await expect(registry.sandboxConnections(p.member, p.org, sandbox)).rejects.toThrow(/No such/);
+    const wrongOwnerSandbox = crypto.randomUUID();
+    await db.query(
+      "insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,visibility) values($1,'bx_wrong_owner',$2,$3,$4,'claude','ready','org')",
+      [wrongOwnerSandbox, golden.id, p.org, p.admin],
+    );
+    await expect(launch.bind(wrongOwnerSandbox, [c.id])).rejects.toThrow(/cannot be bound/);
     const leases = createSqlMcpLeasePort(db);
     const hash = "a".repeat(64);
     await leases.issue({
@@ -561,6 +571,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
           },
           encryptionKey: ENCRYPTION_KEY,
           store: createSqlVaultStore(db),
+          data: createSqlData(db),
           mcp: { registry },
         },
       );
@@ -579,10 +590,11 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
       [shared.id, "connected"],
     ]);
     expect((await call(p.owner, "sandbox-connections", { org: p.org, id: empty })).body.connections).toEqual([]);
-    for (const actor of [p.member, p.admin])
+    for (const actor of [p.member])
       expect((await call(actor, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
+    expect((await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).status).toBe(404);
     expect(
-      (await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections.map((c) => c.id),
+      (await call(p.admin, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections.map((c) => c.id),
     ).toEqual([shared.id]);
     expect((await call(p.member, "sandbox-connections", { org: p.otherOrg, id: orgSandbox })).status).toBe(404);
     expect((await call(p.member, "set-enabled", { org: p.org, id: shared.id, enabled: false })).status).toBe(403);
@@ -637,14 +649,14 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
       (await call(p.admin, "set-enabled", { org: p.org, id: shared.id, enabled: false })).body.connection.status,
     ).toBe("disabled");
     expect(
-      (await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections[0]?.status,
+      (await call(p.admin, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections[0]?.status,
     ).toBe("disabled");
     expect(
       (await call(p.admin, "set-enabled", { org: p.org, id: shared.id, enabled: true })).body.connection.status,
     ).toBe("not_connected");
     expect(await grants.acquire(shared.id, crypto.randomUUID())).toBeNull();
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
-    expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(403);
+    expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
   } finally {
     await db.close();
   }
@@ -866,7 +878,7 @@ test("catalog instances have independent defaults and metadata does not replace 
     const port = createSqlMcpLaunchPort(db, registry);
     const actor = { userId: p.owner, orgId: p.org };
     expect(await port.defaults(actor, "private")).toEqual([first.id]);
-    expect(await port.defaults(actor, "org")).toEqual([]);
+    expect(await port.defaults(actor, "org")).toEqual([first.id]);
     await expect(port.validate(actor, [first.id], "private")).rejects.toThrow(/reconnect/);
     await expect(registry.metadata(p.member, p.org, first.id, { name: "Stolen" })).rejects.toThrow();
     const shared = await registry.save(p.admin, p.org, { ...input, scope: "org" });

@@ -17,7 +17,7 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     const client = await server.client(token);
     const launched = await call(client, SIZED_LAUNCH_TOOL_V1, {
       size_policy_version: 1,
-      golden: "mine",
+      golden: "shared",
       org: server.people.org,
       harness: "claude",
       repo: "web",
@@ -117,14 +117,23 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     await expect(server.db.query("update sandboxes set resource_project=null where id=$1", [id])).rejects.toThrow(
       "immutable",
     );
-    await server.db.query("update goldens set config=$1::jsonb where name='mine'", [
+    await server.db.query("update goldens set config=$1::jsonb where name='shared'", [
       JSON.stringify({ repos: [{ url: "https://github.com/acme/other.git", branch: "main", dir: "web" }], init: [] }),
     ]);
     expect(((await (await http()).json()) as ResourceAdviceResponse).advice.scope.project).toEqual(
       row.resource_project,
     );
-    const denied = await http(await server.token(server.people.admin));
-    expect(denied.status).toBe(404);
+    const memberToken = await server.token(server.people.member);
+    const member = await server.client(memberToken);
+    const list = await call(member, "list");
+    const metadata = (list.data.sandboxes as Record<string, unknown>[]).find((row) => row.id === id);
+    expect(metadata).toMatchObject({ id, canOpen: false, machineSize: "small" });
+    expect(metadata).not.toHaveProperty("resourceProject");
+    expect(JSON.stringify(metadata)).not.toContain(row.resource_project!.url);
+    expect((await http(memberToken)).status).toBe(404);
+    expect((await call(member, "resource_advice", { id })).isError).toBe(true);
+    expect(collected).toBe(2);
+    expect((await http(await server.token(server.people.admin))).status).toBe(200);
     expect(collected).toBe(2);
     partial = true;
     server.clock.now = new Date(server.clock.now.getTime() + 10000);

@@ -40,6 +40,7 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
+  configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
   prepareNativeHarnessCwd(request: { sandboxId: string; harness: "claude" | "codex"; cwd: string }): Promise<void>;
@@ -723,6 +724,34 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         const active = await healthyAdmission(row, save);
         active.harnessCwds = { ...active.harnessCwds, [harness]: cwd };
         await save(active);
+      });
+    },
+    async configureGitHub({
+      sandboxId,
+      configuration,
+    }: {
+      sandboxId: string;
+      configuration: import("@armada/core").GitHubRuntimeConfiguration | null;
+    }) {
+      return admit(sandboxId, async (row) => {
+        // Renewal must never restore or allocate a stopped machine.
+        if (
+          row.golden ||
+          !row.physicalId ||
+          !["ready", "running"].includes(row.info.state) ||
+          (configuration && configuration.generation !== String(row.generation))
+        )
+          throw refusal("unauthorized", "GitHub runtime generation is not active.");
+        const bounded =
+          configuration && row.grantExpiresAt
+            ? { ...configuration, expiresAt: Math.min(configuration.expiresAt, row.grantExpiresAt) }
+            : configuration;
+        const result = await runner.call<{ acknowledged?: boolean }>(row, "configureGitHub", {
+          configuration: bounded,
+        });
+        if (result?.acknowledged !== true)
+          throw refusal("unavailable", "GitHub runtime did not acknowledge configuration.");
+        return { acknowledged: true };
       });
     },
     async configureMcp({ sandboxId, configuration }) {

@@ -58,6 +58,9 @@ describe("database", () => {
         "credentials",
         "github_authorizations",
         "github_connections",
+        "github_refresh_fences",
+        "github_runtime_capabilities",
+        "github_runtime_issued",
         "golden_adoption_receipts",
         "golden_backend_slots",
         "golden_build_jobs",
@@ -259,6 +262,7 @@ describe("database", () => {
         "credentials.value_enc",
         "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",
+        "github_runtime_issued.token_enc",
         "golden_build_jobs.payload_enc",
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
@@ -390,7 +394,7 @@ describe("database", () => {
       ).toEqual([sandbox]);
       expect(
         await asUser(db, people.admin, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
-      ).toEqual([]);
+      ).toEqual([sandbox]);
       await asUser(db, people.admin, () =>
         db.query("update sandboxes set status = 'stopped', stopped_at = now() where id = $1", [sandbox]),
       );
@@ -398,7 +402,7 @@ describe("database", () => {
         await asUser(db, people.owner, () =>
           text(db, "select status::text as value from sandboxes where id = $1", [sandbox]),
         ),
-      ).toBe("ready");
+      ).toBe("stopped");
     });
   });
 

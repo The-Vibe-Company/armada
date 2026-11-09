@@ -22,8 +22,9 @@ import { createClient } from "@/lib/supabase/server";
 const ORG_HOSTING_IN_SETTINGS = "Organization sandbox providers are managed in Settings.";
 
 /**
- * Stores a key, token or secret as ciphertext, in the viewer's own scope or (admins) the selected org's. It is
- * never read back: setting it again replaces it. Organization hosting keys are refused: see `ORG_HOSTING_IN_SETTINGS`.
+ * Stores one of the viewer's own hosting keys (Boat, Modal) as ciphertext. It is never read back: setting it again
+ * replaces it. An organization's hosting is its providers in Settings (`ORG_HOSTING_IN_SETTINGS`), and model
+ * credentials are named accounts on the server, so neither is written here.
  */
 export async function saveCredential(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const viewer = await requireViewer();
@@ -35,7 +36,8 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
   if (!isUuid(owner)) return fail("That request is not valid.");
 
   if (scope === "org" && !(await isSelectedOrganization(owner))) return fail("Switch to that organization first.");
-  if (scope === "org" && credentialKindInfo(kind).use === "hosting") return fail(ORG_HOSTING_IN_SETTINGS);
+  // Only hosting kinds are written here, and an organization's hosting is its providers in Settings.
+  if (scope === "org") return fail(ORG_HOSTING_IN_SETTINGS);
   // A Modal token is a pair, checked and stored together; every other kind is one pasted value.
   const checked =
     kind === "modal"
@@ -86,8 +88,9 @@ export async function removeCredential(_previous: ActionResult | null, data: For
   const supabase = await createClient();
   const row = (await listCredentials(supabase)).find((item) => item.id === id);
   if (!row) return fail("That credential is not available in this scope.");
-  if (row.scope === "org" && isCredentialKind(row.kind) && credentialKindInfo(row.kind).use === "hosting")
-    return fail(ORG_HOSTING_IN_SETTINGS);
+  // A model credential is a named account, removed by id through the server (`creds/accounts/remove`).
+  if (!isCredentialKind(row.kind)) return fail("Remove a model account from its card above.");
+  if (row.scope === "org") return fail(ORG_HOSTING_IN_SETTINGS);
   const { data: rows, error } = await supabase.from("credentials").delete().eq("id", id).select("id");
   if (error) return fail(explainDbError(error));
   if (rows.length === 0) return fail("You are not allowed to do that.");

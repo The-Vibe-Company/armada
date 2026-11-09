@@ -639,6 +639,7 @@ describe("GitHub connections", () => {
       let tail = Promise.resolve();
       const serialSql: Sql = {
         query: db.query.bind(db),
+        autonomousQuery: db.query.bind(db),
         transaction: async <T>(work: (sql: Sql) => Promise<T>) => {
           const previous = tail;
           let release!: () => void;

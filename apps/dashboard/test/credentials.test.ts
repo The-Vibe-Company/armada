@@ -1,21 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import {
-  CREDENTIAL_KINDS,
-  checkModalToken,
-  checkSecretValue,
-  credentialKindInfo,
-  isCredentialKind,
-} from "../src/lib/credentials.ts";
+import { checkModalToken, checkSecretValue, isCredentialKind } from "../src/lib/credentials.ts";
 
 describe("credentials", () => {
-  test("model keys name the variable a sandbox gets; hosting credentials name none", () => {
-    expect(CREDENTIAL_KINDS.map((item) => item.kind)).toEqual(["claude_oauth", "anthropic", "openai", "boat", "modal"]);
-    expect(credentialKindInfo("claude_oauth").env).toBe("CLAUDE_CODE_OAUTH_TOKEN");
-    expect(credentialKindInfo("openai").env).toBe("OPENAI_API_KEY");
-    // Hosting credentials stay on the server: no sandbox gets them as a variable.
-    expect(credentialKindInfo("boat")).toMatchObject({ use: "hosting", env: null });
-    expect(credentialKindInfo("modal")).toMatchObject({ use: "hosting", env: null });
-    expect(isCredentialKind("opencode")).toBe(false);
+  test("only hosting kinds are written directly: a model credential is a named account on the server", () => {
+    for (const kind of ["claude_oauth", "anthropic", "openai", "codex_auth", "opencode"]) {
+      expect(isCredentialKind(kind)).toBe(false);
+    }
+    for (const kind of ["boat", "modal"]) expect(isCredentialKind(kind)).toBe(true);
   });
 
   test("a pasted value is trimmed, and an empty or spaced one is refused", () => {

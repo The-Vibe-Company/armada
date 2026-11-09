@@ -44,7 +44,6 @@ type State = {
   /** The next send, steer or interrupt fails with this message, once. */
   failNextTool: string | null;
   /** Named model accounts (#603) as `creds/list` returns them: safe metadata, never a value. */
-  accounts: { user: Row[]; org: Row[] };
   /** Every `sandbox/bind-credential` body, and the next refusal to answer with, once. */
   bindCalls: Row[];
   failNextBind: { status: number; code: string; message: string } | null;
@@ -89,6 +88,14 @@ type State = {
   otpEmails: string[];
   /** The registry's connections. `authentication` is the write-only value; no response ever includes it. */
   connections: Row[];
+  /** Every `creds/list` and `creds/accounts/*` call. A pasted value is recorded as sent, never stored as text. */
+  accountCalls: { route: string; body: Row }[];
+  /** When set, `creds/list` answers as a server older than named accounts: kinds and dates only. */
+  legacyAccounts: boolean;
+  /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
+  usage: Record<string, Row | { fail: number }>;
+  /** `creds/accounts/auth-capabilities` (#604): what this deployment offers, or null for a server without the route. */
+  authCapabilities: Row | null;
   /** Every control API call, with its operation and body, for the tests to check what the dashboard sent. */
   controlCalls: { operation: string; body: Row }[];
   /** Every `org/provider/*` call (#576): its route, the body as sent and whether it carried a session. */
@@ -152,6 +159,13 @@ function seed(): State {
         kind: "anthropic",
         value_enc: "\\x0102",
         created_at: now,
+        // #603 migrates every model row to a named account; its kind's label is its first name.
+        name: "Anthropic API key",
+        is_default: false,
+        version: 1,
+        status: "active",
+        expires_at: null,
+        updated_at: now,
       },
     ],
     github_connections: [],
@@ -177,10 +191,14 @@ function seed(): State {
     sent: [],
     toolCalls: [],
     failNextTool: null,
-    accounts: { user: [], org: [] },
     bindCalls: [],
     failNextBind: null,
     launches: [],
+    accountCalls: [],
+    legacyAccounts: false,
+    usage: {},
+    // #604 v1 contract (root-native-auth-contract.json): an additive base map, no --name placeholder.
+    authCapabilities: { hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } },
     goldenCalls: [],
     goldenRemoveCalls: [],
     goldenStatusCalls: [],
@@ -834,7 +852,9 @@ function bindCredential(body: Row, userId: string | null): Response {
       "credential_binding_unsafe",
       "Stop the sandbox and finish lifecycle reconciliation before binding.",
     );
-  const account = [...state.accounts.user, ...state.accounts.org].find((row) => row.id === body.credentialId);
+  const account = state.credentials.find(
+    (row) => row.id === body.credentialId && String(row.kind) in MODEL_KINDS && row.status === "active",
+  );
   if (!account) return refuse(400, "invalid", "That account cannot be used for this sandbox.");
   target.credential_id = account.id;
   target.credential_version = account.version;
@@ -866,6 +886,15 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   const dirs = ((source.config as { repos?: { dir?: string }[] }).repos ?? []).map((repo) => repo.dir);
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
+  }
+  if (body.credentialId !== undefined) {
+    const account = state.credentials.find(
+      (row) =>
+        row.id === body.credentialId &&
+        ((row.scope === "user" && row.owner_id === userId) || (row.scope === "org" && row.owner_id === body.org)),
+    );
+    if (account?.status !== "active" || MODEL_KINDS[String(account.kind)] !== body.harness)
+      return controlFail(400, "invalid", "That account cannot run this agent.");
   }
   const sized = "size_policy" in source && !state.olderServer;
   if (sized && body.size !== undefined && !SIZES.includes(String(body.size)))
@@ -1676,6 +1705,122 @@ function orgProvider(route: string, body: Row, request: Request): Response {
   );
 }
 
+/* Named model accounts (#603): creds/list and creds/accounts/{set,rename,default,remove}, user JWT as the bearer. */
+
+const MODEL_KINDS: Record<string, "claude" | "codex"> = {
+  claude_oauth: "claude",
+  anthropic: "claude",
+  openai: "codex",
+  codex_auth: "codex",
+};
+
+/** The safe DTO: never `value_enc`, never the owner. Scope is where the row sits in `creds/list`. */
+function accountDto(row: Row): Row {
+  if (state.legacyAccounts) return { kind: row.kind, createdAt: row.created_at };
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    isDefault: row.is_default === true,
+    status: row.status ?? "active",
+    expiresAt: row.expires_at ?? null,
+    updatedAt: row.updated_at ?? row.created_at,
+    version: row.version ?? 1,
+  };
+}
+
+function accounts(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.accountCalls.push({ route, body: { ...body, ...(body.value === undefined ? {} : { value: "[sent]" }) } });
+  if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+  const model = (row: Row) => String(row.kind) in MODEL_KINDS;
+  if (route === "creds/list") {
+    const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
+    const rows = (scope: string, owner: unknown) =>
+      state.credentials
+        .filter((row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted")
+        .map(accountDto);
+    return json({
+      user: rows("user", userId),
+      orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
+    });
+  }
+  if (route === "creds/accounts/auth-capabilities") {
+    return state.authCapabilities ? json(state.authCapabilities) : json({ error: { message: "Unknown route." } }, 404);
+  }
+  if (route === "creds/accounts/usage") {
+    const report = state.usage[String(body.id)];
+    if (!report) return json({ error: { code: undefined, message: "Unknown route." } }, 404);
+    if ("fail" in report) return controlFail(Number(report.fail), "unavailable", "Usage could not be read.");
+    return json({ usage: report });
+  }
+  const scope = body.scope === "org" ? "org" : body.scope === "user" ? "user" : null;
+  if (!scope) return controlFail(400, "invalid", "Scope is user or org.");
+  if (scope === "org" && !isAdmin(body.org, userId))
+    return controlFail(403, "forbidden", "Only an org admin can do that.");
+  const owner = scope === "org" ? body.org : userId;
+  const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
+  const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
+  if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
+  // As #603's store: only a rotation (`set` with an id) is versioned, and it must name the version it replaces.
+  if (route === "creds/accounts/set" && target && typeof body.expectedVersion !== "number")
+    return controlFail(400, "invalid", "expectedVersion is required to rotate an account.");
+  const stale = route === "creds/accounts/set" && target && body.expectedVersion !== target.version;
+  if (stale) return controlFail(409, "conflict", "This account changed.");
+  const now = new Date().toISOString();
+  if (route === "creds/accounts/set") {
+    if (!(String(body.kind) in MODEL_KINDS)) return controlFail(400, "invalid", "Unknown kind.");
+    const sealed = `\\x${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`;
+    if (target) {
+      Object.assign(target, {
+        value_enc: sealed,
+        version: Number(target.version) + 1,
+        updated_at: now,
+        status: "active",
+      });
+      return json({ account: accountDto(target) });
+    }
+    const row: Row = {
+      id: crypto.randomUUID(),
+      scope,
+      owner_id: owner,
+      kind: body.kind,
+      value_enc: sealed,
+      created_at: now,
+      name: String(body.name),
+      is_default: false,
+      version: 1,
+      status: "active",
+      expires_at: null,
+      updated_at: now,
+    };
+    state.credentials.push(row);
+    return json({ account: accountDto(row) });
+  }
+  if (!target) return controlFail(400, "invalid", "Name the account.");
+  if (route === "creds/accounts/rename") {
+    Object.assign(target, { name: String(body.name), updated_at: now });
+    return json({ account: accountDto(target) });
+  }
+  if (route === "creds/accounts/default") {
+    const harness = MODEL_KINDS[String(target.kind)];
+    // As #603: every same-harness row of the owner, tombstones included, so a removed default stops blocking.
+    for (const row of state.credentials.filter(
+      (item) =>
+        item.scope === scope && item.owner_id === owner && model(item) && MODEL_KINDS[String(item.kind)] === harness,
+    ))
+      row.is_default = row === target;
+    return json({ account: accountDto(target) });
+  }
+  if (route === "creds/accounts/remove") {
+    // A tombstone, never a deleted row: historical sandbox bindings keep their billing identity.
+    // It keeps `is_default`: a removed default blocks implicit resolution until another default is chosen.
+    Object.assign(target, { status: "deleted", updated_at: now });
+    return json({ account: accountDto(target) });
+  }
+  return json({ error: "Not found." }, 404);
+}
+
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
@@ -1805,6 +1950,33 @@ function control(url: URL, body: Row): Response {
     state.events.set(String(body.sandbox), events);
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/accounts") {
+    if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
+    Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
+    if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
+    for (const row of (body.seed as Row[] | undefined) ?? []) state.credentials.push(row);
+    // `{user, org}`: the viewer's and Acme's model accounts as `creds/list` DTOs, replacing the seeded ones.
+    if (body.user !== undefined || body.org !== undefined) {
+      state.credentials = state.credentials.filter((row) => !(String(row.kind) in MODEL_KINDS));
+      const rows = (items: unknown, scope: "user" | "org", owner: string) =>
+        ((items as Row[] | undefined) ?? []).map((dto) => ({
+          id: dto.id,
+          scope,
+          owner_id: owner,
+          kind: dto.kind,
+          value_enc: "\\x0102",
+          created_at: dto.createdAt ?? dto.updatedAt,
+          name: dto.name,
+          is_default: dto.isDefault === true,
+          version: dto.version,
+          status: dto.status ?? "active",
+          expires_at: dto.expiresAt ?? null,
+          updated_at: dto.updatedAt,
+        }));
+      state.credentials.push(...rows(body.user, "user", ALICE), ...rows(body.org, "org", ACME));
+    }
+    return json({ calls: state.accountCalls });
+  }
   if (url.pathname === "/__test/credentials") {
     return json(state.credentials.map((row) => ({ ...row })));
   }
@@ -1856,10 +2028,6 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/sandbox-events") {
     state.events.set(String(body.sandbox), (body.events as Row[]) ?? []);
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/accounts") {
-    state.accounts = { user: (body.user as Row[]) ?? [], org: (body.org as Row[]) ?? [] };
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-next-bind") {
@@ -1990,10 +2158,7 @@ const server = Bun.serve({
       if (route === "golden/size-policy") return goldenSizePolicy(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
-      if (route === "creds/list") {
-        if (!viewer(request)) return json({ error: "Unauthorized." }, 401);
-        return json({ user: state.accounts.user, orgs: [{ id: ACME, name: "Acme", credentials: state.accounts.org }] });
-      }
+      if (route === "creds/list" || route.startsWith("creds/accounts/")) return accounts(route, body, request);
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("org/invitations/"))
         return invitations(route.slice("org/invitations/".length), body, request);

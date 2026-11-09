@@ -1,53 +1,28 @@
-import { type CredentialKind, type CredentialScope, parseCredentialValue, VaultError } from "@armada/core";
+import {
+  type CredentialKind as CoreCredentialKind,
+  type CredentialScope,
+  parseCredentialValue,
+  VaultError,
+} from "@armada/core";
 
-export type CredentialKindInfo = {
-  kind: CredentialKind;
-  label: string;
-  /**
-   * `model`: the agent's own key, injected into the sandboxes it launches under `env`. `hosting`: pays for and
-   * runs the sandboxes; it stays on the Armada server and never enters a sandbox.
-   */
-  use: "model" | "hosting";
-  /** Model credentials: the environment variable a sandbox gets it as. Hosting credentials have none. */
-  env: string | null;
-  description: string;
-};
+/**
+ * The hosting credentials this page stores directly: they pay for and run sandboxes, stay on the Armada server
+ * and never enter a sandbox. Model credentials are named accounts and go through the control API
+ * (`@/lib/account-control`), so a model kind is refused here rather than written as an unnamed row.
+ */
+export type CredentialKind = Extract<CoreCredentialKind, "boat" | "modal">;
 
-/** OpenCode and z.ai keys come with OpenCode support (v1): the schema has no kind for them yet. */
+export type CredentialKindInfo = { kind: CredentialKind; label: string; description: string };
+
 export const CREDENTIAL_KINDS: readonly CredentialKindInfo[] = [
-  {
-    kind: "claude_oauth",
-    label: "Claude Code OAuth token",
-    use: "model",
-    env: "CLAUDE_CODE_OAUTH_TOKEN",
-    description: "From `claude setup-token`. Runs Claude Code on a Claude subscription.",
-  },
-  {
-    kind: "anthropic",
-    label: "Anthropic API key",
-    use: "model",
-    env: "ANTHROPIC_API_KEY",
-    description: "Runs Claude Code on pay-as-you-go API billing.",
-  },
-  {
-    kind: "openai",
-    label: "Codex / OpenAI API key",
-    use: "model",
-    env: "OPENAI_API_KEY",
-    description: "Runs Codex.",
-  },
   {
     kind: "boat",
     label: "boat.dev API key",
-    use: "hosting",
-    env: null,
     description: "Hosts sandboxes on Boat. An org key covers everyone; a personal key covers your private goldens.",
   },
   {
     kind: "modal",
     label: "Modal token",
-    use: "hosting",
-    env: null,
     description: "Hosts sandboxes on Modal: a token ID and its secret, stored together.",
   },
 ];
