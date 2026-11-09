@@ -168,9 +168,13 @@ export function AcceptInvitation({ state, accept, now }: { state: RecipientState
       return (
         <Shell title="This invitation could not be loaded" alert>
           <p role="alert">{state.message}</p>
-          <Button asChild variant="outline" className="w-full sm:w-auto">
-            <Link href={INVITATION_ACCEPT_PATH}>Try again</Link>
-          </Button>
+          {state.signInAgain ? (
+            <SwitchAccount label="Sign in again" primary />
+          ) : (
+            <Button asChild variant="outline" className="w-full sm:w-auto">
+              <Link href={INVITATION_ACCEPT_PATH}>Try again</Link>
+            </Button>
+          )}
         </Shell>
       );
   }
@@ -182,7 +186,8 @@ export function AcceptInvitation({ state, accept, now }: { state: RecipientState
         <Shell title={`Join ${orgName}`}>
           <p>
             You are invited as <strong className="text-foreground">{article(role)}</strong>.{" "}
-            {expiryLabel(expiresAt, now)}.
+            {/* The server just said it is live: a clock ahead of the server's never reads "Expired" here. */}
+            {expiryLabel(expiresAt, now).replace(/^Expired$/, "Expires today")}.
           </p>
           <ActionForm action={accept} className="flex flex-col gap-2">
             <SubmitButton className="w-full sm:w-auto">Accept and join {orgName}</SubmitButton>

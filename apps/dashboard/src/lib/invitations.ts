@@ -187,7 +187,7 @@ export function parsePreview(value: unknown): RecipientPreview | null {
 export type RecipientState =
   | { kind: "missing" }
   | { kind: "sign_in" }
-  | { kind: "unavailable"; message: string }
+  | { kind: "unavailable"; message: string; signInAgain: boolean }
   | { kind: "preview"; preview: RecipientPreview; signedInAs: string };
 
 /**

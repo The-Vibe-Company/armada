@@ -29,7 +29,11 @@ export default async function AcceptInvitationPage() {
 async function preview(token: string, bearer: string | null, signedInAs: string): Promise<RecipientState> {
   const serverUrl = mcpUrl();
   if (!serverUrl || !bearer)
-    return { kind: "unavailable", message: "The Armada server is not configured for this dashboard." };
+    return {
+      kind: "unavailable",
+      message: "The Armada server is not configured for this dashboard.",
+      signInAgain: false,
+    };
   try {
     return {
       kind: "preview",
@@ -38,6 +42,10 @@ async function preview(token: string, bearer: string | null, signedInAs: string)
     };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    return { kind: "unavailable", message: refusalMessage(error.reason, error.status, error.retryAfterSeconds) };
+    return {
+      kind: "unavailable",
+      message: refusalMessage(error.reason, error.status, error.retryAfterSeconds),
+      signInAgain: error.status === 401,
+    };
   }
 }
