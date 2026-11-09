@@ -207,7 +207,9 @@ test("usage reads as reported: current windows, last-known after a token change,
       account(5, "Older server"),
     ],
     usage: {
-      [String(account(1, "").id)]: report(1, { extraUsage: { used: 4.5, limit: 20, currency: "USD" } }),
+      [String(account(1, "").id)]: report(1, {
+        extraUsage: { enabled: true, currency: "USD", usedMinor: 450, limitMinor: 2000 },
+      }),
       [String(account(2, "").id)]: report(2, {}),
       [String(account(3, "").id)]: report(3, { status: "unavailable", windows: [] }),
       [String(account(4, "").id)]: { fail: 503 },

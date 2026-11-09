@@ -161,7 +161,12 @@ function seed(): State {
     accountCalls: [],
     legacyAccounts: false,
     usage: {},
-    authCapabilities: { hostedOAuth: false, nativeCLI: [{ kind: "codex_auth", command: "armada creds login codex" }] },
+    // #604's modelAuthCapabilities (candidate 14be07d): nested logins, null when there is none.
+    authCapabilities: {
+      hostedOAuth: false,
+      claude: { login: null },
+      codex: { login: "armada creds login codex --name <name>" },
+    },
     goldenCalls: [],
     goldenRemoveCalls: [],
     goldenStatusCalls: [],

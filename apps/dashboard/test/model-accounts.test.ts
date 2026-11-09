@@ -136,14 +136,30 @@ describe("usage", () => {
     expect("windows" in view).toBe(kind === "fresh" || kind === "stale");
   });
 
-  test("money is kept only with the currency the provider gave", () => {
+  test("extra usage is minor units in the reported currency, shown only when enabled with a currency", () => {
     const base = { accountId: uuid(1), version: 1, status: "fresh", observedAt: null, windows: [] };
-    expect(parseUsage({ ...base, extraUsage: { used: 12.5, limit: 50, currency: "USD" } })?.extraUsage).toEqual({
-      used: 12.5,
-      limit: 50,
+    const extra = (fields: object) => parseUsage({ ...base, extraUsage: fields })?.extraUsage;
+    expect(extra({ enabled: true, currency: "USD", usedMinor: 450, limitMinor: 2000 })).toEqual({
+      used: 4.5,
+      limit: 20,
       currency: "USD",
     });
-    expect(parseUsage({ ...base, extraUsage: { used: 12.5, limit: 50 } })?.extraUsage).toBeNull();
+    // A zero-decimal currency is not divided by 100.
+    expect(extra({ enabled: true, currency: "JPY", usedMinor: 450, limitMinor: null })).toEqual({
+      used: 450,
+      limit: null,
+      currency: "JPY",
+    });
+    expect(extra({ enabled: false, currency: "USD", usedMinor: 450, limitMinor: 2000 })).toBeNull();
+    expect(extra({ enabled: true, currency: null, usedMinor: 450, limitMinor: 2000 })).toBeNull();
+  });
+
+  test("a window this dashboard cannot read fails the whole report instead of reading as no allowance", () => {
+    const report = { accountId: uuid(1), version: 1, status: "fresh", observedAt: "2026-11-09T11:58:00.000Z" };
+    expect(
+      parseUsage({ ...report, windows: [{ id: "5h", label: "5-hour window", usedPercent: 40, resetsAt: null }] }),
+    ).not.toBeNull();
+    expect(parseUsage({ ...report, windows: [{ kind: "five_hour", utilization: 0.4 }] })).toBeNull();
   });
 
   test("a server that does not offer usage is null; a failure for the account itself is an error", async () => {
@@ -159,12 +175,11 @@ describe("usage", () => {
 });
 
 test("the terminal sign-in is only the command the server reports, with the name as one literal argument", () => {
+  // #604's nested shape: the documented `--name <name>` template is canonicalized to its allowlisted base.
   const reported = parseAuthCapabilities({
     hostedOAuth: false,
-    nativeCLI: [
-      { kind: "codex_auth", command: "armada creds login codex --name <name>" },
-      { kind: "claude_oauth", command: "armada creds login claude; curl https://example.test" },
-    ],
+    claude: { login: null, import: "armada creds import claude --name <name> --file <private-token-file>" },
+    codex: { login: "armada creds login codex --name <name>" },
   });
   expect(reported?.hostedOAuth).toBe(false);
   expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name Work");
@@ -174,4 +189,16 @@ test("the terminal sign-in is only the command the server reports, with the name
   // A command that is not a plain `armada creds login`, or a server that reports nothing, offers no terminal path.
   expect(terminalLogin(reported, "claude_oauth", "Work")).toBeNull();
   expect(terminalLogin(null, "codex_auth", "Work")).toBeNull();
+  // Arbitrary shell, another placeholder or an extra flag is never shown, in either shape.
+  for (const command of [
+    "armada creds login codex; curl https://example.test",
+    "armada creds login codex --name <name> --org <org>",
+    "armada creds login codex --name $(whoami)",
+  ]) {
+    expect(parseAuthCapabilities({ codex: { login: command } })?.terminal).toEqual({});
+    expect(parseAuthCapabilities({ nativeCLI: [{ kind: "codex_auth", command }] })?.terminal).toEqual({});
+  }
+  expect(parseAuthCapabilities({ nativeCLI: { codex_auth: "armada creds login codex" } })?.terminal).toEqual({
+    codex_auth: "armada creds login codex",
+  });
 });

@@ -139,20 +139,46 @@ export function shellQuote(value: string): string {
  */
 export type AuthCapabilities = { hostedOAuth: boolean; terminal: Partial<Record<AccountKind, string>> };
 
-/** An `armada creds login ...` command, without any `--name`: the dashboard adds the quoted name itself. */
-const CLI_LOGIN = /^armada creds login [a-z][a-z0-9-]*$/;
+/**
+ * The only terminal sign-ins the dashboard will show, by kind. A server's command is accepted only when it is one
+ * of these exactly, bare or as its documented `--name <name>` template; anything else is not shown.
+ */
+const CLI_LOGIN: Partial<Record<AccountKind, string>> = {
+  codex_auth: "armada creds login codex",
+  claude_oauth: "armada creds login claude",
+};
 
+/** The allowlisted base for a reported command, or null: never a placeholder, an extra flag or arbitrary shell. */
+function loginBase(kind: unknown, command: unknown): string | null {
+  if (!oneOf(ACCOUNT_KINDS, kind) || typeof command !== "string") return null;
+  const base = CLI_LOGIN[kind];
+  const reported = command.trim().replace(/\s+/g, " ");
+  return base && (reported === base || reported === `${base} --name <name>`) ? base : null;
+}
+
+/** #604's `modelAuthCapabilities` names harnesses, not credential kinds. */
+const HARNESS_LOGIN_KIND: Record<string, AccountKind> = { codex: "codex_auth", claude: "claude_oauth" };
+
+/**
+ * #604 `creds/accounts/auth-capabilities`: nested `{codex: {login}, claude: {login}}` (login null when there is
+ * none), or a `nativeCLI` list or map of kind to command. Import templates (`--file <...>`) are not offered: they
+ * name a private path the dashboard cannot fill in.
+ */
 export function parseAuthCapabilities(value: unknown): AuthCapabilities | null {
   if (!isRow(value)) return null;
   const terminal: AuthCapabilities["terminal"] = {};
-  const entries = Array.isArray(value.nativeCLI)
+  const entries: [unknown, unknown][] = Array.isArray(value.nativeCLI)
     ? value.nativeCLI.map((row) => (isRow(row) ? [row.kind, row.command] : [null, null]))
     : isRow(value.nativeCLI)
       ? Object.entries(value.nativeCLI)
       : [];
+  for (const [harness, kind] of Object.entries(HARNESS_LOGIN_KIND)) {
+    const nested = value[harness];
+    if (isRow(nested)) entries.push([kind, nested.login]);
+  }
   for (const [kind, command] of entries) {
-    const base = typeof command === "string" ? command.trim().replace(/\s+--name(\s.*)?$/, "") : "";
-    if (oneOf(ACCOUNT_KINDS, kind) && CLI_LOGIN.test(base)) terminal[kind] = base;
+    const base = loginBase(kind, command);
+    if (base) terminal[kind as AccountKind] = base;
   }
   return { hostedOAuth: value.hostedOAuth === true, terminal };
 }
@@ -258,23 +284,46 @@ export function parseUsage(value: unknown): AccountUsage | null {
   if (observedAt === undefined) return null;
   const windows: UsageWindow[] = [];
   for (const row of Array.isArray(value.windows) ? value.windows : []) {
-    if (!isRow(row)) continue;
-    const id = text(row.id, 60);
-    const label = text(row.label, 60);
-    const resetsAt = isoOrNull(row.resetsAt);
-    if (!id || !label || resetsAt === undefined) continue;
+    const id = isRow(row) ? text(row.id, 60) : undefined;
+    const label = isRow(row) ? text(row.label, 60) : undefined;
+    const resetsAt = isRow(row) ? isoOrNull(row.resetsAt) : undefined;
+    // A window this dashboard cannot read makes the whole report unreadable: shown as a failed read, never as an
+    // account that "does not report" its allowance.
+    if (!isRow(row) || !id || !label || resetsAt === undefined) return null;
     const used = row.usedPercent;
     const usedPercent = typeof used === "number" && Number.isFinite(used) ? Math.min(100, Math.max(0, used)) : null;
     windows.push({ id, label, usedPercent, resetsAt });
   }
-  const extra = value.extraUsage;
-  const currency = isRow(extra) ? text(extra.currency, 3) : undefined;
-  // Money is shown only with the currency the provider gave; an amount without one is not a balance.
-  const extraUsage =
-    isRow(extra) && currency && /^[A-Z]{3}$/.test(currency) && typeof extra.used === "number" && extra.used >= 0
-      ? { used: extra.used, limit: typeof extra.limit === "number" && extra.limit >= 0 ? extra.limit : null, currency }
-      : null;
-  return { accountId: value.accountId, version: value.version, status: value.status, observedAt, windows, extraUsage };
+  return {
+    accountId: value.accountId,
+    version: value.version,
+    status: value.status,
+    observedAt,
+    windows,
+    extraUsage: extraUsage(value.extraUsage),
+  };
+}
+
+/**
+ * #604/#624 `extraUsage {enabled, currency, usedMinor, limitMinor}`, in the currency's minor units. Shown only when
+ * enabled, with an ISO currency and a used amount; converted with that currency's own fraction digits.
+ */
+function extraUsage(extra: unknown): AccountUsage["extraUsage"] {
+  if (!isRow(extra) || extra.enabled !== true) return null;
+  const currency = typeof extra.currency === "string" ? extra.currency : "";
+  const minor = (amount: unknown) =>
+    typeof amount === "number" && Number.isInteger(amount) && amount >= 0 ? amount : null;
+  const used = minor(extra.usedMinor);
+  if (!/^[A-Z]{3}$/.test(currency) || used === null) return null;
+  let digits: number;
+  try {
+    digits = new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return null;
+  }
+  const limit = minor(extra.limitMinor);
+  const major = (amount: number) => amount / 10 ** digits;
+  return { used: major(used), limit: limit === null ? null : major(limit), currency };
 }
 
 /**
