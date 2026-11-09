@@ -32,6 +32,12 @@ export function compile(target: Target, outfile: string, entry = ENTRY): string 
 }
 
 export function compileServer(target: Target, outfile: string): string {
+  const prepared = Bun.spawnSync([process.execPath, join(ROOT, "scripts/prepare-runtime.ts")], {
+    cwd: ROOT,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if (prepared.exitCode !== 0) throw new Error("Pinned runtime preparation failed.");
   return compile(target, outfile, SERVER_ENTRY);
 }
 

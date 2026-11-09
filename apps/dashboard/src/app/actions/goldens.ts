@@ -1,5 +1,6 @@
 "use server";
 
+import type { Golden, SandboxProviderId } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, createControlClient, isGoldenBuildStatus } from "@/lib/control";
@@ -7,7 +8,7 @@ import { listGoldens } from "@/lib/data/goldens";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
-import { goldenRequest, goldenRowState, type RepoRow } from "@/lib/golden-form";
+import { goldenRequest, goldenRowState, PROVIDER_LABELS, type RepoRow } from "@/lib/golden-form";
 import { createClient } from "@/lib/supabase/server";
 
 export async function setGoldenVisibility(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -25,16 +26,39 @@ export async function setGoldenVisibility(_previous: ActionResult | null, data: 
 }
 
 /**
- * Creates or rebuilds a Boat golden through the server's secure builder (`golden/create`, `golden/update`):
- * the server clones over the caller's GitHub connection, scans for leaked tokens and snapshots. This action
- * only forwards the checked form with the session token, once; it never retries a failed build.
+ * Creates or rebuilds a golden through the server's secure builder (`golden/create`, `golden/update`): the server
+ * clones over the caller's GitHub connection, scans for leaked tokens and snapshots on the golden's provider.
+ * Create sends the provider chosen in the form (Boat or Modal). A rebuild targets the stored row by its id: its
+ * name and provider come from that row, never from the form, so a same-name golden of the other provider is never
+ * rebuilt instead. This action forwards the checked form with the session token and its idempotency key, once;
+ * it never retries. The server answers 202 with a durable job, which the form then polls.
  */
 export async function buildGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const viewer = await requireViewer();
+  const mode = formString(data, "mode");
+  const org = formString(data, "org");
+  if (!isUuid(org)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+
+  let target: Golden | undefined;
+  if (mode === "update") {
+    const goldenId = formString(data, "golden");
+    if (!isUuid(goldenId)) return fail("That request is not valid.");
+    const supabase = await createClient();
+    const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
+    target = goldens.find((row) => row.id === goldenId && row.org_id === org);
+    if (!target) return fail("That golden is not available in this scope.");
+    const isAdmin = memberships.some((item) => item.org.id === target?.org_id && item.role === "admin");
+    const state = goldenRowState(target, goldens, { id: viewer.id, isAdmin });
+    if (!state.canRebuild) return fail(state.reason ?? "This golden cannot be rebuilt here.");
+  }
   const parsed = goldenRequest({
-    mode: formString(data, "mode"),
-    name: formString(data, "name"),
-    org: formString(data, "org"),
+    mode,
+    name: target ? target.name : formString(data, "name"),
+    org,
+    provider: target ? target.provider : formString(data, "provider"),
     visibility: formString(data, "visibility"),
     repos: repoRows(data),
     init: formString(data, "init"),
@@ -42,30 +66,20 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   });
   if (!parsed.ok) return fail(parsed.error);
   const request = parsed.value;
-  if (!isUuid(request.body.org)) return fail("That request is not valid.");
-  if (!(await isSelectedOrganization(request.body.org))) return fail("Switch to that organization first.");
-  const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
 
-  if (request.mode === "update") {
-    const supabase = await createClient();
-    const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
-    const target = goldens.find((row) => row.name === request.body.name && row.provider === "boat");
-    if (!target) return fail("That golden is not available in this scope.");
-    const isAdmin = memberships.some((item) => item.org.id === target.org_id && item.role === "admin");
-    const state = goldenRowState(target, goldens, { id: viewer.id, isAdmin });
-    if (!state.canRebuild) return fail(state.reason ?? "This golden cannot be rebuilt here.");
-  }
+  // Saved in the page's URL before this request, so a lost answer can be recovered instead of resubmitted.
+  const idempotencyKey = formString(data, "idempotencyKey");
+  if (!IDEMPOTENCY_KEY.test(idempotencyKey)) return fail("Reload the page: this build request has no valid key.");
 
   const client = createControlClient({ serverUrl, token: viewer.token });
   let result: unknown;
   try {
     result = await client.post(request.mode === "create" ? "golden/create" : "golden/update", {
       ...request.body,
-      idempotencyKey: formString(data, "idempotencyKey"),
+      idempotencyKey,
     });
   } catch (error) {
-    if (error instanceof ControlError) return fail(explainBuildError(error));
+    if (error instanceof ControlError) return fail(explainBuildError(error, request.body.provider));
     throw error;
   }
   if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
@@ -73,10 +87,15 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
     revalidatePath("/goldens");
     revalidatePath("/sandboxes");
   }
-  return { ok: true, message: `Build admitted: ${result.jobId}.`, build: result };
+  // An admitted job, not a finished build: the form polls its status. No snapshot is assumed here.
+  return {
+    ok: true,
+    message: `${PROVIDER_LABELS[request.body.provider]} build admitted: ${result.jobId}.`,
+    build: result,
+  };
 }
 
-/** One authenticated, bounded status read; never submits or retries a build. */
+/** One authenticated, bounded status read by job id; never submits or retries a build. */
 export async function goldenBuildStatus(jobId: string) {
   const viewer = await requireViewer();
   if (!isUuid(jobId)) throw new Error("Invalid build id.");
@@ -91,9 +110,13 @@ export async function goldenBuildStatus(jobId: string) {
   return result;
 }
 
-/** Recover a lost admission response without submitting another build. */
+/**
+ * Recovers a lost admission receipt by the key saved before submitting, in the selected org only. It reads; it
+ * never submits another build.
+ */
 export async function recoverGoldenBuild(idempotencyKey: string, org: string) {
   const viewer = await requireViewer();
+  if (!IDEMPOTENCY_KEY.test(idempotencyKey)) throw new Error("Invalid build key.");
   if (!isUuid(org) || !(await isSelectedOrganization(org))) throw new Error("Select the build's organization.");
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) throw new Error("The Armada server is not configured.");
@@ -104,6 +127,9 @@ export async function recoverGoldenBuild(idempotencyKey: string, org: string) {
   if (!isGoldenBuildStatus(result)) throw new Error("Unexpected build status.");
   return result;
 }
+
+/** The server's idempotency key shape: 16–128 letters, digits, underscores or hyphens. */
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,128}$/;
 
 function repoRows(data: FormData): RepoRow[] {
   const urls = data.getAll("repo_url");
@@ -116,8 +142,8 @@ function repoRows(data: FormData): RepoRow[] {
   }));
 }
 
-function explainBuildError(error: ControlError): string {
-  if (error.code === "conflict" && /golden capacity/i.test(error.message))
+function explainBuildError(error: ControlError, provider: SandboxProviderId): string {
+  if (provider === "boat" && error.code === "conflict" && /golden capacity/i.test(error.message))
     return `${error.message} A Boat account holds one golden: rebuild the existing golden instead of creating another.`;
   if (error.status === 404 && error.code === undefined)
     return "This Armada server does not offer secure golden builds yet.";

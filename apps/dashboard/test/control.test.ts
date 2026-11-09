@@ -72,10 +72,10 @@ function answering(status: number, body: unknown, seen: Request[] = []) {
   });
 }
 
-test("the golden limit is read once from golden/capabilities for the selected org and Boat", async () => {
+test("the golden limit is read once from golden/capabilities for the selected org and the asked provider", async () => {
   const seen: Request[] = [];
   const org = "00000000-0000-4000-8000-000000000010";
-  expect(await readGoldenCapabilities(answering(200, { provider: "boat", maxGoldens: 1 }, seen), org)).toEqual({
+  expect(await readGoldenCapabilities(answering(200, { provider: "boat", maxGoldens: 1 }, seen), org, "boat")).toEqual({
     ok: true,
     maxGoldens: 1,
   });
@@ -83,10 +83,16 @@ test("the golden limit is read once from golden/capabilities for the selected or
   expect(seen[0]?.url).toBe("https://armada.test/api/v1/golden/capabilities");
   expect(seen[0]?.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
   expect(await seen[0]?.json()).toEqual({ org, provider: "boat" });
-  // Null is "no limit reported", not zero and not a default.
-  expect(await readGoldenCapabilities(answering(200, { provider: "boat", maxGoldens: null }), org)).toEqual({
-    ok: true,
-    maxGoldens: null,
+  // Null is "no limit reported", not zero and not a default: Modal is unbounded.
+  const modalSeen: Request[] = [];
+  expect(
+    await readGoldenCapabilities(answering(200, { provider: "modal", maxGoldens: null }, modalSeen), org, "modal"),
+  ).toEqual({ ok: true, maxGoldens: null });
+  expect(await modalSeen[0]?.json()).toEqual({ org, provider: "modal" });
+  // An answer about another provider is not this provider's limit.
+  expect(await readGoldenCapabilities(answering(200, { provider: "boat", maxGoldens: 1 }), org, "modal")).toEqual({
+    ok: false,
+    reason: "The Armada server sent an unexpected answer.",
   });
 });
 
@@ -94,21 +100,24 @@ test("a refused, failed or unexpected capacity read is unavailable, never a numb
   const org = "00000000-0000-4000-8000-000000000011";
   const seen: Request[] = [];
   const foreign = answering(403, { error: { code: "forbidden", message: "You are not a member of this org." } }, seen);
-  expect(await readGoldenCapabilities(foreign, org)).toEqual({
+  expect(await readGoldenCapabilities(foreign, org, "boat")).toEqual({
     ok: false,
     reason: "You are not a member of this org.",
   });
   expect(seen).toHaveLength(1);
   const noKey = answering(503, { error: { code: "unavailable", message: "No Boat credential for this org." } });
-  expect(await readGoldenCapabilities(noKey, org)).toEqual({ ok: false, reason: "No Boat credential for this org." });
+  expect(await readGoldenCapabilities(noKey, org, "boat")).toEqual({
+    ok: false,
+    reason: "No Boat credential for this org.",
+  });
   // An older server without the route.
   for (const body of [{ error: "Not found." }, null])
-    expect(await readGoldenCapabilities(answering(404, body), org)).toEqual({
+    expect(await readGoldenCapabilities(answering(404, body), org, "boat")).toEqual({
       ok: false,
       reason: "This Armada server does not report golden capacity yet.",
     });
   for (const body of [{ provider: "modal", maxGoldens: 1 }, { provider: "boat", maxGoldens: 0 }, { provider: "boat" }])
-    expect(await readGoldenCapabilities(answering(200, body), org)).toEqual({
+    expect(await readGoldenCapabilities(answering(200, body), org, "boat")).toEqual({
       ok: false,
       reason: "The Armada server sent an unexpected answer.",
     });
@@ -119,7 +128,7 @@ test("a refused, failed or unexpected capacity read is unavailable, never a numb
       throw new TypeError(`connect failed ${TOKEN}`);
     }) as unknown as typeof fetch,
   });
-  const unreachable = await readGoldenCapabilities(down, org);
+  const unreachable = await readGoldenCapabilities(down, org, "boat");
   expect(unreachable).toEqual({ ok: false, reason: "The Armada server is unreachable." });
   expect(JSON.stringify(unreachable)).not.toContain(TOKEN);
 });

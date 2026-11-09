@@ -1,0 +1,111 @@
+#!/usr/bin/env bun
+// Synthetic wire peer using the pinned generated schema. Not an authenticated model recording.
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+import type { TurnStartParams } from "../../src/codex-schema/v2/TurnStartParams.ts";
+import recordedTerminal from "./codex-terminal-recorded.json";
+
+const send = (message: unknown) => process.stdout.write(`${JSON.stringify(message)}\n`);
+let loggedIn = false;
+let turn = 0;
+let thread = "fixture-thread";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line);
+  if (process.env.ARMADA_CWD_PROOF) {
+    const path = "native-cwd-proof.json";
+    let records: unknown[];
+    try {
+      records = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      records = [];
+    }
+    records.push({
+      method: m.method,
+      processCwd: process.cwd(),
+      cwd: m.params?.cwd ?? null,
+      text: m.params?.input?.[0]?.text ?? null,
+    });
+    writeFileSync(path, JSON.stringify(records));
+  }
+
+  const reply = (result: unknown) => send({ id: m.id, result });
+  const notify = (method: string, params: unknown) => send({ method, params });
+  if (m.method === "initialize") reply({ userAgent: "fixture" });
+  else if (m.method === "account/login/start") {
+    if (m.params.type !== "apiKey" || m.params.apiKey !== process.env.OPENAI_API_KEY)
+      throw Error("invalid API-key login");
+    loggedIn = true;
+    reply({ type: "apiKey" });
+  } else if (m.method === "thread/start" || m.method === "thread/resume") {
+    if (process.env.OPENAI_API_KEY && !loggedIn) throw Error("API-key login must precede thread operations");
+    if (m.method === "thread/resume") thread = m.params.threadId;
+    if (process.env.ARMADA_MCP_INSPECTION) {
+      const header = "mcp-header-fixture-sensitive",
+        stdio = "mcp-env-fixture-sensitive";
+      const argv = readFileSync("/proc/self/cmdline", "utf8");
+      const servers = m.params.config?.mcp_servers;
+      writeFileSync(
+        process.env.ARMADA_MCP_INSPECTION,
+        JSON.stringify({
+          argvLeak: argv.includes(header) || argv.includes(stdio),
+          serverNames: Object.keys(servers ?? {}),
+          headerFingerprint: servers?.remote?.http_headers?.Authorization
+            ? createHash("sha256").update(servers.remote.http_headers.Authorization).digest("hex")
+            : null,
+          environmentLeak: Object.values(process.env).some((v) => v?.includes(header) || v?.includes(stdio)),
+          configured:
+            servers?.remote?.http_headers?.Authorization === header && servers?.local?.env?.PRIVATE_MCP_VALUE === stdio,
+        }),
+      );
+    }
+
+    reply({ thread: { id: thread } });
+  } else if (m.method === "turn/start") {
+    const params = m.params as TurnStartParams;
+    turn++;
+    if (params.threadId !== thread || params.approvalPolicy !== "never") throw Error("incorrect turn parameters");
+    reply({ turn: { id: `turn-${turn}`, status: "inProgress" } });
+    notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: "text", delta: "partial" });
+    if (
+      params.input[0]?.type === "text" &&
+      ["recorded-failure", "unauthorized", "usageLimitExceeded", "rateLimitExceeded"].includes(params.input[0].text)
+    ) {
+      send({
+        ...recordedTerminal,
+        params: {
+          ...recordedTerminal.params,
+          threadId: thread,
+          turn: {
+            ...recordedTerminal.params.turn,
+            id: `turn-${turn}`,
+            error: {
+              ...recordedTerminal.params.turn.error,
+              codexErrorInfo:
+                params.input[0].text === "recorded-failure"
+                  ? recordedTerminal.params.turn.error.codexErrorInfo
+                  : params.input[0].text,
+            },
+          },
+        },
+      });
+      return;
+    }
+    if (params.input[0]?.type === "text" && params.input[0].text === "redirect") {
+      notify("item/completed", {
+        threadId: thread,
+        item: { type: "agentMessage", id: "final", text: "redirect delivered once" },
+      });
+      notify("turn/completed", {
+        threadId: thread,
+        turn: { id: `turn-${turn}`, status: "completed", items: [], error: null },
+      });
+    }
+  } else if (m.method === "turn/interrupt") {
+    reply({});
+    notify("turn/completed", {
+      threadId: thread,
+      turn: { id: `turn-${turn}`, status: "interrupted", items: [], error: null },
+    });
+  }
+});

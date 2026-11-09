@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
-  boatCapacity,
   editDefaults,
   goldenRequest,
   goldenRowState,
   launchRepoOptions,
+  providerCapacity,
   repoSlug,
 } from "../src/lib/golden-form.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
-const base = { mode: "create", name: "web", org: ORG, visibility: "org", init: "", setup: "" };
+const base = { mode: "create", name: "web", org: ORG, provider: "boat", visibility: "org", init: "", setup: "" };
 const row = (url: string, branch = "", dir = "") => ({ url, branch, dir });
 
 describe("the golden form request", () => {
@@ -40,6 +40,19 @@ describe("the golden form request", () => {
         },
       },
     });
+  });
+
+  test("the provider is sent as given, and anything but Boat or Modal is refused", () => {
+    const modal = goldenRequest({ ...base, provider: "modal", repos: [row("acme/web")] });
+    expect(modal.ok && modal.value.body.provider).toBe("modal");
+    const rebuild = goldenRequest({ ...base, mode: "update", provider: "modal", repos: [row("acme/web")] });
+    expect(rebuild.ok && rebuild.value.body.provider).toBe("modal");
+    for (const provider of ["", "Boat", "docker"]) {
+      expect(goldenRequest({ ...base, provider, repos: [row("acme/web")] })).toEqual({
+        ok: false,
+        error: "Choose where the golden is built.",
+      });
+    }
   });
 
   test("a rebuild sends no visibility: the server keeps the stored one", () => {
@@ -121,23 +134,28 @@ describe("what the page offers", () => {
     expect(goldenRowState(golden("a", "private", "bob"), [], viewer).reason).toContain("owner");
     expect(goldenRowState(golden("a", "org"), [], viewer).reason).toContain("admin");
     expect(goldenRowState(golden("a", "org"), [], { ...viewer, isAdmin: true }).canRebuild).toBe(true);
+    // A Modal golden follows the same rule; the same name on the other provider is not a duplicate.
     expect(goldenRowState(golden("a", "org", "alice", "modal"), [], { ...viewer, isAdmin: true }).canRebuild).toBe(
-      false,
+      true,
     );
+    const twins = [golden("a", "org"), golden("a", "org", "alice", "modal")];
+    expect(goldenRowState(golden("a", "org"), twins, { ...viewer, isAdmin: true }).duplicateName).toBe(false);
     const both = [golden("a", "org"), golden("a", "private")];
     const state = goldenRowState(golden("a", "private"), both, viewer);
     expect(state).toMatchObject({ duplicateName: true, canRebuild: false });
   });
 
-  test("capacity compares visible Boat rows with the limit the server read, and never invents one", () => {
+  test("capacity compares one provider's visible rows with the limit the server read, and never invents one", () => {
     const boat = { provider: "boat" as const };
     const modal = { provider: "modal" as const };
     const one = { ok: true, maxGoldens: 1 } as const;
-    expect(boatCapacity([], one)).toEqual({ kind: "available", capacity: 1, used: 0 });
-    expect(boatCapacity([boat, modal], one)).toEqual({ kind: "full", capacity: 1, used: 1 });
-    expect(boatCapacity([boat, boat], one)).toEqual({ kind: "legacy", capacity: 1, used: 2 });
-    expect(boatCapacity([boat], { ok: true, maxGoldens: null })).toEqual({ kind: "unknown" });
-    expect(boatCapacity([boat, boat], { ok: false, reason: "No Boat credential." })).toEqual({
+    expect(providerCapacity([], one, "boat")).toEqual({ kind: "available", capacity: 1, used: 0 });
+    expect(providerCapacity([boat, modal], one, "boat")).toEqual({ kind: "full", capacity: 1, used: 1 });
+    expect(providerCapacity([boat, boat], one, "boat")).toEqual({ kind: "legacy", capacity: 1, used: 2 });
+    // Modal goldens never count against the Boat limit, and Modal's unbounded null is "no limit", not zero.
+    expect(providerCapacity([modal, modal], one, "boat")).toEqual({ kind: "available", capacity: 1, used: 0 });
+    expect(providerCapacity([modal, modal], { ok: true, maxGoldens: null }, "modal")).toEqual({ kind: "unknown" });
+    expect(providerCapacity([boat, boat], { ok: false, reason: "No Boat credential." }, "boat")).toEqual({
       kind: "unavailable",
       reason: "No Boat credential.",
     });

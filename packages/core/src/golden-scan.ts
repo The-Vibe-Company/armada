@@ -130,7 +130,7 @@ export async function scanGoldenSandbox(
     "for gitdir in $(find $roots -maxdepth 8 -type d -name .git 2>/dev/null); do",
     '  repo=$(dirname "$gitdir")',
     "  objects_file=$(mktemp)",
-    '  git -C "$repo" cat-file --batch-all-objects --batch-check="%(objectname) %(objecttype)" >"$objects_file" 2>/dev/null',
+    '  git -c safe.directory="$repo" -C "$repo" cat-file --batch-all-objects --batch-check="%(objectname) %(objecttype)" >"$objects_file" 2>/dev/null',
     "  list_status=$?",
     '  if [ "$list_status" -ne 0 ]; then rm -f "$objects_file"; exit 95; fi',
     '  while IFS=" " read -r sha kind; do',
@@ -141,7 +141,7 @@ export async function scanGoldenSandbox(
     // database): a scan that cannot inspect every object cannot say the builder is clean.
     '      *) rm -f "$objects_file"; exit 95 ;;',
     "    esac",
-    '    git -C "$repo" cat-file -p "$sha" 2>/dev/null | grep -aE "$pattern" >/dev/null 2>/dev/null',
+    '    git -c safe.directory="$repo" -C "$repo" cat-file -p "$sha" 2>/dev/null | grep -aE "$pattern" >/dev/null 2>/dev/null',
     '    statuses=("${PIPESTATUS[@]}")',
     '    if [ "${statuses[0]}" -ne 0 ]; then rm -f "$objects_file"; exit 95; fi',
     '    if [ "${statuses[1]}" -eq 0 ]; then printf "ARMADA_SCAN_MATCH git_object git_storage 1\n"; rm -f "$objects_file"; exit 97; fi',

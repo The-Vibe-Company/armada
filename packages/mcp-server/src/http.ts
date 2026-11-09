@@ -4,11 +4,14 @@ import {
   type ClientConfig,
   type CredentialReader,
   createProviderRegistry,
+  type GoldenBuildJobs,
   type LaunchOptions,
+  type LaunchStores,
   type ModalBinding,
   type ModalTokenPair,
   type Provider,
   type ProviderRegistry,
+  type ProviderTarget,
   resolveBoatKey,
   resolveModalTokens,
   VERSION,
@@ -24,6 +27,7 @@ import {
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { redactForLog } from "./log.ts";
+import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createArmadaServer } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
@@ -49,22 +53,34 @@ export interface HandlerOptions {
   /** Each caller's GitHub connection, refreshed at launch so git and gh in the sandbox act as them. */
   github?: GitHubLaunchOptions;
   /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
-  goldenBuilds?: import("@armada/core/server").GoldenBuildJobs;
+  goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
-  providerFor(apiKey: string): Provider;
+  providerFor(apiKey: string, caller?: { userId: string; orgId: string }): Provider;
   /**
    * The Modal provider for a Modal golden or sandbox, given the caller's resolved Modal token pair and the
    * golden's pinned binding. Absent until the Modal adapter (#513): a Modal record then gets a typed
    * `provider_not_configured`, never a Boat provider. The adapter must refuse tokens of another workspace
    * than `binding.workspace`, so a rotated or replaced token pair cannot redirect a pinned golden.
    */
-  modalProviderFor?: (tokens: ModalTokenPair, binding: ModalBinding) => Provider;
+  modalProviderFor?: (
+    tokens: ModalTokenPair,
+    binding: ModalBinding,
+    context: { target: ProviderTarget; caller: { userId: string }; credentialScope: "user" | "org" },
+  ) => Provider | Promise<Provider>;
+  /** Server-owned persisted credential provenance overrides fallback for an existing Modal binding. */
+  modalTokensFor?: (
+    target: ProviderTarget,
+    caller: { userId: string },
+  ) => Promise<ModalTokenPair & { scope: "user" | "org" }>;
+  providerMetadata?: ProviderMetadataFor;
+  goldenTarget?: (target: Omit<ProviderTarget, "modal">, caller: { userId: string }) => Promise<ProviderTarget>;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
   routes?: readonly Route[];
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  connections?: LaunchStores["connections"];
   /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
   log?: (line: string) => void;
 }
@@ -122,10 +138,19 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(caller),
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
+        ...(options.goldenTarget
+          ? { goldenTarget: (target: Omit<ProviderTarget, "modal">) => options.goldenTarget!(target, caller) }
+          : {}),
+        ...(options.providerMetadata
+          ? {
+              providerMetadata: (selection) => options.providerMetadata!(selection, caller),
+            }
+          : {}),
         provider: (target) => providerRegistry(options).resolve(target, caller),
         now,
         sleep,
@@ -151,7 +176,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
  * Boat, the Modal token pair for Modal. Neither ever leaves this process.
  */
 export function providerRegistry(
-  options: Pick<HandlerOptions, "vault" | "encryptionKey" | "providerFor" | "modalProviderFor">,
+  options: Pick<HandlerOptions, "vault" | "encryptionKey" | "providerFor" | "modalProviderFor" | "modalTokensFor">,
 ): ProviderRegistry {
   const modal = options.modalProviderFor;
   return createProviderRegistry({
@@ -159,20 +184,26 @@ export function providerRegistry(
       const { key } = await resolveBoatKey(options.vault, options.encryptionKey, {
         userId: caller.userId,
         orgId: target.orgId,
-        visibility: target.visibility,
+        visibility: target.sourceGoldenVisibility ?? target.visibility,
       });
-      return options.providerFor(key);
+      return options.providerFor(key, { userId: caller.userId, orgId: target.orgId });
     },
     ...(modal
       ? {
           modal: async (target, caller) => {
             if (!target.modal) throw new Error("A Modal target carries its binding.");
-            const tokens = await resolveModalTokens(options.vault, options.encryptionKey, {
-              userId: caller.userId,
-              orgId: target.orgId,
-              visibility: target.visibility,
+            const tokens = options.modalTokensFor
+              ? await options.modalTokensFor(target, caller)
+              : await resolveModalTokens(options.vault, options.encryptionKey, {
+                  userId: caller.userId,
+                  orgId: target.orgId,
+                  visibility: target.sourceGoldenVisibility ?? target.visibility,
+                });
+            return modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
+              target,
+              caller,
+              credentialScope: tokens.scope,
             });
-            return modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal);
           },
         }
       : {}),

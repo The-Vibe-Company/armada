@@ -1,12 +1,13 @@
 import type { Visibility } from "./contract.ts";
-import type { GoldenRecord, GoldenStore } from "./golden.ts";
+import { assertGoldenMutation, type GoldenActor, type GoldenRecord, type GoldenStore } from "./golden.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
 import { isSandboxProvider, type ModalBinding } from "./sandbox-provider.ts";
 
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
 export interface Sql {
   query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
-  /** Runs all queries issued through the callback on one transaction/connection. */
+  /** Runs all queries on one transaction/connection. Callback errors are rejected only after
+   * rollback acknowledgement; COMMIT/connection errors after a successful callback are ambiguous. */
   transaction?<T>(work: (sql: Sql) => Promise<T>): Promise<T>;
 }
 
@@ -40,6 +41,7 @@ const COLUMNS = `id, org_id, name, visibility::text as visibility, owner_id, pro
  */
 export function createSqlGoldenStore(sql: Sql): GoldenStore {
   return {
+    assertMutation: (golden, actor) => assertSqlGoldenMutation(sql, golden, actor),
     async list(orgId: string): Promise<GoldenRecord[]> {
       const result = await sql.query<GoldenRow>(
         `select ${COLUMNS} from public.goldens where org_id = $1 order by name asc, provider asc, visibility asc`,
@@ -96,17 +98,33 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
     async setSandbox(id: string, boatSandboxId: string): Promise<void> {
       await write(
         sql,
-        `update public.goldens set provider_sandbox_id = $2, boat_sandbox_id = case when provider = 'boat' then $2 else null end where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
+        `update public.goldens set provider_sandbox_id = $2, boat_sandbox_id = case when provider = 'boat' then $2 else null end where id = $1 and provider_sandbox_id is null returning id`,
         [id, boatSandboxId],
       );
     },
 
-    // Write compatibility pairs explicitly: correctness must not depend on a repair trigger.
-    // Modal's Boat aliases remain null.
+    async replaceSandbox(id, expectedSandbox, expectedSnapshot, replacement) {
+      const result = await sql.query<{ id: string }>(
+        `update public.goldens set provider_sandbox_id = $4, boat_sandbox_id = case when provider = 'boat' then $4 else null end where id = $1 and provider_sandbox_id is not distinct from $2 and provider_snapshot_id = $3 returning id`,
+        [id, expectedSandbox, expectedSnapshot, replacement],
+      );
+      return result.rows.length === 1;
+    },
+    async compareAndSetSnapshot(id, expected, next, expectedSandbox) {
+      const result = await sql.query<{ id: string }>(
+        `update public.goldens set provider_snapshot_id=$3,provider_sandbox_id=null,boat_snapshot_id=null,boat_sandbox_id=null
+         where id=$1 and provider='modal' and (
+           (provider_snapshot_id is not distinct from $2 and provider_sandbox_id=$4)
+           or (provider_snapshot_id=$3 and provider_sandbox_id is null)) returning id`,
+        [id, expected, next, expectedSandbox],
+      );
+      return result.rows.length === 1;
+    },
+
     async setSnapshot(id: string, providerSnapshotId: string): Promise<void> {
       await write(
         sql,
-        `update public.goldens set provider_snapshot_id = $2, boat_snapshot_id = case when provider = 'boat' then $2 else null end where id = $1 returning id`,
+        `update public.goldens set provider_snapshot_id = $2, boat_snapshot_id = case when provider='boat' then $2 else null end where id = $1 returning id`,
         [id, providerSnapshotId],
       );
     },
@@ -168,4 +186,16 @@ function modalBinding(provider: string, row: GoldenRow): ModalBinding | null {
     throw new Error("Modal golden row has no pinned binding.");
   }
   return { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id };
+}
+
+/** Live membership/role proof, not mere org-golden visibility or a stale caller role. */
+export async function assertSqlGoldenMutation(sql: Sql, golden: GoldenRecord, actor: GoldenActor): Promise<void> {
+  const result = await sql.query<{ role: "admin" | "member" }>(
+    `select m.role from public.members m join public.goldens g on g.org_id=m.org_id
+     where g.id=$1 and g.org_id=$2 and m.user_id=$3 and g.owner_id=$4 and g.visibility=$5::public.visibility`,
+    [golden.id, actor.orgId, actor.userId, golden.ownerId, golden.visibility],
+  );
+  const member = result.rows[0];
+  if (!member) throw new GoldenError("forbidden", "Current golden mutation authority was revoked or changed.");
+  assertGoldenMutation({ ...actor, role: member.role }, golden);
 }

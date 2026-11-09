@@ -5,6 +5,13 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 const PUBLIC_POST_PATHS = new Set(["auth/refresh", "auth/exchange", "auth/email/start", "auth/email/verify"]);
 const PRIVATE_POST_PATHS = new Set([
+  "account/status",
+  "account/logout",
+  "github/status",
+  "github/connect",
+  "github/reconnect",
+  "github/disconnect",
+  "github/install",
   "token/list",
   "token/create",
   "token/revoke",

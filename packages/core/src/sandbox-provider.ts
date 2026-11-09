@@ -43,6 +43,8 @@ export interface ProviderTarget {
   provider: SandboxProviderId;
   orgId: string;
   visibility: Visibility;
+  /** Immutable source-golden credential authority, independent of target-machine visibility. */
+  readonly sourceGoldenVisibility?: Visibility;
   /** Set exactly when `provider` is modal. */
   modal: ModalBinding | null;
 }

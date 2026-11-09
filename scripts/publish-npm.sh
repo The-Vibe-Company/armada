@@ -28,7 +28,7 @@ for dir in dist/npm/armada-*/; do
 done
 
 if [ "$PUBLISH" = true ]; then
-  wait_seconds=${NPM_PUBLISH_WAIT_SECONDS:-300}
+  wait_seconds=${NPM_PUBLISH_WAIT_SECONDS:-900}
   poll_seconds=${NPM_PUBLISH_POLL_SECONDS:-5}
   if ! [[ "$wait_seconds" =~ ^[0-9]+$ && "$poll_seconds" =~ ^[0-9]+$ ]]; then
     echo "NPM_PUBLISH_WAIT_SECONDS and NPM_PUBLISH_POLL_SECONDS must be integers." >&2
@@ -42,34 +42,33 @@ if [ "$PUBLISH" = true ]; then
   fi
   registry_dir=$(mktemp -d)
   trap 'rm -rf "$registry_dir"' EXIT
-  started=$SECONDS
-  waited=0
-  for dir in dist/npm/armada-*/; do
-    name=$(jq -r .name "$dir/package.json")
-    tarball=$(tarball_for "$name")
+  wait_for_package() {
+    local name=$1 tarball=$2 destination=$3
+    local started=$SECONDS waited=0 elapsed remaining fetch_timeout delay
+    mkdir -p "$destination"
     while true; do
-      # Share one retry budget across all platform packages. Account for registry
-      # request time as well as sleep time; zero permits one immediate attempt.
+      # Each platform gets its own bounded budget. The parallel waits cannot let
+      # one slow registry replica consume another platform's availability window.
       elapsed=$((SECONDS - started))
       if [ "$waited" -gt "$elapsed" ]; then elapsed=$waited; fi
       remaining=$((wait_seconds - elapsed))
       fetch_timeout=$((remaining > 0 ? remaining * 1000 : 1))
       if npm pack "$name@$VERSION" --ignore-scripts --prefer-online \
-        --fetch-retries=0 --fetch-timeout="$fetch_timeout" --pack-destination "$registry_dir"; then
+        --fetch-retries=0 --fetch-timeout="$fetch_timeout" --pack-destination "$destination"; then
         # Recovery rebuilds can differ from the immutable original release.
         # Compare bytes only when this invocation uploaded the staged tarball.
-        if [[ "$newly_published" = *" $name "* ]] && ! cmp -s "$tarball" "$registry_dir/$(basename "$tarball")"; then
+        if [[ "$newly_published" = *" $name "* ]] && ! cmp -s "$tarball" "$destination/$(basename "$tarball")"; then
           echo "Registry tarball for $name@$VERSION differs from the staged artifact." >&2
-          exit 1
+          return 1
         fi
-        break
+        return 0
       fi
       elapsed=$((SECONDS - started))
       if [ "$waited" -gt "$elapsed" ]; then elapsed=$waited; fi
       remaining=$((wait_seconds - elapsed))
       if [ "$remaining" -le 0 ]; then
         echo "Timed out waiting for registry tarball $name@$VERSION; launcher publication refused." >&2
-        exit 1
+        return 1
       fi
       delay=$poll_seconds
       if [ "$delay" -gt "$remaining" ]; then delay=$remaining; fi
@@ -77,7 +76,18 @@ if [ "$PUBLISH" = true ]; then
       sleep "$delay"
       waited=$((elapsed + delay))
     done
+  }
+  pids=()
+  for dir in dist/npm/armada-*/; do
+    name=$(jq -r .name "$dir/package.json")
+    wait_for_package "$name" "$(tarball_for "$name")" "$registry_dir/$(basename "$dir")" &
+    pids+=("$!")
   done
+  failed=false
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then failed=true; fi
+  done
+  if [ "$failed" = true ]; then exit 1; fi
 fi
 
 name=$(jq -r .name dist/npm/armada/package.json)

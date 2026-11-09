@@ -105,11 +105,15 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
     const before = (await s.db.query("select * from goldens where name='retained'")).rows[0];
     // Keep the CHECK enforced; neither store writes nor publication may need a repair trigger.
     await s.db.exec("alter table goldens disable trigger goldens_provider_guard");
-    await createSqlGoldenStore(s.db).setSandbox((before as { id: string }).id, "last-good-master");
+    const master = await s.boat.provider.fork({
+      from: (before as { provider_snapshot_id: string }).provider_snapshot_id,
+      noEnv: true,
+    });
+    await createSqlGoldenStore(s.db).setSandbox((before as { id: string }).id, master.id);
     const retained = (await s.db.query("select * from goldens where name='retained'")).rows[0];
     expect(retained).toMatchObject({
-      boat_sandbox_id: "last-good-master",
-      provider_sandbox_id: "last-good-master",
+      boat_sandbox_id: master.id,
+      provider_sandbox_id: master.id,
       boat_snapshot_id: (before as { provider_snapshot_id: string }).provider_snapshot_id,
       provider_snapshot_id: (before as { provider_snapshot_id: string }).provider_snapshot_id,
     });

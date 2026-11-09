@@ -29,9 +29,11 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
         ? "/goldens"
         : section === "credentials"
           ? "/credentials"
-          : section === "settings"
-            ? "/settings"
-            : "/sandboxes";
+          : section === "connections"
+            ? "/connections"
+            : section === "settings"
+              ? "/settings"
+              : "/sandboxes";
   revalidatePath("/", "layout");
   redirect(destination);
 }

@@ -94,7 +94,33 @@ describe("provider routing", () => {
     expect(tooLong.text).toContain("24 hours on modal");
     expect(modal.forks).toEqual([]);
 
-    const launched = await call(mcp, "launch", { golden: "shared", provider: "modal", harness: "claude" });
+    await server.db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'modal',$2)", [
+      server.people.member,
+      await encryptSecret(
+        JSON.stringify({ token_id: "ak-personal0001", token_secret: "as-personal0001" }),
+        ENCRYPTION_KEY,
+      ),
+    ]);
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      provider: "modal",
+      harness: "claude",
+      visibility: "private",
+    });
+    expect(launched.data.visibility).toBe("private");
+    const source = (
+      await server.db.query<{ source_golden_visibility: string }>(
+        "select source_golden_visibility from sandboxes where id=$1",
+        [launched.data.id],
+      )
+    ).rows[0];
+    expect(source?.source_golden_visibility).toBe("org");
+    await expect(
+      server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [launched.data.id]),
+    ).rejects.toThrow(/immutable/);
+    const otherMember = await server.client(await server.token(server.people.admin));
+    const forbidden = await call(otherMember, "send", { id: launched.data.id, prompt: "impersonate" });
+    expect(forbidden.isError).toBe(true);
     expect(launched.data).toMatchObject({ provider: "modal", providerSandboxId: "bx_1", boatId: null });
     expect(modal.forks[0]).toMatchObject({ from: "im-modal-1", noEnv: true });
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_secret);

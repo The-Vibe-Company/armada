@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { CREDENTIAL_KINDS } from "@/lib/credentials";
+import { CREDENTIAL_KINDS, SINGLE_VALUE_KINDS } from "@/lib/credentials";
 import { type CredentialRow, listCredentials } from "@/lib/data/credentials";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
@@ -32,7 +32,7 @@ export default async function CredentialsPage() {
     <>
       <PageHeader
         title="Credentials"
-        description="Keys and tokens Armada injects into the sandboxes it launches. Your own come before your org's."
+        description="Model credentials run the agents inside your sandboxes; hosting credentials (Boat, Modal) pay for and run the sandboxes and stay on the Armada server. Your own are used before your org's."
       />
       {!encryptionKey() && (
         <Alert variant="destructive">
@@ -106,7 +106,11 @@ function CredentialSection({
               <li key={info.kind} className="flex flex-wrap items-center justify-between gap-3 p-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{info.label}</p>
-                  <p className="font-mono text-xs text-muted-foreground">{info.env}</p>
+                  {info.env ? (
+                    <p className="font-mono text-xs text-muted-foreground">{info.env}</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Hosting: stays on the Armada server</p>
+                  )}
                 </div>
                 {row ? (
                   <div className="flex items-center gap-3">
@@ -139,7 +143,7 @@ function CredentialSection({
               <div className="space-y-2">
                 <Label htmlFor={`kind-${owner}`}>Kind</Label>
                 <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="claude_oauth">
-                  {CREDENTIAL_KINDS.map((info) => (
+                  {SINGLE_VALUE_KINDS.map((info) => (
                     <option key={info.kind} value={info.kind}>
                       {info.label}
                     </option>
@@ -161,6 +165,50 @@ function CredentialSection({
             </div>
             <SubmitButton className="justify-self-start">Save credential</SubmitButton>
           </ActionForm>
+        )}
+
+        {canManage && (
+          <div data-modal-token className="border-t pt-6">
+            <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3 sm:max-w-xl">
+              <input type="hidden" name="scope" value={scope} />
+              <input type="hidden" name="owner" value={owner} />
+              <input type="hidden" name="kind" value="modal" />
+              <div>
+                <p className="text-sm font-medium">Modal token</p>
+                <p className="text-xs text-muted-foreground">
+                  From modal.com, Settings, API tokens. Both halves are stored together and never shown again; saving
+                  again replaces them.
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor={`modal-id-${owner}`}>Token ID</Label>
+                  <Input
+                    id={`modal-id-${owner}`}
+                    name="modal_token_id"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    required
+                    placeholder="ak-…"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`modal-secret-${owner}`}>Token secret</Label>
+                  <Input
+                    id={`modal-secret-${owner}`}
+                    name="modal_token_secret"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    required
+                    placeholder="as-…"
+                  />
+                </div>
+              </div>
+              <SubmitButton className="justify-self-start">Save Modal token</SubmitButton>
+            </ActionForm>
+          </div>
         )}
       </CardContent>
     </Card>

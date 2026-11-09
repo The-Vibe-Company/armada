@@ -1,0 +1,16 @@
+{
+  "nativeVersion": "0.167.0",
+  "binarySha256": "cdcb45aaa01d0f14e298985e09465aebccd47f64ecd298aea44814af7b62bbda",
+  "command": "codex app-server generate-ts --out <system-temp>",
+  "checkedInFiles": 79,
+  "matchedBefore": 31,
+  "mismatchedBefore": 48,
+  "matchedAfter": 79,
+  "missingUpstream": 0,
+  "subsetAggregateSha256": "5cc7367553462c38c201798d4968b7b857182d53c12562dbbb87f38439057e48",
+  "syntaxReview": {
+    "reviewedFiles": 79,
+    "equivalentTypes": 79,
+    "differences": "Property-name quotes, redundant parentheses and type-only import ordering; no type changes."
+  }
+}

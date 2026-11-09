@@ -11,6 +11,10 @@
     "@armada/core": "workspace:*",
     "@armada/provider-boat": "workspace:*",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "zod": "4.6.7"
+    "zod": "4.6.7",
+    "@armada/provider-modal": "workspace:*",
+    "modal": "0.11.1",
+    "@armada/agent-runtime": "workspace:*",
+    "@armada/mcp-gateway": "workspace:*"
   }
 }

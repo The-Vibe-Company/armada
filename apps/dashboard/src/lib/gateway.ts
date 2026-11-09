@@ -1,6 +1,6 @@
 import { VERSION } from "@armada/core";
 import { describeFailure } from "./failure.ts";
-import type { LaunchArgs, SendArgs } from "./model-choice.ts";
+import type { SendArgs } from "./model-choice.ts";
 
 /**
  * The dashboard reads live logs and stops or messages a sandbox through the Armada MCP server:
@@ -145,12 +145,5 @@ export function sandboxGateway(gateway: Gateway) {
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     send: (sandboxId: string, prompt: string, override: SendArgs = {}) =>
       gateway.call("send", { id: sandboxId, prompt, ...override }),
-    launch: async (args: LaunchArgs): Promise<{ id: string }> => {
-      const result = await gateway.call("launch", args);
-      if (!isRecord(result) || typeof result.id !== "string") {
-        throw new GatewayError("The Armada server sent no sandbox id.");
-      }
-      return { id: result.id };
-    },
   };
 }

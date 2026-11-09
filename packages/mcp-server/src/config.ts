@@ -7,9 +7,34 @@ export interface ServerConfig {
   authSecret: string;
   /** Origin only. The MCP resource is this plus `/mcp`. */
   publicUrl: string;
+  /** Separately configured dashboard origin; never taken from an HTTP return target. */
+  dashboardUrl: string;
+  /** Explicit local development; never inferred by a downstream helper from process globals. */
+  development: boolean;
   encryptionKey: string;
   /** Privileged Postgres connection (the Supabase `postgres` role), shared with the control API. */
   databaseUrl: string;
+}
+
+export const DEFAULT_DASHBOARD_URL = "https://armada.thevibecompany.co";
+
+/** Fixed deployment configuration, never taken from a request or OAuth return URL. */
+export function dashboardOrigin(value: string = DEFAULT_DASHBOARD_URL, development = false): string {
+  try {
+    const url = new URL(value);
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (
+      !(url.protocol === "https:" || (development && loopback && url.protocol === "http:")) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      /[?#]/.test(value)
+    )
+      throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error("ARMADA_DASHBOARD_URL must be an HTTPS origin without credentials, path, query or fragment.");
+  }
 }
 
 const REQUIRED = [
@@ -47,6 +72,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   if (value("ARMADA_AUTH_SECRET").length < 16) throw new Error("ARMADA_AUTH_SECRET must be at least 16 characters.");
   checkEncryptionKey(value("ARMADA_ENCRYPTION_KEY"));
   const publicUrl = new URL(resourceUrl(value("ARMADA_PUBLIC_URL"))).origin;
+  const development = env.NODE_ENV === "development";
 
   return {
     port,
@@ -54,6 +80,8 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),
     publicUrl,
+    dashboardUrl: dashboardOrigin(env.ARMADA_DASHBOARD_URL?.trim() || undefined, development),
+    development,
     encryptionKey: value("ARMADA_ENCRYPTION_KEY"),
     databaseUrl: value("ARMADA_DATABASE_URL"),
   };

@@ -33,13 +33,17 @@ export async function sshStdinCheckout(
     await fs.chmod(key, 0o600);
     const pub = await (deps.readPublicKey ?? ((p: string) => Bun.file(p).text()))(`${key}.pub`);
     const c = await provider.sshKey({ sandboxId: input.sandboxId, key: pub.trim() });
+    const username = c.username === undefined ? "user" : c.username;
+    if (username !== "user" && username !== "root") throw new GoldenError("setup_failed", "Invalid SSH username.");
     const ep = parseEndpoint(c.sshEndpoint);
     await fs.writeFile(known, knownLine(ep.host, ep.port, c.hostKey), { mode: 0o600 });
     // ssh joins its command argv with spaces before the remote shell parses it. Keep this one
     // shell-quoted argument so semicolons cannot escape bash -c and turn `set +x` into a command.
     // The checkout script itself carries the cleanup trap; do not exec, which would discard it.
     const remote = shellQuote(
-      "set +x; IFS= read -r ARMADA_GIT_TOKEN; IFS= read -r ARMADA_SSH_PUBLIC_KEY; export ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; bash -s; status=$?; unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; history -c 2>/dev/null || true; exit $status",
+      "set +x; IFS= read -r ARMADA_GIT_TOKEN; IFS= read -r ARMADA_SSH_PUBLIC_KEY; export ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; " +
+        (username === "root" ? "export HOME=/home/user; cd /home/user || exit 96; " : "") +
+        "bash -s; status=$?; unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; history -c 2>/dev/null || true; exit $status",
     );
     await command(
       run,
@@ -65,7 +69,7 @@ export async function sshStdinCheckout(
         "LogLevel=ERROR",
         "-p",
         ep.port,
-        `user@${ep.host}`,
+        `${username}@${ep.host}`,
         "bash",
         "-c",
         remote,
@@ -110,7 +114,7 @@ function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: s
       pending = (lines.pop() ?? "").slice(-256);
       for (const line of lines) {
         const match =
-          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
+          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
             line,
           );
         if (match) {

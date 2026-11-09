@@ -13,6 +13,13 @@ import {
 import type { GoldenCreateService } from "./golden-create-service.ts";
 import type { Sql } from "./golden-store.ts";
 import type { Provider } from "./provider.ts";
+import {
+  assertProviderOf,
+  isSandboxProvider,
+  type ModalBinding,
+  type ProviderTarget,
+  type SandboxProviderId,
+} from "./sandbox-provider.ts";
 
 type Input = Parameters<GoldenCreateService["create"]>[2];
 
@@ -28,7 +35,8 @@ interface Job {
   phase: string;
   error_code: "build_failed" | null;
   request_hash: string;
-  reservation_id: string;
+  provider: SandboxProviderId;
+  reservation_id: string | null;
   payload_enc: Uint8Array<ArrayBuffer>;
   fence: string;
   builder_id: string | null;
@@ -39,7 +47,8 @@ export interface GoldenBuildJobsOptions {
   sql: Sql;
   encryptionKey: string | undefined;
   service: Omit<GoldenCreateOptions, "sql" | "job">;
-  provider(actor: GoldenActor, visibility: "org" | "private"): Promise<Provider>;
+  /** Resolves current credentials against the persisted immutable target. Must verify Modal App/environment without allocating a VM. */
+  provider(actor: GoldenActor, visibility: "org" | "private", target: ProviderTarget): Promise<Provider>;
 }
 /** Durable queue. No task is owned by an HTTP connection and expired work is never replayed. */
 export class GoldenBuildJobs {
@@ -100,7 +109,10 @@ export class GoldenBuildJobs {
         visibility: input.visibility,
         name: input.name,
       });
-    if (provider.id !== "boat") throw new GoldenError("invalid_config", "Secure builds require Boat.");
+    if (!isSandboxProvider(provider.id)) throw new GoldenError("invalid_config", "Unknown golden provider.");
+    const providerId = provider.id;
+    const target = buildTarget(providerId, actor.orgId, input);
+    if (input.existingGolden) assertProviderOf(provider, input.existingGolden.provider);
     if (
       (input.config?.repos.length ?? input.repos.length) < 1 ||
       (input.config?.repos.length ?? input.repos.length) > 16
@@ -114,6 +126,8 @@ export class GoldenBuildJobs {
       config: input.config ?? null,
       setup: input.setup ?? null,
       existingGolden: input.existingGolden ?? null,
+      provider: providerId,
+      modal: target.modal,
     });
     // ExistingGolden is re-read by routes; retries after success must still match the submitted config,
     // not the new snapshot pointer. The target ID is immutable; expected revision lives only in payload.
@@ -126,12 +140,19 @@ export class GoldenBuildJobs {
           config: input.config ?? null,
           setup: input.setup ?? null,
           goldenId: input.existingGolden?.id ?? null,
+          // Preserve pre-migration Boat request hashes for durable idempotent retries.
+          ...(providerId === "boat" ? {} : { provider: providerId, modal: target.modal }),
         }),
       )
       .digest("hex");
     const encrypted = await encryptSecret(payload, this.options.encryptionKey);
     const job = await this.transaction(async (sql) => {
-      await this.actor(sql, { owner_id: actor.userId, org_id: actor.orgId, visibility: input.visibility });
+      const currentActor = await this.actor(sql, {
+        owner_id: actor.userId,
+        org_id: actor.orgId,
+        visibility: input.visibility,
+        ...(input.existingGolden ? { golden_id: input.existingGolden.id } : {}),
+      });
       // Serializes duplicate admissions even before a capacity slot exists.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
         actor.userId + ":" + actor.orgId + ":" + idempotencyKey,
@@ -143,14 +164,22 @@ export class GoldenBuildJobs {
         )
       ).rows[0];
       if (prior) {
-        if (prior.request_hash !== hash)
+        if (prior.request_hash !== hash || prior.provider !== providerId)
           throw new GoldenError("conflict", "Idempotency key was used for a different build.");
         return prior;
       }
       if (input.existingGolden) {
         const current = (
-          await sql.query<{ provider_snapshot_id: string | null; owner_id: string; visibility: string }>(
-            "select provider_snapshot_id,owner_id,visibility from public.goldens where id=$1 and org_id=$2 for update",
+          await sql.query<{
+            provider_snapshot_id: string | null;
+            owner_id: string;
+            visibility: string;
+            provider: string;
+            modal_workspace: string | null;
+            modal_environment: string | null;
+            modal_app_id: string | null;
+          }>(
+            "select provider_snapshot_id,owner_id,visibility,provider,modal_workspace,modal_environment,modal_app_id from public.goldens where id=$1 and org_id=$2 for update",
             [input.existingGolden.id, actor.orgId],
           )
         ).rows[0];
@@ -158,16 +187,27 @@ export class GoldenBuildJobs {
           !current ||
           current.provider_snapshot_id !== input.existingGolden.providerSnapshotId ||
           current.owner_id !== input.existingGolden.ownerId ||
-          current.visibility !== input.visibility
+          current.visibility !== input.visibility ||
+          current.provider !== providerId ||
+          (providerId === "modal" &&
+            (current.modal_workspace !== target.modal?.workspace ||
+              current.modal_environment !== target.modal?.environment ||
+              current.modal_app_id !== target.modal?.appId))
         )
           throw new GoldenError("conflict", "Golden changed before build admission.");
       }
-      const reservation = await reserveGoldenBuild(sql, provider, actor, input.existingGolden);
-      if (!reservation) throw new GoldenError("conflict", "Durable build requires a capacity reservation.");
+      // The server factory verifies the pinned management connection, never a client profile label.
+      // It may read App metadata here, but must not allocate a builder before this transaction commits.
+      const verified =
+        providerId === "modal" ? await this.options.provider(currentActor, input.visibility, target) : provider;
+      assertProviderOf(verified, providerId);
+      const reservation = await reserveGoldenBuild(sql, verified, currentActor, input.existingGolden);
+      if (!reservation && providerId === "boat")
+        throw new GoldenError("conflict", "Boat durable builds require a capacity reservation.");
       const id = randomUUID();
       return (
         await sql.query<Job>(
-          "insert into public.golden_build_jobs(id,org_id,owner_id,visibility,idempotency_key,request_hash,payload_enc,reservation_id,name,golden_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *",
+          "insert into public.golden_build_jobs(id,org_id,owner_id,visibility,idempotency_key,request_hash,payload_enc,reservation_id,name,golden_id,provider) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *",
           [
             id,
             actor.orgId,
@@ -176,9 +216,10 @@ export class GoldenBuildJobs {
             idempotencyKey,
             hash,
             encrypted,
-            reservation,
+            reservation ?? null,
             input.name,
             input.existingGolden?.id ?? null,
+            providerId,
           ],
         )
       ).rows[0]!;
@@ -211,6 +252,7 @@ export class GoldenBuildJobs {
   private dto(job: Job, name?: string): GoldenBuildStatus {
     return {
       jobId: job.id,
+      provider: job.provider,
       state: job.state,
       phase: job.phase,
       errorCode: job.error_code,
@@ -229,9 +271,42 @@ export class GoldenBuildJobs {
     ).rows[0];
     if (!owned) throw new GoldenError("build_failed", "Build lease is no longer owned.");
     await this.actor(sql, job);
-    const slot = (await sql.query("select id from public.golden_backend_slots where build_id=$1", [job.reservation_id]))
-      .rows[0];
-    if (!slot) throw new GoldenError("build_failed", "Build reservation is no longer owned.");
+    if (job.reservation_id) {
+      const slot = (
+        await sql.query("select id from public.golden_backend_slots where build_id=$1", [job.reservation_id])
+      ).rows[0];
+      if (!slot) throw new GoldenError("build_failed", "Build reservation is no longer owned.");
+    } else if (job.provider !== "modal") throw new GoldenError("build_failed", "Build reservation is missing.");
+  }
+  private async context(job: Job): Promise<Input> {
+    const raw = JSON.parse(await decryptSecret(job.payload_enc, this.options.encryptionKey));
+    if (!raw || typeof raw !== "object" || (raw.provider ?? "boat") !== job.provider)
+      throw new GoldenError("forbidden", "Build provider context changed.");
+    const input: Input = { ...raw };
+    if (raw.setup === null) delete input.setup;
+    if (raw.config === null) delete input.config;
+    if (raw.existingGolden === null) delete input.existingGolden;
+    if (raw.modal === null) delete input.modal;
+    buildTarget(job.provider, job.org_id, input);
+    return input;
+  }
+  private async resolve(job: Job, actor: GoldenActor, input: Input): Promise<Provider> {
+    const provider = await this.options.provider(actor, job.visibility, buildTarget(job.provider, job.org_id, input));
+    assertProviderOf(provider, job.provider);
+    if (job.reservation_id) {
+      const identity = await provider.backendIdentity?.();
+      const slot = (
+        await this.options.sql.query<{ backend_id: string; provider: string }>(
+          "select backend_id,provider from public.golden_backend_slots where build_id=$1",
+          [job.reservation_id],
+        )
+      ).rows[0];
+      if (!identity || !slot || slot.provider !== job.provider || slot.backend_id !== identity.id)
+        throw new GoldenError("forbidden", "Build backend binding changed.");
+    } else if (job.provider !== "modal" || provider.maxGoldens !== undefined) {
+      throw new GoldenError("forbidden", "Build capacity policy changed.");
+    }
+    return provider;
   }
   /** Reconcile a fenced abandoned attempt, never restart its commands or delete snapshots. */
   async reconcileOne(): Promise<void> {
@@ -243,23 +318,21 @@ export class GoldenBuildJobs {
     if (!row?.builder_id) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
-      const provider = await this.options.provider(actor, row.visibility);
-      const identity = await provider.backendIdentity?.();
-      const slot = (
-        await this.options.sql.query<{ backend_id: string }>(
-          "select backend_id from public.golden_backend_slots where build_id=$1",
-          [row.reservation_id],
-        )
-      ).rows[0];
-      if (!identity || slot?.backend_id !== identity.id) return;
-      // stop is idempotent at the adapter boundary; a failure retains reservation for inspection.
-      await provider.stop({ sandboxId: row.builder_id });
+      const provider = await this.resolve(row, actor, await this.context(row));
+      // Modal delete is disposal; stop could create another snapshot and must not replay an unknown save.
+      if (row.provider === "modal") {
+        // A snapshot/publish attempt may still depend on this source. The retention owner must
+        // reconcile its artifact before disposal; never resolve ambiguity by deleting the source.
+        if (row.phase === "snapshot" || row.phase === "persist") return;
+        const receipt = await provider.delete({ sandboxId: row.builder_id });
+        if (receipt.status !== "deleted") return;
+      } else await provider.stop({ sandboxId: row.builder_id });
       await this.transaction(async (sql) => {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
         ).rows[0];
         if (current?.state !== "recovery_required" || current.fence !== row.fence) return;
-        await sqlGoldenBackendSlots(sql).release(row.reservation_id);
+        if (row.reservation_id) await sqlGoldenBackendSlots(sql).release(row.reservation_id);
         await sql.query("update public.golden_build_jobs set state='failed',updated_at=now() where id=$1", [row.id]);
       });
     } catch {
@@ -290,21 +363,8 @@ export class GoldenBuildJobs {
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, job));
-      const provider = await this.options.provider(actor, job.visibility);
-      const identity = await provider.backendIdentity?.();
-      const slot = (
-        await this.options.sql.query<{ backend_id: string; provider: string }>(
-          "select backend_id,provider from public.golden_backend_slots where build_id=$1",
-          [job.reservation_id],
-        )
-      ).rows[0];
-      if (!slot || slot.provider !== provider.id || slot.backend_id !== identity?.id)
-        throw new GoldenError("forbidden", "Build backend binding changed.");
-      const raw = JSON.parse(await decryptSecret(job.payload_enc, this.options.encryptionKey));
-      const input: Input = { ...raw };
-      if (raw.setup === null) delete input.setup;
-      if (raw.config === null) delete input.config;
-      if (raw.existingGolden === null) delete input.existingGolden;
+      const input = await this.context(job);
+      const provider = await this.resolve(job, actor, input);
       const phase = async (next: string) =>
         this.transaction(async (sql) => {
           await this.lock(sql, job);
@@ -325,7 +385,7 @@ export class GoldenBuildJobs {
         sql: this.options.sql,
         job: {
           id: job.id,
-          reservationId: job.reservation_id,
+          ...(job.reservation_id ? { reservationId: job.reservation_id } : {}),
           phase,
           cleaned: (safe) => {
             safeToRelease = safe;
@@ -361,7 +421,7 @@ export class GoldenBuildJobs {
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [job.id])
         ).rows[0];
         if (current?.state !== "running" || current.fence !== job.fence) return;
-        if (safeToRelease) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
+        if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
           "update public.golden_build_jobs set state=$2,error_code='build_failed',lease_until=null,updated_at=now() where id=$1",
           [job.id, safeToRelease ? "failed" : "recovery_required"],
@@ -372,4 +432,34 @@ export class GoldenBuildJobs {
     }
     return true;
   }
+}
+
+/** Copies only immutable routing metadata. Never retain a factory, token or local profile in a job. */
+function buildTarget(provider: SandboxProviderId, orgId: string, input: Input): ProviderTarget {
+  const binding = input.existingGolden?.modal ?? input.modal ?? null;
+  let modal: ModalBinding | null = null;
+  if (provider === "modal") {
+    if (
+      !binding ||
+      [binding.workspace, binding.environment, binding.appId].some((v) => typeof v !== "string" || !v.trim())
+    )
+      throw new GoldenError("forbidden", "A verified pinned Modal App binding is required.");
+    modal = { workspace: binding.workspace, environment: binding.environment, appId: binding.appId };
+    if (
+      input.modal &&
+      (input.modal.workspace !== modal.workspace ||
+        input.modal.environment !== modal.environment ||
+        input.modal.appId !== modal.appId)
+    )
+      throw new GoldenError("forbidden", "Build Modal binding changed.");
+  } else if (binding) throw new GoldenError("forbidden", "Boat jobs cannot carry a Modal binding.");
+  if (input.existingGolden && (input.existingGolden.provider !== provider || input.existingGolden.orgId !== orgId))
+    throw new GoldenError("forbidden", "Build source provider or organization changed.");
+  return {
+    provider,
+    orgId,
+    visibility: input.visibility,
+    sourceGoldenVisibility: input.existingGolden?.visibility ?? input.visibility,
+    modal,
+  };
 }

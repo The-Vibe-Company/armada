@@ -37,6 +37,21 @@
           "type": "json",
           "path": "apps/dashboard/package.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-modal/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/agent-runtime/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/mcp-gateway/package.json",
+          "jsonpath": "$.version"
         }
       ]
     }

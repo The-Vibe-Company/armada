@@ -1,6 +1,5 @@
 import {
   assertGoldenMutation,
-  assertProviderOf,
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
@@ -13,6 +12,7 @@ import {
   type LaunchCredentialResolver,
   LaunchError,
   type LaunchOptions,
+  type LaunchStores,
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
   type MemberRole,
@@ -25,6 +25,7 @@ import {
   type ProviderTarget,
   redact,
   resolveModelChoice,
+  resolveRepositoryDir,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStatus,
@@ -40,6 +41,7 @@ import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
+import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -53,9 +55,12 @@ export interface ToolContext {
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
   /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
   provider(target: ProviderTarget): Promise<Provider>;
+  providerMetadata?: (selection: { orgId: string; provider: SandboxProviderId }) => Promise<GoldenProviderMetadata>;
+  goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  connections?: LaunchStores["connections"];
   /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
   goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: GoldenAdoption;
@@ -84,6 +89,7 @@ export const serverInfo = { name: "armada" } as const;
 
 const buildOutput = {
   jobId: z.string(),
+  provider: z.enum(SANDBOX_PROVIDERS).optional(),
   state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
   phase: z.string(),
   errorCode: z.literal("build_failed").nullable(),
@@ -141,6 +147,10 @@ const sandbox = z.object({
   golden: z.string(),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
+  repositoryDir: z
+    .string()
+    .nullable()
+    .describe("Configured directory used to prepare native agent cwd; not confinement."),
   ...modelOutput,
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
@@ -163,6 +173,10 @@ const status = {
   golden: z.string(),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
+  repositoryDir: z
+    .string()
+    .nullable()
+    .describe("Configured directory used to prepare native agent cwd; not confinement."),
   ...modelOutput,
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
@@ -236,7 +250,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   const live = async (sandboxId: string) => {
     const found = await visible(sandboxId);
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    return { sandbox: found, provider: await context.provider(found) };
+    return {
+      sandbox: found,
+      provider: await context.provider(found),
+    };
   };
   const statusOf = async (sandboxId: string, promptId: string | undefined): Promise<StatusReport> => {
     const found = await visible(sandboxId);
@@ -268,23 +285,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   tool(
     "golden_capabilities",
     {
-      title: "Golden backend capabilities",
-      description: "Read the selected backend's golden limit. Does not inspect slots or reconcile existing goldens.",
+      title: "Golden provider capabilities",
+      description:
+        "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
       input: { org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
-      output: { provider: z.enum(SANDBOX_PROVIDERS), maxGoldens: z.number().nullable() },
+      output: { provider: z.enum(SANDBOX_PROVIDERS), maxGoldens: z.number().int().positive().nullable() },
       readOnly: true,
     },
     async (args) => {
       const member = resolveCreateOrg(caller.orgs, args.org);
-      const backend = args.provider ?? "boat";
-      const provider = await context.provider({
-        orgId: member.orgId,
-        visibility: "org",
-        provider: backend,
-        modal: null,
-      });
-      assertProviderOf(provider, backend);
-      return { provider: backend, maxGoldens: provider.maxGoldens ?? null };
+      if (!context.providerMetadata)
+        throw new ToolError("unsupported", "Read-only provider metadata is not configured.");
+      return context.providerMetadata({ orgId: member.orgId, provider: args.provider ?? "boat" });
     },
   );
 
@@ -348,6 +360,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "(see `launch`'s `github`), optionally runs a setup script, scans the builder for leaked GitHub tokens, " +
         "and only saves the snapshot when that scan passes. All repos must share one GitHub App installation.",
       input: {
+        provider: z.enum(["boat", "modal"]).optional(),
         idempotencyKey: z.string().min(16).max(128),
         name: z.string().min(1).describe("The golden's name."),
         repos: z
@@ -372,11 +385,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const member = resolveCreateOrg(caller.orgs, args.org);
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
       assertGoldenMutation(actor, { orgId: member.orgId, visibility, ownerId: caller.userId, name: args.name });
-      const provider = await context.provider({ orgId: member.orgId, visibility, provider: "boat", modal: null });
+      const input = { orgId: member.orgId, visibility, provider: args.provider ?? "boat" } as const;
+      const target = context.goldenTarget ? await context.goldenTarget(input) : { ...input, modal: null };
+      const provider = await context.provider(target);
       return context.goldenBuilds.admit(
         provider,
         actor,
         {
+          ...(target.modal ? { modal: target.modal } : {}),
           name: args.name,
           visibility,
           repos: args.repos,
@@ -394,6 +410,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       description:
         "Admits a durable rebuild job; poll golden_build_status. Private goldens require their owner; org goldens require an org admin.",
       input: {
+        provider: z.enum(["boat", "modal"]).optional(),
         idempotencyKey: z.string().min(16).max(128),
         name: z.string().min(1),
         org: z.string().optional(),
@@ -406,7 +423,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!context.goldenBuilds)
         throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
       const member = resolveCreateOrg(caller.orgs, args.org);
-      const rows = await data.goldens.findByName(member.orgId, args.name);
+      const rows = (await data.goldens.findByName(member.orgId, args.name)).filter(
+        (row) => !args.provider || row.provider === args.provider,
+      );
+      if (rows.length > 1) throw new ToolError("conflict", "Golden exists on multiple providers; select a provider.");
       if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
       const existingGolden = rows[0];
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
@@ -432,20 +452,22 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Snapshot a golden",
       description: "Restores the golden master if needed, scans it for leaked GitHub tokens, then saves a snapshot.",
-      input: { name: z.string().min(1), org: z.string().optional() },
+      input: { name: z.string().min(1), org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
       output: { name: z.string(), snapshot: z.string() },
     },
     async (args) => {
       const member = resolveCreateOrg(caller.orgs, args.org);
-      const rows = await data.goldens.findByName(member.orgId, args.name);
+      const rows = (await data.goldens.findByName(member.orgId, args.name)).filter(
+        (row) => !args.provider || row.provider === args.provider,
+      );
+      if (rows.length > 1) throw new ToolError("conflict", "Golden exists on multiple providers; select a provider.");
       if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
       const golden = rows[0];
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
       assertGoldenMutation(actor, golden);
       const provider = await context.provider(golden);
       await data.goldens.assertBackendBinding?.(golden, provider);
-      let target = golden;
-      if (!target.providerSandboxId) target = (await connectGolden(provider, data.goldens, actor, target.name)).golden;
+      const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
       if (!target.providerSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
       await scanGoldenSandbox(provider, target.providerSandboxId);
       const saved = await snapshotGolden(provider, data.goldens, actor, target.name, context.launch ?? {});
@@ -464,6 +486,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
         "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
       input: {
+        visibility: z.enum(["private", "org"]).optional(),
+        connections: z.array(z.string().uuid()).max(100).optional(),
         golden: z.string().min(1).describe("The golden's name, as in golden_list."),
         org: z
           .string()
@@ -474,15 +498,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .optional()
           .describe("The golden's provider. Needed only when the name exists on several providers."),
         harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
-        repo: z
-          .string()
-          .regex(/^[^/\s]+\/[^/\s]+$/, "Repository must be owner/repo.")
-          .optional()
-          .describe(
-            "A repository recorded in the golden, as owner/repo. Sets the native agent's real initial cwd, including idle launches. Omit for legacy launch behavior.",
-          ),
         model: modelInput,
         reasoning_effort: effortInput,
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
+          ),
         prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
         ttl_seconds: z
           .number()
@@ -503,6 +526,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         golden: z.string(),
         visibility: z.enum(["org", "private"]),
         harness: z.enum(HARNESSES),
+        repositoryDir: z
+          .string()
+          .nullable()
+          .describe("Configured directory used to prepare native agent cwd; not confinement."),
         ...modelOutput,
         status: z.enum(SANDBOX_STATUSES),
         conversationIds: z.array(z.string()),
@@ -525,10 +552,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
       const actor = await launchActor(args.golden, args.org);
       const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+      resolveRepositoryDir(chosen, args.repo);
       const provider = await context.provider(chosen);
       const result = await launchSandbox(
         provider,
-        { goldens: data.goldens, sandboxes: data.sandboxes, credentials: context.launchCredentials },
+        {
+          goldens: data.goldens,
+          sandboxes: data.sandboxes,
+          credentials: context.launchCredentials,
+          ...(context.connections ? { connections: context.connections } : {}),
+        },
         actor,
         {
           golden: args.golden,
@@ -536,6 +569,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           harness: args.harness,
           ...(args.repo === undefined ? {} : { repo: args.repo }),
           ...(args.model === undefined ? {} : { model: args.model }),
+          ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+          ...(args.connections === undefined ? {} : { connections: args.connections }),
           ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
           ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
           ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
@@ -546,8 +581,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         id: result.sandbox.id,
         ...sandboxIds(result.sandbox),
         golden: result.golden.name,
-        visibility: result.golden.visibility,
+        visibility: result.sandbox.visibility ?? result.golden.visibility,
         harness: result.sandbox.harness,
+        repositoryDir: result.sandbox.repositoryDir ?? null,
         model: result.sandbox.model,
         reasoningEffort: result.sandbox.reasoningEffort,
         status: result.sandbox.status,
@@ -572,22 +608,49 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Sandboxes you can see, newest first: those of your org's goldens, and of your own private goldens. " +
         "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
       input: {
-        status: z.array(z.enum(SANDBOX_STATUSES)).optional().describe("Only these statuses."),
-        limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 50."),
+        harness: z.enum(HARNESSES).optional(),
+        golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
+        owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
+        page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
+        status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
+        limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
       },
-      output: { sandboxes: z.array(sandbox) },
+      output: {
+        sandboxes: z.array(sandbox),
+        total: z.number().int(),
+        page: z.number().int(),
+        limit: z.number().int(),
+        hasMore: z.boolean(),
+        nextPage: z.number().int().nullable(),
+      },
       readOnly: true,
     },
     async (args) => {
       const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
-      const rows = await data.sandboxes.list({ statuses, limit: args.limit ?? 50 });
+      const limit = args.limit ?? 25;
+      const page = args.page ?? 1;
+      const { rows, total } = await data.sandboxes.list({
+        statuses,
+        limit,
+        page,
+        ...(args.harness === undefined ? {} : { harness: args.harness }),
+        ...(args.golden === undefined ? {} : { goldenId: args.golden }),
+        ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
+      });
+      const hasMore = page * limit < total;
       return {
+        total,
+        page,
+        limit,
+        hasMore,
+        nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
         sandboxes: rows.map((row) => ({
           id: row.id,
           ...sandboxIds(row),
           golden: row.golden,
           visibility: row.visibility,
           harness: row.harness,
+          repositoryDir: row.repositoryDir ?? null,
           model: row.model,
           reasoningEffort: row.reasoningEffort,
           status: row.status,

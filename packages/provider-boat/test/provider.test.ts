@@ -513,3 +513,91 @@ test("the real golden scan passes Boat's command timeout validation", async () =
   await scanGoldenSandbox(provider, ID);
   expect(calls).toBe(1);
 });
+
+test("native bootstrap follows actual resume readiness and precedes prompt; I/O failures forbid turns and snapshots", async () => {
+  for (const fail of [false, true]) {
+    const events: string[] = [];
+    let gets = 0;
+    const provider = createBoatProvider({
+      apiKey: KEY,
+      sleep: async () => {},
+      fetch: (async (input, init) => {
+        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        if (init?.method === "GET") {
+          const state = ["archived", "provisioning", "ready"][gets++] ?? "ready";
+          events.push(state);
+          return Response.json({ sandbox: sandbox({ state }) });
+        }
+        if (path.endsWith("/commands")) {
+          events.push("bridge");
+          return Response.json({
+            ok: true,
+            type: "command.finished",
+            success: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+          });
+        }
+        if (path.endsWith("/resume")) {
+          events.push("resume");
+          return Response.json({ ok: true });
+        }
+        if (path.endsWith("/prompt")) {
+          events.push("prompt");
+          return Response.json({ promptId: "p", conversationId: "c", status: "queued" });
+        }
+        throw Error("Unexpected provider HTTP operation");
+      }) as typeof fetch,
+      beforeResume: async () => {
+        events.push("fence");
+        return true;
+      },
+      beforePrompt: async () => {
+        events.push("configure");
+        if (fail) throw Error("bootstrap I/O failed");
+      },
+      beforeSnapshot: async () => {
+        throw Error("snapshot scrub I/O failed");
+      },
+    });
+    const turn = provider.prompt({
+      sandboxId: ID,
+      harness: "codex",
+      text: "work",
+      model: "gpt-6.1-sol",
+      reasoningEffort: "medium",
+    });
+    if (fail) await expect(turn).rejects.toThrow("bootstrap I/O failed");
+    else await turn;
+    expect(events).toEqual([
+      "archived",
+      "fence",
+      "resume",
+      "provisioning",
+      "ready",
+      "configure",
+      ...(fail ? [] : ["bridge", "prompt"]),
+    ]);
+    await expect(provider.snapshot({ sandboxId: ID, name: "safe" })).rejects.toThrow("snapshot scrub I/O failed");
+  }
+});
+
+test("a stopped-only beforeResume hook refuses the provider resume API on fence failure", async () => {
+  const methods: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    beforeResume: async () => {
+      throw Error("resume fence denied");
+    },
+    fetch: (async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return Response.json({ sandbox: sandbox({ state: "archived" }) });
+    }) as typeof fetch,
+  });
+  await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
+    "resume fence denied",
+  );
+  expect(methods).toEqual(["GET"]);
+});

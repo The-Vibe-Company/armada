@@ -14,7 +14,9 @@ test("HTTP and MCP adoption reject hidden ids and visible non-admin selection be
   try {
     const token = await server.token(server.people.member);
     const client = await server.client(token);
-    const rows = await server.db.query<{ id: string }>("select id from goldens where name in ('shared','mine')");
+    const rows = await server.db.query<{ id: string; name: string }>(
+      "select id,name from goldens where name in ('shared','mine')",
+    );
     const control = {
       authStore: server.auth,
       supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
@@ -29,7 +31,10 @@ test("HTTP and MCP adoption reject hidden ids and visible non-admin selection be
       },
       goldenAdoption,
     };
-    for (const id of [...rows.rows.map((row) => row.id), "99999999-9999-4999-8999-999999999999"]) {
+    for (const { id, status } of [
+      ...rows.rows.map((row) => ({ id: row.id, status: row.name === "shared" ? 403 : 404 })),
+      { id: "99999999-9999-4999-8999-999999999999", status: 404 },
+    ]) {
       const result = await call(client, "golden_adopt", { id });
       expect(result.isError).toBe(true);
       const response = await handleControlRequest(
@@ -40,7 +45,7 @@ test("HTTP and MCP adoption reject hidden ids and visible non-admin selection be
         }),
         control,
       );
-      expect(response?.status).toBe(400);
+      expect(response?.status).toBe(status);
       const text = await response!.text();
       expect(text).not.toContain("mine");
       expect(text).not.toContain("backend_id");

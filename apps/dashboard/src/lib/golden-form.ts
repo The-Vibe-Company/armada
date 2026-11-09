@@ -2,20 +2,29 @@ import {
   type Golden,
   type GoldenConfig,
   GoldenError,
+  isSandboxProvider,
   normalizeGitHubGoldenConfig,
   parseGoldenConfig,
   parseGoldenName,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
 } from "@armada/core";
 import type { GoldenCapabilities } from "./control.ts";
 
 /** One repository row of the golden form, as typed. */
 export type RepoRow = { url: string; branch: string; dir: string };
 
+/** The backends a golden can be built on, in the order the form offers them. */
+export const GOLDEN_PROVIDERS = SANDBOX_PROVIDERS;
+export const PROVIDER_LABELS: Record<SandboxProviderId, string> = { boat: "Boat", modal: "Modal" };
+
 /** The fields of the golden form, as strings, before any check. */
 export type GoldenFormFields = {
   mode: string;
   name: string;
   org: string;
+  /** Create: the backend chosen in the form. Update: the stored golden's own provider, never the form's. */
+  provider: string;
   visibility: string;
   repos: RepoRow[];
   init: string;
@@ -30,7 +39,7 @@ export type GoldenRequest =
         name: string;
         org: string;
         private: boolean;
-        provider: "boat";
+        provider: SandboxProviderId;
         config: { repos: { url: string; branch: string; dir?: string }[]; init: string[] };
         setup?: string;
       };
@@ -40,7 +49,8 @@ export type GoldenRequest =
       body: {
         name: string;
         org: string;
-        provider: "boat";
+        /** Picks this golden among same-name goldens of another provider; the server never changes it. */
+        provider: SandboxProviderId;
         config: { repos: { url: string; branch: string; dir?: string }[]; init: string[] };
         setup?: string;
       };
@@ -58,6 +68,8 @@ export const MAX_GOLDEN_REPOS = 16;
 export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
   const mode = fields.mode === "update" ? "update" : fields.mode === "create" ? "create" : null;
   if (!mode || !fields.org.trim()) return { ok: false, error: "That request is not valid." };
+  if (!isSandboxProvider(fields.provider)) return { ok: false, error: "Choose where the golden is built." };
+  const provider = fields.provider;
   let name: string;
   try {
     name = parseGoldenName(fields.name);
@@ -89,7 +101,7 @@ export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
   if (mode === "update") {
     return {
       ok: true,
-      value: { mode, body: { name, org: fields.org, provider: "boat", config, ...(setup ? { setup } : {}) } },
+      value: { mode, body: { name, org: fields.org, provider, config, ...(setup ? { setup } : {}) } },
     };
   }
   if (fields.visibility !== "org" && fields.visibility !== "private")
@@ -102,7 +114,7 @@ export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
         name,
         org: fields.org,
         private: fields.visibility === "private",
-        provider: "boat",
+        provider,
         config,
         ...(setup ? { setup } : {}),
       },
@@ -196,16 +208,13 @@ export function goldenRowState(
 ): GoldenRowState {
   const duplicateName =
     visible.filter((row) => row.name === golden.name && row.provider === golden.provider).length > 1;
-  const reason =
-    golden.provider !== "boat"
-      ? "The server rebuilds Boat goldens only."
-      : duplicateName
-        ? "Two visible goldens share this name; the rebuild API cannot tell them apart."
-        : golden.visibility === "private" && golden.owner_id !== viewer.id
-          ? "Only the owner rebuilds a private golden."
-          : golden.visibility === "org" && !viewer.isAdmin
-            ? "Only an org admin rebuilds an org golden."
-            : null;
+  const reason = duplicateName
+    ? `Two visible ${PROVIDER_LABELS[golden.provider]} goldens share this name; the rebuild API cannot tell them apart.`
+    : golden.visibility === "private" && golden.owner_id !== viewer.id
+      ? "Only the owner rebuilds a private golden."
+      : golden.visibility === "org" && !viewer.isAdmin
+        ? "Only an org admin rebuilds an org golden."
+        : null;
   return { duplicateName, canRebuild: reason === null, reason };
 }
 
@@ -217,16 +226,20 @@ export type CapacityState =
   | { kind: "legacy"; capacity: number; used: number };
 
 /**
- * The Boat golden count this viewer can see against the limit the Armada server read from the selected org's
- * provider. The count is of visible rows only (another member's private golden or another org's is not seen),
- * so this is guidance; the server reserves the backend slot and is the authority. A failed read is
- * `unavailable` and a null limit `unknown`: neither invents a number.
+ * One provider's golden count this viewer can see against the limit the Armada server read for the selected org
+ * and that provider. The count is of visible rows only (another member's private golden or another org's is not
+ * seen), so this is guidance; the server reserves the backend slot and is the authority. A failed read (such as a
+ * provider not configured for the org) is `unavailable` and a null limit `unknown`: neither invents a number.
  */
-export function boatCapacity(goldens: readonly Pick<Golden, "provider">[], read: GoldenCapabilities): CapacityState {
+export function providerCapacity(
+  goldens: readonly Pick<Golden, "provider">[],
+  read: GoldenCapabilities,
+  provider: SandboxProviderId,
+): CapacityState {
   if (!read.ok) return { kind: "unavailable", reason: read.reason };
   const capacity = read.maxGoldens;
   if (capacity === null) return { kind: "unknown" };
-  const used = goldens.filter((golden) => golden.provider === "boat").length;
+  const used = goldens.filter((golden) => golden.provider === provider).length;
   if (used > capacity) return { kind: "legacy", capacity, used };
   if (used === capacity) return { kind: "full", capacity, used };
   return { kind: "available", capacity, used };

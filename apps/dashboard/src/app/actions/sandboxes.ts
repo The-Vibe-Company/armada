@@ -3,14 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
+import { launchSelection, type McpConnection } from "@/lib/connections";
+import { ControlError } from "@/lib/control";
+import { listSelectedConnections } from "@/lib/data/connections";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listGoldens } from "@/lib/data/goldens";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
-import { launchRepoOptions } from "@/lib/golden-form";
+import { launchSandbox } from "@/lib/launch";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
+import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
 async function gatewayFor(id: string) {
@@ -71,22 +76,46 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
   const viewer = await requireViewer();
-  const gateway = viewerGateway(viewer);
-  if (!gateway) return fail("The Armada server is not configured for this dashboard.");
-  if (parsed.args.repo !== undefined) {
-    // The server checks this again; refusing here keeps a stale form from starting a sandbox somewhere unexpected.
-    const source = (await listGoldens(await createClient())).find(
-      (row) =>
-        row.name === parsed.args.golden && row.provider === parsed.args.provider && row.org_id === parsed.args.org,
-    );
-    if (!source || !launchRepoOptions(source.config).includes(parsed.args.repo))
-      return fail("That repository is not recorded in this golden. Reload the page and choose again.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+
+  const matches = (await listGoldens(await createClient())).filter(
+    (golden) =>
+      golden.name === parsed.args.golden &&
+      golden.provider === parsed.args.provider &&
+      golden.org_id === parsed.args.org,
+  );
+  if (matches.length === 0) return fail("That golden is not available in this organization.");
+  const requested = data.getAll("connections").map(String);
+  let available: McpConnection[] = [];
+  if (requested.length > 0) {
+    const listed = await listSelectedConnections();
+    if (listed.state !== "ready") {
+      return fail(listed.state === "error" ? listed.message : "Connections are not available right now.");
+    }
+    available = listed.connections;
   }
+  const selection = launchSelection({
+    visibility: formString(data, "visibility"),
+    connections: requested,
+    goldenVisibility: matches.some((golden) => golden.visibility === "org") ? "org" : "private",
+    available,
+  });
+  if (!selection.ok) return fail(selection.error);
+  const repository = repositoryChoice(
+    formString(data, "repo"),
+    matches.flatMap((golden) => goldenRepositoryDirs(golden.config)),
+  );
+  if (!repository.ok) return fail(repository.error);
+
   let id: string;
   try {
-    ({ id } = await gateway.launch(parsed.args));
+    ({ id } = await launchSandbox(
+      { serverUrl, token: viewer.token },
+      { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
+    ));
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof ControlError) return fail(error.message);
     throw error;
   }
   revalidatePath("/sandboxes");

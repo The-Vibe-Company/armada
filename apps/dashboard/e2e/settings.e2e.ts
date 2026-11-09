@@ -84,8 +84,88 @@ test("a callback with a missing or foreign state connects nothing", async ({ pag
   await page.goto("/github/callback?code=abc&state=forged");
   await page.waitForURL("**/settings?github=state");
   await expect(page.getByText("the sign-in expired or came from another browser")).toBeVisible();
+  // A lookalike of the CLI prefix stays on the web flow, so its state cookie is still required.
+  await page.goto(`/github/callback?code=abc&state=Armada_cli_${"a".repeat(40)}`);
+  await page.waitForURL("**/settings?github=state");
   const rows = (await (await fetch(`${MOCK}/__test/github-connections`)).json()) as unknown[];
   expect(rows).toEqual([]);
+  expect((await cliState()).githubCliCalls).toEqual([]);
+});
+
+async function cliState() {
+  return (await (await fetch(`${MOCK}/__test/state`)).json()) as {
+    githubCliCalls: { body: Record<string, unknown>; authorization: string | null; cookie: string | null }[];
+  };
+}
+
+/**
+ * A flow state of the shape the API (#529) creates: `armada_cli_` and 72 lowercase hex or hyphen characters. The
+ * mock refuses to register any other shape, so these tests only exercise states the API could have issued.
+ */
+async function cliFlow(code: string, canceled = false): Promise<string> {
+  const state = `armada_cli_${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const response = await fetch(`${MOCK}/__test/github-cli-flow`, {
+    method: "POST",
+    body: JSON.stringify({ state, code, canceled }),
+  });
+  expect(response.ok).toBe(true);
+  return state;
+}
+
+test("the CLI's GitHub sign-in completes through the registered callback, relaying only state and code", async ({
+  page,
+  context,
+}) => {
+  // A signed-in browser with a web flow in progress: neither its session nor its state cookie reaches the API.
+  await signIn(page, "alice@example.com", "/settings");
+  await context.addCookies([
+    { name: "armada_github_state", value: "web-flow-state", url: "http://127.0.0.1:3100/github/callback" },
+  ]);
+  const state = await cliFlow("cli-code-1");
+  await page.goto(`/github/callback?code=cli-code-1&state=${state}`);
+  await expect(page).toHaveURL(/\/github\/cli\?result=connected$/);
+  await expect(page.getByRole("status")).toContainText("GitHub is connected");
+  await page.screenshot({ path: "test-results/github-cli-connected-desktop.png" });
+  expect((await cliState()).githubCliCalls).toEqual([
+    { body: { state, code: "cli-code-1" }, authorization: null, cookie: null },
+  ]);
+  // The web flow's cookie is left alone for that flow, and no web connection was made.
+  expect((await context.cookies()).some((cookie) => cookie.name === "armada_github_state")).toBe(true);
+  expect(await connections()).toEqual([]);
+
+  // Replaying the same callback is refused by the API; the browser only learns that it failed.
+  await page.goto(`/github/callback?code=cli-code-1&state=${state}`);
+  await expect(page).toHaveURL(/\/github\/cli\?result=failed$/);
+  await expect(page.locator("[data-cli-github=failed]").getByRole("alert")).toContainText("could not be completed");
+  await expect(page.locator("body")).not.toContainText("cli-code-1");
+});
+
+test("a CLI GitHub callback needs no session, and cancelled, denied or malformed ones end without connecting", async ({
+  page,
+}) => {
+  const canceled = await cliFlow("cli-code-2", true);
+  await page.goto(`/github/callback?code=cli-code-2&state=${canceled}`);
+  await expect(page).toHaveURL(/\/github\/cli\?result=failed$/);
+  expect((await cliState()).githubCliCalls).toHaveLength(1);
+
+  // Without a dashboard session either: the flow state binds the CLI user, so it completes.
+  const pending = await cliFlow("cli-code-3");
+  await page.goto(`/github/callback?code=cli-code-3&state=${pending}`);
+  await expect(page).toHaveURL(/\/github\/cli\?result=connected$/);
+
+  // Ended before anything is sent: a provider error, a repeated parameter, a short state.
+  const denied = await cliFlow("cli-code-4");
+  await page.goto(`/github/callback?error=access_denied&error_description=nope%20%3Cb%3E&state=${denied}`);
+  await expect(page).toHaveURL(/\/github\/cli\?result=denied$/);
+  await expect(page.locator("body")).not.toContainText("nope");
+  await page.goto(`/github/callback?code=cli-code-4&state=${denied}&state=${denied}`);
+  await expect(page).toHaveURL(/\/github\/cli\?result=failed$/);
+  await page.goto("/github/callback?code=cli-code-4&state=armada_cli_short");
+  await expect(page).toHaveURL(/\/github\/cli\?result=failed$/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/github-cli-failed-mobile.png" });
+  expect((await cliState()).githubCliCalls).toHaveLength(2);
+  expect(await connections()).toEqual([]);
 });
 
 test("a connected person sees who they are, and disconnecting removes only their own row", async ({ page }) => {

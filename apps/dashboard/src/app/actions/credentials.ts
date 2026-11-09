@@ -3,13 +3,22 @@
 import { EncryptionKeyError, encryptSecret, toBytea } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
-import { checkSecretValue, credentialKindInfo, isCredentialKind, isCredentialScope } from "@/lib/credentials";
+import {
+  checkModalToken,
+  checkSecretValue,
+  credentialKindInfo,
+  isCredentialKind,
+  isCredentialScope,
+} from "@/lib/credentials";
 import { listCredentials } from "@/lib/data/credentials";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
-/** Stores a key, token or secret as ciphertext. It is never read back: setting it again replaces it. */
+/**
+ * Stores a key, token or secret as ciphertext, in the viewer's own scope or (admins) the selected org's. It is
+ * never read back: setting it again replaces it.
+ */
 export async function saveCredential(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const viewer = await requireViewer();
   const scope = formString(data, "scope");
@@ -20,7 +29,11 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
   if (!isUuid(owner)) return fail("That request is not valid.");
 
   if (scope === "org" && !(await isSelectedOrganization(owner))) return fail("Switch to that organization first.");
-  const checked = checkSecretValue(data.get("value"));
+  // A Modal token is a pair, checked and stored together; every other kind is one pasted value.
+  const checked =
+    kind === "modal"
+      ? checkModalToken(data.get("modal_token_id"), data.get("modal_token_secret"))
+      : checkSecretValue(data.get("value"));
   if (!checked.ok) return fail(checked.error);
 
   let sealed: Uint8Array;

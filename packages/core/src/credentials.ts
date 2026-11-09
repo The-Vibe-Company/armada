@@ -97,7 +97,7 @@ const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{2
 
 /** Replaces every secret in `text`, so command output and error messages are safe to show. */
 export function redact(text: string, secrets: readonly string[]): string {
-  let out = text.replace(GITHUB_TOKEN, "***");
+  let out = text.replace(GITHUB_TOKEN, "***").replace(/\barmada_gw_[A-Za-z0-9_-]{32,}/g, "***");
   for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
     if (secret !== "") out = out.split(secret).join("***");
   }

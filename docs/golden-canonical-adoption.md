@@ -1,6 +1,6 @@
 # Explicit canonical Boat golden adoption
 
-Deploy migration `supabase/migrations/20261109020000_adopt_canonical_boat_golden.sql`
+Deploy migration `supabase/migrations/20261110060000_adopt_canonical_boat_golden.sql`
 through the normal migration process before deploying this server. **Not applied to
 production by this change.** The unique indexes deliberately fail if existing slot
 bindings already violate global uniqueness. Investigate manually; do not delete,

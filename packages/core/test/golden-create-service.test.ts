@@ -6,6 +6,7 @@ const repo = { owner: "acme", repo: "web", id: 1, installationId: 2 };
 test("coordinates only scanned golden lifecycle", async () => {
   const log: string[] = [];
   const p: any = {
+    id: "boat",
     createGolden: async () => {
       log.push("create");
       return { id: "bx" };
@@ -53,6 +54,7 @@ test("scan failure never snapshots or persists and cleans up", async () => {
     },
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async () => {
       log.push("snapshot");
@@ -80,6 +82,7 @@ test("falls back to the caller's own token and never mints when no App is config
     },
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
@@ -107,6 +110,7 @@ test("authorized repositories across installations use the caller token and do n
     },
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
@@ -142,6 +146,7 @@ test("a snapshot that starts out saving is polled until ready before persisting"
   });
   let getSnapshotCalls = 0;
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => {
       log.push("snapshot");
@@ -183,6 +188,7 @@ test("a snapshot that never becomes ready is never persisted", async () => {
     },
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "saving" }),
     getSnapshot: async () => ({ status: "failed", error: "disk full" }),
@@ -207,6 +213,7 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
     },
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     deleteSnapshot: async (name: string) => void log.push(`delete:${name}`),
@@ -233,6 +240,7 @@ test("uses normalized branches, directories, and init commands after canonical a
     persist: async () => {},
   });
   const provider: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
@@ -259,6 +267,8 @@ test("keeps the legacy repo-string API compatible", () => {
 test("existing golden context is authorized before provider work and propagated", async () => {
   const existing: any = {
     id: "g1",
+    provider: "boat",
+    modal: null,
     orgId: "o",
     name: "x",
     visibility: "private",
@@ -279,6 +289,7 @@ test("existing golden context is authorized before provider work and propagated"
     },
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
@@ -299,6 +310,7 @@ test("existing golden denial happens before authorization or provider", async ()
     persist: async () => {},
   });
   const p: any = {
+    id: "boat",
     createGolden: async () => {
       touched = true;
       return { id: "bx" };
@@ -306,6 +318,8 @@ test("existing golden denial happens before authorization or provider", async ()
   };
   const existing: any = {
     id: "g",
+    provider: "boat",
+    modal: null,
     orgId: "other",
     name: "x",
     visibility: "private",
@@ -324,6 +338,8 @@ test.each(["returned", "lookup"])("uses provider snapshot identifier with builde
   let requested = "";
   const existing: any = {
     id: "stable-id",
+    provider: "boat",
+    modal: null,
     orgId: "o",
     name: "x",
     visibility: "private",
@@ -340,6 +356,7 @@ test.each(["returned", "lookup"])("uses provider snapshot identifier with builde
     },
   });
   const provider: any = {
+    id: "boat",
     createGolden: async () => ({ id: "builder" }),
     snapshot: async ({ name }: { name: string }) => {
       requested = name;
@@ -374,6 +391,47 @@ test.each(["returned", "lookup"])("uses provider snapshot identifier with builde
   );
 });
 
+test("an uncertain Modal snapshot retains its source and returns an actionable reconciliation refusal", async () => {
+  const cleaned: string[] = [];
+  const service = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "caller" }),
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async () => {
+      throw new Error("must not persist");
+    },
+  });
+  const provider: any = {
+    id: "modal",
+    createGolden: async () => ({ id: "modal-builder" }),
+    snapshot: async () => {
+      throw new Error("response lost");
+    },
+    delete: async () => {
+      cleaned.push("delete");
+    },
+    stop: async () => {
+      cleaned.push("stop");
+    },
+  };
+  let error: unknown;
+  try {
+    await service.create(provider, actor, {
+      name: "x",
+      visibility: "private",
+      repos: ["acme/web"],
+      modal: { workspace: "ws", environment: "main", appId: "ap-immutable" },
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toMatchObject({
+    code: "conflict",
+    retryable: false,
+    details: { keepSource: true, sourceSandboxId: "modal-builder" },
+  });
+  expect(cleaned).toEqual([]);
+});
 test.each(["missing", "wrong", "last-good"])(
   "unverified remap (%s) never publishes or deletes an unrelated artifact",
   async (mode) => {
@@ -388,6 +446,7 @@ test.each(["missing", "wrong", "last-good"])(
     });
     const reference = mode === "last-good" ? "last-good" : "unrelated";
     const provider: any = {
+      id: "boat",
       createGolden: async () => ({ id: "builder" }),
       snapshot: async () => ({
         name: reference,
@@ -413,6 +472,8 @@ test.each(["missing", "wrong", "last-good"])(
         repos: ["acme/web"],
         existingGolden: {
           id: "g",
+          provider: "boat",
+          modal: null,
           orgId: "o",
           name: "x",
           visibility: "private",

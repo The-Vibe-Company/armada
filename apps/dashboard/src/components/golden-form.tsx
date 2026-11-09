@@ -1,6 +1,6 @@
 "use client";
 
-import type { GoldenBuildStatus } from "@armada/core";
+import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
 import { type FormEvent, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { buildGolden, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
@@ -9,7 +9,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { MAX_GOLDEN_REPOS, type RepoRow } from "@/lib/golden-form";
+import {
+  type CapacityState,
+  GOLDEN_PROVIDERS,
+  MAX_GOLDEN_REPOS,
+  PROVIDER_LABELS,
+  type RepoRow,
+} from "@/lib/golden-form";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -18,6 +24,11 @@ type Props = {
   orgName: string;
   /** Org admins create org goldens; everyone else creates private ones. A hint: the server checks again. */
   isAdmin: boolean;
+  /** Create: each provider's capacity as the server read it for this org, or why it is not known. */
+  capacities?: Readonly<Record<SandboxProviderId, CapacityState>>;
+  /** Update: the stored golden's id and provider. The provider of a golden never changes. */
+  goldenId?: string;
+  provider?: SandboxProviderId;
   /** Update: the golden being rebuilt, its name fixed. */
   name?: string;
   /** Update: the golden's visibility, which a rebuild keeps. */
@@ -35,11 +46,45 @@ const BUILD_OUTCOME_UNKNOWN =
  * a one-off setup script and who sees it. It submits once to the server's secure builder and shows that one
  * request's outcome; while it runs every field is locked, so the same build cannot be sent twice.
  */
-export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, defaults }: Props) {
+/** The form's build scope: this org's create form, or the rebuild of one stored golden (its id never changes). */
+function buildScope(props: { mode: Props["mode"]; orgId: string; goldenId?: string | undefined }): string {
+  return props.mode === "create" ? `create.${props.orgId}` : `rebuild.${props.goldenId ?? ""}`;
+}
+
+/**
+ * Keyed by its build scope, so switching organization in place (the page re-renders with another org) mounts a new
+ * form: the previous org's job, lock, polling and saved key are left behind with the old one, never carried over.
+ */
+export function GoldenForm(props: Props) {
+  return <ScopedGoldenForm key={buildScope(props)} {...props} />;
+}
+
+function ScopedGoldenForm({
+  mode,
+  orgId,
+  orgName,
+  isAdmin,
+  capacities,
+  goldenId,
+  provider,
+  name,
+  visibility,
+  defaults,
+}: Props) {
   const id = useId();
+  // Each form tracks its own build in the page URL: this org's create form, or the rebuild of this one golden.
+  // Another org's form or another golden's never reads, polls or resubmits it.
+  const scope = buildScope({ mode, orgId, goldenId });
+  const jobParam = `build.${scope}`;
+  const keyParam = `build-key.${scope}`;
+  const providerParam = `build-provider.${scope}`;
   const [admissionKey, setAdmissionKey] = useState("");
   const [observed, setObserved] = useState<GoldenBuildStatus | null>(null);
   const [pollError, setPollError] = useState("");
+  // The provider of the admitted job: a rebuild's is the stored golden's; a create's is what was submitted.
+  const [admittedProvider, setAdmittedProvider] = useState<SandboxProviderId | null>(
+    mode === "update" ? (provider ?? null) : null,
+  );
   const refreshStatus = useCallback(async (jobId: string) => {
     try {
       setObserved(await goldenBuildStatus(jobId));
@@ -51,20 +96,45 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
   const jobId = observed?.jobId;
   const jobState = observed?.state;
   useEffect(() => {
+    // A read started for this scope is ignored once the scope is gone: a late answer never lands in another form.
+    let active = true;
     const params = new URLSearchParams(window.location.search);
-    setAdmissionKey(params.get("build-key") ?? crypto.randomUUID());
-    const jobId = new URLSearchParams(window.location.search).get("build");
-    if (jobId) void refreshStatus(jobId);
-    else if (params.get("build-key"))
-      void recoverGoldenBuild(params.get("build-key")!, orgId)
-        .then(setObserved)
-        .catch(() =>
-          setPollError("No visible admission receipt yet. Recover using the saved key; do not blindly resubmit."),
-        );
-  }, [refreshStatus, orgId]);
+    const savedKey = params.get(keyParam);
+    setAdmissionKey(savedKey ?? crypto.randomUUID());
+    const savedProvider = params.get(providerParam);
+    if (mode === "create" && (savedProvider === "boat" || savedProvider === "modal"))
+      setAdmittedProvider(savedProvider);
+    const savedJob = params.get(jobParam);
+    if (savedJob)
+      void goldenBuildStatus(savedJob)
+        .then((status) => {
+          if (!active) return;
+          setObserved(status);
+          setPollError("");
+        })
+        .catch(() => {
+          if (active)
+            setPollError("Status unavailable. The build may still run; check this job again, do not resubmit.");
+        });
+    else if (savedKey)
+      void recoverGoldenBuild(savedKey, orgId)
+        .then((recovered) => {
+          if (!active) return;
+          setObserved(recovered);
+          rememberJob(jobParam, recovered.jobId);
+        })
+        .catch(() => {
+          if (active)
+            setPollError("No visible admission receipt yet. Recover using the saved key; do not blindly resubmit.");
+        });
+    return () => {
+      active = false;
+    };
+  }, [orgId, jobParam, keyParam, providerParam, mode]);
   useEffect(() => {
     if (!jobId || !jobState || !["queued", "running"].includes(jobState)) return;
     let active = true;
+    // A bounded local wait: the job keeps running on the server after it, and "Check build status" reads it again.
     const deadline = Date.now() + 120_000;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -88,8 +158,11 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
 
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
     let result: ActionResult;
+    // The key is saved in the URL before the request, so an answer lost in transit is recovered, not resubmitted.
+    const submitted = data.get("provider");
     const admissionUrl = new URL(window.location.href);
-    admissionUrl.searchParams.set("build-key", admissionKey);
+    admissionUrl.searchParams.set(keyParam, admissionKey);
+    if (mode === "create" && typeof submitted === "string") admissionUrl.searchParams.set(providerParam, submitted);
     window.history.replaceState(null, "", admissionUrl);
     try {
       result = await buildGolden(previous, data);
@@ -99,10 +172,9 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
       return { ok: false, error: BUILD_OUTCOME_UNKNOWN };
     }
     if (result.ok && result.build) {
+      if (mode === "create" && (submitted === "boat" || submitted === "modal")) setAdmittedProvider(submitted);
       setObserved(result.build);
-      const url = new URL(window.location.href);
-      url.searchParams.set("build", result.build.jobId);
-      window.history.replaceState(null, "", url);
+      rememberJob(jobParam, result.build.jobId);
     }
     return result;
   }, null);
@@ -112,6 +184,7 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
     (defaults?.repos.length ? defaults.repos : [{ url: "", branch: "", dir: "" }]).map(keyed),
   );
   const [chosenVisibility, setChosenVisibility] = useState<"org" | "private">(isAdmin ? "org" : "private");
+  const [chosenProvider, setChosenProvider] = useState<SandboxProviderId>("boat");
   // Controlled, so a refused build keeps what was typed (React resets a form after its action).
   const [goldenName, setGoldenName] = useState("");
   const [init, setInit] = useState(defaults?.init ?? "");
@@ -135,19 +208,25 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
   }
 
   const verb = mode === "create" ? "Build golden" : "Rebuild golden";
+  // An admitted job that has not finished keeps the form locked: nothing is edited or sent again meanwhile.
+  const jobActive = observed !== null && ["queued", "running", "recovery_required"].includes(observed.state);
+  const builtOn = admittedProvider ? `${PROVIDER_LABELS[admittedProvider]} ` : "";
   return (
     <form
       action={formAction}
       onSubmit={guard}
       aria-busy={pending}
-      aria-label={mode === "create" ? "Create a golden" : `Rebuild ${name}`}
+      aria-label={mode === "create" ? "Create a golden" : `Rebuild ${name} on ${PROVIDER_LABELS[provider ?? "boat"]}`}
       className="space-y-5"
       data-golden-form={mode}
     >
       <input type="hidden" name="idempotencyKey" value={admissionKey} />
       <input type="hidden" name="mode" value={mode} />
       <input type="hidden" name="org" value={orgId} />
-      <fieldset disabled={pending} className="space-y-5 disabled:opacity-70">
+      <fieldset disabled={pending || jobActive} className="space-y-5 disabled:opacity-70">
+        {mode === "create" && (
+          <ProviderChoice idPrefix={id} value={chosenProvider} onChange={setChosenProvider} capacities={capacities} />
+        )}
         {mode === "create" ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
@@ -196,10 +275,12 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
           </div>
         ) : (
           <>
-            <input type="hidden" name="name" value={name ?? ""} />
+            <input type="hidden" name="golden" value={goldenId ?? ""} />
             <p className="text-sm text-muted-foreground">
-              The rebuild keeps the name <span className="font-medium text-foreground">{name}</span> and its{" "}
-              {visibility === "private" ? "private" : "org"} visibility, and replaces the snapshot when it succeeds.
+              The rebuild keeps the name <span className="font-medium text-foreground">{name}</span>, its{" "}
+              {visibility === "private" ? "private" : "org"} visibility and its provider,{" "}
+              <span className="font-medium text-foreground">{PROVIDER_LABELS[provider ?? "boat"]}</span>, and replaces
+              the snapshot there when it succeeds.
             </p>
           </>
         )}
@@ -316,14 +397,7 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
       </fieldset>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <Button
-          type="submit"
-          disabled={
-            !admissionKey ||
-            pending ||
-            (observed !== null && ["queued", "running", "recovery_required"].includes(observed.state))
-          }
-        >
+        <Button type="submit" disabled={!admissionKey || pending || jobActive}>
           {pending && <Loader2Icon className="animate-spin" />}
           {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
         </Button>
@@ -340,7 +414,7 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
                     ok: true,
                     message:
                       observed.state === "succeeded" && observed.result
-                        ? `${mode === "create" ? "Built" : "Rebuilt"} golden '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
+                        ? `${mode === "create" ? "Built" : "Rebuilt"} ${builtOn}golden '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
                         : `Build ${observed.jobId}: ${observed.state} (${observed.phase})`,
                   }
               : state
@@ -360,8 +434,9 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
               const key = crypto.randomUUID();
               setAdmissionKey(key);
               const url = new URL(window.location.href);
-              url.searchParams.delete("build");
-              url.searchParams.set("build-key", key);
+              url.searchParams.delete(jobParam);
+              url.searchParams.delete(providerParam);
+              url.searchParams.set(keyParam, key);
               window.history.replaceState(null, "", url);
             }}
           >
@@ -374,7 +449,9 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
             variant="outline"
             onClick={async () => {
               try {
-                setObserved(await recoverGoldenBuild(admissionKey, orgId));
+                const recovered = await recoverGoldenBuild(admissionKey, orgId);
+                setObserved(recovered);
+                rememberJob(jobParam, recovered.jobId);
                 setPollError("");
               } catch {
                 setPollError(
@@ -393,6 +470,83 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
       </div>
     </form>
   );
+}
+
+const CAPACITY_HINT: Record<CapacityState["kind"], (state: CapacityState) => string> = {
+  available: (state) =>
+    state.kind === "available" ? `${state.used} of ${state.capacity} goldens visible to you.` : "",
+  full: () => "At its golden limit: rebuild the existing golden instead.",
+  legacy: () => "Over its golden limit: rebuild an existing golden instead.",
+  unknown: () => "No golden limit reported.",
+  unavailable: (state) => (state.kind === "unavailable" ? `Unavailable: ${state.reason}` : ""),
+};
+
+/**
+ * Where a new golden is built. Each option shows that provider's capacity as the server read it for this org;
+ * an unavailable one (for example not configured for the org) says so. Nothing falls back to the other provider.
+ */
+function ProviderChoice({
+  idPrefix,
+  value,
+  onChange,
+  capacities,
+}: {
+  idPrefix: string;
+  value: SandboxProviderId;
+  onChange: (provider: SandboxProviderId) => void;
+  capacities: Props["capacities"];
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">Provider</legend>
+      <input type="hidden" name="provider" value={value} />
+      <div className="grid gap-2 sm:grid-cols-2">
+        {GOLDEN_PROVIDERS.map((option) => {
+          const capacity = capacities?.[option];
+          const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
+          const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";
+          return (
+            <label
+              key={option}
+              className={cn(
+                "relative flex cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
+                value === option ? "border-primary bg-accent" : "hover:bg-accent/50",
+              )}
+              data-provider-choice={option}
+            >
+              <input
+                type="radio"
+                name={`${idPrefix}-provider`}
+                checked={value === option}
+                onChange={() => onChange(option)}
+                aria-describedby={`${idPrefix}-provider-${option}`}
+                className="absolute inset-0 size-full cursor-pointer appearance-none rounded-md opacity-0"
+              />
+              <span className="min-w-0">
+                <span className="block font-medium">{PROVIDER_LABELS[option]}</span>
+                <span
+                  id={`${idPrefix}-provider-${option}`}
+                  className={cn("block text-xs", warn ? "text-warning" : "text-muted-foreground")}
+                >
+                  {hint}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        A golden stays on its provider for good. The same name may exist once on each provider.
+      </p>
+    </fieldset>
+  );
+}
+
+/** Records an admitted or recovered job in this form's URL scope, so a reload reads it instead of resubmitting. */
+function rememberJob(param: string, jobId: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set(param, jobId);
+  window.history.replaceState(null, "", url);
 }
 
 function BuildStatus({ pending, state }: { pending: boolean; state: ActionResult | null }) {

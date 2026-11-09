@@ -36,6 +36,14 @@ case "$1" in
     while [ "$1" != --pack-destination ]; do shift; done
     destination="$2"
     if [ "$MODE" = unavailable ]; then exit 1; fi
+    if [ "$MODE" = independent-delay ]; then
+      countfile="$TEST_ROOT/count-$file"
+      count=0
+      if [ -f "$countfile" ]; then count=$(cat "$countfile"); fi
+      count=$((count + 1))
+      echo "$count" > "$countfile"
+      if [ "$count" -le 5 ]; then exit 1; fi
+    fi
     if [ "$MODE" = delayed ] && [ ! -f "$TEST_ROOT/retried-$file" ]; then
       touch "$TEST_ROOT/retried-$file"
       exit 1
@@ -76,25 +84,28 @@ esac
   }
 }
 
-test("publication waits for retrievable platform tarballs before publishing the launcher", () => {
-  const result = publish("delayed");
-  expect(result.exitCode).toBe(0);
-  const mainPublish = result.events.findIndex((event) =>
-    event.startsWith(`publish dist/tarballs/the-vibe-company-armada-${version}.tgz `),
-  );
-  expect(mainPublish).toBeGreaterThan(-1);
-  for (const name of platforms) {
-    const attempts = result.events.flatMap((event, index) =>
-      event.startsWith(`pack ${name}@${version} `) ? [index] : [],
+test.each(["delayed", "independent-delay"])(
+  "publication waits for each retrievable platform tarball before publishing the launcher (%s)",
+  (mode) => {
+    const result = publish(mode);
+    expect(result.exitCode).toBe(0);
+    const mainPublish = result.events.findIndex((event) =>
+      event.startsWith(`publish dist/tarballs/the-vibe-company-armada-${version}.tgz `),
     );
-    expect(attempts.length).toBe(2);
-    expect(attempts[1]).toBeLessThan(mainPublish);
-  }
-  expect(result.events.some((event) => event.startsWith("sleep "))).toBe(true);
-  for (const event of result.events.filter((event) => event.startsWith("publish "))) {
-    expect(event).toContain("--access public --tag latest --provenance");
-  }
-});
+    expect(mainPublish).toBeGreaterThan(-1);
+    for (const name of platforms) {
+      const attempts = result.events.flatMap((event, index) =>
+        event.startsWith(`pack ${name}@${version} `) ? [index] : [],
+      );
+      expect(attempts.length).toBe(mode === "delayed" ? 2 : 6);
+      expect(attempts.at(-1)).toBeLessThan(mainPublish);
+    }
+    expect(result.events.some((event) => event.startsWith("sleep "))).toBe(true);
+    for (const event of result.events.filter((event) => event.startsWith("publish "))) {
+      expect(event).toContain("--access public --tag latest --provenance");
+    }
+  },
+);
 
 for (const mode of ["unavailable", "corrupt"]) {
   test(`publication refuses the launcher when platform tarballs are ${mode}`, () => {

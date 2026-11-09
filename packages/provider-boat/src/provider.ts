@@ -114,6 +114,12 @@ function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
 export interface BoatProviderOptions {
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
+  /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
+  beforeResume?: (provider: Provider, sandboxId: string) => Promise<boolean>;
+  /** Called only after explicit physical readiness, before Boat creates the native turn. */
+  beforePrompt?: (provider: Provider, sandboxId: string) => Promise<void>;
+  /** Scrub Armada-owned transient configuration before the snapshot request, fail closed on I/O. */
+  beforeSnapshot?: (provider: Provider, sandboxId: string) => Promise<void>;
   baseUrl?: string;
   /** Seconds before boat stops a sandbox by itself, when a call names none. */
   defaultTtlSeconds?: number;
@@ -168,7 +174,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     return sandboxInfo(response.sandbox);
   }
 
-  return {
+  const provider: Provider = {
     id: PROVIDER_ID,
     harnesses: ["claude", "codex"],
     capabilities: BOAT_CAPABILITIES,
@@ -230,6 +236,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     },
 
     async snapshot(request: SnapshotRequest): Promise<SnapshotInfo> {
+      await options.beforeSnapshot?.(provider, request.sandboxId);
       const response = await call(() =>
         api.saveSavedSnapshot({ savedSnapshotSaveRequest: { sandboxId: request.sandboxId, name: request.name } }),
       );
@@ -262,7 +269,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     },
 
     async get(sandboxId: string): Promise<SandboxInfo> {
-      const response = await call(() => api.get({ sandboxId }));
+      const response = await call(() => api.get({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
       if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
       return sandboxInfo(response.sandbox);
     },
@@ -284,6 +291,40 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
 
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
       if (request.text.trim() === "") throw invalidRequest("A prompt needs text.");
+      if (options.beforePrompt || options.beforeResume) {
+        let info = await provider.get(request.sandboxId);
+        if (info.state === "stopped") {
+          const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
+          if (shouldResume !== false) {
+            try {
+              await call(() => api.resume({ sandboxId: request.sandboxId }));
+            } catch (error) {
+              if (!(error instanceof ProviderError) || error.status !== 409) throw error;
+              const concurrent = await provider.get(request.sandboxId);
+              if (!["starting", "ready", "running"].includes(concurrent.state)) throw error;
+            }
+          }
+          info = await provider.get(request.sandboxId);
+        }
+        for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
+          await sleep(1000);
+          info = await provider.get(request.sandboxId);
+        }
+        if (info.state !== "ready" && info.state !== "running")
+          throw invalidRequest("Sandbox is not ready for native MCP configuration.");
+        await options.beforePrompt?.(provider, request.sandboxId);
+      }
+      if (request.harness === "codex" && options.beforePrompt) {
+        await installNativeCwdWrapper(
+          async (r) => {
+            const result = await provider.exec(r);
+            if (result.detached || result.exitCode !== 0)
+              throw invalidRequest("Native MCP bridge installation failed.");
+          },
+          request.sandboxId,
+          "codex",
+        );
+      }
       const response = await call(() =>
         api.prompt({
           sandboxId: request.sandboxId,
@@ -405,6 +446,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       };
     },
   };
+  return provider;
 }
 
 function isRestoring(details: unknown): boolean {

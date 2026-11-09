@@ -67,6 +67,8 @@ test("forged and removed preferences fall back; forged switch is refused server-
   await select.selectOption(ZENITH);
   await page.getByRole("button", { name: "Switch organization" }).click();
   await expect(select).toHaveValue(ZENITH);
+  // The chosen option shows before the switch is saved; Zenith's sandbox shows only once it is.
+  await expect(page.getByRole("link", { name: "bx_zenith" })).toBeVisible();
   await fetch(`${MOCK}/__test/remove-zenith-membership`, { method: "POST" });
   await page.reload();
   await expect(select).toHaveValue(ACME);
@@ -97,7 +99,10 @@ test("mutation targets cannot escape the selected org even when the viewer admin
   await launch.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(launch.getByRole("alert")).toContainText("Switch to that organization first");
   await page.goto("/credentials");
-  const personal = page.locator('[data-credentials="user"]');
+  // The generic one-value form of the personal section (its Modal token form is separate).
+  const personal = page
+    .locator('[data-credentials="user"] form')
+    .filter({ has: page.getByRole("button", { name: "Save credential" }) });
   await personal.locator('input[name="scope"]').evaluate((input) => {
     (input as HTMLInputElement).value = "org";
   });

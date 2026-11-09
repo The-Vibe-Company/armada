@@ -12,9 +12,14 @@ export {
   mintInstallationToken,
   revokeInstallationToken,
 } from "./github-installation.ts";
-export * from "./golden-adoption.ts";
-export * from "./golden-build-jobs.ts";
-export { assertGoldenBackendBinding, createGoldenCreateService, type GoldenCreateOptions } from "./golden-create.ts";
+export { createGoldenAdoption, type GoldenAdoption } from "./golden-adoption.ts";
+export { GoldenBuildJobs, type GoldenBuildJobsOptions } from "./golden-build-jobs.ts";
+export {
+  assertGoldenBackendBinding,
+  createGoldenCreateService,
+  type GoldenCreateOptions,
+  reserveGoldenBuild,
+} from "./golden-create.ts";
 export {
   type AuthorizedRepo,
   type GoldenCreateDeps,
@@ -25,5 +30,6 @@ export {
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
 export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
+export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
 export { type SshExecDeps, shellQuote, sshStdinCheckout } from "./ssh-executor.ts";

@@ -24,7 +24,13 @@ export function pgArray(items: readonly unknown[]): string {
 export function sqlOver(driver: SqlDriver): Sql {
   const query = async <T>(text: string, params: unknown[] = []) => {
     const sent = params.map((param) => (Array.isArray(param) ? pgArray(param) : param));
-    const rows = (await driver.unsafe(text, sent as never[])) as unknown as T[];
+    // Bun infers a JSONB parameter from a direct cast and JSON-encodes string values again.
+    // The shared Sql contract takes explicitly serialized JSON strings; force text wire encoding
+    // before PostgreSQL parses those bytes as JSON. Do not alter object/non-string parameters.
+    const encoded = text.replace(/\$(\d+)::(jsonb|json)\b/g, (cast, index: string, kind: string) =>
+      typeof params[Number(index) - 1] === "string" ? `$${index}::text::${kind}` : cast,
+    );
+    const rows = (await driver.unsafe(encoded, sent as never[])) as unknown as T[];
     return { rows: Array.from(rows) };
   };
   const transaction = driver.begin;

@@ -2,7 +2,8 @@
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
  * It models what the dashboard relies on: sessions by bearer token, the row level security
  * rules of supabase/migrations (private goldens, org-only keys, admin-only writes), the
- * column grant that keeps ciphertext unreadable, and the `logs` / `stop` / `send` tools.
+ * column grant that keeps ciphertext unreadable, the `logs` / `stop` / `send` / `launch` tools, the MCP
+ * connection control API with its write-only authentication, and an upstream OAuth consent page.
  * The real rules are tested against Postgres in packages/core/test.
  */
 
@@ -35,15 +36,33 @@ type State = {
   sent: string[];
   /** The arguments of every launch and send, as the dashboard serialized them. */
   toolCalls: { name: string; args: Row }[];
-  /** Every control API golden build, as the dashboard's server sent it (never a token: only whether one came). */
+  /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
+  githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
+  /** Every `POST /api/v1/sandbox/launch` body, as the dashboard sent it. */
+  launches: Row[];
+  /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
-  /** When set, a golden build waits until `/__test/golden-release`: the browser test sees the pending state. */
-  goldenGate: { hold: boolean; fail: { status: number; code?: string; message: string } | null };
-  /** Every `golden/capabilities` read (never a token: only whether one came). */
+  goldenGate: {
+    hold: boolean;
+    fail: { status: number; code?: string; message: string } | null;
+    /** The job is admitted, then a gateway in front of the server loses the answer (a 504 without a code). */
+    loseAnswer?: boolean;
+    /** Status reads fail (a 503) while set; the jobs themselves are unaffected. */
+    failStatus?: boolean;
+  };
+  /** Every `golden/build/status` body, as the dashboard sent it. */
+  goldenStatusCalls: Row[];
   capabilityCalls: { body: Row; authorized: boolean }[];
-  /** What the selected provider reports, or how the read fails (no provider credential, an older server). */
-  capabilities: { maxGoldens: number | null; fail: { status: number; code?: string; message: string } | null };
+  /** Per provider: the limit the server reads for the org, or why it cannot (such as not configured). */
+  capabilities: Record<
+    "boat" | "modal",
+    { maxGoldens: number | null; fail: { status: number; code?: string; message: string } | null }
+  >;
   otpEmails: string[];
+  /** The registry's connections. `authentication` is the write-only value; no response ever includes it. */
+  connections: Row[];
+  /** Every control API call, with its operation and body, for the tests to check what the dashboard sent. */
+  controlCalls: { operation: string; body: Row }[];
 };
 
 function seed(): State {
@@ -55,14 +74,26 @@ function seed(): State {
       { org_id: ACME, user_id: BOB, role: "member", created_at: now },
     ],
     goldens: [
-      golden(id(20), "shared-golden", "org", ALICE, "snap-shared"),
+      {
+        ...golden(id(20), "shared-golden", "org", ALICE, "snap-shared"),
+        config: {
+          repos: [
+            { url: "https://github.com/acme/web.git", branch: "main", dir: "web" },
+            { url: "https://github.com/acme/api.git", branch: "main", dir: "api" },
+          ],
+          init: [],
+        },
+      },
       golden(id(21), "alice-private", "private", ALICE, null),
       golden(id(22), "bob-private", "private", BOB, "snap-bob"),
     ],
     sandboxes: [
       sandbox(id(30), "bx_alice_running", id(20), ALICE, "claude", "running", "2026-11-08T10:05:00.000Z"),
       sandbox(id(31), "bx_alice_failed", id(20), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),
-      sandbox(id(32), "bx_bob_secret", id(22), BOB, "claude", "ready", "2026-11-08T10:03:00.000Z"),
+      {
+        ...sandbox(id(32), "bx_bob_secret", id(22), BOB, "claude", "ready", "2026-11-08T10:03:00.000Z"),
+        visibility: "private",
+      },
     ],
     credentials: [
       {
@@ -96,11 +127,55 @@ function seed(): State {
     events: new Map(),
     sent: [],
     toolCalls: [],
+    launches: [],
     goldenCalls: [],
+    goldenStatusCalls: [],
     goldenGate: { hold: false, fail: null },
     capabilityCalls: [],
-    capabilities: { maxGoldens: 1, fail: null },
+    // A Boat account holds one golden; Modal is unbounded.
+    capabilities: { boat: { maxGoldens: 1, fail: null }, modal: { maxGoldens: null, fail: null } },
+    githubCliCalls: [],
     otpEmails: [],
+    connections: [
+      mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
+        url: "https://docs.acme.test/mcp",
+        authType: "none",
+        status: "connected",
+        toolCount: 12,
+        resourceCount: 3,
+        promptCount: 2,
+      }),
+      mcpConnection(id(61), "Alice Linear", ACME, "personal", ALICE, {
+        url: "https://mcp.linear.test/mcp",
+        authType: "oauth",
+        status: "connected",
+        accountLabel: "alice@linear.test",
+        toolCount: 21,
+        resourceCount: 0,
+        promptCount: 1,
+      }),
+      mcpConnection(id(62), "Bob Notes", ACME, "personal", BOB, {
+        url: "https://notes.test/mcp",
+        authType: "bearer",
+        status: "connected",
+        authentication: "bob-token",
+      }),
+      mcpConnection(id(65), "Repo Files", ACME, "personal", ALICE, {
+        transport: "stdio",
+        command: "uvx",
+        args: ["mcp-server-git==2026.1.14"],
+        authType: "none",
+        // Saved before the registry configured stdio definitions on save.
+        status: "not_connected",
+      }),
+      mcpConnection(id(63), "Acme Sentry", ACME, "org", ALICE, {
+        url: "https://sentry.test/mcp",
+        authType: "oauth",
+        status: "needs_reconnect",
+        lastError: "The refresh token was revoked upstream. Reconnect to sign in again.",
+      }),
+    ],
+    controlCalls: [],
   };
   // The org golden records two repositories, so its launch form offers a working directory.
   const shared = state.goldens[0];
@@ -134,6 +209,17 @@ function seed(): State {
     },
   ]);
   return state;
+}
+
+function mcpConnection(
+  cid: string,
+  name: string,
+  orgId: string,
+  scope: "personal" | "org",
+  owner: string,
+  fields: Row,
+): Row {
+  return { id: cid, name, orgId, scope, owner, transport: "http", ...fields };
 }
 
 function golden(gid: string, name: string, visibility: string, owner: string, snapshot: string | null): Row {
@@ -171,6 +257,8 @@ function sandbox(
     harness,
     status,
     conversation_ids: [],
+    // Recorded at launch (sandboxes.visibility); independent of the golden's.
+    visibility: "org",
     created_at: createdAt,
     stopped_at: null,
     deleted_at: null,
@@ -252,6 +340,7 @@ function visibleRows(table: string, userId: string): Row[] {
       return state.goldens.filter((row) => canReadGolden(row, userId));
     case "sandboxes":
       return state.sandboxes.filter((row) => {
+        if (row.visibility === "private" && row.owner_id !== userId) return false;
         const parent = state.goldens.find((item) => item.id === row.golden_id);
         return parent ? canReadGolden(parent, userId) : false;
       });
@@ -545,8 +634,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
-  if (name === "launch" || name === "send") state.toolCalls.push({ name, args });
-  if (name === "launch") return launch(args, userId, reply);
+  if (name === "send") state.toolCalls.push({ name, args });
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
@@ -581,125 +669,458 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   }
 }
 
-function launch(args: Row, userId: string, reply: (result: unknown) => Response): Response {
+/**
+ * `POST /api/v1/sandbox/launch`, as the Armada API serves it: the golden must be visible in the org, `repo` must be
+ * exactly one of its `config.repos[].dir`, and a personal connection needs a private sandbox. The sandbox row
+ * records what was launched, including `repository_dir`.
+ */
+function launchRoute(body: Row, userId: string | null): Response {
+  if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+  state.launches.push(body);
   const source = visibleRows("goldens", userId).find(
-    (row) => row.name === args.golden && row.provider === args.provider && row.org_id === args.org,
+    (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
-  if (!source) return reply({ content: [{ type: "text", text: "No such golden." }], isError: true });
+  if (!source) return controlFail(404, "not_found", "No such golden.");
+  if (body.harness !== "claude" && body.harness !== "codex") {
+    return controlFail(400, "invalid", "The agent is claude or codex.");
+  }
+  const dirs = ((source.config as { repos?: { dir?: string }[] }).repos ?? []).map((repo) => repo.dir);
+  if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
+    return controlFail(400, "invalid", "That repository is not in the golden.");
+  }
+  const ids = Array.isArray(body.connections) ? body.connections.map(String) : [];
+  for (const cid of ids) {
+    const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
+    if (!connection) return controlFail(404, "not_found", "A connection is not available.");
+    if (connection.scope === "personal" && body.visibility !== "private") {
+      return controlFail(400, "invalid", "A personal connection needs a private sandbox.");
+    }
+  }
   const row = sandbox(
     crypto.randomUUID(),
     `bx_launched_${++sequence}`,
     String(source.id),
     userId,
-    String(args.harness),
-    args.prompt ? "running" : "ready",
+    String(body.harness),
+    body.prompt ? "running" : "ready",
     new Date().toISOString(),
   );
-  row.model = args.model;
-  row.reasoning_effort = args.reasoning_effort;
+  row.model = body.model;
+  row.reasoning_effort = body.reasoningEffort;
+  row.visibility = body.visibility;
+  row.connections = ids;
+  row.repository_dir = body.repo ?? null;
   state.sandboxes.unshift(row);
-  return reply({
-    structuredContent: { id: row.id },
-    content: [{ type: "text", text: JSON.stringify({ id: row.id }) }],
+  return json({ sandbox: { id: row.id, boatId: row.boat_id, repositoryDir: row.repository_dir } });
+}
+
+/* The registry's control API (issue #522): POST /api/v1/mcp/<operation>, user JWT as the bearer. */
+
+const DASHBOARD = process.env.DASHBOARD_ORIGIN ?? "http://127.0.0.1:3100";
+const OAUTH_HOST = "oauth.test";
+const ISSUER = `http://127.0.0.1:${PORT}`;
+/** Pending browser sign-ins by state: the API, not the URL, knows which user and connection a state is for. */
+let failSandboxConnections = false;
+const pendingOAuth = new Map<string, { connection: string; user: string; code: string | null }>();
+
+function visibleConnections(orgId: string, userId: string): Row[] {
+  if (!isMember(orgId, userId)) return [];
+  return state.connections.filter((row) => row.orgId === orgId && (row.scope === "org" || row.owner === userId));
+}
+
+/** The public DTO: every field but the owner and the write-only authentication. */
+function connectionDto(row: Row): Row {
+  const { owner: _owner, authentication: _secret, statusBeforeDisable: _previous, ...dto } = row;
+  return dto;
+}
+
+function controlFail(status: number, code: string, message: string): Response {
+  return json({ error: { code, message } }, status);
+}
+
+/** The probe a real broker runs: auto resolves to OAuth for an OAuth host and to public otherwise. */
+function probe(row: Row): string | null {
+  if (row.transport === "stdio") {
+    // Configuring a stdio server checks its definition; the process only ever starts inside a sandbox.
+    row.status = "connected";
+    return null;
+  }
+  const url = new URL(String(row.url));
+  const needsOAuth = url.hostname.endsWith(OAUTH_HOST);
+  if (row.authType === "auto") row.authType = needsOAuth ? "oauth" : "none";
+  if (row.authType === "oauth") {
+    if (row.status !== "needs_reconnect") row.status = "not_connected";
+    const pending = crypto.randomUUID().replaceAll("-", "");
+    pendingOAuth.set(pending, { connection: String(row.id), user: String(row.owner), code: null });
+    return `${ISSUER}/oauth/authorize?state=${pending}`;
+  }
+  if (row.authType === "bearer" && row.authentication !== "good-token") {
+    row.status = "needs_reconnect";
+    row.lastError = "The server refused the token (401).";
+    return null;
+  }
+  row.status = "connected";
+  delete row.lastError;
+  Object.assign(row, { toolCount: 4, resourceCount: 1, promptCount: 0 });
+  return null;
+}
+
+/** The registry's complete McpConnectionInput check, for create and for the full-replace update. */
+function invalidDefinition(body: Row): string | null {
+  if (body.scope !== "personal" && body.scope !== "org") return "scope is required.";
+  if (typeof body.name !== "string" || !body.name.trim()) return "name is required.";
+  if (!["http", "sse", "stdio"].includes(String(body.transport))) return "transport is required.";
+  if (!["auto", "none", "bearer", "headers", "oauth"].includes(String(body.authType))) return "authType is required.";
+  if (!Array.isArray(body.args) || !body.args.every((arg) => typeof arg === "string")) return "args is required.";
+  if (body.transport === "stdio") {
+    if (typeof body.command !== "string" || !body.command) return "command is required for stdio.";
+    if (body.url !== undefined) return "A stdio connection has no url.";
+    if (body.authType !== "none" || body.authentication !== undefined) {
+      return "stdio connections support no authentication.";
+    }
+    return null;
+  }
+  if (typeof body.url !== "string" || !body.url.startsWith("http")) return "url is required for http and sse.";
+  if (body.command !== undefined) return "A remote connection has no command.";
+  return null;
+}
+
+function definitionFields(body: Row): Row {
+  return {
+    name: body.name,
+    transport: body.transport,
+    authType: body.authType,
+    ...(body.transport === "stdio" ? { command: body.command, args: body.args } : { url: body.url }),
+    ...(body.authentication ? { authentication: body.authentication } : {}),
+  };
+}
+
+function mcpControl(operation: string, body: Row, userId: string | null): Response {
+  if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+  state.controlCalls.push({ operation, body });
+  if (operation === "oauth/callback") return oauthCallback(body, userId);
+  const org = String(body.org ?? "");
+  if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
+  if (operation === "list") return json({ connections: visibleConnections(org, userId).map(connectionDto) });
+  if (operation === "sandbox-connections") {
+    if (failSandboxConnections) return controlFail(503, "unavailable", "The registry is unavailable.");
+    const sandboxRow = visibleRows("sandboxes", userId).find((item) => item.id === body.id && item.org_id === org);
+    if (!sandboxRow) return controlFail(404, "not_found", "That sandbox does not exist.");
+    const bound = Array.isArray(sandboxRow.connections) ? sandboxRow.connections.map(String) : [];
+    const visible = visibleConnections(org, userId).filter((item) => bound.includes(String(item.id)));
+    return json({ connections: visible.map(connectionDto) });
+  }
+  if (operation === "create") {
+    if (body.scope === "org" && !isAdmin(org, userId)) {
+      return controlFail(403, "forbidden", "Only an org admin adds org connections.");
+    }
+    if (visibleConnections(org, userId).some((row) => row.name === body.name && row.scope === body.scope)) {
+      return controlFail(409, "conflict", "A connection with that name already exists.");
+    }
+    const invalid = invalidDefinition(body);
+    if (invalid) return controlFail(400, "invalid", invalid);
+    const row: Row = mcpConnection(crypto.randomUUID(), String(body.name), org, body.scope as "org", userId, {
+      ...definitionFields(body),
+      // A stdio definition is configured for launch once saved: it starts inside each sandbox, never here.
+      status: body.transport === "stdio" ? "connected" : "not_connected",
+    });
+    state.connections.push(row);
+    return json({ connection: connectionDto(row) });
+  }
+  const row = visibleConnections(org, userId).find((item) => item.id === body.id);
+  if (!row) return controlFail(404, "not_found", "That connection does not exist.");
+  const writable = row.scope === "personal" ? row.owner === userId : isAdmin(org, userId);
+  if (operation === "status") return json({ connection: connectionDto(row) });
+  if (!writable) return controlFail(403, "forbidden", "Only an org admin changes org connections.");
+  switch (operation) {
+    case "update": {
+      // The registry's save is a full replace of the definition: the immutable scope must be restated, and
+      // every saved authentication is cleared.
+      const invalid = invalidDefinition(body);
+      if (invalid) return controlFail(400, "invalid", invalid);
+      if (body.scope !== row.scope) return controlFail(400, "invalid", "The scope of a connection cannot change.");
+      for (const key of ["name", "transport", "url", "command", "args", "authType", "accountLabel", "lastError"]) {
+        delete row[key];
+      }
+      for (const key of ["toolCount", "resourceCount", "promptCount", "authentication"]) delete row[key];
+      Object.assign(row, definitionFields(body));
+      row.status = row.transport === "stdio" ? "connected" : "not_connected";
+      return json({ connection: connectionDto(row) });
+    }
+    case "connect": {
+      const authorizationUrl = probe(row);
+      const pending = authorizationUrl ? new URL(authorizationUrl).searchParams.get("state") : null;
+      const entry = pending ? pendingOAuth.get(pending) : undefined;
+      if (entry) entry.user = userId;
+      return json({ connection: connectionDto(row), ...(authorizationUrl ? { authorizationUrl } : {}) });
+    }
+    case "set-enabled": {
+      if (typeof body.enabled !== "boolean") return controlFail(400, "invalid", "enabled must be true or false.");
+      if (body.enabled === false) {
+        if (row.status !== "disabled") row.statusBeforeDisable = row.status;
+        row.status = "disabled";
+      } else if (row.status === "disabled") {
+        row.status = row.statusBeforeDisable ?? "not_connected";
+        delete row.statusBeforeDisable;
+      }
+      return json({ connection: connectionDto(row) });
+    }
+    case "revoke":
+      delete row.authentication;
+      delete row.accountLabel;
+      row.status = "not_connected";
+      return json({ ok: true });
+    case "delete":
+      state.connections = state.connections.filter((item) => item !== row);
+      return json({ ok: true });
+    default:
+      return controlFail(404, "not_found", "Unknown route.");
+  }
+}
+
+/** The API side of `/auth/mcp/callback`: the pending state names the user and connection; the code must match. */
+function oauthCallback(body: Row, userId: string): Response {
+  const pending = pendingOAuth.get(String(body.state ?? ""));
+  if (!pending || pending.user !== userId || !pending.code || pending.code !== body.code) {
+    return controlFail(400, "invalid", "That authorization is not pending.");
+  }
+  if (body.issuer !== undefined && body.issuer !== ISSUER) return controlFail(400, "invalid", "Unexpected issuer.");
+  pendingOAuth.delete(String(body.state));
+  const row = state.connections.find((item) => item.id === pending.connection);
+  if (!row) return controlFail(404, "not_found", "That connection does not exist.");
+  Object.assign(row, {
+    status: "connected",
+    accountLabel: "service@oauth.test",
+    toolCount: 9,
+    resourceCount: 2,
+    promptCount: 1,
   });
+  delete row.lastError;
+  return json({ connection: connectionDto(row) });
 }
 
-const goldenJobs = new Map<string, { route: string; body: Row; owner: string; response?: Row }>();
+/** The upstream server's consent page; it sends the browser to the dashboard's callback with a one-time code. */
+function oauth(url: URL): Response {
+  const pendingState = url.searchParams.get("state") ?? "";
+  const pending = pendingOAuth.get(pendingState);
+  const row = pending ? state.connections.find((item) => item.id === pending.connection) : undefined;
+  if (url.pathname === "/oauth/authorize") {
+    if (!row) return new Response("unknown state", { status: 400 });
+    const page = `<!doctype html><title>Authorize</title><h1>Authorize Armada for ${String(row.name)}</h1>
+<a href="/oauth/decide?state=${pendingState}&decision=allow">Allow</a> <a href="/oauth/decide?state=${pendingState}&decision=deny">Deny</a>`;
+    return new Response(page, { headers: { "content-type": "text/html" } });
+  }
+  const back = new URL("/auth/mcp/callback", DASHBOARD);
+  back.searchParams.set("state", pendingState);
+  if (pending && url.searchParams.get("decision") === "allow") {
+    pending.code = `code-${crypto.randomUUID()}`;
+    back.searchParams.set("code", pending.code);
+    back.searchParams.set("iss", ISSUER);
+  } else {
+    back.searchParams.set("error", "access_denied");
+    back.searchParams.set("error_description", "The user said no <script>");
+  }
+  return new Response(null, { status: 302, headers: { location: back.toString() } });
+}
+
+/**
+ * Durable golden build jobs, as `docs/golden-build-jobs.md` describes the server: `golden/create` and
+ * `golden/update` check the request at admission and answer 202 with a queued job; the build itself publishes
+ * later, here on a status read (`golden/build/status`) once the gate is open. The same requester, org and
+ * idempotency key with the same request return the same job; the same key with another request is a 409.
+ * Status is read by `{jobId}` or `{org, idempotencyKey}`, by the job's owner only, and carries only the safe
+ * fields: jobId, state, phase, errorCode and the public result.
+ */
+type GoldenJob = {
+  id: string;
+  route: string;
+  body: Row;
+  owner: string;
+  key: string;
+  status: { state: string; phase: string; errorCode: string | null; result: Row | null };
+};
+const goldenJobs = new Map<string, GoldenJob>();
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,128}$/;
+
+function jobJson(job: GoldenJob): Row {
+  return { jobId: job.id, ...job.status };
+}
+
 async function goldenBuild(route: string, body: Row, request: Request): Promise<Response> {
-  if (!state.goldenGate.hold || state.goldenGate.fail) return executeGoldenBuild(route, body, request);
-  const owner = viewer(request);
-  if (!owner || !isMember(body.org, owner))
-    return json({ error: { code: "forbidden", message: "Not a member." } }, 403);
-  const jobId = id(++sequence);
-  goldenJobs.set(jobId, { route, body, owner });
-  state.goldenCalls.push({ route, body, authorized: true });
-  return json({ jobId, state: "queued", phase: "queued", errorCode: null, result: null }, 202);
-}
-async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
-  const jobId = String(body.jobId);
-  const job = goldenJobs.get(jobId);
-  if (!job || viewer(request) !== job.owner || !isMember(job.body.org, job.owner))
-    return json({ error: { code: "not_found", message: "No such build." } }, 404);
-  if (job.response) return json(job.response);
-  if (state.goldenGate.hold)
-    return json({ jobId, state: "running", phase: "checkout_baseline", errorCode: null, result: null });
-  const response = await executeGoldenBuild(job.route, job.body, request);
-  const result = (await response.json()) as Row;
-  job.response = response.ok
-    ? { ...result, jobId }
-    : { jobId, state: "failed", phase: "checkout_baseline", errorCode: "build_failed", result: null };
-  return json(job.response);
-}
-
-/** `golden/create` and `golden/update` of the control API, with the server's owner/admin rules. */
-async function executeGoldenBuild(route: string, body: Row, request: Request): Promise<Response> {
   const userId = viewer(request);
-  if (!Array.from(goldenJobs.values()).some((job) => job.body === body))
-    state.goldenCalls.push({ route, body, authorized: Boolean(userId) });
+  state.goldenCalls.push({ route, body, authorized: Boolean(userId) });
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
-
+  // Admission never waits for the build: a held gate keeps the admitted job running until it is released.
   const failure = state.goldenGate.fail;
   // A failure without a code is a gateway's own answer (a timeout in front of the server), not the server's.
   if (failure)
     return failure.code
       ? json({ error: { code: failure.code, message: failure.message } }, failure.status)
       : new Response(failure.message, { status: failure.status, headers: { "content-type": "text/plain" } });
-  const org = String(body.org);
-  if (!isMember(org, userId)) return json({ error: { code: "forbidden", message: "Not a member." } }, 403);
-  const config = body.config as Row;
-  const name = String(body.name);
-  const snapshot = `golden-${++sequence}`;
-  if (route === "golden/create") {
-    const visibility = body.private ? "private" : "org";
-    if (visibility === "org" && !isAdmin(org, userId))
-      return json({ error: { code: "forbidden", message: "Only an admin can create an org golden." } }, 403);
-    const row = { ...golden(id(++sequence), name, visibility, userId, snapshot), org_id: org, config };
-    state.goldens.push(row);
-    return json(
-      {
-        jobId: id(++sequence),
-        state: "succeeded",
-        phase: "complete",
-        errorCode: null,
-        result: { name, visibility, snapshot },
-      },
-      202,
-    );
-  }
-  const rows = visibleRows("goldens", userId).filter((row) => row.org_id === org && row.name === name);
-  const target = rows[0];
-  if (rows.length !== 1 || !target) return json({ error: { code: "not_found", message: "No golden." } }, 404);
-  const allowed = target.visibility === "private" ? target.owner_id === userId : isAdmin(org, userId);
-  if (!allowed) return json({ error: { code: "forbidden", message: "You cannot rebuild this golden." } }, 403);
-  target.config = config;
-  target.provider_snapshot_id = snapshot;
-  target.boat_snapshot_id = snapshot;
-  return json(
-    {
-      jobId: id(++sequence),
-      state: "succeeded",
-      phase: "complete",
-      errorCode: null,
-      result: { name, visibility: target.visibility, snapshot },
-    },
-    202,
+  const key = String(body.idempotencyKey ?? "");
+  if (!IDEMPOTENCY_KEY.test(key))
+    return json({ error: { code: "invalid", message: "idempotencyKey is required." } }, 400);
+  const { idempotencyKey: _key, ...payload } = body;
+  const fingerprint = JSON.stringify([route, payload]);
+  const existing = [...goldenJobs.values()].find(
+    (job) => job.owner === userId && job.body.org === body.org && job.key === key,
   );
+  if (existing) {
+    const { idempotencyKey: _same, ...before } = existing.body;
+    if (JSON.stringify([existing.route, before]) !== fingerprint)
+      return json({ error: { code: "conflict", message: "That idempotency key was used for another build." } }, 409);
+    return json(jobJson(existing), 202);
+  }
+  const refused = admitGoldenBuild(route, body, userId);
+  if (refused) return refused;
+  const job: GoldenJob = {
+    id: id(++sequence),
+    route,
+    body,
+    owner: userId,
+    key,
+    status: { state: "queued", phase: "queued", errorCode: null, result: null },
+  };
+  goldenJobs.set(job.id, job);
+  if (state.goldenGate.loseAnswer)
+    return new Response("Gateway Timeout", { status: 504, headers: { "content-type": "text/plain" } });
+  return json(jobJson(job), 202);
 }
 
-/** `golden/capabilities`: the server's scoped read of the selected org's provider limit. */
+async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
+  const userId = viewer(request);
+  state.goldenStatusCalls.push(body);
+  if (state.goldenGate.failStatus)
+    return json({ error: { code: "unavailable", message: "Status is unavailable." } }, 503);
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  const job =
+    body.jobId !== undefined
+      ? goldenJobs.get(String(body.jobId))
+      : [...goldenJobs.values()].find(
+          (item) => item.owner === userId && item.body.org === body.org && item.key === body.idempotencyKey,
+        );
+  if (!job || job.owner !== userId || !isMember(job.body.org, userId))
+    return json({ error: { code: "not_found", message: "No such build." } }, 404);
+  if (job.status.state === "queued" || job.status.state === "running") {
+    if (state.goldenGate.hold)
+      job.status = { state: "running", phase: "checkout_baseline", errorCode: null, result: null };
+    else {
+      const result = publishGoldenBuild(job.route, job.body, job.owner);
+      job.status = result
+        ? { state: "succeeded", phase: "complete", errorCode: null, result }
+        : { state: "failed", phase: "publish", errorCode: "build_failed", result: null };
+    }
+  }
+  return json(jobJson(job));
+}
+
+/** What the server checks at admission: membership, the provider, the owner/admin rule and the rebuild target. */
+function admitGoldenBuild(route: string, body: Row, userId: string): Response | null {
+  const org = String(body.org);
+  if (!isMember(org, userId)) return json({ error: { code: "forbidden", message: "Not a member." } }, 403);
+  if (body.provider !== undefined && body.provider !== "boat" && body.provider !== "modal")
+    return json({ error: { code: "invalid", message: "Provider is boat or modal." } }, 400);
+  const name = String(body.name);
+  if (route === "golden/create") {
+    // Absent means Boat, as on the server. A provider not configured for the org is refused, never redirected.
+    const provider = (body.provider ?? "boat") as "boat" | "modal";
+    const unconfigured = state.capabilities[provider].fail;
+    if (unconfigured) return json({ error: { code: "provider_not_configured", message: unconfigured.message } }, 503);
+    if (!body.private && !isAdmin(org, userId))
+      return json({ error: { code: "forbidden", message: "Only an admin can create an org golden." } }, 403);
+    if (state.goldens.some((row) => row.org_id === org && row.name === name && row.provider === provider))
+      return json({ error: { code: "conflict", message: `Golden '${name}' already exists on ${provider}.` } }, 409);
+    return null;
+  }
+  const target = rebuildTarget(body, userId);
+  if (target instanceof Response) return target;
+  const allowed = target.visibility === "private" ? target.owner_id === userId : isAdmin(org, userId);
+  if (!allowed) return json({ error: { code: "forbidden", message: "You cannot rebuild this golden." } }, 403);
+  return null;
+}
+
+/** The server's selectGolden: the name, narrowed to the body's provider; still more than one is a conflict. */
+function rebuildTarget(body: Row, userId: string): Row | Response {
+  const rows = visibleRows("goldens", userId).filter(
+    (row) =>
+      row.org_id === body.org &&
+      row.name === body.name &&
+      (body.provider === undefined || row.provider === body.provider),
+  );
+  if (rows.length > 1)
+    return json(
+      { error: { code: "conflict", message: "Golden exists on boat and modal. Pass --provider boat or modal." } },
+      409,
+    );
+  return rows[0] ?? json({ error: { code: "not_found", message: "No golden." } }, 404);
+}
+
+/** The worker's atomic publication: the new or rebuilt row and its snapshot, on the golden's own provider. */
+function publishGoldenBuild(route: string, body: Row, userId: string): Row | null {
+  const org = String(body.org);
+  const name = String(body.name);
+  const config = body.config as Row;
+  const snapshot = `golden-${++sequence}`;
+  if (route === "golden/create") {
+    const provider = (body.provider ?? "boat") as "boat" | "modal";
+    const visibility = body.private ? "private" : "org";
+    state.goldens.push({
+      ...golden(id(++sequence), name, visibility, userId, provider === "boat" ? snapshot : null),
+      org_id: org,
+      provider,
+      provider_snapshot_id: snapshot,
+      config,
+    });
+    return { name, visibility, snapshot };
+  }
+  const target = rebuildTarget(body, userId);
+  if (target instanceof Response) return null;
+  target.config = config;
+  target.provider_snapshot_id = snapshot;
+  if (target.provider === "boat") target.boat_snapshot_id = snapshot;
+  return { name, visibility: target.visibility, snapshot };
+}
+
+/** `golden/capabilities {org, provider}`: the server's scoped read of the org's limit on that provider. */
 function goldenCapabilities(body: Row, request: Request): Response {
   const userId = viewer(request);
   state.capabilityCalls.push({ body, authorized: Boolean(userId) });
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
   if (!isMember(body.org, userId))
     return json({ error: { code: "forbidden", message: "You are not a member of this org." } }, 403);
-  const failure = state.capabilities.fail;
+  const provider = body.provider ?? "boat";
+  if (provider !== "boat" && provider !== "modal")
+    return json({ error: { code: "invalid", message: "Provider is boat or modal." } }, 400);
+  const entry = state.capabilities[provider];
+  const failure = entry.fail;
   if (failure)
     return json(
       failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
       failure.status,
     );
-  return json({ provider: "boat", maxGoldens: state.capabilities.maxGoldens }, 200, { "cache-control": "no-store" });
+  return json({ provider, maxGoldens: entry.maxGoldens }, 200, { "cache-control": "no-store" });
+}
+
+/**
+ * The API's public `POST /api/v1/github/oauth/callback {state, code}` for the CLI's GitHub sign-in. The flow state is
+ * the API's own one-use record (the actor is bound there), so the request carries no cookie and no bearer. Unknown,
+ * used, cancelled or mismatched flows are refused with the API's error shape; success is fixed metadata.
+ */
+const githubCliFlows = new Map<string, { code: string; status: "pending" | "used" | "canceled" }>();
+
+function githubCliCallback(request: Request, body: Row): Response {
+  state.githubCliCalls.push({
+    body,
+    authorization: request.headers.get("authorization"),
+    cookie: request.headers.get("cookie"),
+  });
+  const keys = Object.keys(body).sort().join(",");
+  if (keys !== "code,state") return controlFail(400, "invalid", "The body is {state, code}.");
+  const flow = githubCliFlows.get(String(body.state));
+  if (flow?.status !== "pending") return controlFail(400, "invalid", "That sign-in is not pending.");
+  if (flow.code !== body.code) return controlFail(400, "invalid", "That sign-in is not pending.");
+  flow.status = "used";
+  return json({ ok: true, provider: "github" });
 }
 
 /** GitHub's token and user endpoints, reached by the app server through e2e/github-fetch.cjs. */
@@ -732,12 +1153,22 @@ function github(request: Request, url: URL, body: Row): Response {
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
+    pendingOAuth.clear();
+    githubCliFlows.clear();
+    failSandboxConnections = false;
     if (body.multiOrg) {
       const now = "2026-11-08T10:00:00.000Z";
       state.orgs.push({ id: id(11), name: "Zenith", created_at: now });
       state.members.push({ org_id: id(11), user_id: ALICE, role: "member", created_at: now });
       state.goldens.push({ ...golden(id(23), "zenith-golden", "org", ALICE, "snap-zenith"), org_id: id(11) });
       state.sandboxes.push({ ...sandbox(id(33), "bx_zenith", id(23), ALICE, "codex", "ready", now), org_id: id(11) });
+      state.connections.push(
+        mcpConnection(id(64), "Zenith Search", id(11), "org", ALICE, {
+          url: "https://search.zenith.test/mcp",
+          authType: "none",
+          status: "connected",
+        }),
+      );
       state.credentials.push({
         id: id(41),
         scope: "org",
@@ -745,6 +1176,18 @@ function control(url: URL, body: Row): Response {
         kind: "boat",
         value_enc: "\\x0102",
         created_at: now,
+      });
+    }
+    if (body.modalTwin) {
+      // A Modal golden with the same name as the Boat `shared-golden`, recording another repository.
+      state.goldens.push({
+        ...golden(id(24), "shared-golden", "org", ALICE, null),
+        provider: "modal",
+        provider_snapshot_id: "modal-snap-1",
+        config: {
+          repos: [{ url: "https://github.com/acme/docs.git", branch: "main", dir: "docs" }],
+          init: [],
+        },
       });
     }
     if (body.novaOrg) {
@@ -758,13 +1201,16 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/golden-gate") {
     state.goldenGate = {
+      loseAnswer: body.loseAnswer === true,
+      failStatus: body.failStatus === true,
       hold: body.hold === true,
       fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
     };
     return json({ ok: true });
   }
   if (url.pathname === "/__test/capabilities") {
-    state.capabilities = {
+    const provider = body.provider === "modal" ? "modal" : "boat";
+    state.capabilities[provider] = {
       maxGoldens: body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1),
       fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
     };
@@ -819,13 +1265,31 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/github-connections") {
     return json(state.github_connections.map((row) => ({ ...row })));
   }
+  if (url.pathname === "/__test/github-cli-flow") {
+    // Only the shape the API issues: `armada_cli_` and 72 lowercase hex or hyphen characters.
+    if (!/^armada_cli_[0-9a-f-]{72}$/.test(String(body.state))) return json({ message: "unrealistic state" }, 400);
+    githubCliFlows.set(String(body.state), {
+      code: String(body.code),
+      status: body.canceled ? "canceled" : "pending",
+    });
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-sandbox-connections") {
+    failSandboxConnections = true;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/state") {
     return json({
       otpEmails: state.otpEmails,
       sent: state.sent,
       toolCalls: state.toolCalls,
+      launches: state.launches,
       goldenCalls: state.goldenCalls,
+      goldenStatusCalls: state.goldenStatusCalls,
       capabilityCalls: state.capabilityCalls,
+      githubCliCalls: state.githubCliCalls,
+      controlCalls: state.controlCalls,
+      connections: state.connections.map((row) => ({ ...row })),
     });
   }
   return json({ message: "not found" }, 404);
@@ -843,6 +1307,15 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
+    if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
+      return launchRoute(body, viewer(request));
+    if (url.pathname === "/api/v1/github/oauth/callback" && request.method === "POST") {
+      return githubCliCallback(request, body);
+    }
+    if (url.pathname.startsWith("/api/v1/mcp/") && request.method === "POST") {
+      return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
+    }
+    if (url.pathname.startsWith("/oauth/")) return oauth(url);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
