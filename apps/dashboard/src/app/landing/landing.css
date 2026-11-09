@@ -789,9 +789,9 @@ html:has(> body .lp) {
   color: var(--critical);
 }
 .lp-terminal-line.is-amber {
-  color: var(--active);
+  color: var(--text-2);
 }
-/* One accent in the session too (#628): a notice is quiet text, success is lime. */
+/* One accent in the session too (#628): a notice (amber or orange before) is quiet text, success is lime. */
 .lp-terminal-line.is-orange {
   color: var(--text-2);
 }
