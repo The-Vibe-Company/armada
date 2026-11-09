@@ -330,7 +330,7 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
   ].join("\n");
 }
 
-/** Disposable builders must not retain standard Git/GitHub credential stores from the image or setup.
+/** Disposable builders must not retain standard credential stores or interactive histories from the image or setup.
  * Remove only these exact authentication files, never repositories, caches or whole directories.
  * An unexpected directory/permission failure aborts the build rather than bypassing the scan.
  */
@@ -338,6 +338,7 @@ const CREDENTIAL_CLEANUP = [
   "set -eu",
   "for home in /home/user /root; do",
   '  rm -f -- "$home/.git-credentials" "$home/.config/git/credentials" "$home/.netrc" "$home/.config/gh/hosts.yml"',
+  '  rm -f -- "$home/.bash_history" "$home/.zsh_history" "$home/.python_history" "$home/.node_repl_history" "$home/.local/share/fish/fish_history"',
   "done",
 ].join("\n");
 
