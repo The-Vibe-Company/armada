@@ -181,6 +181,28 @@ test("on a common phone height, a running turn's composer and its controls are i
     }
     await expect(box).toHaveValue("Keep the old behaviour for empty input");
   }
+  // A model change makes Steer unavailable, and says so in words on a touch screen, without costing a row.
+  await page.getByRole("button", { name: "Details" }).click();
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await page.getByLabel("Reasoning effort").selectOption("high");
+  await page.getByRole("button", { name: "Model changed" }).click();
+  await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Steer", exact: true })).toHaveAccessibleDescription(
+    "Model change: New turn only",
+  );
+  await expect(page.getByText("New turn only")).toBeVisible();
+  expect(await page.getByText("New turn only").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+    true,
+  );
+  expect(await hitTestable(page.getByRole("button", { name: "Send as new turn" }))).toBe(true);
+  expect(await scrolled()).toEqual({ document: 0, main: 0 });
+  await page.screenshot({ path: "test-results/sandbox-viewport-phone-664-model-change.png", animations: "disabled" });
+  await page.getByRole("button", { name: "Model changed" }).click();
+  await page.getByLabel("Reasoning effort").selectOption("");
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeEnabled();
+  await expect(box).toHaveValue("Keep the old behaviour for empty input");
+  await page.getByRole("button", { name: "Details" }).click();
   // Open details are readable in their own bounded panel, still without moving the page.
   const details = page.getByRole("region", { name: "Details" });
   const connections = details.getByText("Launched without MCP connections you can see.");

@@ -7,10 +7,10 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleSlashIcon,
+  CircleStopIcon,
   Loader2Icon,
   RadioIcon,
   SlidersHorizontalIcon,
-  SquareIcon,
   XIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -745,7 +745,7 @@ function Composer({
           launchedModel={launchedModel}
         />
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
         <Button
           type="button"
           variant="ghost"
@@ -753,39 +753,58 @@ function Composer({
           aria-expanded={showModel}
           aria-controls={`${fieldId}-model`}
           onClick={() => setShowModel((value) => !value)}
-          className={cn("text-muted-foreground", override && "text-foreground")}
+          className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
         >
           <SlidersHorizontalIcon />
+          {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
+          {override && (
+            <span className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden" aria-hidden="true" />
+          )}
           {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
           <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
         </Button>
-        {result && (
+        {result ? (
           <p
             role={result.ok ? "status" : "alert"}
             className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
           >
             {result.ok ? result.message : result.error}
           </p>
+        ) : (
+          running &&
+          override && (
+            // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
+            <p
+              id={`${fieldId}-steer-hint`}
+              className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
+            >
+              <span className="sr-only">Model change: </span>
+              New turn only
+            </p>
+          )
         )}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
           {running && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
+              className="max-sm:px-2"
               disabled={pending !== null}
               onClick={() => run("interrupt")}
             >
-              {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+              {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <CircleStopIcon />}
               <span className="max-sm:sr-only">Interrupt</span>
             </Button>
           )}
           {running && (
             <Button
               aria-label={restarts ? "Steer (restarts turn)" : "Steer"}
+              aria-describedby={override && !result ? `${fieldId}-steer-hint` : undefined}
               type="button"
               variant={primary === "steer" ? "default" : "outline"}
               size="sm"
+              className="max-sm:px-2.5"
               disabled={pending !== null || override}
               title={
                 override
@@ -811,6 +830,7 @@ function Composer({
             aria-label={running ? "Send as new turn" : undefined}
             type="button"
             size="sm"
+            className="max-sm:px-2.5"
             variant={primary === "send" ? "default" : "outline"}
             disabled={pending !== null}
             onClick={() => run("send")}
