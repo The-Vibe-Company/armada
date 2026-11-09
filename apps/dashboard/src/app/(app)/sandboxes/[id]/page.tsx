@@ -119,18 +119,17 @@ export default async function SandboxPage({ params, searchParams }: Props) {
         </div>
       </div>
 
-      {/* Only when the record does not show the override either: a crafted link cannot contradict evidence. */}
-      {sizeUnconfirmed &&
-        (sandbox as { machine_size?: { source?: unknown } | null }).machine_size?.source !== "override" && (
-          <Alert data-size-unconfirmed className="border-warning/40">
-            <TriangleAlertIcon className="text-warning" />
-            <AlertTitle>Machine size not confirmed</AlertTitle>
-            <AlertDescription>
-              The Armada server did not record the requested size, so this sandbox may run at the provider&apos;s own
-              size.
-            </AlertDescription>
-          </Alert>
-        )}
+      {/* Only while nothing is recorded: a crafted link cannot contradict recorded evidence. */}
+      {sizeUnconfirmed && sandbox.machine_size == null && (
+        <Alert data-size-unconfirmed className="border-warning/40">
+          <TriangleAlertIcon className="text-warning" />
+          <AlertTitle>Machine size not confirmed</AlertTitle>
+          <AlertDescription>
+            The Armada server did not record the requested size, so this sandbox may run at the provider&apos;s own
+            size.
+          </AlertDescription>
+        </Alert>
+      )}
       {life.notice && (
         <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
           <ClockAlertIcon className="text-warning" />

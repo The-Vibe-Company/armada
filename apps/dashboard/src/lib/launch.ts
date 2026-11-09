@@ -13,7 +13,7 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
 export async function launchSandbox(
   options: ArmadaApiOptions,
   args: LaunchArgs,
-): Promise<{ id: string; sizeConfirmed: boolean }> {
+): Promise<{ id: string; sizeRecorded: boolean; sizeConfirmed: boolean }> {
   const payload = await controlPost(
     options,
     LAUNCH_PATH,
@@ -35,7 +35,8 @@ export async function launchSandbox(
   const sandbox = payload.sandbox;
   const id = typeof sandbox === "object" && sandbox !== null && "id" in sandbox ? sandbox.id : undefined;
   if (typeof id !== "string" || !id) throw new ControlError("The Armada server sent no sandbox id.");
-  // A server before #653 ignores `size` and records no evidence: the requested size is then not confirmed.
+  // A server before #653 ignores `size` and answers no `machineSize` key at all; a newer one always answers it.
+  const recorded = typeof sandbox === "object" && sandbox !== null && "machineSize" in sandbox;
   const evidence = (sandbox as { machineSize?: { requested?: unknown } | null }).machineSize;
-  return { id, sizeConfirmed: args.size === undefined || evidence?.requested === args.size };
+  return { id, sizeRecorded: recorded, sizeConfirmed: args.size === undefined || evidence?.requested === args.size };
 }

@@ -29,16 +29,19 @@ test("a size is sent only when chosen, and confirmed only by the server's record
   };
   expect(await launchSandbox(answering({ sandbox: recorded }, 200, seen), { ...args, size: "large" })).toEqual({
     id: "s1",
+    sizeRecorded: true,
     sizeConfirmed: true,
   });
   expect(seen[0]).toMatchObject({ size: "large" });
   // A server before #653 ignores `size`: the sandbox exists, but the size is not confirmed.
   expect(await launchSandbox(answering({ sandbox: { id: "s2" } }), { ...args, size: "large" })).toEqual({
     id: "s2",
+    sizeRecorded: false,
     sizeConfirmed: false,
   });
   expect(await launchSandbox(answering({ sandbox: { id: "s3" } }, 200, seen), args)).toEqual({
     id: "s3",
+    sizeRecorded: false,
     sizeConfirmed: true,
   });
   expect(seen[1]).not.toHaveProperty("size");

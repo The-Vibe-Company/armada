@@ -153,6 +153,13 @@ test("a refused size says what can be changed, and an unconfirmed size is never 
   await expect(page.locator("[data-size-unconfirmed]")).toContainText("Machine size not confirmed");
   await expect(page.locator("dd", { hasText: "Not recorded" })).toHaveText("Not recorded");
 
+  // Keeping the golden's default is not confirmed either when the server resolves none.
+  await page.goto("/goldens");
+  await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Launch" }).click();
+  await page.waitForURL(/\?size=unconfirmed$/);
+  expect((await mockState()).launches.at(-1)).not.toHaveProperty("size");
+
   await page.goto("/goldens");
   const card = page.locator('[data-golden="shared-golden"]');
   await card.getByText("Machine size defaults").click();

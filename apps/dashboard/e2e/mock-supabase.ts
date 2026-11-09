@@ -816,7 +816,15 @@ function launchRoute(body: Row, userId: string | null): Response {
   row.provider = source.provider;
   if ("size_policy" in source) row.machine_size = machineSize;
   state.sandboxes.unshift(row);
-  return json({ sandbox: { id: row.id, boatId: row.boat_id, repositoryDir: row.repository_dir, machineSize } });
+  return json({
+    sandbox: {
+      id: row.id,
+      boatId: row.boat_id,
+      repositoryDir: row.repository_dir,
+      // An older server answers no `machineSize` key at all.
+      ...(sized ? { machineSize } : {}),
+    },
+  });
 }
 
 /* The registry's control API (issue #522): POST /api/v1/mcp/<operation>, user JWT as the bearer. */

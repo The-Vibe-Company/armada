@@ -163,8 +163,9 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
 
   let id: string;
   let sizeConfirmed: boolean;
+  let sizeRecorded: boolean;
   try {
-    ({ id, sizeConfirmed } = await launchSandbox(
+    ({ id, sizeConfirmed, sizeRecorded } = await launchSandbox(
       { serverUrl, token: viewer.token },
       { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
     ));
@@ -178,7 +179,10 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     return fail(error.message);
   }
   revalidatePath("/sandboxes");
-  redirect(`/sandboxes/${id}${sizeConfirmed ? "" : "?size=unconfirmed"}`);
+  // A golden with defaults expects the server to resolve one; a server that records nothing did not.
+  const expectsDefault = matches.some((golden) => golden.size_policy != null);
+  const unconfirmed = !sizeConfirmed || (!sizeRecorded && expectsDefault);
+  redirect(`/sandboxes/${id}${unconfirmed ? "?size=unconfirmed" : ""}`);
 }
 
 function modelFields(data: FormData): ModelFields {
