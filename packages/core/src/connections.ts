@@ -206,10 +206,17 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
         (input.defaultForLaunch !== undefined && typeof input.defaultForLaunch !== "boolean")
       )
         throw new VaultError("invalid", "Invalid MCP metadata.");
-      await sql.query(
-        "update public.mcp_connections set name=coalesce($2,name),default_for_launch=coalesce($3,default_for_launch) where id=$1::uuid",
-        [id, input.name ?? null, input.defaultForLaunch ?? null],
+      const updated = await sql.query<{ id: string }>(
+        `update public.mcp_connections c
+        set name=coalesce($2,c.name),default_for_launch=coalesce($3,c.default_for_launch)
+        where c.id=$1::uuid and c.org_id=$4::uuid
+        and exists(select 1 from public.members m where m.org_id=c.org_id and m.user_id=$5::uuid
+          and ((c.scope='personal' and c.owner_id=$5::uuid) or (c.scope='org' and m.role='admin')))
+        returning c.id`,
+        [id, input.name ?? null, input.defaultForLaunch ?? null, org, user],
       );
+      if (!updated.rows[0])
+        throw new VaultError("forbidden", "MCP metadata permission changed; reload before retrying.");
       return dto(await get(user, org, id));
     },
     async configureStdio(user, org, id) {

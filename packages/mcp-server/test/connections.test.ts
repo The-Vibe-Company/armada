@@ -5,6 +5,7 @@ import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
+  type Sql,
 } from "@armada/core";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
@@ -877,5 +878,45 @@ test("catalog instances have independent defaults and metadata does not replace 
     await expect(registry.save(p.owner, p.org, { ...input, serviceId: "slack" })).rejects.toThrow(/setup required/);
   } finally {
     await db.close();
+  }
+});
+
+test("metadata UPDATE refuses authority revoked after its pre-read", async () => {
+  for (const scope of ["personal", "org"] as const) {
+    const { db, people: p } = await database();
+    try {
+      const actor = scope === "personal" ? p.owner : p.admin;
+      const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
+      const connection = await registry.save(actor, p.org, {
+        name: "Unchanged",
+        scope,
+        transport: "http",
+        serviceId: "linear",
+      });
+      let revoked = false;
+      // Commit the authority change immediately before the real SQL mutation executes.
+      const boundary: Sql = {
+        async query<T>(statement: string, params?: unknown[]) {
+          if (!revoked && /^update public\.mcp_connections/i.test(statement.trim())) {
+            revoked = true;
+            if (scope === "personal")
+              await db.query("delete from members where user_id=$1 and org_id=$2", [actor, p.org]);
+            else await db.query("update members set role='member' where user_id=$1 and org_id=$2", [actor, p.org]);
+          }
+          return db.query<T>(statement, params);
+        },
+      };
+      const racing = createSqlMcpRegistry(boundary, ENCRYPTION_KEY);
+      const outcome = await racing
+        .metadata(actor, p.org, connection.id, { name: "Unauthorized", defaultForLaunch: true })
+        .catch((error) => error);
+      expect(revoked).toBe(true);
+      expect(
+        (await db.query("select name,default_for_launch from mcp_connections where id=$1", [connection.id])).rows,
+      ).toEqual([{ name: "Unchanged", default_for_launch: false }]);
+      expect(outcome).toBeInstanceOf(Error);
+    } finally {
+      await db.close();
+    }
   }
 });
