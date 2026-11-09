@@ -48,6 +48,7 @@ test.each([
       }
       const time = Date.parse("2026-11-09T12:00:00Z");
       const boat = fakeBoat();
+      const resolvedSources: string[] = [];
       let reads = 0;
       boat.provider.events = async () => {
         reads++;
@@ -74,7 +75,10 @@ test.each([
         encryptionKey: KEY,
         supabase: { supabaseUrl: "https://unused.example", anonKey: "unused" },
         modelUsage: createModelUsageApi(db, () => new Date(time)),
-        logs: async () => ({ provider: boat.provider, providerSandboxId: "native" }),
+        logs: async (_, sandboxId) => {
+          resolvedSources.push(sandboxId);
+          return { provider: boat.provider, providerSandboxId: "native" };
+        },
       };
       const auth = productionAuthIo(
         { out: () => {}, err: () => {} },
@@ -156,6 +160,31 @@ test.each([
         windows: [],
       });
       expect(reads).toBe(before);
+      if (visibility === "private") {
+        await db.query("update sandboxes set credential_version=2,access_owner_id=$2 where id=$1", [SANDBOX, OWNER]);
+        expect((await request(OWNER)).status).toBe(200);
+        const cachedReads = reads;
+        await db.query("insert into orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [ORG, OWNER, SANDBOX]);
+        expect((await request(OWNER)).status).toBe(404);
+        const hiddenParent = await request(OWNER, false);
+        expect(await hiddenParent.json()).toMatchObject({ status: "unavailable", observedAt: null, windows: [] });
+        expect(reads).toBe(cachedReads);
+        const worker = "77777777-7777-4777-8777-777777777777";
+        await db.query(
+          `insert into sandboxes(id,org_id,owner_id,access_owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,
+           visibility,credential_id,credential_version,created_at)
+           values($1,$2,$3,$3,$4,'codex','ready','worker','worker','private',$5,2,'2000-01-01')`,
+          [worker, ORG, OWNER, GOLDEN, account.id],
+        );
+        expect((await request(OWNER, false)).status).toBe(200);
+        expect(resolvedSources.at(-1)).toBe(worker); // Skip the newer, hidden parent.
+        const visibleReads = reads;
+        await db.query("update sandboxes set access_owner_id=$2 where id=$1", [worker, PEER]);
+        expect(await (await request(OWNER, false)).json()).toMatchObject({ status: "unavailable", windows: [] });
+        expect(reads).toBe(visibleReads); // Original owner cannot reuse cached private access.
+        expect((await request(PEER, false)).status).toBe(200);
+        expect(resolvedSources.at(-1)).toBe(worker);
+      }
     } finally {
       await db.close();
     }
