@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, chown, lstat, mkdir, rm } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { chmod, chown, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 export type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@armada/core";
@@ -214,7 +215,13 @@ export class GitHubBroker {
         this.configure(null);
         credentials.stop(true);
         redaction.stop(true);
-        void Promise.all([rm(socket, { force: true }), rm(redactSocket, { force: true })]);
+        for (const path of [socket, redactSocket]) {
+          try {
+            unlinkSync(path);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
       },
     };
   }

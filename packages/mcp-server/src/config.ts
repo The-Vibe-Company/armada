@@ -5,6 +5,8 @@ export interface ServerConfig {
   port: number;
   orchestratorPairs: readonly OrchestratorPair[];
   orchestratorSkillRevision: string | undefined;
+  /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
+  githubRuntimeEnabled: boolean;
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
@@ -85,6 +87,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     port,
     orchestratorPairs,
     orchestratorSkillRevision,
+    githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),

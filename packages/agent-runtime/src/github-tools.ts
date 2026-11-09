@@ -85,14 +85,14 @@ export async function installGitHubTools(input: {
   if (gitInfo?.isSymbolicLink() || (gitInfo && !gitInfo.isFile())) throw Error("github_tools_denied");
   await writeFile(
     input.gitWrapper,
-    `#!/bin/sh\nexec ${privileged} ${q(client)} elevate git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
+    `#!/bin/sh\nexec ${privileged} ${q(client)} git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
     { mode: 0o755 },
   );
   await chmod(input.gitWrapper, 0o755);
   if (input.git !== input.gitWrapper) {
     await writeFile(
       input.git,
-      `#!/bin/sh\nexec ${privileged} ${q(client)} elevate git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
+      `#!/bin/sh\nexec ${privileged} ${q(client)} git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
       { mode: 0o755 },
     );
     await chmod(input.git, 0o755);
@@ -139,12 +139,64 @@ export async function installGitHubTools(input: {
   await chmod(proxy, 0o755);
 }
 
-export const GITHUB_CLIENT = `import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal
+export const GITHUB_CLIENT = `import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal,time,errno,shlex
+def diagnostic(error,stage):
+    # Never interpolate exception text, paths, request bodies or inherited values.
+    reason='invalid_response'
+    if isinstance(error,FileNotFoundError): reason='socket_missing'
+    elif isinstance(error,PermissionError): reason='socket_permission_denied'
+    elif isinstance(error,ConnectionRefusedError): reason='broker_not_listening'
+    elif isinstance(error,(TimeoutError,socket.timeout)): reason='broker_timeout'
+    elif isinstance(error,ConnectionError): reason='broker_disconnected'
+    sys.stderr.write('Managed GitHub credentials unavailable ('+stage+': '+reason+').\\n');sys.stderr.flush()
+def git_command_index(args):
+    i=0
+    while i<len(args):
+        arg=args[i]
+        if arg in ('-C','-c','--git-dir','--work-tree','--namespace','--config-env'):
+            i+=2;continue
+        if arg=='--': return i+1
+        if not arg.startswith('-'): return i
+        i+=1
+    return len(args)
+def supervised_git(executable,args,env):
+    index=git_command_index(args)
+    if index>=len(args): return False
+    prefix=args[:index]
+    command=args[index]
+    # Git aliases can expand to credential fill. Resolve them using the same
+    # repository/global config, without contacting the broker or executing them.
+    builtins=subprocess.run([executable,'--list-cmds=builtins'],env=env,capture_output=True,text=True,check=True).stdout.splitlines()
+    for _ in range(16):
+        if command=='credential': return True
+        if command in builtins: return False
+        alias=subprocess.run([executable]+prefix+['config','--get','alias.'+command],env=env,capture_output=True,text=True)
+        if alias.returncode: return False
+        value=alias.stdout.strip()
+        # Shell aliases may execute arbitrary credential-producing tools.
+        if value.startswith('!'): return True
+        words=shlex.split(value)
+        if not words: return False
+        offset=git_command_index(words)
+        if offset>=len(words): return True
+        prefix+=words[:offset]
+        command=words[offset]
+    return True
+# Ordinary Git runs as the caller, with normal stdin/signals and no broker RPC.
+# Only credential output (including aliases) and arbitrary shell aliases require
+# supervised redaction. HTTPS authentication invokes the installed helper.
+if len(sys.argv)>1 and sys.argv[1]=='git-run':
+    env=dict(os.environ)
+    env.pop('GH_TOKEN',None);env.pop('GITHUB_TOKEN',None)
+    try: supervised=supervised_git(sys.argv[3],sys.argv[4:],env)
+    except Exception: supervised=True
+    if not supervised:
+        os.execve(sys.argv[3],[sys.argv[3]]+sys.argv[4:],env)
 # sudo-rs supports named preservation, not preserving the entire environment.
 # Only variable NAMES cross argv; values remain in the inherited private environment.
-if len(sys.argv)>1 and sys.argv[1]=='elevate':
+if len(sys.argv)>1 and (sys.argv[1]=='elevate' or (sys.argv[1]=='git-run' and os.getuid()!=0)):
     names=','.join(key for key in os.environ if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',key) and not key.startswith('SUDO_'))
-    os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'/usr/bin/python3','-I',os.path.abspath(__file__)]+sys.argv[2:])
+    os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'/usr/bin/python3','-I',os.path.abspath(__file__)]+(sys.argv[2:] if sys.argv[1]=='elevate' else sys.argv[1:]))
 local_secrets=set(value.encode() for key,value in os.environ.items() if key in ("GH_TOKEN","GITHUB_TOKEN") and value)
 class Connection(http.client.HTTPConnection):
     def __init__(self,name,path=None):
@@ -163,6 +215,12 @@ def repository(value):
     return value
 def safe(line,stream=False):
     redaction=os.path.join(os.path.dirname(sys.argv[2]),'redact.sock')
+    if sys.argv[1]=='native' and local_secrets:
+        registration=Connection('private',redaction)
+        registration.request('POST','/register',json.dumps([value.decode() for value in local_secrets]),{'Content-Type':'application/json'})
+        reply=registration.getresponse();reply.read()
+        if reply.status!=200: raise ValueError()
+        registration.close()
     connection=Connection('private',redaction)
     connection.request('POST','/redact',line,{'Content-Type':'application/octet-stream','X-Armada-Stream':'1' if stream else '0'})
     response=connection.getresponse()
@@ -181,6 +239,18 @@ def execute(executable,args,env):
     env={key:value for key,value in env.items() if not key.startswith('SUDO_')}
     child=subprocess.Popen([executable]+args,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,preexec_fn=demote)
     failed=[]
+    stopping=threading.Event()
+    def filtered(value,stream=False):
+        warned=False
+        while True:
+            try: return safe(value,stream)
+            except Exception as error:
+                if sys.argv[1]!='native': raise
+                if stopping.is_set(): return b'',len(value)
+                if not warned: diagnostic(error,'redaction');warned=True
+                # Fail closed with bounded pipe backpressure, never terminate the
+                # native harness because the independent redactor is restarting.
+                time.sleep(0.1)
     def forward(source,target):
         try:
             pending=b''
@@ -188,17 +258,19 @@ def execute(executable,args,env):
                 chunk=source.read1(65536)
                 if not chunk: break
                 pending+=chunk
-                line,consumed=safe(pending,True)
+                line,consumed=filtered(pending,True)
                 pending=pending[consumed:]
                 target.write(line); target.flush()
             if pending:
-                line,_=safe(pending)
+                line,_=filtered(pending)
                 target.write(line); target.flush()
-        except Exception:
+        except Exception as error:
+            diagnostic(error,'redaction')
             failed.append(True)
             child.terminate()
     threads=[threading.Thread(target=forward,args=(child.stdout,sys.stdout.buffer)),threading.Thread(target=forward,args=(child.stderr,sys.stderr.buffer))]
     def forward_signal(sig,frame):
+        stopping.set()
         try: child.send_signal(sig)
         except ProcessLookupError: pass
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP): signal.signal(sig,forward_signal)
@@ -216,12 +288,14 @@ def execute(executable,args,env):
         os.kill(os.getpid(),-status)
     sys.exit(1 if failed else status)
 try:
-    if local_secrets:
+    stage='registration'
+    if local_secrets and sys.argv[1]!='native':
         registration=Connection('private',os.path.join(os.path.dirname(sys.argv[2]),'redact.sock'))
         registration.request('POST','/register',json.dumps([value.decode() for value in local_secrets]),{'Content-Type':'application/json'})
         reply=registration.getresponse();reply.read()
         if reply.status!=200: raise ValueError()
         registration.close()
+    stage='request'
     mode=sys.argv[1]
     if mode=='native':
         execute(sys.argv[3],sys.argv[4:],dict(os.environ))
@@ -293,7 +367,7 @@ try:
         env['GH_HOST']='github.com'
         env.pop('GH_ENTERPRISE_TOKEN',None); env.pop('GITHUB_ENTERPRISE_TOKEN',None)
         execute(sys.argv[3],args,env)
-except Exception:
-    sys.stderr.write('Managed GitHub credentials unavailable.\\n')
+except Exception as error:
+    diagnostic(error,stage)
     sys.exit(1)
 `;

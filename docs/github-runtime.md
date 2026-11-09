@@ -4,6 +4,31 @@ GitHub App **user** access tokens expire after eight hours. Refreshing one inval
 previous access token and previous refresh token. Installation tokens are different (one hour) and
 are not a substitute for the worker owner's identity. See [GitHub's user-token refresh contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens).
 
+## Server opt-in (default off)
+
+The trusted server environment setting `ARMADA_GITHUB_RUNTIME_ENABLED=true` enables
+this experimental runtime. Omit it (recommended), or use any value other than exact
+`true`, to disable it. Restart the server after changing the setting; use the same
+setting on every replica.
+
+When off, launch, send, steer and exec do not prepare the managed GitHub runtime.
+No GitHub wrapper, broker or credential socket is installed, and the internal
+GitHub credential-acquisition route is not mounted. Fresh sandboxes retain stock
+git/gh and the existing launch-time `GH_TOKEN`/git credential setup. This gate does
+not disable GitHub OAuth, golden checkout, MCP bindings or model authentication.
+The #703 implementation and migration `20261110121300_github_runtime.sql` remain.
+
+**Existing-worker limitation:** disabling the server setting does not undo files
+already installed inside a worker while it was enabled, stop its broker, or restore
+its binaries. Its managed credential acquisitions will fail once all replicas are
+off, so git/gh may still fail there. Do not treat this switch as an in-place repair:
+retire affected workers through the normal lifecycle and launch replacements from
+a clean golden that has never had managed wrappers installed. Do not snapshot an
+affected worker into a golden. No automatic command replay or guest mutation is
+performed by the off path. Root-cause repair and automated restoration are separate work.
+
+The sections below describe the opt-in path only.
+
 ## Credential-time renewal
 
 Launch/prompt preparation and authorized exec/steer prepare a GitHub-only broker in the **same VM**.
@@ -86,3 +111,44 @@ child environment are not transparently replayed; future invocations acquire fre
 5. After deployment, the integrator may use an already-owned worker for reviewed read-only `gh api
    user` and `git ls-remote` checks from an authorized repository directory (or set `GH_REPO`). An authorized exec prepares the private broker without replacing
    the VM or native session. Do not allocate/restart a VM or copy manager credentials as a workaround.
+
+### Incident #719: enablement smoke checklist
+
+Do not enable the managed runtime until the default-off server gate from #718 is merged
+and the runtime repair in #719 passes process-level regression coverage. A successful
+broker bootstrap or an isolated `gh auth status` is not sufficient evidence: neither
+exercises Git inside a native harness process tree.
+
+Before enabling it for general use, an authorized operator must run this smoke in a
+non-production environment with disposable repositories and credentials:
+
+1. With the setting off, launch both Claude and Codex and confirm stock Git/gh behavior.
+2. With the setting on, launch a fresh sandbox for each harness. In the first turn run
+   `git status -sb`, `git ls-remote origin HEAD`, and a push to a uniquely named scratch
+   branch in an explicitly authorized disposable repository.
+3. Run `git status -sb` and `git ls-remote origin HEAD` through authorized exec, then
+   run them again in a second agent turn. Confirm the original harness remains usable.
+4. Exercise access-token expiry/renewal without replacing the VM or native session;
+   repeat the remote operation and verify it uses renewed authorization.
+5. Stop, stall, and restart the private broker. Local Git must continue to work;
+   authenticated network operations may fail with a sanitized, bounded error, but
+   neither harness may exit. Repeat exec and a second turn after recovery.
+6. Remove scratch branches and stop disposable sandboxes. Do not copy personal or
+   manager credentials into the guest, print tokens, or enable production as a test.
+
+Record the server/runtime revision, gate setting, provider, harness, operation exit
+statuses, renewal outcome, and harness survival. Keep token values and private socket
+responses out of the evidence. A failure in either harness blocks enablement.
+
+The #719 repair separates ordinary Git execution from credential acquisition: ordinary
+Git runs directly as the caller, with inherited GitHub token variables removed; HTTPS
+Git asks the installed helper for authorization only when needed. Explicit `git credential` output (including Git aliases) and arbitrary shell aliases
+remain supervised so `credential fill` does not publish managed token bytes.
+Like stock Git, ordinary local Git output is not an arbitrary-secret redaction boundary.
+Native harness output and gh output retain broker redaction. Native output is held with
+pipe backpressure while the redactor is unavailable, not forwarded unfiltered and not
+used as a reason to terminate the harness. This can pause visible turn output until
+recovery; it does not provide uninterrupted output during a total redactor outage.
+Diagnostics expose only fixed stage/reason labels, never exception text, socket paths,
+credential responses or environment values. A missing socket reports `socket_missing`;
+permission errors, refused connections and timeouts have distinct labels.

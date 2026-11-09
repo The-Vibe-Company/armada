@@ -83,7 +83,7 @@ test("existing native children use new GitHub material and register it before gh
     let pending = "";
     async function phase() {
       child.stdin.write(
-        "gh auth token --hostname github.com\nprintf 'protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n' | git credential fill\ngit config --get armada.probe\necho PHASE_DONE\n",
+        "gh auth token --hostname github.com\nprintf 'protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n' | git credential fill\ngit -c alias.creds=credential creds fill <<'CREDENTIAL_INPUT'\nprotocol=https\nhost=github.com\npath=acme/repo.git\n\nCREDENTIAL_INPUT\ngit config --get armada.probe\necho PHASE_DONE\n",
       );
       while (!pending.includes("PHASE_DONE\n")) {
         const item = await reader.read();
@@ -104,14 +104,16 @@ test("existing native children use new GitHub material and register it before gh
       throw Error(diagnostic);
     }
     expect(registered.has(current)).toBe(true);
-    expect(first).toContain("password=***");
+    expect(first.match(/password=\*\*\*/g)).toHaveLength(2);
+    expect(first).not.toContain(current);
     expect(first).toContain("preserved");
     expect(first.split("\n")[0]).toBe(`${createHash("sha256").update(`${current}\n`).digest("hex")}  -`);
     token = next;
     const second = await phase();
     expect(registered.has(next)).toBe(true);
     expect(registered.has(current)).toBe(true);
-    expect(second).toContain("password=***");
+    expect(second.match(/password=\*\*\*/g)).toHaveLength(2);
+    expect(second).not.toContain(next);
     expect(second.split("\n")[0]).toBe(`${createHash("sha256").update(`${next}\n`).digest("hex")}  -`);
     expect(second).not.toContain("inherited-stale");
     expect(second).not.toContain(current);
@@ -128,7 +130,7 @@ test("existing native children use new GitHub material and register it before gh
     child.stdin.end();
     await child.exited;
     expect(await new Response(child.stderr).text()).toBe(
-      "Managed GitHub credentials unavailable.\nManaged GitHub credentials unavailable.\n",
+      "Managed GitHub credentials unavailable (request: invalid_response).\nManaged GitHub credentials unavailable (request: invalid_response).\n",
     );
   } finally {
     socket.close();
