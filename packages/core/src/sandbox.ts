@@ -1,11 +1,13 @@
 import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
 import type { Sql } from "./golden-store.ts";
+import type { MachineSizeEvidence } from "./machine-size.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
 export interface SandboxRecord {
+  machineSize?: MachineSizeEvidence | null;
   credentialId?: string | null;
   credentialVersion?: number | null;
   expiresAt?: string;
@@ -77,6 +79,7 @@ export interface SandboxStore {
     ownerId: string;
     harness: Harness;
     status: SandboxStatus;
+    machineSize?: MachineSizeEvidence;
     activityLeaseId?: string;
     requestedTtlSeconds?: number;
     effectiveTtlSeconds?: number;
@@ -134,6 +137,7 @@ export async function cleanupSandboxes(
 }
 
 export interface SandboxRow {
+  machine_size?: MachineSizeEvidence | null;
   credential_id?: string | null;
   credential_version?: number | null;
   id: string;
@@ -165,15 +169,15 @@ export interface SandboxRow {
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer)
+           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -193,6 +197,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
           input.activityLeaseId ?? null,
           input.credentialId ?? null,
           input.credentialVersion ?? null,
+          JSON.stringify(input.machineSize ?? null),
         ],
       );
       const row = result.rows[0];
@@ -225,6 +230,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
       const result = await sql.query<SandboxRow>(
         `select ${COLUMNS} from public.sandboxes
          where created_at < $1::timestamptz and status <> 'deleted'
+         and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id)
          order by created_at asc`,
         [cutoff],
       );
@@ -265,6 +271,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
     statusReason: row.status_reason ?? null,
     repositoryDir: row.repository_dir ?? null,
+    machineSize: row.machine_size ?? null,
     model: row.model ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
   };

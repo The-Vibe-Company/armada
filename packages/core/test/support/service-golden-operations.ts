@@ -22,7 +22,7 @@ export function serviceGoldenOperations(db: PGlite): Pick<GoldenStore, "beginOpe
     },
   };
   return {
-    beginOperation: (id) => beginGoldenOperation(server, id),
+    beginOperation: (id, expected) => beginGoldenOperation(server, id, expected),
     reconcileOperations: (golden, actor) => reconcileGoldenOperations(server, golden, actor),
   };
 }

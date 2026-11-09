@@ -14,6 +14,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
+import { goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -105,6 +106,7 @@ export interface ControlOptions {
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
+  goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
   connections?: LaunchStores["connections"];
   /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
@@ -711,6 +713,37 @@ async function dispatch(
         // An org name or ID, resolved against fresh memberships like every other sandbox route.
         ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
       });
+    case "golden/size-policy": {
+      if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
+      const data = options.data(caller);
+      const name = required(body, "golden");
+      const actor = await launchActor(data, caller, name, optional(body, "org"));
+      const golden = await goldenForSettings(
+        data.goldens,
+        actor,
+        name,
+        optional(body, "provider") as "boat" | "modal" | undefined,
+      );
+      if (body.policy !== undefined) {
+        const policy = parseMachineSizePolicy(
+          body.policy,
+          golden.config.repos.map((r) => r.dir),
+        );
+        if (!data.goldens.setSizePolicy) throw new VaultError("unavailable", "Policy writes are unavailable.");
+        await data.goldens.setSizePolicy(golden, actor, policy);
+        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
+      }
+      return {
+        goldenId: golden.id,
+        provider: golden.provider,
+        repositories: golden.config.repos,
+        policy: golden.sizePolicy ?? null,
+      };
+    }
+    case "sandbox/launch-sized-v1":
+      if (body.sizePolicyVersion !== 1)
+        throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
+      return launchRoute(options, caller, body);
     case "sandbox/launch":
       return launchRoute(options, caller, body);
     case "launch/resolve":
@@ -722,6 +755,21 @@ async function dispatch(
         required(body, "id"),
         body,
       );
+    case "golden/retirement/dry-run":
+    case "golden/retirement/reconcile": {
+      if (!options.goldenRetirements) throw new VaultError("unavailable", "Snapshot retirement is not configured.");
+      const id = required(body, "id");
+      if (!UUID.test(id)) throw new VaultError("invalid", "id must be a golden UUID.");
+      const selected = await selectedCaller(options, caller, optional(body, "org"));
+      return options.goldenRetirements.forCaller(
+        caller.userId,
+        selected.orgs.map((o) => o.orgId),
+        id,
+        body.limit === undefined ? 20 : Number(body.limit),
+        route.endsWith("reconcile"),
+        body.receipts === undefined ? [] : (body.receipts as string[]),
+      );
+    }
     case "golden/remove": {
       const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
       const data = options.data?.(scopedCaller);
@@ -1039,6 +1087,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     {
       ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
       golden: name,
+      ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),

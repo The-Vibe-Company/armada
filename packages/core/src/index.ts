@@ -98,6 +98,7 @@ export {
   type GoldenRecord,
   type GoldenStore,
   goldenForLaunch,
+  goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
   snapshotGolden,
@@ -139,6 +140,7 @@ export {
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
+export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export {
   MCP_STDIO_EXECUTABLES,

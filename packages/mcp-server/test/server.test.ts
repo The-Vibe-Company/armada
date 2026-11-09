@@ -296,9 +296,11 @@ describe("tools", () => {
         "golden_adopt",
         "golden_list",
         "golden_snapshot",
+        "golden_size_policy",
         "golden_update",
         "interrupt",
         "launch",
+        "launch_sized_v1",
         "list",
         "logs",
         "send",
@@ -682,25 +684,25 @@ describe("tools", () => {
     expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
   });
 
-  test("real launch persists account binding and send refuses a removed source without using a new default", async () => {
+  test("real launch persists account binding and send/restart steer refuse a removed source without using a new default", async () => {
     const { token, client, people, db, boat } = await start();
     const store = createSqlVaultStore(db);
     const first = await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
       action: "set",
       scope: "user",
-      kind: "claude_oauth",
+      kind: "openai",
       name: "Work",
       value: "work-subscription",
     });
     const second = await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
       action: "set",
       scope: "user",
-      kind: "claude_oauth",
+      kind: "openai",
       name: "Other",
       value: "other-subscription",
     });
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", credentialId: first.id });
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", credentialId: first.id });
     expect(launched.isError).not.toBe(true);
     expect(
       (await db.query("select credential_id,credential_version from sandboxes where id=$1", [launched.data.id]))
@@ -723,6 +725,11 @@ describe("tools", () => {
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("No fallback was used");
     expect(boat.prompts).toHaveLength(count);
+    const steerCount = boat.steers.length;
+    const steerRefused = await call(mcp, "steer", { id: launched.data.id, text: "Must not restart" });
+    expect(steerRefused.isError).toBe(true);
+    expect(steerRefused.text).toContain("No fallback was used");
+    expect(boat.steers).toHaveLength(steerCount);
   });
 
   test("send continues the conversation and marks the sandbox running", async () => {

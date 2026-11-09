@@ -9,8 +9,7 @@ export const ORCHESTRATOR_DEFAULTS = {
   minIdleSeconds: 900,
   maxIdleSeconds: 86400,
   maxActiveChildren: 3,
-  maxChildStartsPerDay: 10,
-  delegationSeconds: 900,
+  delegationSeconds: 86400,
   waitLeaseSeconds: 900,
   maxWaitSeconds: 86400,
 } as const;
@@ -34,7 +33,6 @@ export interface OrchestratorCreate {
   modelAccountId: string;
   idleSeconds?: number;
   maxActiveChildren?: number;
-  maxChildStartsPerDay?: number;
 }
 
 export interface Orchestrator {
