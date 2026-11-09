@@ -109,7 +109,10 @@ function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: s
       const lines = pending.split("\n");
       pending = (lines.pop() ?? "").slice(-256);
       for (const line of lines) {
-        const match = /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|inline_scan) ([0-9]{1,3})$/.exec(line);
+        const match =
+          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
+            line,
+          );
         if (match) {
           phase = match[1]!;
           exitCode = match[2];

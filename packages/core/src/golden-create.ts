@@ -74,7 +74,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
   const deps: GoldenCreateDeps = {
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
-    scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
+    scan: (provider, sandboxId, context) => scanGoldenSandbox(provider, sandboxId, context),
     async reserve(provider, actor, existingGolden) {
       if (options.job) {
         await options.job.phase("authorization");

@@ -41,7 +41,7 @@ export interface GoldenCreateDeps {
   mint?(installationId: number, repoIds: number[]): Promise<{ token: string; revoke(): Promise<void> }>;
   ssh(provider: Provider, input: { sandboxId: string; token: string; script: string }): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
-  scan(provider: Provider, sandboxId: string): Promise<void>;
+  scan(provider: Provider, sandboxId: string, context?: { buildId: string }): Promise<void>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
   /** Legacy factory hook; production persistence finalizes atomically itself. */
@@ -138,7 +138,7 @@ export class GoldenCreateService {
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
       await enter("secret_scan");
-      await this.deps.scan(provider, builder.id);
+      await this.deps.scan(provider, builder.id, { buildId });
       await enter("snapshot");
       requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
@@ -330,6 +330,17 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
   ].join("\n");
 }
 
+/** Disposable builders must not retain standard Git/GitHub credential stores from the image or setup.
+ * Remove only these exact authentication files, never repositories, caches or whole directories.
+ * An unexpected directory/permission failure aborts the build rather than bypassing the scan.
+ */
+const CREDENTIAL_CLEANUP = [
+  "set -eu",
+  "for home in /home/user /root; do",
+  '  rm -f -- "$home/.git-credentials" "$home/.config/git/credentials" "$home/.netrc" "$home/.config/gh/hosts.yml"',
+  "done",
+].join("\n");
+
 export function goldenScript(repos: readonly PreparedRepo[], setup: readonly string[] = []): string {
   const lines = [
     "set -euo pipefail",
@@ -354,6 +365,8 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
     baselineSetup(repos),
     "armada_phase=init",
     ...setup,
+    "armada_phase=credential_cleanup",
+    `if [ "$(id -u)" -eq 0 ]; then bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; else sudo -n bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; fi 2>/dev/null`,
     // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
     // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
     // exec channel after this session closes, and is what actually gates the snapshot.
