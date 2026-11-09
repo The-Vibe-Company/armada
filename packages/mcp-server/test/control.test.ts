@@ -8,11 +8,14 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
+import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
+import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
+import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -928,6 +931,7 @@ async function withServer(
       store: createSqlVaultStore(db),
       encryptionKey: KEY,
       data: createSqlData(db),
+      credentialBindingRecovery: createCredentialBindingRecovery(db, KEY),
     };
     const cli = (userId: string, opts: { session?: boolean; armadaUrl?: boolean; token?: string } = {}): Who => {
       const who: Who = {
@@ -1008,6 +1012,7 @@ describe("controlOptionsFromEnv", () => {
     });
     expect(options.goldenBuilds).toBeDefined();
     expect(options.providerFor).toBeDefined();
+    expect(typeof options.credentialBindingRecovery).toBe("function");
     expect(typeof options.providerFor?.("any-key").exec).toBe("function");
   });
 
@@ -1047,6 +1052,57 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
   });
 });
 
+test("public sandbox logs omit account-private native quota and auth records", async () => {
+  await withServer(async ({ options, cli }) => {
+    const stan = cli(STAN);
+    await stan.run(["org", "create", "Quota privacy"]);
+    const boat = fakeBoat();
+    boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    const types = [
+      "usage_report",
+      "rate_limit_event",
+      "account/rateLimits/updated",
+      "account/rateLimits/read",
+      "account/updated",
+      "auth_status",
+    ];
+    boat.provider.events = async () => ({
+      events: [
+        ...types.map((type) => ({
+          id: type,
+          at: 1,
+          kind: "other" as const,
+          type,
+          data: { private: "personal-subscription-information" },
+        })),
+        {
+          id: "local",
+          at: 1,
+          kind: "other" as const,
+          type: "system",
+          data: { subtype: "local_command_output", content: "personal-subscription-information" },
+        },
+        {
+          id: "ordinary-system",
+          at: 1,
+          kind: "other" as const,
+          type: "system",
+          data: { subtype: "init", public: "ordinary-native-init" },
+        },
+        { id: "message", at: 2, kind: "message" as const, text: "public work", partial: false, tools: [] },
+      ],
+      hasMore: false,
+    });
+    options.logs = async () => ({ provider: boat.provider, providerSandboxId: "bx_1" });
+    const result = await stan.run(["logs", STAN, "--json"]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("public work");
+    expect(result.out).toContain("ordinary-native-init");
+    expect(result.out).not.toContain("personal-subscription-information");
+    for (const type of types) expect(result.out).not.toContain(type);
+  });
+});
+
 test("CLI named-account operations preserve safe IDs and CAS through the authenticated API", async () => {
   await withServer(async ({ cli }) => {
     const admin = cli(STAN);
@@ -1073,5 +1129,223 @@ test("CLI named-account operations preserve safe IDs and CAS through the authent
     ).not.toBe(0);
     expect((await admin.run(["creds", "remove", id])).code).toBe(0);
     expect(JSON.parse((await admin.run(["creds", "list", "--json"])).out).user).toHaveLength(1);
+  });
+});
+
+test("owner explicitly recovers a stopped legacy Modal binding once, retaining its workspace and conversations", async () => {
+  await withServer(async ({ db, options, cli }) => {
+    const admin = cli(STAN),
+      owner = cli(ADA);
+    await admin.run(["org", "create", "Recovery"]);
+    const org = (await options.store.memberships(STAN))[0]!;
+    await options.store.addMember(org.id, ADA, "member");
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    options.authStore.addMembership(ADA, { orgId: org.id, name: org.name, role: "member" });
+    const golden = (
+      await db.query<{ id: string }>(
+        "insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,'legacy','org','modal','im-golden','ws','main','ap-retained',$3::jsonb) returning id",
+        [
+          org.id,
+          ADA,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web", branch: "main", dir: "web" }], init: [] }),
+        ],
+      )
+    ).rows[0]!.id;
+    const id = crypto.randomUUID(),
+      machineId = "modal_legacy_retained";
+    await db.query(
+      "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,stopped_at,conversation_ids) values($1,'modal',$2,$3,$4,$5,'claude','stopped',now(),ARRAY['existing-conversation'])",
+      [id, machineId, golden, org.id, ADA],
+    );
+    const scope: Scope = {
+      orgId: org.id,
+      userId: ADA,
+      visibility: "org",
+      binding: { workspace: "ws", environment: "main", appId: "ap-retained" },
+    };
+    const key = scopeKey(scope);
+    const machine: Machine = {
+      info: {
+        id: machineId,
+        name: "Existing work",
+        state: "stopped",
+        providerState: "stopped",
+        labels: { retained: "yes" },
+      },
+      generation: 4,
+      golden: false,
+      phase: "stopped",
+      physicalId: "sb-existing-stopped",
+      physicalName: "existing-workspace",
+      recoveryImageId: "im-existing-work",
+      ttlSeconds: 14400,
+    };
+    await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [key, JSON.stringify(scope)]);
+    await db.query(
+      "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'org',$4,'existing',$5::jsonb)",
+      [key, org.id, ADA, machineId, JSON.stringify(machine)],
+    );
+    await db.query("insert into modal_server_harnesses(scope,machine_id,harness) values($1,$2,'claude')", [
+      key,
+      machineId,
+    ]);
+    for (const [name, value] of [
+      ["Chosen", "chosen-token"],
+      ["Alternate", "alternate-token"],
+    ])
+      expect((await owner.run(["creds", "set", "claude-oauth", "--name", name!], { stdin: value! })).code).toBe(0);
+    await owner.run(["creds", "set", "openai", "--name", "WrongHarness"], { stdin: "wrong-harness-key" });
+    const accounts = JSON.parse((await owner.run(["creds", "list", "--json"])).out).user as {
+      id: string;
+      name: string;
+    }[];
+    const chosen = accounts.find((row) => row.name === "Chosen")!.id,
+      alternate = accounts.find((row) => row.name === "Alternate")!.id,
+      wrong = accounts.find((row) => row.name === "WrongHarness")!.id;
+    const post = async (
+      userId: string,
+      credentialId: string,
+      action = "bind-credential",
+      extra: Record<string, unknown> = {},
+    ) => {
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`;
+      return (await handleControlRequest(
+        new Request(`https://armada.test/api/v1/sandbox/${action}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            id,
+            org: org.id,
+            ...(action === "bind-credential" ? { credentialId } : {}),
+            ...extra,
+          }),
+        }),
+        options,
+      ))!;
+    };
+    const resolver = modalLaunchEnvironment({
+      sql: db,
+      vault: options.store,
+      encryptionKey: KEY,
+      scope,
+      scopeKey: key,
+      callerUserId: ADA,
+    });
+    await expect(resolver(machine, {})).rejects.toMatchObject({ code: "credential_binding_required" });
+    let providerResolutions = 0;
+    options.providers = {
+      resolve: async () => {
+        providerResolutions++;
+        throw new Error("Unbound operations must not reach provider construction.");
+      },
+    };
+    for (const [action, extra] of [
+      ["send", { prompt: "continue" }],
+      ["exec", { command: "pwd" }],
+      ["steer", { text: "pause" }],
+      ["interrupt", {}],
+    ] as const) {
+      const refused = await post(ADA, chosen, action, extra);
+      expect(refused.status).toBe(409);
+      // The refusal names the owner's recovery route instead of leaving the caller without a way out.
+      expect(await refused.json()).toMatchObject({
+        error: { code: "credential_binding_required", message: expect.stringContaining("armada bind-credential") },
+      });
+    }
+    expect(providerResolutions).toBe(0);
+    expect(
+      (
+        await db.query<{ record: Machine }>("select record from modal_machines where scope=$1 and id=$2", [
+          key,
+          machineId,
+        ])
+      ).rows[0]!.record,
+    ).toEqual(machine);
+    expect((await post(STAN, chosen)).status).toBe(404); // Org admins cannot adopt another owner's workspace.
+    const incompatible = await post(ADA, wrong);
+    expect(await incompatible.json()).toMatchObject({
+      error: { code: "unavailable", message: expect.stringContaining("incompatible") },
+    });
+    expect(incompatible.status).toBe(503);
+    await options.store.removeMember(org.id, ADA);
+    expect((await post(ADA, chosen)).status).toBe(404); // The named org is resolved against fresh memberships.
+    // Without --org, the bearer's org list may be stale: the transaction checks membership again.
+    expect((await post(ADA, chosen, "bind-credential", { org: undefined })).status).toBe(403);
+    await options.store.addMember(org.id, ADA, "member");
+    for (const phase of ["active", "checkpoint", "snapshot", "terminate"]) {
+      await db.query("update modal_machines set record=$3::jsonb where scope=$1 and id=$2", [
+        key,
+        machineId,
+        JSON.stringify({ ...machine, phase }),
+      ]);
+      const unsafe = await post(ADA, chosen);
+      expect(unsafe.status).toBe(409);
+      expect(await unsafe.json()).toMatchObject({ error: { code: "credential_binding_unsafe" } });
+    }
+    await db.query(
+      "update modal_machines set record=$3::jsonb,lease_id=$4,lease_until=now()+interval '1 minute' where scope=$1 and id=$2",
+      [key, machineId, JSON.stringify(machine), crypto.randomUUID()],
+    );
+    expect((await post(ADA, chosen)).status).toBe(409);
+    await db.query("update modal_machines set lease_id=null,lease_until=null where scope=$1 and id=$2", [
+      key,
+      machineId,
+    ]);
+    await db.query("update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1", [
+      id,
+      crypto.randomUUID(),
+    ]);
+    expect((await post(ADA, chosen)).status).toBe(409);
+    // Expired leases are released everywhere else; a failed send or a reconciler stop can leave them behind.
+    await db.query("update modal_machines set lease_until=now()-interval '1 minute' where scope=$1 and id=$2", [
+      key,
+      machineId,
+    ]);
+    await db.query(
+      "update sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 minute',reconcile_lease=$3,reconcile_lease_until=now()-interval '1 minute' where id=$1",
+      [id, crypto.randomUUID(), crypto.randomUUID()],
+    );
+    const attempts = await Promise.all([
+      owner.run(["bind-credential", id, "--credential-id", chosen, "--org", org.id, "--json"]),
+      owner.run(["bind-credential", id, "--credential-id", alternate, "--org", "Recovery", "--json"]),
+    ]);
+    expect(attempts.map((result) => result.code).sort()).toEqual([0, 1]);
+    // The loser lost the compare-and-swap; it was not refused for its org name.
+    expect(attempts.find((result) => result.code === 1)!.err).toContain("bound");
+    const winner = JSON.parse(attempts.find((result) => result.code === 0)!.out);
+    expect([chosen, alternate]).toContain(winner.credentialId);
+    expect(winner).toMatchObject({ id, credentialVersion: 1, harness: "claude", status: "bound" });
+    expect(JSON.stringify(attempts)).not.toContain("chosen-token");
+    expect(
+      (await db.query("select credential_id,credential_version,conversation_ids from sandboxes where id=$1", [id]))
+        .rows[0],
+    ).toEqual({
+      credential_id: winner.credentialId,
+      credential_version: 1,
+      conversation_ids: ["existing-conversation"],
+    });
+    expect(
+      (
+        await db.query(
+          "select credential_id,credential_version from modal_server_harnesses where scope=$1 and machine_id=$2",
+          [key, machineId],
+        )
+      ).rows[0],
+    ).toEqual({ credential_id: winner.credentialId, credential_version: 1 });
+    const after = (
+      await db.query<{ record: Machine }>("select record from modal_machines where scope=$1 and id=$2", [
+        key,
+        machineId,
+      ])
+    ).rows[0]!.record;
+    expect({ ...after, info: { ...after.info, labels: machine.info.labels } }).toEqual({
+      ...machine,
+      launchUserId: ADA,
+    });
+    expect((await db.query("select count(*)::int as n from modal_machines")).rows[0]).toEqual({ n: 1 });
+    expect((await resolver({ ...after, generation: 5, phase: "booting" }, {})).claudeEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(
+      winner.credentialId === chosen ? "chosen-token" : "alternate-token",
+    );
+    expect((await post(ADA, winner.credentialId === chosen ? alternate : chosen)).status).toBe(409);
   });
 });

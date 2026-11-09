@@ -77,6 +77,7 @@ import {
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
@@ -84,6 +85,7 @@ import { InvitationError, type Invitations, invitationsFromEnv } from "./invitat
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -101,6 +103,8 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  credentialBindingRecovery?: CredentialBindingRecovery;
+  modelUsage?: ModelUsageApi;
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
@@ -141,6 +145,8 @@ export interface ControlOptions {
     verifier: string,
   ) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
 }
+
+export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
 
 const STATUS: Record<VaultErrorCode, number> = {
   credential_binding_required: 409,
@@ -537,6 +543,15 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route === "creds/accounts/usage") {
+    if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
+    const id = required(body, "id"),
+      sandboxId = optional(body, "sandboxId");
+    if (!UUID.test(id) || (sandboxId !== undefined && !UUID.test(sandboxId)))
+      throw new VaultError("invalid", "Account and sandbox IDs must be UUIDs.");
+    const logs = options.logs;
+    return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
+  }
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
   if (route.startsWith("github/")) {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
@@ -573,6 +588,7 @@ async function dispatch(
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
+      "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
       "sandbox/stop": "stop",
       "sandbox/wait": "wait",
@@ -700,6 +716,15 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "sandbox/bind-credential":
+      if (!options.credentialBindingRecovery)
+        throw new VaultError("unavailable", "Binding recovery is not configured.");
+      return options.credentialBindingRecovery(caller, {
+        id: required(body, "id"),
+        credentialId: required(body, "credentialId"),
+        // An org name or ID, resolved against fresh memberships like every other sandbox route.
+        ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
+      });
     case "golden/size-policy": {
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);
@@ -1005,7 +1030,7 @@ async function readLogs(
     ? await promptOutcome(target.provider, { sandboxId: target.providerSandboxId, promptId: latest })
     : null;
   return {
-    events: dedupe(events),
+    events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,
     hasMore,
     settled:
@@ -1256,7 +1281,7 @@ function fail(status: number, code: string, message: string): Response {
  * `ARMADA_DATABASE_URL` (a privileged Postgres connection string, the Supabase `postgres` role)
  * and `ARMADA_ENCRYPTION_KEY`.
  */
-export function controlOptionsFromEnv(env: Record<string, string | undefined>): ControlOptions {
+export function controlOptionsFromEnv(env: Record<string, string | undefined>): ConfiguredControlOptions {
   const need = (name: string): string => {
     const value = env[name];
     if (!value) throw new Error(`Set ${name}.`);
@@ -1299,6 +1324,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
   return {
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
@@ -1308,6 +1334,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     github: { app: githubApp },
     store,
     providerFor,
+    modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),
     providers,
     data: createSqlData(sql),

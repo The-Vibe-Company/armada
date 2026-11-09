@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { enabledProviders } from "@/lib/auth-config";
 import { GITHUB_RESULT_MESSAGES } from "@/lib/github";
+import { INVITATION_ACCEPT_PATH } from "@/lib/invitations";
 import { safeNextPath } from "@/lib/routes";
 import { LoginForm } from "./login-form";
 
@@ -28,7 +29,11 @@ export default async function LoginPage({ searchParams }: Props) {
         <CardHeader className="items-center text-center">
           <ShipIcon className="mb-2 size-8" />
           <CardTitle className="text-xl">Sign in to Armada</CardTitle>
-          <CardDescription>We email you a sign-in link and a code. No password.</CardDescription>
+          <CardDescription>
+            {next === INVITATION_ACCEPT_PATH
+              ? "Use the address your invitation was sent to. We email you a sign-in link and a code."
+              : "We email you a sign-in link and a code. No password."}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <LoginForm next={next} providers={providers} initialError={error} />
