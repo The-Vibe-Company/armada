@@ -21,7 +21,13 @@ export interface CredentialSource {
 export const CODEX_AUTH_ENV = "ARMADA_CODEX_AUTH_JSON";
 
 /** What a launch hands to the sandbox: its environment, and every value in it that must never be printed. */
+export interface CredentialBinding {
+  credentialId: string;
+  credentialVersion: number;
+}
+
 export interface HarnessCredentials {
+  binding?: CredentialBinding;
   env: Record<string, string>;
   secrets: string[];
   /** The harness reads its login from this file, which launch writes from {@link CODEX_AUTH_ENV}. */
@@ -89,7 +95,13 @@ export function toHarnessCredentials(resolved: ResolvedCredentials, github?: Git
     env[CODEX_AUTH_ENV] = auth;
     secrets.push(auth, ...authJsonSecrets(auth));
   }
-  return { env, secrets, codexAuthJson: auth !== undefined, ...(github ? { github } : {}) };
+  return {
+    ...(resolved.binding ? { binding: resolved.binding } : {}),
+    env,
+    secrets,
+    codexAuthJson: auth !== undefined,
+    ...(github ? { github } : {}),
+  };
 }
 
 /** GitHub's token formats (`ghu_`, `ghr_`, `ghs_`, `gho_`, `ghp_`, `github_pat_`): masked wherever they appear, known or not. */
@@ -293,12 +305,23 @@ export async function resolveModalTokens(
 }
 
 /** Ciphertext of the stored credentials. Only the server, as the service role, can read it. */
+export interface StoredCredential {
+  id?: string;
+  kind: CredentialKind;
+  valueEnc: Uint8Array;
+  isDefault?: boolean;
+  status?: string;
+  expiresAt?: string | null;
+  version?: number;
+}
+
 export interface CredentialReader {
-  credentials(scope: CredentialScope, ownerId: string): Promise<{ kind: CredentialKind; valueEnc: Uint8Array }[]>;
+  credentials(scope: CredentialScope, ownerId: string): Promise<StoredCredential[]>;
   orgBoatKey(orgId: string): Promise<Uint8Array | null>;
 }
 
 export interface ResolvedCredentials {
+  binding?: CredentialBinding;
   /** Variables to put in the sandbox environment at launch. Never in the golden. */
   env: Record<string, string>;
   /** Files to write into the sandbox at launch. */
@@ -314,7 +337,7 @@ export interface ResolvedCredentials {
 export async function resolveCredentials(
   reader: CredentialReader,
   encryptionKey: string | undefined,
-  input: { userId: string; orgId: string; harness: Harness },
+  input: { userId: string; orgId: string; harness: Harness; credentialId?: string; credentialVersion?: number },
 ): Promise<ResolvedCredentials> {
   const kinds = HARNESS_KINDS[input.harness];
   for (const [scope, ownerId] of [
@@ -322,12 +345,34 @@ export async function resolveCredentials(
     ["org", input.orgId],
   ] as const) {
     const rows = await reader.credentials(scope, ownerId);
-    for (const kind of kinds) {
-      const row = rows.find((candidate) => candidate.kind === kind);
-      if (!row) continue;
-      const value = await open(row.valueEnc, encryptionKey);
-      return deliver(kind, scope, value);
+    const compatible = rows.filter((row) => kinds.includes(row.kind));
+    const candidates =
+      input.credentialId !== undefined ? rows.filter((row) => row.id === input.credentialId) : compatible;
+    if (candidates.length === 0) continue;
+    const defaults = candidates.filter((row) => row.isDefault);
+    const row =
+      input.credentialId !== undefined
+        ? candidates[0]
+        : defaults.length === 1
+          ? defaults[0]
+          : candidates.length === 1
+            ? candidates[0]
+            : undefined;
+    if (!row) throw new VaultError("conflict", "Multiple compatible accounts: choose credentialId or set a default.");
+    if (
+      !kinds.includes(row.kind) ||
+      (row.status !== undefined && row.status !== "active") ||
+      (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) ||
+      (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
+    ) {
+      throw new VaultError(
+        "unavailable",
+        "The selected credential is incompatible, expired, revoked or changed. No fallback was used.",
+      );
     }
+    const result = deliver(row.kind, scope, await open(row.valueEnc, encryptionKey));
+    if (row.id) result.binding = { credentialId: row.id, credentialVersion: row.version ?? 1 };
+    return result;
   }
   throw new VaultError(
     "missing_credential",

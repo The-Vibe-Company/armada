@@ -11,6 +11,64 @@ import { VaultError } from "./vault-error.ts";
  */
 export function createSqlVaultStore(sql: Sql): VaultStore {
   return {
+    async mutateAccount(userId, input, valueEnc) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Account mutations require a transaction.");
+      return sql.transaction(async (tx) => {
+        const owner = input.scope === "user" ? userId : input.org;
+        // Serialize defaults and mutations per owner; authorization is checked after taking the lock.
+        await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [owner]);
+        if (input.scope === "org") {
+          const admin = await tx.query(
+            "select 1 from public.members where org_id=$1 and user_id=$2 and role='admin' for share",
+            [owner, userId],
+          );
+          if (!admin.rows.length) throw new VaultError("forbidden", "Only an org admin can do that.");
+        }
+        const existing = input.id
+          ? await tx.query<{ kind: CredentialKind; version: number }>(
+              "select kind, version from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind not in ('boat','modal') and status <> 'deleted' for update",
+              [input.id, input.scope, owner],
+            )
+          : { rows: [] };
+        if (input.id && !existing.rows.length) throw new VaultError("not_found", "No such account.");
+        const kind = existing.rows[0]?.kind ?? input.kind;
+        if (input.kind && existing.rows[0] && input.kind !== kind)
+          throw new VaultError("invalid", "An account kind cannot change.");
+        if (input.action !== "set" && !input.id) throw new VaultError("invalid", "Account id is required.");
+        let id = input.id;
+        if (input.action === "set" && input.id && existing.rows[0]?.version !== input.expectedVersion)
+          throw new VaultError("conflict", "The account revision changed. Restart login; no secret was overwritten.");
+        if (input.action === "set") {
+          if (id)
+            await tx.query(
+              "update public.credentials set value_enc=$2::bytea, status='active', expires_at=$3::timestamptz where id=$1",
+              [id, valueEnc, input.expiresAt ?? null],
+            );
+          else {
+            const created = await tx.query<{ id: string }>(
+              "insert into public.credentials(scope,owner_id,kind,value_enc,name,expires_at) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5,$6::timestamptz) returning id",
+              [input.scope, owner, kind, valueEnc, input.name?.trim() ?? "Default", input.expiresAt ?? null],
+            );
+            id = created.rows[0]?.id;
+          }
+        } else if (input.action === "rename") {
+          if (!input.name) throw new VaultError("invalid", "Name is required.");
+          await tx.query("update public.credentials set name=$2 where id=$1", [id, input.name.trim()]);
+        } else if (input.action === "remove") {
+          await tx.query("update public.credentials set status='deleted' where id=$1", [id]);
+        } else {
+          await tx.query(
+            "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal')",
+            [input.scope, owner, kind],
+          );
+          await tx.query("update public.credentials set is_default=true where id=$1", [id]);
+        }
+        const rows = await createSqlVaultStore(tx).listCredentials(input.scope, owner ?? "");
+        const row = rows.find((row) => row.id === id);
+        if (!row) throw new VaultError("unavailable", "Account mutation failed.");
+        return row;
+      });
+    },
     async createOrg(name, adminUserId) {
       try {
         const result = await sql.query<{ id: string; name: string }>(
@@ -110,32 +168,102 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     },
 
     async upsertCredential(scope, ownerId, kind, valueEnc) {
+      if (kind !== "boat" && kind !== "modal") {
+        if (!sql.transaction) throw new VaultError("unavailable", "Credential writes require a transaction.");
+        await sql.transaction(async (tx) => {
+          await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [ownerId]);
+          const found = await tx.query<{ id: string }>(
+            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and kind=$3::public.credential_kind and status <> 'deleted' for update",
+            [scope, ownerId, kind],
+          );
+          if (found.rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
+          const ambiguous = await tx.query(
+            "select kind from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status <> 'deleted' and kind not in ('boat','modal') and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) group by kind having count(*) > 1",
+            [scope, ownerId, kind],
+          );
+          if (ambiguous.rows.length) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
+          if (found.rows[0])
+            await tx.query("update public.credentials set value_enc=$2::bytea,status='active' where id=$1", [
+              found.rows[0].id,
+              valueEnc,
+            ]);
+          else
+            await tx.query(
+              "insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea)",
+              [scope, ownerId, kind, valueEnc],
+            );
+          // Legacy kind writes preserve the old harness preference through explicit defaults.
+          const preferred = await tx.query<{ id: string }>(
+            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status='active' and name='Default' and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal') order by case when kind in ('claude_oauth','openai') then 0 else 1 end limit 1",
+            [scope, ownerId, kind],
+          );
+          const named = await tx.query(
+            "select 1 from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and name <> 'Default' and kind not in ('boat','modal')",
+            [scope, ownerId],
+          );
+          if (preferred.rows[0] && !named.rows.length) {
+            await tx.query(
+              "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal')",
+              [scope, ownerId, kind],
+            );
+            await tx.query("update public.credentials set is_default=true where id=$1", [preferred.rows[0].id]);
+          }
+        });
+        return;
+      }
       await sql.query(
-        `insert into public.credentials (scope, owner_id, kind, value_enc)
-         values ($1::public.credential_scope, $2, $3::public.credential_kind, $4::bytea)
-         on conflict (scope, owner_id, kind) do update set value_enc = excluded.value_enc`,
+        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind in ('boat','modal') do update set value_enc=excluded.value_enc`,
         [scope, ownerId, kind, valueEnc],
       );
     },
 
     async deleteCredential(scope, ownerId, kind) {
-      const result = await sql.query(
-        `delete from public.credentials
-         where scope = $1::public.credential_scope and owner_id = $2 and kind = $3::public.credential_kind
-         returning id`,
-        [scope, ownerId, kind],
-      );
-      return result.rows.length > 0;
+      if (!sql.transaction) throw new VaultError("unavailable", "Credential removal requires a transaction.");
+      return sql.transaction(async (tx) => {
+        await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [ownerId]);
+        const rows = (await createSqlVaultStore(tx).listCredentials(scope, ownerId)).filter(
+          (row) => row.kind === kind && row.status !== "deleted",
+        );
+        if (rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
+        if (!rows[0]) return false;
+        await tx.query(
+          kind === "boat" || kind === "modal"
+            ? "delete from public.credentials where id=$1"
+            : "update public.credentials set status='deleted' where id=$1",
+          [rows[0].id],
+        );
+        return true;
+      });
     },
 
     async listCredentials(scope, ownerId): Promise<CredentialInfo[]> {
-      const result = await sql.query<{ kind: string; created_at: string | Date }>(
-        `select kind::text as kind, created_at from public.credentials
+      const result = await sql.query<{
+        id: string;
+        name: string;
+        is_default: boolean;
+        status: string;
+        expires_at: string | null;
+        updated_at: string;
+        version: number;
+        kind: string;
+        created_at: string | Date;
+      }>(
+        `select id,name,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
          where scope = $1::public.credential_scope and owner_id = $2
          order by kind`,
         [scope, ownerId],
       );
-      return result.rows.map((row) => ({ kind: row.kind as CredentialKind, createdAt: instant(row.created_at) }));
+      return result.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        isDefault: row.is_default,
+        status: row.status,
+        expiresAt: row.expires_at ? instant(row.expires_at) : null,
+        updatedAt: instant(row.updated_at),
+        version: row.version,
+        kind: row.kind as CredentialKind,
+        createdAt: instant(row.created_at),
+      }));
     },
 
     async setOrgBoatKey(orgId, valueEnc) {
@@ -151,12 +279,28 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     },
 
     async credentials(scope: CredentialScope, ownerId: string) {
-      const result = await sql.query<{ kind: string; value_enc: Uint8Array }>(
-        `select kind::text as kind, value_enc from public.credentials
+      const result = await sql.query<{
+        id: string;
+        is_default: boolean;
+        status: string;
+        expires_at: string | null;
+        version: number;
+        kind: string;
+        value_enc: Uint8Array;
+      }>(
+        `select id,is_default,status,expires_at,version,kind::text as kind, value_enc from public.credentials
          where scope = $1::public.credential_scope and owner_id = $2`,
         [scope, ownerId],
       );
-      return result.rows.map((row) => ({ kind: row.kind as CredentialKind, valueEnc: new Uint8Array(row.value_enc) }));
+      return result.rows.map((row) => ({
+        id: row.id,
+        isDefault: row.is_default,
+        status: row.status,
+        expiresAt: row.expires_at,
+        version: row.version,
+        kind: row.kind as CredentialKind,
+        valueEnc: new Uint8Array(row.value_enc),
+      }));
     },
 
     async getGitHubConnection(userId): Promise<StoredGitHubConnection | null> {

@@ -24,6 +24,7 @@ import { isActiveStatus } from "@/lib/events";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { lifecycleView, readLifecycle } from "@/lib/lifecycle";
+import { describeEvidence } from "@/lib/machine-size";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -61,6 +62,7 @@ export default async function SandboxPage({ params }: Props) {
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
+  const machineSize = describeEvidence(sandbox.provider, sandbox);
 
   const facts: [string, string][] = [
     ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
@@ -78,6 +80,7 @@ export default async function SandboxPage({ params }: Props) {
         ]
       : []),
     ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
+    ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
     ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
