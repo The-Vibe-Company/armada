@@ -202,8 +202,13 @@ legacy credential rows) and Modal token pairs count as configured, not perpetual
 Connections perform a bounded, read-only authentication check before encrypted storage. A rejected
 credential or unavailable provider leaves the stored credential unchanged. No sandbox or App is created.
 
-The shared authenticated control API exposes `POST org/provider/status` (`{org}`) and
-`POST org/provider/connect` (`{org, provider, value}`). Both return only
+In the dashboard, an admin connects, replaces and disconnects the active organization's providers in
+Settings. New goldens, rebuilds and launches use only a provider the organization has connected; goldens
+and sandboxes already on a disconnected provider stay listed and manageable.
+
+The shared authenticated control API exposes `POST org/provider/status` (`{org}`),
+`POST org/provider/connect` (`{org, provider, value}`) and `POST org/provider/disconnect`
+(`{org, provider}`, admin only, rechecked live). Each returns only
 `{org:{id,name,role}, ready, providers:[{provider:"boat",configured},{provider:"modal",configured}]}`.
 Readiness is derived from current organization credentials, so interrupted onboarding resumes
 without cookies or query flags. Credential repair, account access and managed sandbox operations

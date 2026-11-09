@@ -1,7 +1,8 @@
+import type { SandboxProviderId } from "@armada/core";
 import { cache } from "react";
 import { CAPABILITIES_TIMEOUT_MS, ControlError, createControlClient } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
-import { type ProviderStatus, parseProviderStatus } from "@/lib/provider-setup";
+import { isConfigured, type ProviderStatus, parseProviderStatus, SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
 import { requireViewer } from "./viewer";
 
 /**
@@ -44,14 +45,16 @@ export function explainSetupError(error: ControlError): string {
 }
 
 /**
- * Why new work (a golden build, a launch) cannot start in this organization, or null when it can. Checked by the
- * server actions themselves, so a forged form post meets the same rule as the page.
+ * Why new work (a golden build, a rebuild, a launch) cannot start on this provider in this organization, or null when
+ * it can. Only the organization's own connection of that exact provider counts: another connected provider or a
+ * personal key does not. Checked by the server actions themselves, so a forged form post meets the same rule as the
+ * page. A status that could not be read is a retryable error, never "not connected".
  */
-export async function newWorkBlocker(org: string): Promise<string | null> {
+export async function newWorkBlocker(org: string, provider: SandboxProviderId): Promise<string | null> {
   const setup = await readProviderSetup(org);
   if (setup.state === "unavailable")
-    return `The organization's sandbox provider could not be checked. ${setup.message}`;
-  return setup.state === "ready"
-    ? null
-    : "Connect a sandbox provider for this organization first: an admin finishes its setup.";
+    return `The organization's sandbox providers could not be checked. ${setup.message}`;
+  if (isConfigured(setup.status, provider)) return null;
+  const label = SETUP_PROVIDER_INFO[provider].label;
+  return `${label} is not connected for this organization. An admin connects it in Settings.`;
 }

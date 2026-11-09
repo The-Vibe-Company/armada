@@ -81,7 +81,13 @@ import { providerRegistry } from "./http.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
-import { connectOrgProvider, orgProviderStatus, type ProviderValidator, validateOrgProvider } from "./org-provider.ts";
+import {
+  connectOrgProvider,
+  disconnectOrgProvider,
+  orgProviderStatus,
+  type ProviderValidator,
+  validateOrgProvider,
+} from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { bunSql } from "./sql.ts";
@@ -598,6 +604,8 @@ async function dispatch(
       required(body, "value"),
       options.providerValidator ?? validateOrgProvider,
     );
+  if (route === "org/provider/disconnect")
+    return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
     case "org/create":

@@ -1265,10 +1265,11 @@ function orgCredential(cid: string, owner: string, kind: string): Row {
 }
 
 /**
- * `org/provider/status` and `org/provider/connect` (#576), as the Armada API serves them. Readiness is derived from the
+ * `org/provider/status`, `org/provider/connect` and `org/provider/disconnect`, as the Armada API serves them. Readiness is derived from the
  * stored state only: the org's Boat column or an org-scoped Modal credential. A personal key never counts. Connect is
  * admin-only, checks the value with the provider (here: a value containing "rejected" is refused) and stores
- * ciphertext, never the value; its answer is the same status.
+ * ciphertext, never the value, so a refused replacement keeps the stored one. Disconnect is admin-only and clears that
+ * provider alone. Each answers the same status.
  */
 function orgProvider(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
@@ -1314,6 +1315,16 @@ function orgProvider(route: string, body: Row, request: Request): Response {
     else if (existing) existing.value_enc = "\\x0304";
     else state.credentials.push(orgCredential(id(++sequence), String(org.id), provider));
   }
+  if (route === "org/provider/disconnect") {
+    if (!isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin can do that.");
+    const provider = body.provider;
+    if (provider !== "boat" && provider !== "modal") return controlFail(400, "invalid", "Provider is boat or modal.");
+    if (provider === "boat") org.boat_api_key_enc = null;
+    else
+      state.credentials = state.credentials.filter(
+        (row) => !(row.scope === "org" && row.owner_id === org.id && row.kind === provider),
+      );
+  }
   const configured = (provider: string) =>
     provider === "boat"
       ? Boolean(org.boat_api_key_enc)
@@ -1325,20 +1336,6 @@ function orgProvider(route: string, body: Row, request: Request): Response {
     200,
     { "cache-control": "no-store" },
   );
-}
-
-/** `creds/rm` for the org Boat key, as the Armada API serves it: admin-only, it clears the org's column. */
-function removeOrgCredential(body: Row, request: Request): Response {
-  const userId = viewer(request);
-  state.providerCalls.push({ route: "creds/rm", body, authorized: Boolean(userId) });
-  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
-  const org = state.orgs.find((row) => row.id === body.org);
-  if (!org || !isMember(org.id, userId)) return controlFail(404, "not_found", "You are not a member of that org.");
-  if (body.scope !== "org" || body.kind !== "boat") return controlFail(400, "invalid", "Unsupported in this mock.");
-  if (!isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin can do that.");
-  if (!org.boat_api_key_enc) return controlFail(404, "not_found", "No such credential is stored.");
-  org.boat_api_key_enc = null;
-  return json({ ok: true }, 200, { "cache-control": "no-store" });
 }
 
 function control(url: URL, body: Row): Response {
@@ -1383,6 +1380,9 @@ function control(url: URL, body: Row): Response {
       });
       state.members.push({ org_id: id(12), user_id: id(3), role: "admin", created_at: "2026-11-08T10:00:00.000Z" });
     }
+    // Modal connected for the organization as well (#598): new work may then choose it.
+    if (body.acmeModal) state.credentials.push(orgCredential(id(45), ACME, "modal"));
+    if (body.novaModal) state.credentials.push(orgCredential(id(46), id(12), "modal"));
     if (body.orionOrg) {
       // An org that never finished its provider setup (#576): carol is its admin, bob a member, nothing configured.
       const now = "2026-11-08T10:00:00.000Z";
@@ -1556,8 +1556,8 @@ const server = Bun.serve({
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);
-      if (route === "org/provider/status" || route === "org/provider/connect") return orgProvider(route, body, request);
-      if (route === "creds/rm") return removeOrgCredential(body, request);
+      if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
+        return orgProvider(route, body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);
