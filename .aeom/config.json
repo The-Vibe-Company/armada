@@ -1,12 +1,8 @@
 {
   "url": "http://127.0.0.1:4317",
   "start": "bash scripts/aeom/landing-app.sh",
-  "pages": [
-    "/"
-  ],
-  "public": [
-    "/"
-  ],
+  "pages": ["/"],
+  "public": ["/"],
   "protected": [
     "apps/dashboard/src/app/(app)/**",
     "apps/dashboard/src/app/api/**",
