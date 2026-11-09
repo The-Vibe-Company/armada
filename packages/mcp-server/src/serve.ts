@@ -15,11 +15,13 @@ import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
+import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
 import type { createOrchestratorServices } from "./orchestrator-composition.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
@@ -40,6 +42,10 @@ export async function startServer(
     orchestrators?: (context: {
       sql: Sql;
       providers: ProviderRegistry;
+      credentials: NamedOrchestratorCredentials;
+      encryptionKey: string | undefined;
+      connections: NonNullable<ControlOptions["connections"]>;
+      publicUrl: string;
     }) => Promise<Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle">>;
     routes?: readonly Route[];
     log?: (line: string) => void;
@@ -125,11 +131,9 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const orchestrators = await options.orchestrators?.({ sql, providers });
   const control: ControlOptions = {
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
-    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -163,6 +167,23 @@ export async function startServer(
       };
     },
   };
+  // Actual604 exposes the same ownership object on control.modelAuth. Reflect keeps
+  // pre-producer deployments type-safe; no second ownership/redaction registry is created.
+  const credentials = Reflect.apply(launchCredentials, undefined, [
+    store,
+    config.encryptionKey,
+    { store, app: githubApp },
+    Reflect.get(control, "modelAuth"),
+  ]) as NamedOrchestratorCredentials;
+  const orchestrators = await options.orchestrators?.({
+    sql,
+    providers,
+    credentials,
+    encryptionKey: config.encryptionKey,
+    connections: mcp.connections,
+    publicUrl: config.publicUrl,
+  });
+  if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     publicUrl: config.publicUrl,

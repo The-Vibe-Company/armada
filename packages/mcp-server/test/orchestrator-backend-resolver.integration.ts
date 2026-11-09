@@ -74,6 +74,7 @@ test("production resolver pins selected golden/account/resources and cleanup sur
     } as unknown as core.Provider;
     const selection = createOrchestratorBackendResolver({
       sql,
+      encryptionKey: ENCRYPTION_KEY,
       providers: {
         resolve: async (target) => {
           targets.push(target);
@@ -155,8 +156,8 @@ test("production resolver pins selected golden/account/resources and cleanup sur
       goldenId: golden.id,
       provider: "boat",
     });
-    expect(managed.provider).toBe(provider);
-    expect((await managed.observe(machine)).state).toBe("active");
+    expect(managed.provider.id).toBe("boat");
+    expect((await managed.observe(machine)).state).toBe("unknown");
     expect(targets.at(-1)?.sourceGoldenVisibility).toBe("org");
     expect(targets.at(-1)?.visibility).toBe("private");
     await expect(selection.resolveBackend(configuration, p.owner)).rejects.toThrow("not_found");

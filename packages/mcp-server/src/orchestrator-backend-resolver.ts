@@ -16,6 +16,7 @@ import {
   resolveRepositoryDir,
   type Sql,
 } from "@armada/core/server";
+import { createBoatOrchestratorProvider } from "./boat-orchestrator-provider.ts";
 import { launchOrchestratorParent } from "./orchestrator-launch.ts";
 import type { ManagedMachine, ManagedNativeBackend, ManagedSelection } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeBackend, OrchestratorRuntimeOptions } from "./orchestrator-runtime.ts";
@@ -46,6 +47,7 @@ export function createOrchestratorBackendResolver(input: {
   credentials: NamedOrchestratorCredentials;
   connections?: LaunchStores["connections"];
   mcpUrl: string;
+  encryptionKey?: string;
   native(provider: Provider["id"], harness: Harness): OrchestratorNativeAdapter | undefined;
   consent(actor: GoldenActor, configuration: OrchestratorCreate): Promise<OrchestratorRuntimeBackend["consent"]>;
 }) {
@@ -140,7 +142,11 @@ export function createOrchestratorBackendResolver(input: {
     const target: ProviderTarget = identity?.sandboxId
       ? await persistedTarget(identity.sandboxId, ownerId, configuration.orgId)
       : golden;
-    const provider = await input.providers.resolve(target, { userId: ownerId });
+    const rawProvider = await input.providers.resolve(target, { userId: ownerId });
+    const provider =
+      configuration.provider === "boat"
+        ? createBoatOrchestratorProvider(rawProvider, input.encryptionKey)
+        : rawProvider;
     if (provider.id !== configuration.provider) throw new OrchestratorRuntimeError("conflict");
     const scopedGoldens = new Proxy(goldens, {
       get(target, key) {
@@ -257,10 +263,12 @@ export function createOrchestratorBackendResolver(input: {
     if (!adapter) throw new OrchestratorRuntimeError("unavailable");
     const target = await persistedTarget(machine.sandboxId, selection.ownerId, selection.orgId);
     if (target.provider !== selection.provider) throw new OrchestratorRuntimeError("conflict");
-    const provider = await input.providers.resolve(target, { userId: selection.ownerId });
+    const rawProvider = await input.providers.resolve(target, { userId: selection.ownerId });
+    const provider =
+      selection.provider === "boat" ? createBoatOrchestratorProvider(rawProvider, input.encryptionKey) : rawProvider;
     const backend = adapter.managed(provider, machine, selection);
     const inspect = provider.observeOrchestrator?.bind(provider);
-    if (!inspect) return backend; // A different native adapter must supply real observation, never a capability bit.
+    if (!inspect || provider.id !== "modal") return backend; // A different native adapter must supply real observation, never a capability bit.
     return new Proxy(backend, {
       get(target, key) {
         if (key === "observe")

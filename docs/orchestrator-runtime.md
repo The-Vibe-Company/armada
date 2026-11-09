@@ -28,7 +28,7 @@ The runtime now integrates merged main, including #661 ready-admission fix
   epoch tombstone is journaled. Modal exposes these operations under an active
   native-generation lease; stopped machines are never restored by this transport.
   Active native turns refuse rotation/scrub; no hot reload is claimed. Checkpoint
-  refuses until the slot has been scrubbed. Boat has no implementation here.
+  refuses until the slot has been scrubbed. Boat now has an explicit pinned-SSH memory-only broker adapter; native continuity is not enabled.
 - Child `Authority.admit` and lifecycle/waits remain #661/#663-owned; this change
   does not dispatch delegated principals as owners.
 
@@ -234,3 +234,35 @@ its same-registry redaction/publication rather than copying only resolve.
 #604 `refreshNativeSecrets` is synchronous; `publishNativeAuth` is asynchronous.
 A native adapter/prerequisite verifier is mandatory per provider/harness; absence
 fails closed before allocation. Concrete native adapters/proof remain in progress.
+
+## Boat private epoch transport
+
+The Boat-specific provider wrapper obtains kernel boot identity over pinned SSH
+stdin, not labels or the SQL lifecycle counter. Install/scrub controls use the
+same private channel. A memory-only broker injects the scoped epoch header into
+upstream MCP requests; native Claude/Codex configuration contains only a loopback
+URL. Broker code and monotonic epoch tombstones live on verified tmpfs; neither
+raw epoch nor derived control key is written into native config, HOME, argv or
+snapshot files. Control keys are domain/sandbox/boot-bound HMACs of the server
+root key, not owner/provider credentials; the root key never enters the VM.
+
+A durable-per-boot first-seen epoch tombstone prevents delayed older installs and
+same-epoch resurrection after scrub/restart. Exact token-hash scrub ignores late
+old cleanup. The broker registers credentials before operations, uses only
+constant diagnostics, and redacts known epochs in forwarded request/streamed
+response bodies. In-flight requests block mutation. ACK means broker/config
+delivery only, not live-client/native continuity proof. The 24-hour issuer and
+quiescent checkpoint/rollover deadlines remain enforced by the authority and
+lifecycle lanes; no periodic manual reauthentication is added.
+
+Generic MCP normalization/allowlists are unchanged. A separate secret-free bridge
+ownership marker preserves user/external definitions. Startup composition receives
+the existing lifecycle-aware credential resolver using the server's actual #604
+ownership object, so native auth/redaction/publication do not split registries.
+
+Outstanding generation policy is explicit: the current authority transport binding
+comes from SQL lifecycle_generation, while Boat's kernel boot UUID and Modal's
+runner generation are native incarnation identities. They are never compared as
+if equivalent or inferred from labels. The current transport fails closed on this
+mismatch. A reviewed two-fence binding/rebind contract is still required before
+native activation; implementing private delivery does not by itself resolve it.
