@@ -1,7 +1,8 @@
 import { GoldenError } from "@armada/core";
 
-const BOOLEAN = new Set(["--private", "--json", "--all", "--follow"]);
+const BOOLEAN = new Set(["--private", "--json", "--all", "--follow", "--no-browser"]);
 const VALUE = new Set([
+  "--since",
   "--idempotency-key",
   "--connections",
   "--visibility",
@@ -30,7 +31,11 @@ export interface Args {
   options: Map<string, string[]>;
 }
 
-export function parseArgs(argv: readonly string[]): Args {
+export function parseArgs(
+  argv: readonly string[],
+  additionalValues: readonly string[] = [],
+  additionalBooleans: readonly string[] = [],
+): Args {
   const positionals: string[] = [];
   const options = new Map<string, string[]>();
   for (let index = 0; index < argv.length; index++) {
@@ -47,12 +52,13 @@ export function parseArgs(argv: readonly string[]): Args {
     if (!arg.startsWith("--")) throw new GoldenError("invalid_config", `Unknown option '${arg}'.`);
     const eq = arg.indexOf("=");
     const key = eq === -1 ? arg : arg.slice(0, eq);
-    if (BOOLEAN.has(key)) {
+    if (BOOLEAN.has(key) || additionalBooleans.includes(key)) {
       if (eq !== -1) throw new GoldenError("invalid_config", `${key} takes no value.`);
       options.set(key, []);
       continue;
     }
-    if (!VALUE.has(key)) throw new GoldenError("invalid_config", `Unknown option '${key}'.`);
+    if (!VALUE.has(key) && !additionalValues.includes(key))
+      throw new GoldenError("invalid_config", `Unknown option '${key}'.`);
     const value = eq === -1 ? argv[index + 1] : arg.slice(eq + 1);
     if (eq === -1) index += 1;
     if (value === undefined || value.startsWith("--")) {

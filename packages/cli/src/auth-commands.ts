@@ -2,9 +2,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch, assertEmail, createPkce, type Provider } from "@armada/auth";
-
 import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
+import { filePreferences, type Preferences } from "./preferences.ts";
 import { fileSessionStore, type SessionStore } from "./session.ts";
 
 export interface AuthIo {
@@ -16,6 +16,8 @@ export interface AuthIo {
   open: (url: string) => void;
   session: SessionStore;
   timeoutMs?: number;
+  preferences?: Preferences;
+  sleep?: (ms: number) => Promise<void>;
   /** Reads the code typed from a sign-in email. Tests set it; the terminal prompt is the default. */
   readCode?: (signal: AbortSignal) => Promise<string>;
   readEmail?: () => Promise<string>;
@@ -37,6 +39,7 @@ export function productionAuthIo(
     now: () => new Date(),
     open: openBrowser,
     session: fileSessionStore(defaultSessionPath(env)),
+    preferences: filePreferences(join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "preferences.json")),
     readCode: promptCode,
     readEmail: () =>
       new Promise((resolve) => {
@@ -153,7 +156,12 @@ export async function logoutCommand(io: AuthIo): Promise<void> {
   io.out("Logged out.\n");
 }
 
-export async function tokenCreate(io: AuthIo, orgName: string | undefined, label: string | undefined): Promise<void> {
+export async function tokenCreate(
+  io: AuthIo,
+  orgName: string | undefined,
+  label: string | undefined,
+  json = false,
+): Promise<void> {
   const client = await createArmadaApiClient(io);
   const created = await client.request<{ id: string; label: string; orgName: string; token: string }>(
     "/api/v1/token/create",
@@ -166,16 +174,24 @@ export async function tokenCreate(io: AuthIo, orgName: string | undefined, label
       }),
     },
   );
+  if (json) {
+    io.out(`${JSON.stringify(created)}\n`);
+    return;
+  }
   io.out(
     `Created a service token. Copy it now; Armada stores only its hash.\n\nid: ${created.id}\nlabel: ${created.label}\norg: ${created.orgName}\ntoken: ${created.token}\n`,
   );
 }
 
-export async function tokenList(io: AuthIo): Promise<void> {
+export async function tokenList(io: AuthIo, json = false): Promise<void> {
   const client = await createArmadaApiClient(io);
   const { tokens } = await client.request<{
     tokens: { id: string; label: string; orgName: string; createdAt: string; revokedAt: string | null }[];
   }>("/api/v1/token/list", { method: "POST" });
+  if (json) {
+    io.out(`${JSON.stringify({ tokens })}\n`);
+    return;
+  }
   if (tokens.length === 0) {
     io.out("No service tokens.\n");
     return;
@@ -186,14 +202,14 @@ export async function tokenList(io: AuthIo): Promise<void> {
   }
 }
 
-export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
+export async function tokenRevoke(io: AuthIo, id: string, json = false): Promise<void> {
   const client = await createArmadaApiClient(io);
   await client.request("/api/v1/token/revoke", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ id }),
   });
-  io.out(`Revoked ${id}.\n`);
+  io.out(json ? `${JSON.stringify({ ok: true })}\n` : `Revoked ${id}.\n`);
 }
 
 function openBrowser(url: string): void {

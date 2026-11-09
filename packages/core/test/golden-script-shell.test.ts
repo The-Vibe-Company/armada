@@ -230,6 +230,39 @@ test("real shell: pinned Bun replaces an image binary in a non-writable PATH dir
     fakeBin(system, ["bun"]);
     // Model the immutable image's PATH directory, not a writable fake binary directory.
     expect(spawnSync("chmod", ["555", system]).status).toBe(0);
+    const bashEnv = join(base, "bash-env");
+    const events = join(base, "events");
+    // The real image resolves Bun at this fixed privileged path. Map only that path
+    // to our owned readonly fixture; no process receives a host-system write target.
+    writeFileSync(
+      bashEnv,
+      `command() {
+  if [ "$#" -eq 2 ] && [ "$1" = -v ] && [ "$2" = bun ]; then printf '%s\\n' /usr/local/bin/bun;
+  else builtin command "$@"; fi
+}
+ln() {
+  if [ "$#" -eq 4 ] && [ "$1" = -sf ] && [ "$2" = -- ] && [ "$3" = "$HOME/.bun-npm/bin/bun" ] && [ "$4" = /usr/local/bin/bun ]; then
+    printf 'unprivileged-denied\\n' >> "$ARMADA_TEST_EVENTS"
+    return 1
+  fi
+  case "\${!#}" in /usr/*|/bin/*) return 95 ;; esac
+  builtin command ln "$@"
+}
+`,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(bin, "sudo"),
+      `#!/bin/sh
+set -eu
+[ "$#" -eq 6 ] && [ "$1" = -n ] && [ "$2" = ln ] && [ "$3" = -sf ] && [ "$4" = -- ] && [ "$5" = "$HOME/.bun-npm/bin/bun" ] && [ "$6" = /usr/local/bin/bun ] || exit 95
+printf 'privileged-replacement\\n' >> "$ARMADA_TEST_EVENTS"
+chmod 755 "$ARMADA_TEST_IMAGE_BIN"
+/bin/ln -sf -- "$5" "$ARMADA_TEST_IMAGE_BIN/bun"
+chmod 555 "$ARMADA_TEST_IMAGE_BIN"
+`,
+      { mode: 0o700 },
+    );
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
     const block = extract(
       goldenScript(prepared).replace(/\/home\/user/g, home),
@@ -237,11 +270,23 @@ test("real shell: pinned Bun replaces an image binary in a non-writable PATH dir
       "npm install --global @openai/codex",
     );
     const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
-      env: { PATH: `${system}:${bin}:/usr/bin:/bin`, HOME: home },
+      env: {
+        PATH: `${system}:${bin}:/usr/bin:/bin`,
+        HOME: home,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        BASH_ENV: bashEnv,
+        ARMADA_TEST_EVENTS: events,
+        ARMADA_TEST_IMAGE_BIN: system,
+      },
       encoding: "utf8",
     });
     expect(result.status).toBe(0);
-    const fresh = spawnSync(join(system, "bun"), [], { encoding: "utf8" });
+    expect(readFileSync(events, "utf8")).toBe("unprivileged-denied\nprivileged-replacement\n");
+    const fresh = spawnSync("/bin/sh", ["-c", "bun"], {
+      env: { PATH: `${system}:${bin}:/usr/bin:/bin`, HOME: home, GIT_CONFIG_GLOBAL: "/dev/null" },
+      encoding: "utf8",
+    });
+    expect(fresh.status).toBe(0);
     expect(fresh.stdout).toContain("PINNED");
   } finally {
     spawnSync("chmod", ["755", system]);

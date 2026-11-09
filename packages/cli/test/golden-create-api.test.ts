@@ -166,3 +166,48 @@ for (const outcome of ["succeeded", "failed", "disconnected"] as const) {
     if (outcome === "disconnected") expect(error).toContain("do not resubmit");
   });
 }
+
+for (const state of ["succeeded", "queued"] as const) {
+  test(`golden JSON output is one complete document after durable admission: ${state}`, async () => {
+    const result = { name: "web", visibility: "private", snapshot: "golden-bx" };
+    const job = {
+      jobId: "11111111-1111-4111-8111-111111111111",
+      state,
+      phase: state === "succeeded" ? "complete" : "queued",
+      errorCode: null,
+      result: state === "succeeded" ? result : null,
+    };
+    const paths: string[] = [];
+    let output = "";
+    const code = await run(
+      ["golden", "create", "web", "--repo", "https://github.com/acme/web.git", "--timeout", "0", "--json"],
+      {
+        out: (text) => {
+          output += text;
+        },
+        err: () => {},
+      },
+      {
+        sleep: async () => {
+          throw new Error("Admission-only mode must not poll.");
+        },
+        auth: {
+          out: () => {},
+          err: () => {},
+          env: { ARMADA_TOKEN: token },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => {},
+          fetch: async (input) => {
+            paths.push(new URL(String(input)).pathname);
+            return Response.json(job, { status: 202 });
+          },
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(paths).toEqual(["/api/v1/golden/create"]);
+    expect(JSON.parse(output)).toEqual(state === "succeeded" ? result : job);
+    expect(output).not.toContain(token);
+  });
+}

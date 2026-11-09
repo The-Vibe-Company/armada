@@ -45,6 +45,7 @@ Requires [Bun](https://bun.sh) 1.4.2 (`packageManager` in `package.json`).
 
 ```sh
 bun install
+bun scripts/prepare-runtime.ts # portable runtime artifact required by local server tests
 bun test                 # every package's tests, including one that compiles the binary and runs it
 bun run lint             # Biome
 bun run format           # Biome, with safe fixes applied

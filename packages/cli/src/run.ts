@@ -25,8 +25,9 @@ import {
   type VaultStore,
   VERSION,
 } from "@armada/core";
+import { accountCommand } from "./account-commands.ts";
 import { flag, parseArgs, single, values } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
+import { armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import {
   type AuthIo,
   loginCommand,
@@ -67,20 +68,20 @@ export interface Deps {
   vault?: { store: VaultStore; encryptionKey: string };
 }
 
-const HELP = `armada ${VERSION}: launch coding agents on boat.dev
+const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
 
 Usage:
   armada --version                         Print the version
   armada --help                            Show this help
   armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
-                               [--setup <local-file>] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
+                               [--setup <local-file>] [--provider boat|modal] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Server-orchestrated: builds, scans and snapshots the golden on the
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
   armada golden update <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
-                               [--setup <local-file>] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
-                                           Rebuild the existing golden in place. One boat golden may contain
+                               [--setup <local-file>] [--provider boat|modal] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
+                                           Rebuild the existing golden in place. One golden may contain
                                            many repositories; visibility and ownership stay unchanged.
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
@@ -88,20 +89,35 @@ Usage:
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
-  armada golden connect <name>             Open the master sandbox to place .env files
-  armada golden snapshot <name>            Freeze the master sandbox
-  armada golden list [--json]              Goldens you can see
+  armada golden connect <name> [--provider boat|modal]
+                                           Open the canonical master for maintenance
+  armada golden snapshot <name> [--provider boat|modal]
+                                           Scan and freeze the master sandbox
+  armada golden capabilities [--provider boat|modal] [--org UUID] [--json]
+                                           Server-authoritative golden capacity; null means unbounded/unknown
+  armada golden list [--provider boat|modal] [--json]
+                                           Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                [--repo owner/repo] [--provider boat|modal] [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
+                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
+                [--visibility private|org] [--connections <id,...>] [--org <org>]
+                                           Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --repo owner/repo selects a recorded
                                            golden repository as the native agent's real initial cwd (also when idle);
                                            omit it to keep legacy launch behavior. Defaults:
                                            ${modelDefaults()}
-  armada list|detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+                                           --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
+  armada list [--status STATUS] [--agent|--harness claude|codex] [--golden UUID] [--owner UUID|me]
+              [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
+                                           Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
+  armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
+                                           Read actual bound connection metadata, never mutate bindings
+  armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
-  armada mcp list|add|update|connect|status|reconnect|disable|revoke|delete [id] [--org UUID] [--file JSON]
+  armada mcp add NAME URL [--scope personal|org] [--org UUID]
+                                           Public/OAuth URL shortcut; auto discovery, no secret argv
+  armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
   armada logs <sandbox-id> [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
@@ -112,6 +128,11 @@ Usage:
   armada token revoke <id>
   armada org create <name>                 Create an org; you are its first admin
   armada org list
+  armada org use <name|UUID|none>           Persist selection for this Armada server
+  armada org current                        Show selected organization
+  armada account status|logout              Account identity / revoke current login session
+  armada github status|connect|reconnect|disconnect|install|manage [installation-id]
+                                           Browser authorization waits for real completion; --no-browser prints URL
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
@@ -133,6 +154,18 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
   try {
     return await dispatch(argv, io, deps);
   } catch (error) {
+    if (
+      argv.includes("--json") &&
+      (error instanceof GoldenError ||
+        error instanceof LaunchError ||
+        error instanceof VaultError ||
+        error instanceof ProviderRoutingError ||
+        error instanceof ProviderError ||
+        error instanceof AuthError)
+    ) {
+      io.err(`${JSON.stringify({ error: { code: error.code, message: error.message } })}\n`);
+      return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
+    }
     if (error instanceof GoldenError) {
       io.err(`armada: ${error.message}\n`);
       return error.code === "invalid_config" ? 2 : 1;
@@ -163,7 +196,41 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 }
 
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const [command, ...rest] = argv;
+  const [command, ...original] = argv;
+  let rest = original;
+  const terminator = rest.indexOf("--");
+  const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
+  const scoped = [
+    "golden",
+    "launch",
+    "list",
+    "detail",
+    "status",
+    "send",
+    "steer",
+    "interrupt",
+    "exec",
+    "stop",
+    "wait",
+    "logs",
+    "mcp",
+  ];
+  if (
+    command &&
+    (scoped.includes(command) ||
+      (command === "org" && rest[0] === "members") ||
+      (command === "creds" && rest[0] === "list") ||
+      (command === "token" && rest[0] === "create")) &&
+    !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
+  ) {
+    const auth = authOf(io, deps);
+    const selected = await auth.preferences?.read(armadaApiUrl(auth.env.ARMADA_URL));
+    if (selected) {
+      const split = rest.indexOf("--");
+      rest =
+        split < 0 ? [...rest, "--org", selected] : [...rest.slice(0, split), "--org", selected, ...rest.slice(split)];
+    }
+  }
   switch (command) {
     case "--version":
     case "-v":
@@ -189,16 +256,24 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "stop":
     case "wait":
     case "mcp":
-      return operation(command, rest, authOf(io, deps), (path) =>
-        path
-          ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path)
-          : (
-              deps.readStdin ??
-              (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
-            )(),
+      return operation(
+        command,
+        rest,
+        authOf(io, deps),
+        (path) =>
+          path
+            ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path)
+            : (
+                deps.readStdin ??
+                (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
+              )(),
+        () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
       );
     case "logs":
       return logs(rest, io, deps);
+    case "github":
+    case "account":
+      return accountCommand(command, rest, authOf(io, deps));
     case "login":
       return login(rest, io, deps);
     case "logout":
@@ -229,6 +304,44 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     ...(deps.snapshotPolls !== undefined ? { snapshotPolls: deps.snapshotPolls } : {}),
   };
   switch (subcommand) {
+    case "capabilities": {
+      if (args.positionals.length) throw new GoldenError("invalid_config", "golden capabilities takes no name.");
+      const requested = providerFlag(args);
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const payload = await client.request<unknown>("/api/v1/golden/capabilities", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(requested === undefined ? {} : { provider: requested }),
+          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+        }),
+      });
+      const data =
+        payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
+      if (
+        !isSandboxProvider(data.provider) ||
+        (requested !== undefined && requested !== data.provider) ||
+        (data.maxGoldens !== null &&
+          (typeof data.maxGoldens !== "number" || !Number.isSafeInteger(data.maxGoldens) || data.maxGoldens < 0))
+      ) {
+        throw new VaultError("unavailable", "Armada returned invalid or mismatched golden capabilities.");
+      }
+      const capabilities: { provider: SandboxProviderId; maxGoldens: number | null } = {
+        provider: data.provider,
+        maxGoldens: data.maxGoldens as number | null,
+      };
+      io.out(
+        flag(args, "--json")
+          ? `${JSON.stringify(capabilities)}\n`
+          : `${capabilities.provider}: max goldens ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
+      );
+      return 0;
+    }
     case "visibility": {
       const visibility = single(args, "--visibility");
       if (visibility !== "org" && visibility !== "private")
@@ -300,7 +413,7 @@ async function admitGoldenBuild(
     ...init,
     body: JSON.stringify({ ...JSON.parse(String(init.body)), idempotencyKey: key }),
   });
-  io.out(`Build job: ${job.jobId}\n`);
+  if (!flag(args, "--json")) io.out(`Build job: ${job.jobId}\n`);
   const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
   let current = job;
   try {
@@ -327,7 +440,8 @@ async function admitGoldenBuild(
   if (current.state === "succeeded") return current.result ?? undefined;
   if (current.state === "failed" || current.state === "recovery_required")
     throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (build_failed).`);
-  io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
+  if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
+  else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
   return undefined;
 }
 
@@ -358,6 +472,10 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     signal: AbortSignal.timeout(10_000),
   });
   if (!result) return 0;
+  if (flag(args, "--json")) {
+    io.out(`${JSON.stringify(result)}\n`);
+    return 0;
+  }
   io.out(
     `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
   );
@@ -405,6 +523,10 @@ async function create(
     signal: AbortSignal.timeout(10_000),
   });
   if (!result) return 0;
+  if (flag(args, "--json")) {
+    io.out(`${JSON.stringify(result)}\n`);
+    return 0;
+  }
   io.out(
     `Created golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
   );
@@ -448,6 +570,10 @@ async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps):
     }),
     signal: AbortSignal.timeout(10 * 60_000),
   });
+  if (flag(args, "--json")) {
+    io.out(`${JSON.stringify(saved)}\n`);
+    return 0;
+  }
   io.out(`Snapshotted golden ${saved.name}.\nSaved snapshot: ${saved.snapshot}\n`);
   return 0;
 }
@@ -556,7 +682,8 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
   let settled = false;
-  let cursor: string | null = null;
+  let cursor: string | null = single(args, "--since") ?? null;
+
   while (!settled) {
     const result: LogsWireResult = await client.request<LogsWireResult>("/api/v1/logs/read", {
       method: "POST",
@@ -605,10 +732,13 @@ function parseTtl(value: string): number {
 function launchText(result: LaunchResult): string {
   const { sandbox, golden } = result;
   const lines = [
-    `Launched ${sandbox.harness} from golden ${golden.name} (${golden.visibility}).`,
+    `Launched ${sandbox.harness} sandbox (${sandbox.visibility ?? golden.visibility}) from golden ${golden.name}.`,
     `Sandbox: ${sandbox.id}`,
     `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
+    ...(sandbox.repositoryDir
+      ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
+      : []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
@@ -637,7 +767,8 @@ function jsonLaunch(result: LaunchResult) {
     providerSandboxId: sandbox.providerSandboxId,
     boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
     golden: result.golden.name,
-    visibility: result.golden.visibility,
+    visibility: sandbox.visibility ?? result.golden.visibility,
+    repositoryDir: sandbox.repositoryDir ?? null,
     harness: sandbox.harness,
     model: sandbox.model,
     reasoningEffort: sandbox.reasoningEffort,
@@ -662,6 +793,8 @@ function line(row: GoldenRecord): string {
 
 function jsonGolden(row: GoldenRecord) {
   return {
+    id: row.id,
+    orgId: row.orgId,
     name: row.name,
     visibility: row.visibility,
     ownerId: row.ownerId,
@@ -738,19 +871,19 @@ async function tokenCommand(parsed: AuthArgs, auth: AuthIo): Promise<number> {
   const extra = parsed.position[1];
   switch (sub) {
     case "create":
-      rejectUnknown(parsed.flags, ["org", "label"]);
+      rejectUnknown(parsed.flags, ["org", "label", "json"]);
       if (extra !== undefined) throw new AuthError("Run armada token create --org <name> --label <label>.", "usage");
-      await tokenCreate(auth, parsed.flags.get("org"), parsed.flags.get("label"));
+      await tokenCreate(auth, parsed.flags.get("org"), parsed.flags.get("label"), parsed.flags.has("json"));
       return 0;
     case "list":
-      rejectUnknown(parsed.flags, []);
+      rejectUnknown(parsed.flags, ["json"]);
       if (extra !== undefined) throw new AuthError("Run armada token list.", "usage");
-      await tokenList(auth);
+      await tokenList(auth, parsed.flags.has("json"));
       return 0;
     case "revoke":
-      rejectUnknown(parsed.flags, []);
+      rejectUnknown(parsed.flags, ["json"]);
       if (!extra || parsed.position.length > 2) throw new AuthError("Run armada token revoke <id>.", "usage");
-      await tokenRevoke(auth, extra);
+      await tokenRevoke(auth, extra, parsed.flags.has("json"));
       return 0;
     default:
       throw new AuthError("Run armada token create, list, or revoke.", "usage");
@@ -778,6 +911,10 @@ function parseAuth(argv: readonly string[]): AuthArgs {
     }
     const eq = arg.indexOf("=");
     const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+    if (name === "json" && eq === -1) {
+      flags.set("json", "true");
+      continue;
+    }
     if (name.length === 0) throw new AuthError("Unknown flag.", "usage");
     const value = eq === -1 ? argv[index + 1] : arg.slice(eq + 1);
     if (eq === -1) {

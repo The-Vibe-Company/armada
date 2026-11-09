@@ -1,77 +1,137 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nativeCwdCommand, nativeCwdInstallScript } from "../src/native-cwd.ts";
 
-function install(path: string, harness: "codex" | "claude", cwd: string) {
-  return spawnSync("bash", ["-c", nativeCwdInstallScript(path, nativeCwdCommand(path, harness, cwd))], {
+/** Exercise the production privilege boundary without elevating owned temporary fixtures. */
+function installFixture(root: string, command: string) {
+  const bin = join(root, "fixture-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "sudo"),
+    `#!/bin/sh
+set -eu
+[ "$#" -eq 4 ] && [ "$1" = -n ] && [ "$2" = bash ] && [ "$3" = -c ] || exit 97
+case "$4" in *"$ARMADA_NATIVE_TEST_ROOT"*) ;; *) exit 98 ;; esac
+exec /bin/bash -c "$4"
+`,
+    { mode: 0o755 },
+  );
+  const result = spawnSync("bash", ["-c", command], {
     encoding: "utf8",
     timeout: 10_000,
+    cwd: root,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      ARMADA_NATIVE_TEST_ROOT: root,
+    },
   });
+  expect(result.stderr).toBe("");
+  return result;
+}
+
+function install(path: string, harness: "codex" | "claude", cwd: string, root: string) {
+  return installFixture(root, nativeCwdInstallScript(path, nativeCwdCommand(path, harness, cwd)));
+}
+
+/** Portable protocol fixture only: execute the production wrapper command without pretending
+ * macOS has the VM's Linux flock/GNU rename installer semantics. Linux keeps the real installer. */
+function installProtocolFixture(path: string, root: string, cwd?: string) {
+  if (process.platform === "linux")
+    return installFixture(root, nativeCwdInstallScript(path, nativeCwdCommand(path, "codex", cwd), cwd));
+  const original = `${path}.armada-original`;
+  if (!existsSync(original)) renameSync(path, original);
+  if (cwd !== undefined) writeFileSync(`${path}.armada-cwd`, cwd);
+  rmSync(path, { force: true });
+  writeFileSync(path, `#!/bin/sh\n${nativeCwdCommand(path, "codex", cwd)}\n`, { mode: 0o755 });
+  return { status: 0 };
 }
 
 for (const harness of ["codex", "claude"] as const) {
-  test(`installs the ${harness} VM wrapper and preserves dynamic argv without recursion`, () => {
-    const base = mkdtempSync(join(tmpdir(), "armada-boat-native-cwd-"));
-    try {
-      const bin = join(base, "bin with ' quote");
-      const cwd = join(base, "repo with ' quote $ and ` shell");
-      const output = join(base, "output");
-      mkdirSync(bin, { recursive: true });
-      mkdirSync(cwd);
-      const path = join(bin, harness);
-      const native = `${path}-native`;
-      writeFileSync(
-        native,
-        `#!/bin/sh
+  test.skipIf(process.platform !== "linux")(
+    `installs the ${harness} VM wrapper and preserves dynamic argv without recursion`,
+    () => {
+      const base = mkdtempSync(join(tmpdir(), "armada-boat-native-cwd-"));
+      try {
+        const bin = join(base, "bin with ' quote");
+        const cwd = join(base, "repo with ' quote $ and ` shell");
+        const output = join(base, "output");
+        mkdirSync(bin, { recursive: true });
+        mkdirSync(cwd);
+        const path = join(bin, harness);
+        const native = `${path}-native`;
+        writeFileSync(
+          native,
+          `#!/bin/sh
 printf '%s\\0' invocation "$PWD" >> ${JSON.stringify(output)}
 for arg do printf '%s\\0' "$arg" >> ${JSON.stringify(output)}; done
 exit 23
 `,
-      );
-      chmodSync(native, 0o755);
-      symlinkSync(native, path);
-      expect(install(path, harness, base).status).toBe(0);
-      expect(install(path, harness, cwd).status).toBe(0);
-      expect(install(path, harness, cwd).status).toBe(0);
+        );
+        chmodSync(native, 0o755);
+        symlinkSync(native, path);
+        expect(install(path, harness, base, base).status).toBe(0);
+        expect(install(path, harness, cwd, base).status).toBe(0);
+        expect(install(path, harness, cwd, base).status).toBe(0);
 
-      // Boat supplies these only when it starts the installed native agent.
-      const common = ["--model", "runtime-model", "--protocol", "stream", "", "a ' quote", "$(exit 99)", "line\nbreak"];
-      const overrides = ["-C", "/bad", "--cd", "/also-bad", "--cd=/third-bad"];
-      const literal = ["--", "-C", "/literal", "--cd=/literal-too"];
-      const runtimeArgs = [...common, ...overrides, ...literal];
-      const run = (args: string[]) =>
-        spawnSync(path, args, {
-          encoding: "utf8",
-          timeout: 5_000,
-          cwd: base,
-          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
-        });
-      expect(run(runtimeArgs).status).toBe(23);
-      // A later invocation must not replay the earlier runtime arguments.
-      expect(run(["--model=second-model", "--json", "-C"]).status).toBe(23);
-      expect(readFileSync(output, "utf8").split("\0")).toEqual([
-        "invocation",
-        cwd,
-        ...common,
-        ...(harness === "claude" ? overrides : []),
-        ...literal,
-        "invocation",
-        cwd,
-        "--model=second-model",
-        "--json",
-        ...(harness === "claude" ? ["-C"] : []),
-        "",
-      ]);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  });
+        // Boat supplies these only when it starts the installed native agent.
+        const common = [
+          "--model",
+          "runtime-model",
+          "--protocol",
+          "stream",
+          "",
+          "a ' quote",
+          "$(exit 99)",
+          "line\nbreak",
+        ];
+        const overrides = ["-C", "/bad", "--cd", "/also-bad", "--cd=/third-bad"];
+        const literal = ["--", "-C", "/literal", "--cd=/literal-too"];
+        const runtimeArgs = [...common, ...overrides, ...literal];
+        const run = (args: string[]) =>
+          spawnSync(path, args, {
+            encoding: "utf8",
+            timeout: 5_000,
+            cwd: base,
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          });
+        expect(run(runtimeArgs).status).toBe(23);
+        // A later invocation must not replay the earlier runtime arguments.
+        expect(run(["--model=second-model", "--json", "-C"]).status).toBe(23);
+        expect(readFileSync(output, "utf8").split("\0")).toEqual([
+          "invocation",
+          cwd,
+          ...common,
+          ...(harness === "claude" ? overrides : []),
+          ...literal,
+          "invocation",
+          cwd,
+          "--model=second-model",
+          "--json",
+          ...(harness === "claude" ? ["-C"] : []),
+          "",
+        ]);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
 }
 
-test("SDK-installed Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd", async () => {
+test("Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd", async () => {
   const { fakeBoat } = await import("./support.ts");
   const base = mkdtempSync(join(tmpdir(), "armada-boat-protocol-"));
   try {
@@ -103,10 +163,17 @@ sys.exit(23)
       body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout: "", stderr: "", timedOut: false },
     });
     await boat.provider.prepareNativeHarnessCwd?.({ sandboxId: "bx_test", harness: "codex", cwd });
-    // Run exactly the SDK-serialized /commands payload, relocating only the root-owned bin path.
+    // Linux runs exactly the SDK-serialized VM installer with only the bin path relocated.
+    // macOS owns only the generated protocol command; the Linux installer has its own tests.
     const body = boat.requests[0]?.body as { command: string };
     const command = body.command.replaceAll("/usr/local/bin/codex", path);
-    expect(spawnSync("bash", ["-c", command], { encoding: "utf8" }).status).toBe(0);
+    expect(
+      process.platform === "linux"
+        ? installFixture(base, command).status
+        : installProtocolFixture(path, base, cwd).status,
+    ).toBe(0);
+    // A default MCP refresh must retain the explicitly selected repository across reinstall.
+    expect(installProtocolFixture(path, base).status).toBe(0);
     const unsupported = spawnSync(path, ["app-server", "--listen", "ws://127.0.0.1:9000"], {
       encoding: "utf8",
       timeout: 5000,
@@ -163,7 +230,7 @@ test.skipIf(!process.env.CODEX_NATIVE_TEST_BINARY)("real Codex app-server report
     mkdirSync(cwd);
     const path = join(base, "codex");
     symlinkSync(process.env.CODEX_NATIVE_TEST_BINARY as string, path);
-    expect(install(path, "codex", cwd).status).toBe(0);
+    expect(installProtocolFixture(path, base, cwd).status).toBe(0);
     // Even with process cwd=repo-b, the unwrapped app-server accepts Boat's home cwd.
     for (const [executable, expected] of [
       [`${path}.armada-original`, base],

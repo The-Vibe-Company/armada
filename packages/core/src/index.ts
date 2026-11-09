@@ -1,4 +1,5 @@
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
+export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export {
   CODEX_AUTH_ENV,
@@ -135,11 +136,15 @@ export {
   MAX_LAUNCH_TTL_SECONDS,
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
+export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
 export {
-  type LaunchWorkdir,
-  resolveLaunchWorkdir,
-  resolveLaunchWorkdirAt,
-} from "./launch-workdir.ts";
+  MCP_STDIO_EXECUTABLES,
+  McpStdioError,
+  type McpStdioLauncher,
+  normalizeResolvedMcpStdio,
+  type PinnedMcpStdio,
+  parsePinnedMcpStdio,
+} from "./mcp-stdio.ts";
 export {
   type HarnessModels,
   MODEL_CATALOG,
@@ -182,6 +187,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   type CleanupResult,
   cleanupSandboxes,

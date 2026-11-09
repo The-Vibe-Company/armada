@@ -80,6 +80,20 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   await page.setViewportSize({ width: 1280, height: 720 });
   await expect(page.getByLabel("Model")).toHaveValue("claude-opus-5-5");
   await expect(page.getByLabel("Reasoning effort")).toHaveValue("medium");
+  // Repository context of a multi-repo golden: default first, reset when the dialog is reopened.
+  const repo = page.getByLabel("Working directory");
+  await expect(repo).toHaveValue("");
+  await expect(repo.locator("option")).toHaveText(["No repository (default directory)", "web", "api"]);
+  await expect(
+    page.getByText(
+      "A chosen repository is where the agent starts; with none, it starts in the default directory. All repositories remain available.",
+    ),
+  ).toBeVisible();
+  await repo.selectOption("web");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  await expect(page.getByLabel("Working directory")).toHaveValue("");
+  await page.getByLabel("Working directory").selectOption("api");
   await page.getByLabel("Agent").selectOption("codex");
   await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
@@ -89,6 +103,9 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
 
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
   await expect(page.getByText("gpt-6-luna")).toBeVisible();
+  const facts = page.locator("dl").first();
+  await expect(facts.getByText("Repository context")).toBeVisible();
+  await expect(facts.getByText("api", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Send a message" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("Now the docs");
   await page.getByLabel("Reasoning effort").selectOption("low");
@@ -107,21 +124,25 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
 
-  const { toolCalls } = (await (await fetch(`${MOCK}/__test/state`)).json()) as {
+  const { launches, toolCalls } = (await (await fetch(`${MOCK}/__test/state`)).json()) as {
+    launches: Record<string, unknown>[];
     toolCalls: { name: string; args: Record<string, unknown> }[];
   };
-  expect(toolCalls).toEqual([
+  // The canonical POST /api/v1/sandbox/launch body.
+  expect(launches).toEqual([
     {
-      name: "launch",
-      args: {
-        golden: "shared-golden",
-        provider: "boat",
-        org: expect.any(String),
-        harness: "codex",
-        model: "gpt-6-luna",
-        reasoning_effort: "high",
-      },
+      golden: "shared-golden",
+      provider: "boat",
+      org: expect.any(String),
+      harness: "codex",
+      model: "gpt-6-luna",
+      reasoningEffort: "high",
+      visibility: "org",
+      connections: [],
+      repo: "api",
     },
+  ]);
+  expect(toolCalls).toEqual([
     { name: "send", args: { id: expect.any(String), prompt: "Now the docs", reasoning_effort: "low" } },
     { name: "send", args: { id: expect.any(String), prompt: "Continue with model default", model: "gpt-6.1-terra" } },
   ]);

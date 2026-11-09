@@ -2,6 +2,7 @@ import {
   GoldenError,
   type GoldenRow,
   type GoldenStore,
+  type Harness,
   type ModalBinding,
   mapGoldenRow,
   mapSandboxRow,
@@ -13,12 +14,14 @@ import {
   statusReasonOf,
   type Visibility,
 } from "@armada/core";
-import { assertGoldenBackendBinding } from "@armada/core/server";
+import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
   golden: string;
+  /** Provider management credentials follow the source golden, never independent sandbox access visibility. */
+  sourceGoldenVisibility: Visibility;
   visibility: Visibility;
   /** The golden's pinned Modal App, on a Modal sandbox. Routing reaches the sandbox through it. */
   modal: ModalBinding | null;
@@ -28,7 +31,14 @@ export interface ServerSandboxStore extends SandboxStore {
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
   get(id: string): Promise<SandboxView | null>;
   /** Newest first. */
-  list(filter: { statuses?: readonly SandboxStatus[]; limit: number }): Promise<SandboxView[]>;
+  list(filter: {
+    statuses?: readonly SandboxStatus[];
+    harness?: Harness;
+    goldenId?: string;
+    ownerId?: string;
+    limit: number;
+    page?: number;
+  }): Promise<{ rows: SandboxView[]; total: number }>;
 }
 
 /**
@@ -51,15 +61,20 @@ const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility
   g.modal_environment, g.modal_app_id, g.config, g.created_at`;
 const SANDBOX_COLUMNS = `s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  s.model, s.reasoning_effort, g.name as golden, g.visibility::text as visibility, g.modal_workspace,
+  s.model, s.reasoning_effort, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
+  s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
   g.modal_environment, g.modal_app_id`;
 /** `$1` is the caller's orgs and `$2` the caller. */
-const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)`;
-const SANDBOX_VISIBLE = `s.org_id = g.org_id and ${GOLDEN_VISIBLE}`;
+const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
+  and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
+const SANDBOX_VISIBLE = `s.org_id = g.org_id and s.org_id=any($1::uuid[]) and (s.visibility='org' or s.access_owner_id=$2::uuid)
+  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 
 type SandboxViewRow = SandboxRow & {
   golden: string;
   visibility: string;
+  source_golden_visibility: string;
+  access_owner_id: string;
   modal_workspace?: string | null;
   modal_environment?: string | null;
   modal_app_id?: string | null;
@@ -82,8 +97,13 @@ export function createSqlData(sql: Sql): DataSource {
 
     const writeGolden = async (id: string, column: "provider_sandbox_id" | "provider_snapshot_id", value: string) => {
       const admins = caller.orgs.filter((org) => org.role === "admin").map((org) => org.orgId);
+      const alias = column === "provider_sandbox_id" ? "boat_sandbox_id" : "boat_snapshot_id";
+      const firstMaster = column === "provider_sandbox_id" ? " and provider_sandbox_id is null" : "";
       const result = await sql.query<{ id: string }>(
-        `update public.goldens set ${column} = $1 where id = $2::uuid and org_id = any($3::uuid[])
+        `update public.goldens set ${column} = $1, ${alias} = case when provider = 'boat' then $1 else null end
+         where id = $2::uuid and org_id = any($3::uuid[])${firstMaster}
+         and exists (select 1 from public.members m where m.org_id = goldens.org_id and m.user_id = $4::uuid
+           and (goldens.visibility = 'private' or m.role = 'admin'))
          and ((visibility = 'private' and owner_id = $4::uuid) or (visibility = 'org' and org_id = any($5::uuid[]))) returning id`,
         [value, id, orgIds, caller.userId, admins],
       );
@@ -91,6 +111,11 @@ export function createSqlData(sql: Sql): DataSource {
     };
     const goldens: GoldenStore = {
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
+      async assertMutation(golden, actor) {
+        if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
+          throw new GoldenError("forbidden", "This caller cannot mutate the golden.");
+        await assertSqlGoldenMutation(sql, golden, actor);
+      },
       async list(orgId) {
         ownOrg(orgId);
         const result = await sql.query<GoldenRow>(
@@ -109,10 +134,50 @@ export function createSqlData(sql: Sql): DataSource {
         );
         return result.rows.map(mapGoldenRow);
       },
+      async compareAndSetSnapshot(id, expectedSnapshot, replacement, expectedSandbox) {
+        const result = await sql.query(
+          `update public.goldens g set provider_snapshot_id=$5,provider_sandbox_id=null
+           where ${GOLDEN_VISIBLE} and g.id=$3 and g.provider='modal'
+           and ((g.provider_snapshot_id is not distinct from $4 and g.provider_sandbox_id=$6)
+             or (g.provider_snapshot_id=$5 and g.provider_sandbox_id is null))
+           and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2
+             and ((g.visibility='private' and g.owner_id=$2) or (g.visibility='org' and m.role='admin')))
+           returning g.id`,
+          [...scope, id, expectedSnapshot, replacement, expectedSandbox],
+        );
+        return result.rows.length === 1;
+      },
       insert: readOnly,
       setConfig: readOnly,
       setSandbox: (id, value) => writeGolden(id, "provider_sandbox_id", value),
+      async replaceSandbox(id, expectedSandbox, expectedSnapshot, replacement) {
+        const result = await sql.query<{ id: string }>(
+          `update public.goldens g set provider_sandbox_id = $6, boat_sandbox_id = case when g.provider = 'boat' then $6 else null end
+           where ${GOLDEN_VISIBLE} and g.id = $3::uuid and g.provider_sandbox_id is not distinct from $4 and g.provider_snapshot_id is not distinct from $5
+             and exists (select 1 from public.members m where m.org_id = g.org_id and m.user_id = $2::uuid and (g.visibility = 'private' or m.role = 'admin'))
+             and ((g.visibility = 'private' and g.owner_id = $2::uuid) or (g.visibility = 'org' and g.org_id = any($7::uuid[]))) returning g.id`,
+          [
+            ...scope,
+            id,
+            expectedSandbox,
+            expectedSnapshot,
+            replacement,
+            caller.orgs.filter((o) => o.role === "admin").map((o) => o.orgId),
+          ],
+        );
+        return result.rows.length === 1;
+      },
       setSnapshot: (id, value) => writeGolden(id, "provider_snapshot_id", value),
+      async recordSnapshot(id, expectedSandbox, snapshot) {
+        const result = await sql.query<{ id: string }>(
+          `update public.goldens g set provider_snapshot_id = $5, boat_snapshot_id = case when g.provider = 'boat' then $5 else null end where ${GOLDEN_VISIBLE}
+           and g.id = $3::uuid and g.provider_sandbox_id is not distinct from $4
+           and exists (select 1 from public.members m where m.org_id = g.org_id and m.user_id = $2::uuid and
+             ((g.visibility = 'private' and g.owner_id = $2::uuid) or (g.visibility = 'org' and m.role = 'admin'))) returning g.id`,
+          [...scope, id, expectedSandbox, snapshot],
+        );
+        return result.rows.length === 1;
+      },
     };
 
     const sandboxes: ServerSandboxStore = {
@@ -121,13 +186,14 @@ export function createSqlData(sql: Sql): DataSource {
           throw new DataError("A sandbox is recorded for its caller only.");
         }
         const result = await sql.query<SandboxViewRow>(
-          `with visible as (select g.id from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
+          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-             reasoning_effort, provider)
+             reasoning_effort, provider, visibility, access_owner_id, repository_dir)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider from visible
+             $9::text, $10::text, $11::public.sandbox_provider,coalesce($12::public.visibility,visible.visibility),$2::uuid,$13::text from visible
+           where visible.visibility='org' or coalesce($12::public.visibility,visible.visibility)='private'
            returning id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort`,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,repository_dir,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
             ...scope,
             input.goldenId,
@@ -139,6 +205,8 @@ export function createSqlData(sql: Sql): DataSource {
             input.model,
             input.reasoningEffort,
             input.provider,
+            input.visibility ?? null,
+            input.repositoryDir ?? null,
           ],
         );
         const row = result.rows[0];
@@ -186,15 +254,34 @@ export function createSqlData(sql: Sql): DataSource {
         return row ? mapView(row) : null;
       },
       async list(filter) {
-        const statuses = filter.statuses && filter.statuses.length > 0 ? [...filter.statuses] : null;
-        const result = await sql.query<SandboxViewRow>(
-          `select ${SANDBOX_COLUMNS} from public.sandboxes s join public.goldens g on g.id = s.golden_id
-           where ${SANDBOX_VISIBLE} and ($3::text[] is null or s.status::text = any($3::text[]))
-           order by s.created_at desc, s.id
-           limit $4`,
-          [...scope, statuses, filter.limit],
+        const statuses = filter.statuses?.length ? [...filter.statuses] : null;
+        const result = await sql.query<(SandboxViewRow & { total: number }) | { id: null; total: number }>(
+          `with matched as (
+             select ${SANDBOX_COLUMNS} from public.sandboxes s join public.goldens g on g.id = s.golden_id
+             where ${SANDBOX_VISIBLE}
+               and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
+               and ($4::text is null or s.harness::text = $4)
+               and ($5::uuid is null or s.golden_id = $5)
+               and ($6::uuid is null or s.owner_id = $6)
+           ) select p.*, totals.total from (select count(*)::int as total from matched) totals
+             left join (select * from matched order by created_at desc, id limit $7 offset $8) p on true
+             order by p.created_at desc, p.id`,
+          [
+            ...scope,
+            statuses,
+            filter.harness ?? null,
+            filter.goldenId ?? null,
+            filter.ownerId ?? null,
+            filter.limit,
+            ((filter.page ?? 1) - 1) * filter.limit,
+          ],
         );
-        return result.rows.map(mapView);
+        const page = result.rows[0];
+        if (!page) throw new DataError("The sandbox page could not be read.");
+        return {
+          rows: result.rows.filter((row): row is SandboxViewRow & { total: number } => row.id !== null).map(mapView),
+          total: page.total,
+        };
       },
     };
 
@@ -209,10 +296,18 @@ export function createSqlData(sql: Sql): DataSource {
         if (!visible.rows.length) throw new GoldenError("not_found", "No such golden.");
         if (!sql.transaction)
           throw new GoldenError("conflict", "Visibility requires a transactional database connection.");
-        await sql.transaction(async (tx) => {
-          await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [caller.userId]);
-          await tx.query("select public.set_golden_visibility($1::uuid, $2::public.visibility)", [id, visibility]);
-        });
+        try {
+          await sql.transaction(async (tx) => {
+            await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [caller.userId]);
+            await tx.query("select public.set_golden_visibility($1::uuid, $2::public.visibility)", [id, visibility]);
+          });
+        } catch (error) {
+          const code = typeof error === "object" && error && "code" in error ? error.code : undefined;
+          if (code === "P0002") throw new GoldenError("not_found", "No such golden.");
+          if (code === "42501") throw new GoldenError("forbidden", "Only an org admin can share a golden.");
+          if (code === "23514") throw new GoldenError("conflict", "Other members still have sandboxes of this golden.");
+          throw error;
+        }
       },
     };
   };
@@ -223,6 +318,7 @@ function mapView(row: SandboxViewRow): SandboxView {
     ...mapSandboxRow(row),
     golden: row.golden,
     visibility: visibility(row.visibility),
+    sourceGoldenVisibility: visibility(row.source_golden_visibility),
     modal:
       row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
         ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }

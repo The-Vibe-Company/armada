@@ -55,3 +55,79 @@ test("an admin manages the org keys, a member only sees which are set", async ({
   await expect(bobsOrg.getByRole("button", { name: /Remove/ })).toHaveCount(0);
   expect(await page.content()).not.toContain("boat-org-key-123");
 });
+
+const MODAL_ID = "ak-e2eModalTokenId1234";
+const MODAL_SECRET = "as-e2eModalTokenSecret5678";
+
+test("a Modal token is saved from its two fields as one encrypted pair, never shown again, and removed", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/credentials");
+  const mine = page.locator('[data-credentials="user"]');
+  await expect(mine.getByLabel("Kind").locator("option", { hasText: "Modal" })).toHaveCount(0);
+  const modal = mine.locator("[data-modal-token]");
+  await modal.getByLabel("Token ID").fill(MODAL_ID);
+  await modal.getByLabel("Token secret").fill(MODAL_SECRET);
+  await modal.getByRole("button", { name: "Save Modal token" }).click();
+  await expect(modal.getByText("Modal token saved.")).toBeVisible();
+  await expect(modal.getByLabel("Token ID")).toHaveValue("");
+  await expect(modal.getByLabel("Token secret")).toHaveValue("");
+
+  const row = mine.locator("li", { hasText: "Modal token" });
+  await expect(row.getByRole("img", { name: "Value hidden" })).toBeVisible();
+  await expect(row).toContainText("Hosting: stays on the Armada server");
+  await page.reload();
+  const html = await page.content();
+  expect(html).not.toContain(MODAL_ID);
+  expect(html).not.toContain(MODAL_SECRET);
+
+  const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string; value_enc: string }[];
+  const sealed = stored.find((item) => item.kind === "modal");
+  // iv (12) + the canonical {"token_id","token_secret"} JSON + tag (16) bytes, as hex; neither half in clear.
+  const canonical = JSON.stringify({ token_id: MODAL_ID, token_secret: MODAL_SECRET });
+  expect(sealed?.value_enc.length).toBe(2 + 2 * (12 + canonical.length + 16));
+  expect(sealed?.value_enc).not.toContain(Buffer.from(MODAL_SECRET).toString("hex"));
+
+  await mine.getByRole("button", { name: "Remove Modal token" }).click();
+  await expect(mine.getByRole("button", { name: "Remove Modal token" })).toHaveCount(0);
+});
+
+test("a Modal token pair the server would refuse is reported without echoing it and nothing is stored", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/credentials");
+  const modal = page.locator('[data-credentials="user"] [data-modal-token]');
+  // The halves swapped: the id must start with ak- and the secret with as-.
+  await modal.getByLabel("Token ID").fill(MODAL_SECRET);
+  await modal.getByLabel("Token secret").fill(MODAL_ID);
+  await modal.getByRole("button", { name: "Save Modal token" }).click();
+  await expect(modal.locator('p[role="alert"]')).toHaveText(
+    "That is not a Modal token pair: the id starts with ak- and the secret with as-.",
+  );
+  await expect(modal.getByLabel("Token ID")).toHaveValue("");
+  await expect(modal.getByLabel("Token secret")).toHaveValue("");
+  const html = await page.content();
+  expect(html).not.toContain(MODAL_ID);
+  expect(html).not.toContain(MODAL_SECRET);
+  const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string }[];
+  expect(stored.some((item) => item.kind === "modal")).toBe(false);
+});
+
+test("a member cannot set the org's Modal token, even by forging the form", async ({ page }) => {
+  await signIn(page, "bob@example.com", "/credentials");
+  await expect(page.locator('[data-credentials="Acme (org)"] [data-modal-token]')).toHaveCount(0);
+  // Bob's own form, pointed at the org he only belongs to.
+  const modal = page.locator('[data-credentials="user"] [data-modal-token]');
+  await modal.locator('input[name="scope"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "org";
+  });
+  await modal.locator('input[name="owner"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
+  });
+  await modal.getByLabel("Token ID").fill(MODAL_ID);
+  await modal.getByLabel("Token secret").fill(MODAL_SECRET);
+  await modal.getByRole("button", { name: "Save Modal token" }).click();
+  await expect(modal.locator('p[role="alert"]')).toHaveText("You are not allowed to do that.");
+  const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string }[];
+  expect(stored.some((item) => item.kind === "modal")).toBe(false);
+});

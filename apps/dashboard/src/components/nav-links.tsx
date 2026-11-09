@@ -1,6 +1,6 @@
 "use client";
 
-import { BoxesIcon, CameraIcon, KeyRoundIcon, SettingsIcon, UsersIcon } from "lucide-react";
+import { BoxesIcon, CameraIcon, KeyRoundIcon, PlugIcon, SettingsIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment } from "react";
@@ -21,6 +21,7 @@ const GROUPS = [
     links: [
       { href: "/goldens", label: "Goldens", hint: "Repositories and snapshots", icon: CameraIcon },
       { href: "/credentials", label: "Credentials", hint: "Agent and Boat keys", icon: KeyRoundIcon },
+      { href: "/connections", label: "Connections", hint: "MCP servers and tools", icon: PlugIcon },
     ],
   },
   {

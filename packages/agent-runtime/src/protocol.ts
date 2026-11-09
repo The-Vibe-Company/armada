@@ -1,0 +1,88 @@
+import type { AgentEvent, ExecRequest, PromptRequest, PromptStatus } from "@armada/core";
+export const PROTOCOL_VERSION = 1;
+export const AUTH_HEADER = "x-armada-runner-grant";
+export type McpConnection =
+  | { type: "http"; url: string; headers?: Record<string, string> }
+  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+/** Values are transient. Persist only revision; server owns refresh and grants. */
+export interface McpConfiguration {
+  revision: string;
+  servers: Record<string, McpConnection>;
+}
+export interface ConfigureMcpRequest {
+  op: "configureMcp";
+  configuration: McpConfiguration;
+}
+export interface ConfigureMcpResult {
+  revision: string;
+}
+export interface Grant {
+  token: string;
+  sandboxId: string;
+  generation: string;
+  expiresAt: number;
+}
+export type CheckpointIdentity = Pick<Grant, "sandboxId" | "generation">;
+export type DriverEvent =
+  | Omit<Extract<AgentEvent, { kind: "message" }>, "id" | "at" | "conversationId" | "promptId">
+  | { kind: "other"; type: string; data: unknown };
+export interface RuntimePromptRequest extends PromptRequest {
+  /** Private native cwd supplied by the provider after server-side repository validation. */
+  cwd?: string;
+}
+/** Trusted private bootstrap only, not a Provider.exec or runner HTTP request field. */
+export interface ExecEnvironment {
+  GH_TOKEN?: string;
+  GITHUB_TOKEN?: string;
+  HOME?: string;
+  PATH?: string;
+  GIT_CONFIG_GLOBAL?: string;
+  GIT_TERMINAL_PROMPT?: "0";
+}
+export interface RunnerExecutionOptions {
+  execEnv?: ExecEnvironment;
+  credentialFreeBuilder?: boolean;
+  ghConfigDir?: string;
+}
+export interface DriverContext {
+  request: RuntimePromptRequest;
+  sessionId?: string;
+  signal: AbortSignal;
+  emit(event: DriverEvent): void;
+  session(id: string): void;
+  mcp?: McpConfiguration;
+}
+export interface Turn {
+  done: Promise<"finished" | "interrupted">;
+  interrupt(): Promise<void>;
+  steer(text: string): Promise<void>;
+}
+export interface Driver {
+  start(context: DriverContext): Turn;
+  close(): Promise<void>;
+}
+export interface IngestClient {
+  append(batch: {
+    sandboxId: string;
+    generation: string;
+    events: { sequence: number; event: AgentEvent }[];
+  }): Promise<{ acknowledgedSequence: number }>;
+}
+export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
+  | { op: "health" }
+  | ConfigureMcpRequest
+  | { op: "prompt"; input: RuntimePromptRequest }
+  | { op: "getPrompt"; promptId: string }
+  | { op: "steer"; conversationId: string; text: string }
+  | { op: "interrupt"; conversationId?: string }
+  | { op: "events"; cursor?: string; limit?: number; conversationId?: string }
+  | { op: "exec"; input: ExecRequest }
+  | { op: "getExec"; processId: number }
+  | { op: "checkpoint" }
+);
+export interface StoredPrompt {
+  promptId: string;
+  conversationId: string;
+  status: PromptStatus;
+  request: RuntimePromptRequest;
+}

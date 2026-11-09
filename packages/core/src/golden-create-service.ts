@@ -1,9 +1,18 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
 import { assertGoldenMutation, waitSnapshot } from "./golden.ts";
-import { assignDirs, type GitHubGoldenConfig, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
+import {
+  assignDirs,
+  type GitHubGoldenConfig,
+  GOLDEN_POLL_MS,
+  GOLDEN_ROOT,
+  GOLDEN_SANDBOX_POLLS,
+  GoldenError,
+  parseGoldenName,
+} from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import { type Provider, ProviderError } from "./provider.ts";
+import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
 
 const MAX_REPOS = 16;
 
@@ -21,7 +30,7 @@ export interface PreparedRepo extends AuthorizedRepo {
 }
 
 export interface GoldenCreateDeps {
-  /** Durable worker hooks; never supplied by a client. */
+  /** Durable queue phase/fence hooks, never client-controlled. */
   execution?: {
     id: string;
     cleaned(safe: boolean): void;
@@ -47,12 +56,14 @@ export interface GoldenCreateDeps {
   /** Legacy factory hook; production persistence finalizes atomically itself. */
   finalize?(reservationId: string, goldenId: string): Promise<void>;
   release?(reservationId: string): Promise<void>;
-  /** Confirm after a persistence error that no committed row references this attempt's artifact.
-   * Unknown database outcomes must retain the artifact rather than risk deleting a committed pointer. */
-  canDiscardSnapshot?(snapshot: string): Promise<boolean>;
+  /** Only an acknowledged rollback/known loser may authorize cleanup, never an absence read.
+   * The production factory records transaction outcome proof for this exact failed attempt. */
+  canDiscardSnapshot?(snapshot: string, error: unknown): Promise<boolean>;
   /** Persist must atomically finalize a reservation when one was taken. */
   persist(input: {
     actor: GoldenActor;
+    provider: SandboxProviderId;
+    modal: ModalBinding | null;
     existingGolden?: GoldenRecord;
     name: string;
     visibility: Visibility;
@@ -77,10 +88,20 @@ export class GoldenCreateService {
       setup?: string;
       config?: GitHubGoldenConfig;
       existingGolden?: GoldenRecord;
+      /** Trusted server-resolved binding, never a client-supplied profile name. */
+      modal?: ModalBinding;
     },
     limits: GoldenLimits = {},
   ): Promise<{ snapshot: string }> {
+    if (!isSandboxProvider(provider.id)) throw new GoldenError("invalid_config", "Unknown golden provider.");
+    const providerId = provider.id;
+    const modal = input.existingGolden?.modal ?? input.modal ?? null;
+    if ((provider.id === "modal") !== (modal !== null))
+      throw new GoldenError("invalid_config", "Secure golden creation requires the provider’s pinned binding.");
     if (input.existingGolden) {
+      assertProviderOf(provider, input.existingGolden.provider);
+      if (input.visibility !== input.existingGolden.visibility)
+        throw new GoldenError("forbidden", "A rebuild cannot change golden visibility.");
       const existing = input.existingGolden;
       if (existing.orgId !== actor.orgId || existing.name !== input.name)
         throw new GoldenError("forbidden", "You cannot rebuild this golden.");
@@ -103,7 +124,10 @@ export class GoldenCreateService {
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
     let persisted = false;
+    let uncertainSnapshot = false;
     let persistAttempted = false;
+    let knownUnpublished = false;
+    let uncertainPublication = false;
     let requestedSnapshot: string | undefined;
     let ownedSnapshot: string | undefined;
     let artifactSettled = false;
@@ -119,7 +143,12 @@ export class GoldenCreateService {
     };
     try {
       await enter("builder");
-      builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
+      builder = await provider.createGolden({
+        name,
+        ttlSeconds: 86400,
+        labels: { armada: "golden-builder" },
+        ...(this.deps.execution ? { idempotencyKey: this.deps.execution.id } : {}),
+      });
       await this.deps.execution?.builder(builder.id);
       // A scoped installation token can cover only one installation. Multiple already-authorized
       // repos use the caller's cached user token, which is never revoked or rotated here.
@@ -139,10 +168,11 @@ export class GoldenCreateService {
       });
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId });
-      await enter("snapshot");
       requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
+      await enter("snapshot");
+      uncertainSnapshot = providerId === "modal";
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
       const snapshot = started.name;
       // The provider's reference is authoritative, not necessarily the requested label.
@@ -159,15 +189,52 @@ export class GoldenCreateService {
       }
       ownedSnapshot = snapshot;
       const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
+      uncertainSnapshot = false;
       artifactSettled = true;
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
+      // The persist phase fences retirement too: old source stays canonical until commit.
       await enter("persist");
+      // Quiesce the prior connected master while it is still canonical and last-good is intact.
+      // Publication CAS must also compare its ID so a concurrent connect cannot become untracked.
+      const oldMaster = input.existingGolden?.providerSandboxId;
+      if (oldMaster && oldMaster !== builder.id) {
+        try {
+          await provider.stop({ sandboxId: oldMaster });
+          // Boat stop may only acknowledge a pending save. Keep the old canonical reference
+          // until an actual terminal observation confirms that no live master is being lost.
+          let stopped = false;
+          const polls = limits.sandboxPolls ?? GOLDEN_SANDBOX_POLLS;
+          for (let poll = 0; poll < polls; poll++) {
+            await this.deps.execution?.phase("persist");
+            const observed = await provider.get(oldMaster);
+            if (observed.state === "stopped") {
+              stopped = true;
+              break;
+            }
+            if (observed.state === "failed")
+              throw new GoldenError("conflict", "The old golden master failed to stop safely.");
+            if (poll + 1 < polls)
+              await (limits.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
+                GOLDEN_POLL_MS,
+              );
+          }
+          if (!stopped) throw new GoldenError("conflict", "The old golden master has no confirmed stopped receipt.");
+        } catch (error) {
+          throw new GoldenError(
+            "conflict",
+            `Could not confirm retirement of golden master ${oldMaster}. It remains canonical; reconcile before rebuilding.`,
+            { cause: error },
+          );
+        }
+      }
       persistAttempted = true;
       {
         const goldenId = await this.deps.persist({
           actor,
+          provider: providerId,
+          modal,
           ...(input.existingGolden ? { existingGolden: input.existingGolden } : {}),
           name,
           visibility: input.visibility,
@@ -177,23 +244,56 @@ export class GoldenCreateService {
           builderId: builder.id,
           ...(reservation ? { reservationId: reservation } : {}),
         });
-        if (reservation && goldenId && this.deps.finalize) await this.deps.finalize(reservation, goldenId);
         persisted = true;
+        if (reservation && goldenId && this.deps.finalize) await this.deps.finalize(reservation, goldenId);
       }
       return { snapshot };
     } catch (error) {
-      // Never log the thrown object: provider errors can contain bodies, commands or credentials.
-      const code = error instanceof GoldenError || error instanceof ProviderError ? error.code : "unknown";
       console.error(
-        JSON.stringify({ event: "golden_build_failed", buildId, phase, code, elapsedMs: Date.now() - startedAt }),
+        JSON.stringify({
+          event: "golden_build_failed",
+          buildId,
+          phase,
+          code: error instanceof GoldenError || error instanceof ProviderError ? error.code : "unknown",
+          elapsedMs: Date.now() - startedAt,
+        }),
       );
-      if (error instanceof GoldenError) throw error;
+      if (persistAttempted && !persisted) {
+        knownUnpublished =
+          ownedSnapshot !== undefined &&
+          (await this.deps.canDiscardSnapshot?.(ownedSnapshot, error).catch(() => false)) === true;
+        if (!knownUnpublished) {
+          uncertainPublication = true;
+          throw new GoldenError(
+            "conflict",
+            `Golden publication could not be confirmed. Retained ready snapshot ${ownedSnapshot} and source ${builder?.id}; reconcile the in-flight transaction and golden revision before retrying or deleting either artifact.`,
+            { cause: error },
+          );
+        }
+      }
+      if (uncertainSnapshot && builder)
+        throw new ProviderError({
+          provider: providerId,
+          code: "conflict",
+          retryable: false,
+          message: `Modal snapshot outcome is unknown. Source builder ${builder.id} retained; reconcile before retrying.`,
+          details: {
+            ...(error instanceof ProviderError && error.details?.resourceReceipt
+              ? { resourceReceipt: error.details.resourceReceipt }
+              : {}),
+            keepSource: true,
+            sourceSandboxId: builder.id,
+          },
+        });
+      if (error instanceof GoldenError || error instanceof ProviderError) throw error;
       throw new GoldenError(
         "build_failed",
-        `Golden build failed during ${phase} (${code}). Check server phase diagnostics and retry; last-good snapshots are not deleted by failure cleanup.`,
+        `Golden build failed during ${phase} (unknown). Check server phase diagnostics; last-good artifacts are retained.`,
+        { cause: error },
       );
     } finally {
-      if (!persisted && requestedSnapshot && builder) {
+      let cleanupSafe = !uncertainSnapshot && !uncertainPublication;
+      if (!uncertainSnapshot && !persisted && requestedSnapshot && builder) {
         // A timed-out request may have created an artifact. Only reclaim a settled artifact
         // with matching source provenance; an in-flight/unknown save is left for reconciliation.
         if (!artifactSettled) {
@@ -213,26 +313,37 @@ export class GoldenCreateService {
             /* Unknown ownership/state: retain. */
           }
         }
-        if (
-          ownedSnapshot &&
-          artifactSettled &&
-          (!persistAttempted || (await this.deps.canDiscardSnapshot?.(ownedSnapshot).catch(() => false)))
-        ) {
-          await provider.deleteSnapshot(ownedSnapshot).catch(() => {});
+        if (ownedSnapshot && artifactSettled && (!persistAttempted || knownUnpublished)) {
+          await provider.deleteSnapshot(ownedSnapshot).catch(() => {
+            cleanupSafe = false;
+          });
         }
       }
-      if (!persisted && reservation) await this.deps.release?.(reservation).catch(() => {});
-      await issued?.revoke().catch(() => {});
+      if (!persisted && requestedSnapshot && !artifactSettled) cleanupSafe = false;
+      if (cleanupSafe && !persisted && reservation)
+        await this.deps.release?.(reservation).catch(() => {
+          cleanupSafe = false;
+        });
+      await issued?.revoke().catch(() => {
+        cleanupSafe = false;
+      });
       let stopped = false;
-      if (builder) {
+      if (builder && !uncertainSnapshot && !uncertainPublication) {
+        // A disposable Modal builder must not create a durable stop checkpoint.
         try {
-          await provider.stop({ sandboxId: builder.id });
-          stopped = true;
+          if (providerId === "modal") {
+            const receipt = await provider.delete({ sandboxId: builder.id });
+            stopped = receipt.status === "deleted";
+            if (!stopped) cleanupSafe = false;
+          } else {
+            await provider.stop({ sandboxId: builder.id });
+            stopped = true;
+          }
         } catch {
-          /* Retain uncertain job capacity. */
+          cleanupSafe = false;
         }
       }
-      this.deps.execution?.cleaned(stopped || (!builder && phase === "authorization"));
+      this.deps.execution?.cleaned(cleanupSafe && (stopped || (!builder && phase === "authorization")));
     }
   }
 }
@@ -287,6 +398,7 @@ const CLEANUP_TRAP = [
   "    unset ARMADA_SSH_PUBLIC_KEY",
   "  fi",
   "  unset ARMADA_GIT_TOKEN",
+  "  if declare -F normalize_armada_build_ownership >/dev/null; then normalize_armada_build_ownership; fi",
   "}",
   "trap 'cleanup_armada_key' EXIT",
 ].join("\n");
@@ -318,7 +430,7 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     "  fi",
     "done",
     "armada_phase=bun",
-    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; mkdir -p "$HOME/.local/bin" "$HOME/.bun/bin"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.local/bin/bun"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.bun/bin/bun"; resolved_bun=$(command -v bun || true); if [ -n "$resolved_bun" ]; then if [ -w "$(dirname "$resolved_bun")" ]; then ln -sf "$HOME/.bun-npm/bin/bun" "$resolved_bun"; else sudo -n ln -sf "$HOME/.bun-npm/bin/bun" "$resolved_bun"; fi; fi; export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"; fi',
+    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; mkdir -p "$HOME/.local/bin" "$HOME/.bun/bin"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.local/bin/bun"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.bun/bin/bun"; resolved_bun=$(command -v bun || true); if [ -n "$resolved_bun" ]; then if ! ln -sf -- "$HOME/.bun-npm/bin/bun" "$resolved_bun"; then case "$resolved_bun" in /usr/local/bin/bun|/usr/bin/bun|/bin/bun) sudo -n ln -sf -- "$HOME/.bun-npm/bin/bun" "$resolved_bun" ;; *) printf "%s\n" "Cannot update the selected Bun executable." >&2; exit 96 ;; esac; fi; fi; export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"; fi',
     'command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; export PATH="$HOME/.bun/bin:$PATH"; }',
     "armada_phase=chromium",
     "if command -v bun >/dev/null 2>&1; then",
@@ -347,10 +459,34 @@ const CREDENTIAL_CLEANUP = [
   "done",
 ].join("\n");
 
+/** Root golden SSH must leave only known build outputs user-owned. Never recurse through
+ * symlinks into /opt or managed runner state; worker SSH/exec remains the ordinary user. */
+function ownershipSetup(repos: readonly PreparedRepo[]): string {
+  const paths = [
+    ...repos.map((repo) => `/home/user/${safe(repo.dir)}`),
+    "/home/user/.cache",
+    "/home/user/.bun-npm",
+    "/home/user/.bun",
+    "/home/user/.local",
+    "/home/user/.npm",
+    "/home/user/.config",
+    "/home/user/.ssh",
+  ];
+  return [
+    "normalize_armada_build_ownership() {",
+    '  [ "$(id -u)" -eq 0 ] || return 0',
+    `  for path in ${paths.map(shellQuote).join(" ")}; do`,
+    '    if [ -e "$path" ] || [ -L "$path" ]; then chown -h -R -P -- user:user "$path"; fi',
+    "  done",
+    "}",
+  ].join("\n");
+}
+
 export function goldenScript(repos: readonly PreparedRepo[], setup: readonly string[] = []): string {
   const lines = [
     "set -euo pipefail",
     CLEANUP_TRAP,
+    ownershipSetup(repos),
     "armada_phase=checkout",
     `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s\\n" "$armada_phase" "$armada_status" >&2' ERR`,
     // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
@@ -371,8 +507,11 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
     baselineSetup(repos),
     "armada_phase=init",
     ...setup,
+    "armada_phase=ownership",
+    "normalize_armada_build_ownership",
     "armada_phase=credential_cleanup",
     `if [ "$(id -u)" -eq 0 ]; then bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; else sudo -n bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; fi 2>/dev/null`,
+    "armada_phase=inline_scan",
     // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
     // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
     // exec channel after this session closes, and is what actually gates the snapshot.

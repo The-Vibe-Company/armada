@@ -1,0 +1,14 @@
+{
+  "name": "@armada/provider-modal",
+  "version": "2.5.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./embedded": "./src/embedded.ts"
+  },
+  "dependencies": {
+    "@armada/core": "workspace:*",
+    "modal": "0.11.1"
+  }
+}

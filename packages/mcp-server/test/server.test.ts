@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
-import { bunLikeSql, call, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
+import { createSqlVaultStore } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
+import { createHandler } from "../src/http.ts";
+import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
 
@@ -286,10 +290,10 @@ describe("tools", () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(
       [
         "exec",
-        "golden_create",
         "golden_build_status",
-        "golden_adopt",
         "golden_capabilities",
+        "golden_create",
+        "golden_adopt",
         "golden_list",
         "golden_snapshot",
         "golden_update",
@@ -306,7 +310,7 @@ describe("tools", () => {
     );
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
     const launch = tools.find((tool) => tool.name === "launch");
-    expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string", pattern: "^[^/\\s]+\\/[^/\\s]+$" });
+    expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
     expect(launch?.inputSchema.required ?? []).not.toContain("repo");
     const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
     const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
@@ -327,23 +331,70 @@ describe("tools", () => {
   });
 
   test("golden_capabilities is read-only, scoped before resolution, and reports provider metadata only", async () => {
-    const { token, client, people, boat } = await start();
-    const mcp = await client(await token(people.member));
+    const { token, client, people, boat, db, auth, clock } = await start();
+    const bearer = await token(people.member);
+    const vault = createSqlVaultStore(db);
+    const supabase = { supabaseUrl: "https://unused.test", anonKey: "test" };
+    let secretReads = 0;
+    const metadata = createProviderMetadata({
+      sql: db,
+      vault: {
+        credentials: async (...args) => {
+          secretReads++;
+          return vault.credentials(...args);
+        },
+        orgBoatKey: async (...args) => {
+          secretReads++;
+          return vault.orgBoatKey(...args);
+        },
+      },
+      encryptionKey: ENCRYPTION_KEY,
+      providerFor: boat.providerFor,
+    });
+    const handler = createHandler({
+      publicUrl: PUBLIC_URL,
+      authStore: auth,
+      supabase,
+      oauth: {
+        ...supabase,
+        publicUrl: PUBLIC_URL,
+        store: auth,
+        authSecret: "metadata-fixture-auth-secret",
+        fetch: async () => {
+          throw new Error("Capability reads must not invoke OAuth.");
+        },
+        now: () => clock.now,
+      },
+      data: createSqlData(db),
+      vault,
+      encryptionKey: ENCRYPTION_KEY,
+      providerMetadata: metadata,
+      providerFor: () => {
+        throw new Error("Metadata must not resolve a resource provider.");
+      },
+      log: () => {},
+    });
+    const request = rpc(handler, bearer);
     // This user also belongs to otherOrg, but this token must never widen to it.
-    const denied = await call(mcp, "golden_capabilities", { org: people.otherOrg, provider: "boat" });
-    expect(denied.isError).toBe(true);
+    const denied = await request.tool("golden_capabilities", { org: people.otherOrg, provider: "boat" });
+    expect(denied.result?.isError).toBe(true);
+    expect(secretReads).toBe(0);
     expect(boat.keys).toEqual([]);
     Object.assign(boat.provider, { maxGoldens: 7 });
-    const result = await call(mcp, "golden_capabilities", { org: people.org, provider: "boat" });
-    expect(result.isError).toBe(false);
-    expect(result.data).toEqual({ provider: "boat", maxGoldens: 7 });
+    const result = await request.tool("golden_capabilities", { org: people.org, provider: "boat" });
+    expect(result.result?.isError).not.toBe(true);
+    expect(result.result?.structuredContent).toEqual({ provider: "boat", maxGoldens: 7 });
     Object.assign(boat.provider, { maxGoldens: undefined });
-    expect((await call(mcp, "golden_capabilities")).data).toEqual({ provider: "boat", maxGoldens: null });
+    expect((await request.tool("golden_capabilities", {})).result?.structuredContent).toEqual({
+      provider: "boat",
+      maxGoldens: null,
+    });
+    expect(secretReads).toBeGreaterThan(0);
     expect(boat.keys).toHaveLength(2);
     expect(boat.forks).toEqual([]);
     expect(boat.execs).toEqual([]);
     expect(boat.stops).toEqual([]);
-    const listed = await mcp.listTools();
+    const listed = await (await client(bearer)).listTools();
     expect(listed.tools.find((tool) => tool.name === "golden_capabilities")?.annotations).toMatchObject({
       readOnlyHint: true,
       destructiveHint: false,
@@ -433,13 +484,33 @@ describe("tools", () => {
     expect(github.refreshed).toHaveLength(1);
   });
 
-  test("exec output masks a GitHub token the sandbox prints", async () => {
+  test("exec output masks GitHub and narrow MCP gateway credentials", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    boat.setExecOutput({ stdout: "GH_TOKEN=ghu_0123456789abcdefghijABCDEFGHIJ0123" });
+    const narrow = `armada_gw_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")}`;
+    boat.setExecOutput({ stdout: `GH_TOKEN=ghu_0123456789abcdefghijABCDEFGHIJ0123 MCP=${narrow}` });
     const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
-    expect(ran.data.stdout).toBe("GH_TOKEN=***");
+    expect(String(ran.data.stdout).includes(narrow)).toBe(false);
+    expect(ran.data.stdout).toBe("GH_TOKEN=*** MCP=***");
+  });
+
+  test("launch returns the independent private visibility of a fork from a shared golden", async () => {
+    const { token, client, people, db } = await start();
+    const launched = await call(await client(await token(people.member)), "launch", {
+      golden: "shared",
+      harness: "codex",
+      visibility: "private",
+    });
+    expect(launched.isError).toBe(false);
+    expect(launched.data.visibility).toBe("private");
+    expect(
+      (
+        await db.query<{ visibility: string }>("select visibility from public.sandboxes where id=$1", [
+          launched.data.id,
+        ])
+      ).rows[0]?.visibility,
+    ).toBe("private");
   });
 
   test("launch of a private golden uses its owner's own credential and personal boat key", async () => {

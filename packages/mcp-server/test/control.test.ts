@@ -6,7 +6,7 @@ import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
-
+import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { fakeBoat } from "./support.ts";
 
 const KEY = Buffer.alloc(32, 5).toString("base64");
@@ -317,7 +317,7 @@ describe("control API", () => {
               init: ["pnpm install"],
             },
           });
-          return { jobId: "build-1", state: "queued", phase: "queued", errorCode: null, result: null };
+          return { jobId: "job-fixture", state: "queued", phase: "queued", errorCode: null, result: null };
         },
       } as never;
       const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
@@ -326,7 +326,7 @@ describe("control API", () => {
           new Request("https://armada.test/api/v1/golden/create", {
             method: "POST",
             headers: { authorization: `Bearer ${session}` },
-            body: JSON.stringify(body),
+            body: JSON.stringify({ idempotencyKey: "valid-idempotency-key", ...body }),
           }),
           { ...options, goldenBuilds: service, providerFor: () => ({}) as never },
         );
@@ -340,7 +340,7 @@ describe("control API", () => {
         },
       });
       expect(ok?.status).toBe(202);
-      expect(await ok?.json()).toMatchObject({ jobId: "build-1", state: "queued" });
+      expect(await ok?.json()).toMatchObject({ jobId: "job-fixture", state: "queued", result: null });
       const bad = await request({ name: "web", config: { repos: [{ url: "https://evil.example/acme/web.git" }] } });
       expect(bad?.status).toBe(400);
       expect(await bad?.text()).not.toContain("evil.example");
@@ -451,8 +451,8 @@ describe("control API", () => {
     });
   });
 
-  test("golden/capabilities authenticates and denies foreign orgs before provider resolution", async () => {
-    await withServer(async ({ options }) => {
+  test("golden/capabilities authenticates and denies foreign orgs before credential metadata reads", async () => {
+    await withServer(async ({ db, options }) => {
       const orgA = (await options.store.createOrg("Capabilities A", STAN)).id;
       const orgB = (await options.store.createOrg("Capabilities B", STAN)).id;
       options.authStore.addMembership(STAN, { orgId: orgA, name: "Capabilities A", role: "admin" });
@@ -465,14 +465,34 @@ describe("control API", () => {
         label: "capabilities",
         createdAt: new Date().toISOString(),
       });
+      await options.store.setOrgBoatKey(orgA, await encryptSecret("capability-org-a", KEY));
+      await options.store.setOrgBoatKey(orgB, await encryptSecret("capability-org-b", KEY));
       const targets: unknown[] = [];
+      let secretReads = 0;
       let maxGoldens: number | undefined = 9;
       options.providers = {
-        resolve: async (target) => {
-          targets.push(target);
-          return { ...fakeBoat().provider, ...(maxGoldens === undefined ? {} : { maxGoldens }) };
+        resolve: async () => {
+          throw new Error("Metadata must not resolve resources.");
         },
       };
+      options.providerMetadata = createProviderMetadata({
+        sql: db,
+        vault: {
+          credentials: async (...args) => {
+            secretReads++;
+            return options.store.credentials(...args);
+          },
+          orgBoatKey: async (...args) => {
+            secretReads++;
+            return options.store.orgBoatKey(...args);
+          },
+        },
+        encryptionKey: KEY,
+        providerFor: (key, caller) => {
+          targets.push({ key, userId: caller?.userId });
+          return { ...fakeBoat().provider, ...(maxGoldens === undefined ? {} : { maxGoldens }) };
+        },
+      });
       const request = (authorization: string, body: object) =>
         handleControlRequest(
           new Request("https://armada.test/api/v1/golden/capabilities", {
@@ -488,6 +508,7 @@ describe("control API", () => {
         `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: id })).replace(/=+$/, "")}.sig`;
       expect((await request(session(ADA), { org: orgA }))?.status).toBe(403);
       expect(targets).toEqual([]);
+      expect(secretReads).toBe(0);
       const result = await request(`Bearer ${service}`, { org: orgA, provider: "boat" });
       expect(result?.status).toBe(200);
       expect(result?.headers.get("cache-control")).toBe("no-store");
@@ -499,12 +520,17 @@ describe("control API", () => {
         maxGoldens: null,
       });
       expect(targets).toEqual([
-        { orgId: orgA, visibility: "org", provider: "boat", modal: null },
-        { orgId: orgA, visibility: "org", provider: "boat", modal: null },
-        { orgId: orgB, visibility: "org", provider: "boat", modal: null },
+        { key: "capability-org-a", userId: STAN },
+        { key: "capability-org-a", userId: STAN },
+        { key: "capability-org-b", userId: STAN },
       ]);
       expect((await request(`Bearer ${service}`, { provider: "invalid" }))?.status).toBe(400);
       expect(targets).toHaveLength(3);
+      const reads = secretReads;
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [orgA, ADA]);
+      await db.query("delete from members where org_id=$1 and user_id=$2", [orgA, STAN]);
+      expect((await request(`Bearer ${service}`, { org: orgA }))?.status).toBe(403);
+      expect(secretReads).toBe(reads);
     });
   });
 
@@ -573,9 +599,9 @@ describe("control API", () => {
         label: "ci",
         createdAt: new Date().toISOString(),
       });
-      const call = (body: object) =>
+      const call = (body: object, route = "creds/list") =>
         handleControlRequest(
-          new Request("https://armada.test/api/v1/creds/list", {
+          new Request(`https://armada.test/api/v1/${route}`, {
             method: "POST",
             headers: { authorization: `Bearer ${service}` },
             body: JSON.stringify(body),
@@ -584,6 +610,8 @@ describe("control API", () => {
         );
       expect((await call({ org: actualA }))?.status).toBe(200);
       expect((await call({ org: actualB }))?.status).toBe(403);
+      expect((await call({ org: actualB }, "mcp/list"))?.status).toBe(403);
+      expect((await call({ state: "one-use-state", code: "one-use-code" }, "mcp/oauth/callback"))?.status).toBe(403);
     });
   });
 

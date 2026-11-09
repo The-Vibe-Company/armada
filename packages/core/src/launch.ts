@@ -20,9 +20,9 @@ import {
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
 import { LaunchError } from "./launch-error.ts";
-import { resolveLaunchWorkdir } from "./launch-workdir.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import type { Provider } from "./provider.ts";
+import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
@@ -37,13 +37,15 @@ const OUTPUT_LIMIT = 2000;
 export interface LaunchRequest {
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
   golden: string;
+  visibility?: "private" | "org";
+  connections?: string[];
   /** Needed only when the name exists on several providers. Never a substitute for the golden's own. */
   provider?: SandboxProviderId;
   harness: Harness;
-  /** Optional owner/repo from the golden manifest; prepares the native agent before any prompt. */
-  repo?: string;
   /** With a prompt the agent starts at once. Without one the sandbox is left ready for the first `send`. */
   prompt?: string;
+  /** Configured dir or owner/repo; resolved and persisted as a native harness cwd. */
+  repo?: string;
   ttlSeconds?: number;
   /** A model of `MODEL_CATALOG` for this harness. Default: the harness's default model. */
   model?: string;
@@ -60,6 +62,12 @@ export interface LaunchStores {
   goldens: GoldenStore;
   sandboxes: SandboxStore;
   credentials: LaunchCredentialResolver;
+  connections?: {
+    validate(actor: GoldenActor, ids: string[], visibility: "private" | "org"): Promise<void>;
+    bind(sandboxId: string, ids: string[]): Promise<void>;
+    /** After init, before any first prompt (including an idle launch). */
+    prepare?(provider: Provider, sandbox: SandboxRecord, actor: GoldenActor): Promise<void>;
+  };
 }
 
 /** What a launch did about GitHub. A launch without a connection still succeeds, and says so here. */
@@ -116,11 +124,17 @@ export async function launchSandbox(
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
-  const workdir = request.repo === undefined ? undefined : resolveLaunchWorkdir(golden.config.repos, request.repo);
+  const repositoryDir = resolveRepositoryDir(golden, request.repo);
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
-  if (workdir && !prepareNativeCwd) {
+  if (repositoryDir !== null && !prepareNativeCwd)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
-  }
+  const visibility = request.visibility ?? golden.visibility;
+  if (golden.visibility === "private" && visibility === "org")
+    throw new LaunchError("invalid_request", "A private golden cannot launch an org sandbox.");
+  const connectionIds = [...new Set(request.connections ?? [])];
+  if (connectionIds.length && !stores.connections)
+    throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
+  await stores.connections?.validate(actor, connectionIds, visibility);
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness);
@@ -141,7 +155,7 @@ export async function launchSandbox(
       org: actor.orgId,
       owner: actor.userId,
       golden: golden.name,
-      visibility: golden.visibility,
+      visibility,
       harness,
     },
   });
@@ -157,8 +171,10 @@ export async function launchSandbox(
       ownerId: actor.userId,
       harness,
       status: "starting",
+      repositoryDir,
       model: choice.model,
       reasoningEffort: choice.reasoningEffort,
+      visibility,
     });
   } catch (error) {
     await quietly(() => provider.delete({ sandboxId: forked.id }));
@@ -166,6 +182,14 @@ export async function launchSandbox(
   }
 
   try {
+    if ((record.visibility ?? golden.visibility) !== visibility) {
+      await provider.delete({ sandboxId: forked.id });
+      throw new LaunchError(
+        "start_failed",
+        "The sandbox store did not persist the requested independent visibility; no agent was started.",
+      );
+    }
+    await stores.connections?.bind(record.id, connectionIds);
     const ready = await waitReady(provider, forked.id, options);
     if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, secrets);
     const launchGithub: GitHubLaunchInfo =
@@ -173,9 +197,9 @@ export async function launchSandbox(
         ? await setupGitHub(provider, ready.id, github.identity, secrets)
         : { status: github.status, message: github.message };
     await setup(provider, ready.id, golden, secrets);
-    if (workdir && prepareNativeCwd) {
-      await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: workdir.cwd });
-    }
+    if (repositoryDir !== null && prepareNativeCwd)
+      await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
+    await stores.connections?.prepare?.(provider, record, actor);
     if (prompt === undefined) {
       await stores.sandboxes.update(record.id, { status: "ready" });
       return finish(

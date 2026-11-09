@@ -47,6 +47,51 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  test("MCP prepare runs after binding and init, before first prompt, including idle launches", async () => {
+    for (const prompt of [undefined, "start"]) {
+      const world = setup({ golden: golden("org") });
+      let bound = false,
+        prepared = false;
+      world.stores.connections = {
+        validate: async () => {},
+        bind: async () => {
+          bound = true;
+        },
+        prepare: async (_provider, sandbox, actor) => {
+          expect(bound).toBe(true);
+          expect(world.execs.at(-1)?.command).toBe("pnpm i");
+          expect(world.prompts).toHaveLength(0);
+          expect(sandbox.ownerId).toBe(actor.userId);
+          prepared = true;
+        },
+      };
+      await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "claude",
+        ...(prompt ? { prompt } : {}),
+      });
+      expect(prepared).toBe(true);
+      expect(world.prompts).toHaveLength(prompt ? 1 : 0);
+    }
+  });
+
+  test("a legacy store that drops independent private visibility cannot start an agent", async () => {
+    const world = setup({ golden: golden("org") });
+    const insert = world.stores.sandboxes.insert.bind(world.stores.sandboxes);
+    world.stores.sandboxes.insert = async (input) => ({ ...(await insert(input)), visibility: "org" });
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "claude",
+        visibility: "private",
+        prompt: "work",
+      }),
+    ).rejects.toThrow("did not persist");
+    expect(world.deleted).toEqual(["bx_1"]);
+    expect(world.prompts).toHaveLength(0);
+    expect(world.stopped).toEqual(["bx_1"]);
+  });
+
   test("forks the stored snapshot with only this harness's credentials, pulls and inits, then prompts", async () => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(
@@ -706,6 +751,7 @@ function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): Sa
       if (insertError) throw insertError;
       const record: SandboxRecord = {
         ...input,
+        repositoryDir: input.repositoryDir ?? null,
         conversationIds: [],
         createdAt: "2026-11-08T12:00:00.000Z",
         stoppedAt: null,
@@ -732,6 +778,7 @@ function definedOnly(patch: SandboxPatch): Record<string, unknown> {
 
 function sandboxRecord(id: string, providerSandboxId: string, createdAt: string): SandboxRecord {
   return {
+    repositoryDir: null,
     id,
     provider: "boat",
     providerSandboxId,

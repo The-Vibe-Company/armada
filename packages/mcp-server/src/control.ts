@@ -20,6 +20,8 @@ import {
   connectGolden,
   createGoldenAdoption,
   createOrg,
+  createSqlMcpLaunchPort,
+  createSqlMcpRegistry,
   createSqlVaultStore,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
@@ -32,18 +34,25 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
   goldenForLaunch,
+  isSandboxProvider,
   LaunchError,
   type LaunchOptions,
   type LaunchResult,
+  type LaunchStores,
   launchSandbox,
   listCredentials,
   listMembers,
   listOrgs,
+  type McpBrokerPort,
+  type McpConnectionInput,
+  type McpRegistry,
   type ModelChoice,
   normalizeGitHubGoldenConfig,
   type Provider,
+  ProviderError,
   type ProviderRegistry,
   ProviderRoutingError,
+  type ProviderTarget,
   parseCredentialKind,
   parseGoldenConfig,
   parseRole,
@@ -53,6 +62,7 @@ import {
   resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
+  resolveRepositoryDir,
   scanGoldenSandbox,
   setCredential,
   setMemberRole,
@@ -64,15 +74,24 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
-import type { DataSource, ScopedData } from "./data.ts";
+import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
+import type { GitHubAccountApi } from "./github-account.ts";
+import { providerRegistry } from "./http.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+import { createModalIntegration } from "./modal-integration.ts";
+import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import { createProviderMetadata } from "./provider-metadata.ts";
 import { bunSql } from "./sql.ts";
-import { callSharedTool } from "./tool-api.ts";
+import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  githubAccount?: GitHubAccountApi;
+  mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
+  connections?: LaunchStores["connections"];
   /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
   authStore: AuthStore;
   supabase: SupabaseProject;
@@ -97,7 +116,9 @@ export interface ControlOptions {
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
   providers?: ProviderRegistry;
-  providerFor?: (apiKey: string) => Provider;
+  providerMetadata?: ProviderMetadataFor;
+  goldenTarget?: (target: Omit<ProviderTarget, "modal">, caller: { userId: string }) => Promise<ProviderTarget>;
+  providerFor?: (apiKey: string, caller?: { userId: string; orgId: string }) => Provider;
   /** Server-side native-session refresh; never exposed to the CLI. */
   refreshNative?: (refreshToken: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
   exchangeNative?: (
@@ -135,6 +156,12 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
+  if (route === "github/oauth/callback") {
+    if (request.method !== "GET" && request.method !== "POST") return fail(405, "invalid", "Use POST or GET.");
+    return options.githubAccount
+      ? options.githubAccount.callback(request)
+      : fail(503, "unavailable", "GitHub account authorization is not configured.");
+  }
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
   if (route === "auth/email/start") return emailStartRoute(request, options);
@@ -147,15 +174,64 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   try {
     const caller = await authenticatedCaller(request, options);
     const body = await readBody(request);
+    if (route === "account/logout") {
+      if (caller.via !== "supabase")
+        throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
+      const response = await (options.supabase.fetch ?? fetch)(
+        new URL("/auth/v1/logout?scope=local", options.supabase.supabaseUrl),
+        {
+          method: "POST",
+          headers: { apikey: options.supabase.anonKey, authorization: request.headers.get("authorization") ?? "" },
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!response.ok) throw new VaultError("unavailable", "The account session could not be signed out.");
+      return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+    }
     const result = await dispatch(route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
     return Response.json(result, {
-      status: (route === "golden/create" || route === "golden/update") && "jobId" in (result as object) ? 202 : 200,
+      status:
+        (route === "golden/create" || route === "golden/update") &&
+        typeof result === "object" &&
+        result !== null &&
+        "jobId" in result
+          ? 202
+          : 200,
       headers: { "cache-control": "no-store" },
     });
   } catch (error) {
+    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
+    if (error instanceof ProviderError) {
+      const status =
+        error.code === "conflict"
+          ? 409
+          : error.code === "forbidden"
+            ? 403
+            : error.code === "invalid_request"
+              ? 400
+              : 503;
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message: error.message,
+            ...(error.details?.keepSource === true
+              ? {
+                  details: {
+                    keepSource: true,
+                    sourceSandboxId: error.details.sourceSandboxId,
+                  },
+                }
+              : {}),
+          },
+        },
+        { status, headers: { "cache-control": "no-store" } },
+      );
+    }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError) return fail(400, error.code, error.message);
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
@@ -197,14 +273,22 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
   try {
     const caller = await authenticatedCaller(request, options);
     const body = await readBody(request);
-    const org = optional(body, "org");
-    if (caller.via !== "supabase") {
-      const scope = caller.orgs[0];
-      if (!scope || !org) return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
-      const memberships = await options.authStore.memberships(caller.userId);
-      const membership = memberships.find((item) => item.orgId === scope.orgId);
-      if (!membership || membership.name !== org) return fail(403, "forbidden", "This token is scoped to another org.");
-    }
+    const ref = optional(body, "org") ?? optional(body, "orgName");
+    if (body.org !== undefined && body.orgName !== undefined && body.org !== body.orgName)
+      return fail(400, "invalid", "Conflicting org selectors.");
+    const memberships = await options.authStore.memberships(caller.userId);
+    const selected =
+      ref === undefined
+        ? undefined
+        : memberships.find(
+            (item) =>
+              (item.orgId === ref || item.name.toLowerCase() === ref.toLowerCase()) &&
+              caller.orgs.some((scope) => scope.orgId === item.orgId),
+          );
+    if (ref !== undefined && !selected) return fail(403, "forbidden", "This organization is not in your scope.");
+    if (caller.via !== "supabase" && !selected)
+      return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
+    const org = selected?.name;
     const created = await createServiceToken(options.authStore, {
       userId: caller.userId,
       ...(org ? { orgName: org } : {}),
@@ -409,7 +493,35 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
-  if (route.startsWith("mcp/")) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
+  if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
+  if (route.startsWith("github/")) {
+    if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
+    return options.githubAccount.command(route.slice("github/".length), caller, body);
+  }
+  if (route.startsWith("mcp/")) {
+    if (route === "mcp/oauth/callback") {
+      if (caller.via !== "supabase")
+        throw new VaultError("forbidden", "OAuth callbacks require a personal sign-in session.");
+      return dispatchMcp(route.slice(4), caller.userId, body, options);
+    }
+    const org = scopedOrg(caller, optional(body, "org"));
+    return dispatchMcp(route.slice(4), caller.userId, { ...body, org }, options);
+  }
+  if (route === "golden/capabilities") {
+    const selected = scopedOrg(caller, optional(body, "org"));
+    const member =
+      selected === undefined
+        ? caller.orgs.length === 1
+          ? caller.orgs[0]
+          : undefined
+        : caller.orgs.find((org) => org.orgId === selected);
+    if (!member) throw new VaultError("forbidden", "Name an org in this caller's scope.");
+    const backend = optional(body, "provider") ?? "boat";
+    if (backend !== "boat" && backend !== "modal") throw new VaultError("invalid", "Provider is boat or modal.");
+    if (!options.providerMetadata)
+      throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
+    return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
+  }
   const toolName = (
     {
       "golden/capabilities": "golden_capabilities",
@@ -426,25 +538,34 @@ async function dispatch(
     } as Record<string, string>
   )[route];
   if (toolName) {
-    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const selected = optional(body, "org");
     if (
       route === "golden/capabilities" &&
-      selected !== undefined &&
-      !caller.orgs.some((member) => member.orgId === scopedOrg(caller, selected))
-    ) {
+      optional(body, "provider") !== undefined &&
+      !isSandboxProvider(required(body, "provider"))
+    )
+      throw new VaultError("invalid", "Provider is boat or modal.");
+    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    if (
+      route === "golden/capabilities" &&
+      optional(body, "org") !== undefined &&
+      !caller.orgs.some((member) => member.orgId === scopedOrg(caller, optional(body, "org")))
+    )
       throw new VaultError("forbidden", "You are not a member of this org.");
-    }
-    const scopedCaller =
-      selected === undefined
-        ? caller
-        : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === scopedOrg(caller, selected)) };
+    const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
     return callSharedTool(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
         data: options.data(scopedCaller),
-        provider: (target) => options.providers!.resolve(target, scopedCaller),
+        provider: (target) =>
+          options.providers
+            ? options.providers.resolve(target, scopedCaller)
+            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+        ...(options.providerMetadata
+          ? {
+              providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
+            }
+          : {}),
         launchCredentials: launchCredentials(options.store, options.encryptionKey),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
@@ -462,7 +583,11 @@ async function dispatch(
     case "org/create":
       return { org: await createOrg(store, userId, required(body, "name")) };
     case "org/list":
-      return { orgs: await listOrgs(store, userId) };
+      return {
+        orgs: (await listOrgs(store, userId)).filter(
+          (item) => caller.via === "supabase" || caller.orgs.some((scope) => scope.orgId === item.id),
+        ),
+      };
     case "members/list":
       return listMembers(store, userId, org);
     case "members/add":
@@ -505,24 +630,24 @@ async function dispatch(
     case "launch/resolve":
       throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
     case "logs/read":
-      return readLogs(options, caller, required(body, "id"), body);
+      return readLogs(
+        options,
+        await selectedCaller(options, caller, optional(body, "org")),
+        required(body, "id"),
+        body,
+      );
     case "golden/visibility": {
       const visibility = required(body, "visibility");
       if (visibility !== "org" && visibility !== "private")
         throw new VaultError("invalid", "Visibility is private or org.");
-      const scopedCaller = org === undefined ? caller : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === org) };
+      const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
       const data = options.data?.(scopedCaller);
       if (!data?.setGoldenVisibility) throw new VaultError("unavailable", "Visibility management is not configured.");
       await data.setGoldenVisibility(required(body, "id"), visibility);
       return { ok: true };
     }
     case "golden/list":
-      return listGoldens(
-        options,
-        optional(body, "org") === undefined
-          ? caller
-          : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === scopedOrg(caller, optional(body, "org"))) },
-      );
+      return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
     case "golden/build/status":
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       return options.goldenBuilds.status(
@@ -594,32 +719,47 @@ function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson
  * once a fail-closed secret scan and the snapshot both succeed. The caller needs no boat.dev key.
  */
 async function createGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
-  if (!options.goldenBuilds || !options.providerFor) {
+  if (!options.goldenBuilds || (!options.providers && !options.providerFor)) {
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   }
+  required(body, "idempotencyKey");
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
-  if (body.provider !== undefined && body.provider !== "boat")
-    throw new ProviderRoutingError(
-      "provider_not_configured",
-      "modal",
-      "Secure Modal golden creation is not configured.",
-    );
+  if (body.provider !== undefined && body.provider !== "boat" && body.provider !== "modal")
+    throw new VaultError("invalid", "Provider is boat or modal.");
+  if (visibility === "org" && org.role !== "admin")
+    throw new VaultError("forbidden", "Only an admin can create an org golden.");
+  const targetInput = { orgId: org.id, visibility, provider: (body.provider ?? "boat") as "boat" | "modal" };
+  const target = options.goldenTarget
+    ? await options.goldenTarget(targetInput, caller)
+    : { ...targetInput, modal: null };
+  if (target.provider === "modal" && !target.modal)
+    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
   const name = required(body, "name");
   const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
   const repos = config ? [] : requiredStringArray(body, "repos");
   const setup = optional(body, "setup");
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, { orgId: org.id, visibility, ownerId: caller.userId, name });
-  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
-    userId: caller.userId,
-    orgId: org.id,
-    visibility,
-  });
+  if (target.provider === "modal" && !options.providers)
+    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal resource routing is not configured.");
+  const provider = options.providers
+    ? await options.providers.resolve(target, caller)
+    : options.providerFor!(
+        (
+          await resolveBoatKey(options.store, options.encryptionKey, {
+            userId: caller.userId,
+            orgId: org.id,
+            visibility,
+          })
+        ).key,
+        { userId: caller.userId, orgId: org.id },
+      );
   return options.goldenBuilds.admit(
-    options.providerFor(boat.key),
+    provider,
     actor,
     {
+      ...(target.modal ? { modal: target.modal } : {}),
       name,
       visibility,
       repos,
@@ -632,30 +772,21 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
 
 /** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
 async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
-  if (!options.goldenBuilds || !options.providerFor || !options.data)
+  if (!options.goldenBuilds || (!options.providers && !options.providerFor) || !options.data)
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
+  required(body, "idempotencyKey");
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const name = required(body, "name");
   const rows = await options.data(caller).goldens.findByName(org.id, name);
   const existingGolden = selectGolden(rows, body);
   if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  if (existingGolden.provider !== "boat")
-    throw new ProviderRoutingError(
-      "provider_not_configured",
-      "modal",
-      "Secure Modal golden rebuild is not configured.",
-    );
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, existingGolden);
   if (body.config === undefined) throw new VaultError("invalid", "config is required.");
   const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
-  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
-    userId: caller.userId,
-    orgId: org.id,
-    visibility: existingGolden.visibility,
-  });
+  const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
-    options.providerFor(boat.key),
+    provider,
     actor,
     {
       name: existingGolden.name,
@@ -684,14 +815,9 @@ async function snapshotGoldenRoute(
   if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, golden);
-  // Core methods re-check the exact private-owner/org-admin policy before changing anything.
   const provider = await providerForGolden(options, caller, golden);
   await data.goldens.assertBackendBinding?.(golden, provider);
-  let target = golden;
-  if (!target.providerSandboxId) {
-    const restored = await connectGolden(provider, data.goldens, actor, target.name);
-    target = restored.golden;
-  }
+  const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
   if (!target.providerSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
   await scanGoldenSandbox(provider, target.providerSandboxId);
   const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
@@ -781,11 +907,15 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
 async function launchRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>): Promise<unknown> {
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
-  if (body.visibility !== undefined || body.connections !== undefined)
-    throw new VaultError(
-      "unavailable",
-      "Connection binding and independent visibility require the registry service (#520).",
-    );
+  if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")
+    throw new VaultError("invalid", "Visibility is private or org.");
+  if (
+    body.connections !== undefined &&
+    (!Array.isArray(body.connections) ||
+      body.connections.length > 100 ||
+      body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
+  )
+    throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
   const name = required(body, "golden");
   const repo = body.repo === undefined ? undefined : required(body, "repo");
   const harness = required(body, "harness");
@@ -798,12 +928,14 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     name,
     optional(body, "provider") as "boat" | "modal" | undefined,
   );
+  resolveRepositoryDir(golden, optional(body, "repo"));
   const provider = await providerForGolden(options, caller, golden);
   const result = await launchSandbox(
     provider,
     {
       goldens: data.goldens,
       sandboxes: data.sandboxes,
+      ...(options.connections ? { connections: options.connections } : {}),
       credentials: launchCredentials(options.store, options.encryptionKey, {
         store: options.store,
         app: options.github?.app ?? null,
@@ -816,6 +948,8 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       golden: name,
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
+      ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
       ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
@@ -857,7 +991,7 @@ async function providerForGolden(options: ControlOptions, caller: Caller, golden
     visibility: golden.visibility,
   });
   return (
-    options.providerFor?.(key.key) ??
+    options.providerFor?.(key.key, { userId: caller.userId, orgId: golden.orgId }) ??
     Promise.reject(new VaultError("unavailable", "Launching is not configured on this server."))
   );
 }
@@ -1009,22 +1143,48 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   const authStore = createSqlAuthStore(sql);
   const supabaseUrl = need("SUPABASE_URL");
   const anonKey = need("SUPABASE_ANON_KEY");
+  const registry = createSqlMcpRegistry(sql, encryptionKey);
+  const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
+  let modal: ReturnType<typeof createModalIntegration> | undefined;
+  const modalIntegration = () =>
+    (modal ??= createModalIntegration({
+      sql,
+      vault: store,
+      encryptionKey,
+      publicUrl: need("ARMADA_PUBLIC_URL"),
+      github: { store, app: githubApp },
+    }));
+  const providers = providerRegistry({
+    vault: store,
+    encryptionKey,
+    providerFor,
+    modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
+    modalProviderFor: async (tokens, binding, context) =>
+      (await modalIntegration()).modalProviderFor(tokens, binding, context),
+  });
   return {
+    mcp: { registry },
+    connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
     supabase: { supabaseUrl, anonKey },
     encryptionKey,
     github: { app: githubApp },
     store,
-    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    providerFor,
     goldenAdoption: createGoldenAdoption(sql),
+    providers,
+    data: createSqlData(sql),
+    providerMetadata: createProviderMetadata({ sql, vault: store, encryptionKey, providerFor }),
+    goldenTarget: async (target, caller) =>
+      target.provider === "boat" ? { ...target, modal: null } : (await modalIntegration()).goldenTarget(target, caller),
     goldenBuilds: new GoldenBuildJobs({
       sql,
       encryptionKey,
-      service: { github: { store, encryptionKey, app: githubApp }, installationApp: githubInstallationAppFromEnv(env) },
-      provider: async (actor, visibility) => {
-        const credential = await resolveBoatKey(store, encryptionKey, { ...actor, visibility });
-        return createBoatProvider({ apiKey: credential.key });
+      service: {
+        github: { store, encryptionKey, app: githubApp },
+        installationApp: githubInstallationAppFromEnv(env),
       },
+      provider: (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
     }),
   };
 }
@@ -1037,4 +1197,92 @@ function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): Gold
   if (selected.length > 1)
     throw new GoldenError("conflict", "Golden exists on boat and modal. Pass --provider boat or modal.");
   return selected[0];
+}
+
+async function dispatchMcp(action: string, userId: string, body: Record<string, unknown>, options: ControlOptions) {
+  if (action === "oauth/callback") {
+    const callback = options.mcp?.broker?.callback;
+    if (!callback || !options.mcp) throw new VaultError("unavailable", "MCP OAuth callback broker is not configured.");
+    const result = await callback.call(
+      options.mcp.broker,
+      userId,
+      required(body, "state"),
+      required(body, "code"),
+      optional(body, "issuer"),
+    );
+    const connection = await options.mcp.registry.get(userId, result.orgId, result.connectionId);
+    return {
+      connection: {
+        ...connection,
+        status: connection.status === "disabled" || result.status === "connected" ? connection.status : result.status,
+      },
+    };
+  }
+  const orgId = required(body, "org");
+  if (!UUID.test(orgId)) throw new VaultError("invalid", "org must be an organization UUID.");
+  // Membership checked even if the registry is not configured.
+  const orgs = await listOrgs(options.store, userId);
+  if (!orgs.some((o) => o.id === orgId)) throw new VaultError("forbidden", "Organization membership required.");
+  if (!options.mcp) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
+  const { registry, broker } = options.mcp;
+  if (action === "list") return { connections: await registry.list(userId, orgId) };
+  if (action === "create" || action === "update") {
+    if (action === "update" && !UUID.test(required(body, "id")))
+      throw new VaultError("invalid", "id must be a connection UUID.");
+    return {
+      connection: await registry.save(
+        userId,
+        orgId,
+        body as unknown as McpConnectionInput,
+        action === "update" ? required(body, "id") : undefined,
+      ),
+    };
+  }
+  const id = required(body, "id");
+  if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");
+  if (action === "sandbox-connections") return { connections: await registry.sandboxConnections(userId, orgId, id) };
+  if (action === "set-enabled") {
+    if (typeof body.enabled !== "boolean") throw new VaultError("invalid", "enabled must be a boolean.");
+    return { connection: await registry.setEnabled(userId, orgId, id, body.enabled) };
+  }
+  const connection = await registry.get(userId, orgId, id);
+  if (action === "delete" || action === "revoke") {
+    await registry.revoke(userId, orgId, id, action === "delete");
+    return { ok: true };
+  }
+  if (action === "connect" && connection.scope === "org" && !orgs.some((o) => o.id === orgId && o.role === "admin"))
+    throw new VaultError("forbidden", "Only an organization administrator may connect a shared grant.");
+  if (action === "connect" && connection.status === "disabled")
+    throw new VaultError("conflict", "Enable this MCP connection before connecting.");
+  if (connection.transport === "stdio") {
+    if (action === "connect") return { connection: await registry.configureStdio(userId, orgId, id) };
+    if (action === "status") return { connection };
+  }
+  if (action === "status" && connection.status === "disabled") return { connection };
+  if (action === "connect" || action === "status") {
+    if (!broker)
+      return {
+        connection: {
+          ...connection,
+          status: "unavailable",
+          lastError: "MCP broker is not configured. Ask your administrator to configure the OAuth/gateway service.",
+        },
+      };
+    const result = await broker[action]({ userId, orgId, connectionId: id });
+    const current = await registry.get(userId, orgId, id);
+    return {
+      connection: {
+        ...current,
+        status: current.status === "disabled" || result.status === "connected" ? current.status : result.status,
+      },
+      ...("authorizationUrl" in result && result.authorizationUrl ? { authorizationUrl: result.authorizationUrl } : {}),
+    };
+  }
+  throw new VaultError("not_found", "Unknown MCP control action.");
+}
+
+async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
+  if (ref === undefined) return caller;
+  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
+  return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }

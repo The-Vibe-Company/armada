@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+if [ "${1:-}" = clone ]; then
+  args=()
+  for arg in "$@"; do
+    if [ "$arg" = "https://github.com/fixture/app.git" ]; then
+      args+=("git://127.0.0.1/fixture")
+    else
+      args+=("$arg")
+    fi
+  done
+  exec /usr/bin/git "${args[@]}"
+fi
+exec /usr/bin/git "$@"

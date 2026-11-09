@@ -17,6 +17,7 @@ const env = {
   GITHUB_APP_SLUG: "armada-tvc",
   GITHUB_APP_ID: "8675309",
   MOCK_PORT: String(MOCK_PORT),
+  DASHBOARD_ORIGIN: `http://127.0.0.1:${APP_PORT}`,
 };
 
 export default defineConfig({

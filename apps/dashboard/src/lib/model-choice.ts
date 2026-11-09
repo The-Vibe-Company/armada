@@ -6,6 +6,7 @@ import {
   resolveModelChoice,
   type SandboxProviderId,
 } from "@armada/core";
+import type { SandboxVisibility } from "./connections.ts";
 
 /** The select value that means "a model id typed in the field next to it". */
 export const OTHER_MODEL = "other";
@@ -18,14 +19,18 @@ export type LaunchArgs = {
   provider: SandboxProviderId;
   org: string;
   harness: Harness;
-  /** `owner/repo` recorded in the golden: the agent's real initial working directory. Omitted: legacy behaviour. */
-  repo?: string;
   model: string;
   reasoning_effort: string;
+  /** Who sees the sandbox: its owner only, or every member of the org. Personal connections need private. */
+  visibility: SandboxVisibility;
+  /** Connection ids (never names) whose MCP servers the sandbox gets. */
+  connections: string[];
+  /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
+  repo?: string;
   prompt?: string;
 };
 
-const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const REPO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,80})?$/;
 
 export type SendArgs = { model?: string; reasoning_effort?: string };
 
@@ -44,7 +49,7 @@ export function launchArgs(
     prompt: string;
     repo?: string;
   } & ModelFields,
-): Parsed<LaunchArgs> {
+): Parsed<Omit<LaunchArgs, "visibility" | "connections">> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
   if (!harness) return { ok: false, error: "Choose Claude Code or Codex." };
   if (!fields.golden.trim() || !fields.org.trim() || !isSandboxProvider(fields.provider)) {

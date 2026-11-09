@@ -1,0 +1,19 @@
+{
+  "method": "turn/completed",
+  "params": {
+    "threadId": "recorded-thread",
+    "turn": {
+      "id": "recorded-turn",
+      "status": "failed",
+      "items": [],
+      "error": {
+        "message": "[provider message omitted]",
+        "codexErrorInfo": {
+          "httpConnectionFailed": {
+            "httpStatusCode": null
+          }
+        }
+      }
+    }
+  }
+}

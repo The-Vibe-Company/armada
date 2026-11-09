@@ -8,7 +8,9 @@ export function isPublicPath(pathname: string): boolean {
     pathname.startsWith("/login/") ||
     pathname.startsWith("/auth/") ||
     // The GitHub App can send the person here before this browser has an Armada session.
-    pathname === "/github/callback"
+    pathname === "/github/callback" ||
+    // Where the CLI's GitHub sign-in ends; the CLI user may have no dashboard session in this browser.
+    pathname === "/github/cli"
   );
 }
 

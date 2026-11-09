@@ -1,30 +1,40 @@
-import { setTimeout as delay } from "node:timers/promises";
 import type { GoldenBuildJobs } from "@armada/core/server";
 
-/** Owns the awaited worker loop for the lifetime of armada-server, never an HTTP request. */
-export function startGoldenWorker(jobs: GoldenBuildJobs) {
-  const controller = new AbortController();
+/** One serialized queue loop per process; SQL fencing owns concurrency across processes.
+ * Shutdown stops new ticks, never turns a disconnected HTTP request into cancelled build ownership.
+ */
+export function startGoldenWorker(
+  jobs: Pick<GoldenBuildJobs, "runOne" | "reconcileOne">,
+  log: (line: string) => void = console.error,
+) {
+  let stopped = false;
+  let wake: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const done = (async () => {
-    while (!controller.signal.aborted) {
+    while (!stopped) {
       try {
+        const worked = await jobs.runOne();
+        if (stopped) break;
+        if (worked) continue;
         await jobs.reconcileOne();
-        if (!controller.signal.aborted && (await jobs.runOne())) continue;
       } catch {
-        // Database/provider exceptions may contain credentials. Log only a fixed code.
-        console.error(JSON.stringify({ event: "golden_worker_failed", code: "unavailable" }));
+        // Upstream SQL/SDK errors may carry credential-bearing request data. Never log them.
+        log("armada: golden worker tick unavailable; durable jobs remain fenced.");
       }
-      try {
-        await delay(1000, undefined, { signal: controller.signal });
-      } catch {
-        break;
-      }
+      if (!stopped)
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+          timer = setTimeout(resolve, 1000);
+          timer.unref();
+        });
     }
   })();
   return {
-    /** Stops claiming immediately; an active build drains or is fenced after process termination. */
-    stop: () => {
-      controller.abort();
-    },
     done,
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      wake?.();
+    },
   };
 }

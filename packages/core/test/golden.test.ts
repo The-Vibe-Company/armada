@@ -314,6 +314,18 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
       row.providerSandboxId = providerSandboxId;
     },
+    async replaceSandbox(id, expectedSandbox, expectedSnapshot, replacement) {
+      const row = rows.find(
+        (item) =>
+          item.id === id &&
+          writable(item) &&
+          item.providerSandboxId === expectedSandbox &&
+          item.providerSnapshotId === expectedSnapshot,
+      );
+      if (!row) return false;
+      row.providerSandboxId = replacement;
+      return true;
+    },
     async setSnapshot(id, providerSnapshotId) {
       const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");

@@ -34,7 +34,7 @@ describe("golden command", () => {
   test("create builds, scans and snapshots a multi-repo golden on the server, with no boat account environment", async () => {
     // golden create is server-orchestrated now (no separate connect/snapshot step for a golden
     // built this way, and no BOAT_API_KEY): the CLI sends the parsed --repo/--init config to
-    // /api/v1/golden/create, which runs the whole disposable-builder flow in one call.
+    // /api/v1/golden/create, which admits the durable disposable-builder job, then polls its status.
     const db = await openDatabase();
     try {
       await applyMigrations(db);

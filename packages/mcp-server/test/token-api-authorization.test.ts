@@ -98,8 +98,14 @@ test("session callers can create and list only their own tokens in memberships",
   expect(list.status).toBe(200);
   expect((await list.json()) as unknown).toMatchObject({ tokens: [{ id: dto.id, orgName: "Alpha", label: "worker" }] });
 
+  const legacySelector = await call("token/create", jwt(ALICE), { orgName: "Beta" });
+  expect(legacySelector.status).toBe(200);
+  expect(((await legacySelector.json()) as { orgName: string }).orgName).toBe("Beta");
+  const uuidSelector = await call("token/create", jwt(ALICE), { org: ORG_A });
+  expect(uuidSelector.status).toBe(200);
+  expect(((await uuidSelector.json()) as { orgName: string }).orgName).toBe("Alpha");
   const switched = await call("token/create", jwt(ALICE), { org: "Other" });
-  expect(switched.status).toBe(401);
+  expect(switched.status).toBe(403);
 });
 
 test("service tokens remain subset-scoped and cannot create or list in another organization", async () => {

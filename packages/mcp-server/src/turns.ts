@@ -28,6 +28,8 @@ export interface StatusReport {
   golden: string;
   visibility: SandboxView["visibility"];
   harness: SandboxView["harness"];
+  /** Persisted native repository directory; not an access boundary. */
+  repositoryDir: string | null;
   /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
   model: string | null;
   reasoningEffort: string | null;
@@ -125,6 +127,7 @@ function report(
     golden: sandbox.golden,
     visibility: sandbox.visibility,
     harness: sandbox.harness,
+    repositoryDir: sandbox.repositoryDir ?? null,
     model: sandbox.model,
     reasoningEffort: sandbox.reasoningEffort,
     status,

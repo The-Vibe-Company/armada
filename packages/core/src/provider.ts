@@ -8,6 +8,7 @@ import type { Harness } from "./contract.ts";
  * sandbox it acts on; a provider holds no per-sandbox state, so one instance serves any number of callers.
  */
 export interface Provider {
+  prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   readonly id: string;
   readonly harnesses: readonly Harness[];
   /** What each harness can do here. Callers branch on this, never on the harness name. */
@@ -16,6 +17,18 @@ export interface Provider {
   readonly maxGoldens?: number;
   /** Stable non-secret backend account identity, when supported. */
   backendIdentity?(): Promise<{ id: string }>;
+  /** Private authenticated runtime configuration; must complete before a model turn starts. */
+  configureMcp?(request: {
+    sandboxId: string;
+    configuration: {
+      revision: string;
+      servers: Record<
+        string,
+        | { type: "http"; url: string; headers?: Record<string, string> }
+        | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
+      >;
+    };
+  }): Promise<void | { revision: string }>;
 
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
@@ -23,6 +36,9 @@ export interface Provider {
    * Callers inject credentials later, per sandbox, through `fork`'s `env`.
    */
   createGolden(request: CreateGoldenRequest): Promise<SandboxInfo>;
+  /** Authorized credential-free golden restoration, never a normal agent fork. Source is derived
+   * exclusively from the bound snapshot; optional prior ID must match that image's own source. */
+  restoreGoldenMaster?(request: { snapshotId: string; sandboxId?: string }): Promise<SandboxInfo>;
   /** Freezes a sandbox using a requested label. SnapshotInfo.name is the authoritative provider
    * reference (it may differ from the label); use it for polling, fork and deletion. */
   snapshot(request: SnapshotRequest): Promise<SnapshotInfo>;
@@ -93,6 +109,8 @@ export interface SandboxInfo {
   state: SandboxState;
   /** The provider's own state name, for diagnosis. */
   providerState: string;
+  /** Trusted physical/runtime incarnation, changing on restore or volatile runner replacement. Not a label. */
+  physicalGeneration?: string;
   /** Why the sandbox failed, when it did. */
   error?: string;
   labels: Readonly<Record<string, string>>;
@@ -217,6 +235,8 @@ export interface SshKeyRequest {
 
 export interface SshConnection {
   sshEndpoint: string;
+  /** Provider-trusted SSH login; omitted for the standard user account. Never request input. */
+  username?: "user" | "root";
   /** OpenSSH host key to pin; never use TOFU for golden builders. */
   hostKey: string;
 }
@@ -343,4 +363,10 @@ export class ProviderError extends Error {
     this.requestId = init.requestId;
     this.details = init.details;
   }
+}
+
+export interface PrepareNativeHarnessCwdRequest {
+  sandboxId: string;
+  harness: Harness;
+  cwd: string;
 }

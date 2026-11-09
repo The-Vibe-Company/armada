@@ -1,4 +1,13 @@
-import type { GoldenBuildStatus } from "@armada/core";
+import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
+import {
+  type ConnectionTarget,
+  type CreateConnectionRequest,
+  type McpConnection,
+  parseConnection,
+  safeAuthorizationUrl,
+  type UpdateConnectionRequest,
+} from "./connections.ts";
+
 /**
  * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
  * server can do (a golden build needs the encrypted Boat key and the caller's GitHub connection; the golden
@@ -117,17 +126,22 @@ export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult 
 }
 
 /**
- * The selected backend's golden limit, as the Armada server reads it from the provider it resolves for that
- * org (`golden/capabilities`). `maxGoldens` null means the server reports no limit (unbounded or unknown),
- * which is not zero. `unavailable` is a failed read (no access, no provider credentials, an older server, an
- * unexpected answer): the limit is then not known here, and the server still checks it when it builds.
+ * One provider's golden limit for an org, as the Armada server reads it from the backend it resolves for that org
+ * and provider (`golden/capabilities {org, provider}`). `maxGoldens` null means the server reports no limit (Modal
+ * is unbounded), which is not zero. `unavailable` is a failed read (no access, the provider not configured for the
+ * org, an older server, an answer for another provider): the limit is then not known here, and the server still
+ * checks it when it builds.
  */
 export type GoldenCapabilities = { ok: true; maxGoldens: number | null } | { ok: false; reason: string };
 
-export async function readGoldenCapabilities(client: ControlClient, org: string): Promise<GoldenCapabilities> {
+export async function readGoldenCapabilities(
+  client: ControlClient,
+  org: string,
+  provider: SandboxProviderId,
+): Promise<GoldenCapabilities> {
   let result: unknown;
   try {
-    result = await client.post("golden/capabilities", { org, provider: "boat" });
+    result = await client.post("golden/capabilities", { org, provider });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     if (error.status === 404 && error.code === undefined)
@@ -136,7 +150,7 @@ export async function readGoldenCapabilities(client: ControlClient, org: string)
   }
   if (
     isRecord(result) &&
-    result.provider === "boat" &&
+    result.provider === provider &&
     (result.maxGoldens === null ||
       (typeof result.maxGoldens === "number" && Number.isInteger(result.maxGoldens) && result.maxGoldens > 0))
   )
@@ -144,6 +158,130 @@ export async function readGoldenCapabilities(client: ControlClient, org: string)
   return { ok: false, reason: "The Armada server sent an unexpected answer." };
 }
 
+export const MCP_CONTROL_PATH = "/api/v1/mcp/";
+
+export type ArmadaApiOptions = {
+  /** Any URL on the Armada server, such as `ARMADA_MCP_URL`; only its origin is used. */
+  serverUrl: string;
+  token: string;
+  fetch?: typeof fetch;
+};
+
+export type McpControl = ReturnType<typeof createMcpControl>;
+
+/**
+ * One authenticated POST to the Armada API: JSON in, a JSON object out, its `{error: {message}}` turned into a
+ * {@link ControlError}. `feature` names what an older server does not offer yet.
+ */
+export async function controlPost(
+  options: ArmadaApiOptions,
+  path: string,
+  body: object,
+  feature = "MCP connections",
+): Promise<Record<string, unknown>> {
+  let response: Response;
+  try {
+    response = await (options.fetch ?? fetch)(new URL(path, new URL(options.serverUrl).origin), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      redirect: "error",
+    });
+  } catch {
+    throw new ControlError("The Armada server is unreachable.");
+  }
+  const payload = await readMcpJson(response);
+  if (response.ok) {
+    if (!payload) throw new ControlError("The Armada server sent something unreadable.", response.status);
+    return payload;
+  }
+  throw failure(response.status, payload, feature);
+}
+
+export function createMcpControl(options: ArmadaApiOptions) {
+  const post = (operation: string, body: object) => controlPost(options, `${MCP_CONTROL_PATH}${operation}`, body);
+
+  async function connection(operation: string, body: object) {
+    const payload = await post(operation, body);
+    const parsed = parseConnection(payload.connection);
+    if (!parsed) throw new ControlError("The Armada server sent an unexpected connection.");
+    return { payload, connection: parsed };
+  }
+
+  async function confirm(operation: string, body: ConnectionTarget): Promise<void> {
+    const payload = await post(operation, body);
+    if (payload.ok !== true) throw new ControlError("The Armada server did not confirm the change.");
+  }
+
+  return {
+    async list(org: string): Promise<McpConnection[]> {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.connections)) throw new ControlError("The Armada server sent no connection list.");
+      // Rows of another org are dropped even if the server sent them: the page shows the selected org only.
+      return payload.connections.map(parseConnection).filter((row): row is McpConnection => row?.orgId === org);
+    },
+    create: async (request: CreateConnectionRequest) => (await connection("create", request)).connection,
+    update: async (request: UpdateConnectionRequest) => (await connection("update", request)).connection,
+    status: async (target: ConnectionTarget) => (await connection("status", target)).connection,
+    /** Starts or repeats the connection. An OAuth server answers with the URL the browser signs in at. */
+    async connect(target: ConnectionTarget): Promise<{ connection: McpConnection; authorizationUrl: string | null }> {
+      const { payload, connection: parsed } = await connection("connect", target);
+      if (payload.authorizationUrl === undefined || payload.authorizationUrl === null) {
+        return { connection: parsed, authorizationUrl: null };
+      }
+      const authorizationUrl = safeAuthorizationUrl(payload.authorizationUrl);
+      if (!authorizationUrl) throw new ControlError("The sign-in address from the server was refused as unsafe.");
+      return { connection: parsed, authorizationUrl };
+    },
+    revoke: (target: ConnectionTarget) => confirm("revoke", target),
+    delete: (target: ConnectionTarget) => confirm("delete", target),
+    /** Turns a connection off for new launches, or back on. Its stored authorization is kept. */
+    setEnabled: async (target: ConnectionTarget & { enabled: boolean }) =>
+      (await connection("set-enabled", target)).connection,
+    /**
+     * The connections bound to one sandbox, as the registry recorded them at launch, limited to what the viewer
+     * may see. `id` is the sandbox id.
+     */
+    async sandboxConnections(target: ConnectionTarget): Promise<McpConnection[]> {
+      const payload = await post("sandbox-connections", target);
+      if (!Array.isArray(payload.connections)) throw new ControlError("The Armada server sent no connection list.");
+      return payload.connections.map(parseConnection).filter((row): row is McpConnection => row?.orgId === target.org);
+    },
+    /**
+     * Completes a browser sign-in. The server matches `state` with the pending authorization it created, which
+     * names the org and connection; the dashboard only relays the provider's answer with the viewer's bearer.
+     */
+    oauthCallback: async (body: { state: string; code: string; issuer?: string }) =>
+      (await connection("oauth/callback", body)).connection,
+  };
+}
+
+async function readMcpJson(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const value: unknown = await response.json();
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The server's `{error: {code, message}}`, in words for the person. Its message is already sanitized. */
+function failure(status: number, payload: Record<string, unknown> | null, feature: string): ControlError {
+  const error = payload && typeof payload.error === "object" && payload.error !== null ? payload.error : null;
+  const message = error && "message" in error && typeof error.message === "string" ? error.message.slice(0, 300) : null;
+  if (status === 401) return new ControlError("The Armada server refused this session. Sign in again.", status);
+  if (status === 403) return new ControlError(message ?? "You are not allowed to do that.", status);
+  if ((status === 404 || status === 405) && (!message || message === "Unknown route.")) {
+    return new ControlError(`This Armada server does not offer ${feature} yet.`, status);
+  }
+  if (status >= 500) return new ControlError(message ?? "The Armada server could not complete the request.", status);
+  return new ControlError(message ?? `The Armada server answered ${status}.`, status);
+}
+
+/** A golden build job receipt or status (`golden/create`, `golden/update`, `golden/build/status`). */
 export function isGoldenBuildStatus(value: unknown): value is GoldenBuildStatus {
   return (
     isRecord(value) &&

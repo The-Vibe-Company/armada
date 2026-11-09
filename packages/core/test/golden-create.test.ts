@@ -1,6 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { createMemoryAuthStore } from "../../auth/src/index.ts";
+import { handleControlRequest } from "../../mcp-server/src/control.ts";
+import { providerRegistry } from "../../mcp-server/src/http.ts";
+import { sqlOver } from "../../mcp-server/src/sql.ts";
 import {
   connectGolden,
   createGoldenCreateService,
@@ -9,10 +15,13 @@ import {
   encryptSecret,
   type GitHubInstallationApp,
   type GoldenActor,
+  GoldenBuildJobs,
+  type GoldenBuildStatus,
   GoldenError,
   type Provider,
   ProviderError,
   type SandboxInfo,
+  type Sql,
 } from "../src/server.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
@@ -40,54 +49,198 @@ describe("createGoldenCreateService, wired to a real database", () => {
     }
   });
 
-  test("without GITHUB_APP_PRIVATE_KEY, checkout falls back to the caller's own token and persists a valid config", async () => {
-    const db = await openDatabase();
-    try {
-      await applyMigrations(db);
-      const { actor, userId } = await fixture(db);
-      await connectGitHub(db, userId);
-      const sshCalls: { token: string; script: string }[] = [];
-      const service = createGoldenCreateService({
-        sql: db,
-        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
-        installationApp: null,
-        fetch: fakeGitHubFetch(),
-        ssh: async (_provider, input) => {
-          sshCalls.push(input);
-        },
-      });
-      const result = await service.create(readyProvider(), actor, {
-        name: "web",
-        visibility: "org",
-        repos: ["acme/web"],
-        setup: "echo setup",
-      });
-      expect(result.snapshot).toBe("golden-bx_1");
-      expect(sshCalls).toHaveLength(1);
-      expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
+  test.each(["boat", "modal"] as const)(
+    "secure %s checkout persists provider-specific identity without Boat aliases",
+    async (providerId) => {
+      const db = await openDatabase();
+      try {
+        await applyMigrations(db);
+        const { actor, userId } = await fixture(db);
+        await connectGitHub(db, userId);
+        const sshCalls: { token: string; script: string }[] = [];
+        // PGlite has one connection. Route a provider's read-only validation to the active
+        // transaction instead of deadlocking an independent pool read (production Bun SQL pools).
+        let active: Sql | undefined;
+        const sql: Sql = {
+          query: (text, params) => (active ?? db).query(text, params),
+          transaction: (work) =>
+            db.transaction(async (tx) => {
+              active = tx;
+              try {
+                return await work(tx);
+              } finally {
+                active = undefined;
+              }
+            }),
+        };
+        const serviceOptions = {
+          github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+          installationApp: null,
+          fetch: fakeGitHubFetch(),
+          ssh: async (_provider: Provider, input: { token: string; script: string }) => {
+            sshCalls.push(input);
+          },
+        };
+        const { maxGoldens: _capacity, backendIdentity: _identity, ...uncapped } = readyProvider();
+        const provider: Provider = providerId === "modal" ? { ...uncapped, id: "modal" } : readyProvider();
+        let builders = 0;
+        const createBuilder = provider.createGolden;
+        provider.createGolden = async (input) => {
+          builders++;
+          return createBuilder(input);
+        };
+        const modal = { workspace: "workspace-authority", environment: "main", appId: "ap-immutable" };
+        const store = createSqlVaultStore(sql);
+        const orgPair = { token_id: "ak-org000001", token_secret: "as-org000001" };
+        let activePair = orgPair;
+        for (const [scope, owner, value] of [
+          ["org", actor.orgId, orgPair],
+          ["user", actor.userId, { token_id: "ak-personal01", token_secret: "as-personal01" }],
+        ] as const)
+          await db.query("insert into credentials(scope,owner_id,kind,value_enc) values($1,$2,'modal',$3)", [
+            scope,
+            owner,
+            await encryptSecret(JSON.stringify(value), KEY),
+          ]);
+        await store.setOrgBoatKey(actor.orgId, await encryptSecret("boat-test", KEY));
+        const authStore = createMemoryAuthStore();
+        authStore.addMembership(actor.userId, { orgId: actor.orgId, name: "Example", role: "admin" });
+        const registry = providerRegistry({
+          vault: store,
+          encryptionKey: KEY,
+          providerFor: () => {
+            expect(providerId).toBe("boat");
+            return provider;
+          },
+          modalProviderFor: (tokens, binding, context) => {
+            expect(tokens).toEqual({ tokenId: activePair.token_id, tokenSecret: activePair.token_secret });
+            expect(binding).toEqual(modal);
+            expect(context.credentialScope).toBe("org");
+            expect(context.caller.userId).toBe(actor.userId);
+            return provider;
+          },
+        });
+        const workerTargets: unknown[] = [];
+        const jobs = new GoldenBuildJobs({
+          sql,
+          encryptionKey: KEY,
+          service: serviceOptions,
+          provider: (freshActor, visibility, target) => {
+            expect(visibility).toBe("org");
+            expect(target).toEqual({
+              provider: providerId,
+              orgId: actor.orgId,
+              visibility: "org",
+              sourceGoldenVisibility: "org",
+              modal: providerId === "modal" ? modal : null,
+            });
+            workerTargets.push(target);
+            return registry.resolve(target, { userId: freshActor.userId });
+          },
+        });
+        let configurationCalls = 0;
+        const control = {
+          authStore,
+          store,
+          encryptionKey: KEY,
+          goldenBuilds: jobs,
+          providerFor: () => provider,
+          supabase: {
+            supabaseUrl: "https://supabase.test",
+            anonKey: "anon",
+            fetch: (async () => Response.json({ id: actor.userId })) as unknown as typeof fetch,
+          },
+          goldenTarget: async (target: Omit<import("../src/sandbox-provider.ts").ProviderTarget, "modal">) => {
+            configurationCalls++;
+            return { ...target, modal: providerId === "modal" ? modal : null };
+          },
+          providers: registry,
+        };
+        const request = (path: string, body: object) =>
+          handleControlRequest(
+            new Request(`https://armada.test/api/v1/${path}`, {
+              method: "POST",
+              headers: { authorization: "Bearer eyJheader.eyJpayload.signature" },
+              body: JSON.stringify(body),
+            }),
+            control,
+          );
+        const response = await request("golden/create", {
+          name: "web",
+          provider: providerId,
+          repos: ["acme/web"],
+          setup: "echo setup",
+          idempotencyKey: "async-build-contract-01",
+        });
+        expect(response?.status).toBe(202);
+        const admitted = (await response?.json()) as GoldenBuildStatus;
+        expect(admitted).toMatchObject({ state: "queued", provider: providerId, result: null });
+        expect(builders).toBe(0);
+        expect(sshCalls).toHaveLength(0);
+        expect((await db.query("select id from goldens")).rows).toHaveLength(0);
+        const encrypted = (
+          await db.query<{ payload_enc: Uint8Array; reservation_id: string | null }>(
+            "select payload_enc,reservation_id from golden_build_jobs",
+          )
+        ).rows[0]!;
+        const payload = await import("../src/crypto.ts").then((crypto) =>
+          crypto.decryptSecret(new Uint8Array(encrypted.payload_enc), KEY),
+        );
+        expect(JSON.parse(payload)).toMatchObject({
+          provider: providerId,
+          modal: providerId === "modal" ? modal : null,
+        });
+        expect(payload).not.toContain(orgPair.token_secret);
+        expect(encrypted.reservation_id === null).toBe(providerId === "modal");
+        activePair = { token_id: "ak-orgrotated01", token_secret: "as-orgrotated01" };
+        await db.query("update credentials set value_enc=$2 where scope='org' and owner_id=$1 and kind='modal'", [
+          actor.orgId,
+          await encryptSecret(JSON.stringify(activePair), KEY),
+        ]);
+        expect(await jobs.runOne()).toBe(true);
+        expect(workerTargets).toHaveLength(providerId === "modal" ? 2 : 1);
+        expect(configurationCalls).toBe(1); // Never rederive App binding during execution.
+        expect(builders).toBe(1);
+        const status = await request("golden/build/status", { jobId: admitted.jobId });
+        expect(status?.status).toBe(200);
+        const completed = (await status?.json()) as GoldenBuildStatus;
+        expect(completed).toMatchObject({
+          state: "succeeded",
+          provider: providerId,
+          result: { snapshot: "golden-bx_1" },
+        });
+        expect(sshCalls).toHaveLength(1);
+        expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
 
-      const row = await db.query<{
-        visibility: string;
-        boat_snapshot_id: string;
-        boat_sandbox_id: string;
-        config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
-      }>("select visibility, boat_snapshot_id, boat_sandbox_id, config from goldens where name = 'web'");
-      expect(row.rows[0]).toMatchObject({
-        visibility: "org",
-        boat_snapshot_id: "golden-bx_1",
-        boat_sandbox_id: null,
-        config: {
-          repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
-          init: ["echo setup"],
-        },
-      });
-      const slots = await db.query("select golden_id, build_id from golden_backend_slots");
-      expect(slots.rows).toHaveLength(1);
-      expect((slots.rows[0] as { golden_id: string; build_id: string | null }).build_id).toBeNull();
-    } finally {
-      await db.close();
-    }
-  });
+        const row = await db.query<{
+          visibility: string;
+          boat_snapshot_id: string;
+          boat_sandbox_id: string;
+          config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
+        }>(
+          "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config from goldens where name = 'web'",
+        );
+        expect(row.rows[0]).toMatchObject({
+          visibility: "org",
+          provider: providerId,
+          modal_app_id: providerId === "modal" ? modal.appId : null,
+          provider_snapshot_id: "golden-bx_1",
+          provider_sandbox_id: null,
+          boat_snapshot_id: providerId === "boat" ? "golden-bx_1" : null,
+          boat_sandbox_id: null,
+          config: {
+            repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+            init: ["echo setup"],
+          },
+        });
+        const slots = await db.query("select golden_id,build_id from golden_backend_slots");
+        expect(slots.rows).toHaveLength(providerId === "boat" ? 1 : 0);
+        if (providerId === "boat") expect((slots.rows[0] as { build_id: string | null }).build_id).toBeNull();
+      } finally {
+        await db.close();
+      }
+    },
+  );
 
   test("Boat capacity requires a backend identity and a second factory build is refused globally", async () => {
     const db = await openDatabase();
@@ -265,6 +418,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     const machines = new Map<string, { content: number; stopped: boolean }>();
     const deleted: string[] = [];
     let next = 0;
+    let blockedOldMaster: string | undefined;
     const start = (content: number): SandboxInfo => {
       const id = `machine-${++next}`;
       machines.set(id, { content, stopped: false });
@@ -293,6 +447,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
         artifacts.delete(name);
       },
       stop: async ({ sandboxId }) => {
+        if (failure === "old-stop" && sandboxId === blockedOldMaster) throw new Error("uncertain old stop");
         machines.get(sandboxId)!.stopped = true;
       },
       get: async (id) => {
@@ -380,12 +535,37 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     const restored = await connectGolden(provider, store, actor, "web");
     expect(restored.sandbox.id).not.toBe(connected.sandbox.id);
     expect(machines.get(restored.sandbox.id)?.content).toBe(artifacts.get(updated.snapshot)?.content);
+    // A failed old-master stop must leave that active master canonical and retrievable.
+    const active = (await store.findByName(actor.orgId, "web"))[0]!;
+    blockedOldMaster = active.providerSandboxId!;
+    failure = "old-stop";
+    await expect(service.create(provider, actor, { ...input, existingGolden: active })).rejects.toThrow(
+      "remains canonical",
+    );
+    expect((await store.findByName(actor.orgId, "web"))[0]?.providerSandboxId).toBe(blockedOldMaster);
+    expect((await provider.get(blockedOldMaster)).state).toBe("ready");
+    expect(artifacts.has(active.providerSnapshotId!)).toBe(true);
+    // Rollback after quiescence retains the old stopped master reference and its last-good artifact.
+    failure = "persist";
+    await expect(service.create(provider, actor, { ...input, existingGolden: active })).rejects.toMatchObject({
+      code: "build_failed",
+    });
+    expect((await store.findByName(actor.orgId, "web"))[0]?.providerSandboxId).toBe(blockedOldMaster);
+    expect((await provider.get(blockedOldMaster)).state).toBe("stopped");
+    failure = "";
+    const reopened = await connectGolden(provider, store, actor, "web");
+    expect((await provider.get(reopened.sandbox.id)).state).toBe("ready");
+    const beforeRetire = (await store.findByName(actor.orgId, "web"))[0]!;
+    await service.create(provider, actor, { ...input, existingGolden: beforeRetire });
+    expect((await store.findByName(actor.orgId, "web"))[0]?.providerSandboxId).toBeNull();
+    expect((await provider.get(reopened.sandbox.id)).state).toBe("stopped");
+    expect([...machines.values()].every((machine) => machine.stopped)).toBe(true);
     // An ambiguous commit error must never delete an artifact the database actually committed.
     failure = "ack";
     const current = (await store.findByName(actor.orgId, "web"))[0]!;
-    await expect(service.create(provider, actor, { ...input, existingGolden: current })).rejects.toMatchObject({
-      code: "build_failed",
-    });
+    await expect(service.create(provider, actor, { ...input, existingGolden: current })).rejects.toThrow(
+      "publication could not be confirmed",
+    );
     const committed = (await store.findByName(actor.orgId, "web"))[0]!;
     expect(committed.providerSnapshotId).not.toBe(updated.snapshot);
     expect(artifacts.has(committed.providerSnapshotId!)).toBe(true);
@@ -395,7 +575,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
   }
 });
 
-async function fixture(db: Awaited<ReturnType<typeof openDatabase>>): Promise<{ actor: GoldenActor; userId: string }> {
+async function fixture(db: Sql): Promise<{ actor: GoldenActor; userId: string }> {
   const org = crypto.randomUUID();
   const userId = crypto.randomUUID();
   await db.query("insert into auth.users (id) values ($1)", [userId]);
@@ -404,7 +584,7 @@ async function fixture(db: Awaited<ReturnType<typeof openDatabase>>): Promise<{ 
   return { actor: { userId, orgId: org, role: "admin" }, userId };
 }
 
-async function connectGitHub(db: Awaited<ReturnType<typeof openDatabase>>, userId: string): Promise<void> {
+async function connectGitHub(db: Sql, userId: string): Promise<void> {
   await db.query(
     "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
     [userId, await encryptSecret("ghr_refresh_octocat", KEY)],
@@ -502,3 +682,263 @@ function caps() {
     approvals: false,
   };
 }
+
+// A single PGlite connection cannot observe an uncommitted transaction from another session.
+// This test runs on actual PostgreSQL using promise barriers, with no wall-clock ordering guesses.
+test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
+  "invisible in-flight COMMIT cannot authorize deleting a ready golden artifact",
+  async () => {
+    const configured = process.env.ARMADA_TEST_POSTGRES_URL!;
+    const admin = new Bun.SQL(configured);
+    const name = `golden_review_${crypto.randomUUID().replaceAll("-", "")}`;
+    await admin.unsafe(`create database "${name}"`);
+    const url = new URL(configured);
+    url.pathname = `/${name}`;
+    const client = new Bun.SQL(url.href);
+    const sql = sqlOver({
+      unsafe: (text, params) => client.unsafe(text, params),
+      begin: (work) => client.begin((tx) => work({ unsafe: (text, params) => tx.unsafe(text, params) })),
+    });
+    let finish!: () => void;
+    const commitGate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let callbackDone!: () => void;
+    const callbackFinished = new Promise<void>((resolve) => {
+      callbackDone = resolve;
+    });
+    let pendingCommit: Promise<unknown> | undefined;
+    let attempt: Promise<void> | undefined;
+    try {
+      const prereq = (await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text()).replace(
+        /^create role [^;]+;/gm,
+        (command) => `do $$ begin ${command} exception when duplicate_object then null; end $$;`,
+      );
+      await client.unsafe(prereq);
+      for (const file of (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort())
+        await client.unsafe(await Bun.file(join(migrationsDir, file)).text());
+      const { actor, userId } = await fixture(sql);
+      await connectGitHub(sql, userId);
+      const artifacts = new Set<string>();
+      const deleted: string[] = [];
+      let deletedArtifact!: () => void;
+      const deletionObserved = new Promise<void>((resolve) => {
+        deletedArtifact = resolve;
+      });
+      const provider: Provider = {
+        ...readyProvider(),
+        snapshot: async ({ name, sandboxId }) => {
+          artifacts.add(name);
+          return { name, sourceSandboxId: sandboxId, status: "ready" };
+        },
+        deleteSnapshot: async (name) => {
+          deleted.push(name);
+          artifacts.delete(name);
+          deletedArtifact();
+        },
+      };
+      const ambiguous: Sql = {
+        query: sql.query,
+        async transaction(work) {
+          pendingCommit = sql.transaction!(async (tx) => {
+            const result = await work(tx);
+            callbackDone();
+            await commitGate;
+            return result;
+          });
+          // The real transaction callback has written/finalized, but COMMIT is still gated.
+          await callbackFinished;
+          throw new Error("transport disconnected before COMMIT acknowledgement");
+        },
+      };
+      const service = createGoldenCreateService({
+        sql: ambiguous,
+        github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async () => {},
+      });
+      let failure: unknown;
+      attempt = service.create(provider, actor, { name: "late", visibility: "org", repos: ["acme/web"] }).then(
+        () => {},
+        (error: unknown) => {
+          failure = error;
+        },
+      );
+      // Baseline cleanup can then block releasing the uncommitted slot. Observe deletion itself
+      // rather than waiting for that deadlock or using wall-clock sleeps to release COMMIT.
+      await Promise.race([attempt, deletionObserved]);
+      // Independent real connection sees no row: that absence is NOT evidence of rollback.
+      expect((await sql.query("select id from goldens")).rows).toHaveLength(0);
+      expect(deleted).toEqual([]);
+      expect(artifacts.has("golden-bx_1")).toBe(true);
+      expect(failure).toMatchObject({ code: "conflict" });
+      expect(String(failure)).toContain("reconcile the in-flight transaction");
+      finish();
+      await pendingCommit;
+      const committed = await sql.query<{ provider_snapshot_id: string }>("select provider_snapshot_id from goldens");
+      expect(committed.rows[0]?.provider_snapshot_id).toBe("golden-bx_1");
+      expect(artifacts.has(committed.rows[0]!.provider_snapshot_id)).toBe(true);
+      const slots = await sql.query<{ golden_id: string; build_id: string | null }>(
+        "select golden_id,build_id from golden_backend_slots",
+      );
+      expect(slots.rows[0]?.golden_id).toBeTruthy();
+      expect(slots.rows[0]?.build_id).toBeNull();
+      // The independent known-negative case is a callback error acknowledged after actual rollback.
+      // Keep loser cleanup: prior artifact and finalized binding must survive, new attempt is reclaimed.
+      const prior = (await createSqlGoldenStore(sql).findByName(actor.orgId, "late"))[0]!;
+      const rollbackSql: Sql = {
+        query: sql.query,
+        transaction: (work) =>
+          sql.transaction!(async (tx) =>
+            work({
+              query: async (text, params) => {
+                if (text.includes("finalize_golden_backend_slot")) throw new Error("known rollback callback");
+                return tx.query(text, params);
+              },
+            }),
+          ),
+      };
+      const knownLoser = createGoldenCreateService({
+        sql: rollbackSql,
+        github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async () => {},
+      });
+      await expect(
+        knownLoser.create(provider, actor, {
+          name: "late",
+          visibility: "org",
+          repos: ["acme/web"],
+          existingGolden: prior,
+        }),
+      ).rejects.toMatchObject({ code: "build_failed" });
+      expect(deleted).toHaveLength(1);
+      expect(deleted[0]).not.toBe(prior.providerSnapshotId);
+      expect(artifacts.has(prior.providerSnapshotId!)).toBe(true);
+      expect((await createSqlGoldenStore(sql).findByName(actor.orgId, "late"))[0]?.providerSnapshotId).toBe(
+        prior.providerSnapshotId,
+      );
+      expect(
+        (await sql.query<{ build_id: string | null }>("select build_id from golden_backend_slots")).rows[0]?.build_id,
+      ).toBeNull();
+    } finally {
+      finish();
+      await pendingCommit?.catch(() => {});
+      await attempt;
+      await client.close();
+      await admin.unsafe(`drop database "${name}" with (force)`);
+      await admin.close();
+    }
+  },
+);
+
+test.each(["delayed", "timeout", "failed", "unknown"] as const)(
+  "rebuild keeps its old canonical master until a confirmed stop (%s)",
+  async (mode) => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const { actor, userId } = await fixture(db);
+      await connectGitHub(db, userId);
+      const remote = new Map<string, "running" | "stopped" | "failed">();
+      const artifacts = new Set<string>();
+      const deleted: string[] = [];
+      let n = 0;
+      let oldMaster: string | undefined;
+      let stopAcknowledged = false;
+      let unknown = mode === "unknown";
+      const allocate = (): SandboxInfo => {
+        const id = `remote-${++n}`;
+        remote.set(id, "running");
+        return { id, name: id, state: "ready", providerState: "active", labels: {} };
+      };
+      const provider: Provider = {
+        ...readyProvider(),
+        createGolden: async () => allocate(),
+        fork: async () => allocate(),
+        snapshot: async ({ name, sandboxId }) => {
+          artifacts.add(name);
+          return { name, sourceSandboxId: sandboxId, status: "ready" };
+        },
+        deleteSnapshot: async (name) => {
+          deleted.push(name);
+          artifacts.delete(name);
+        },
+        stop: async ({ sandboxId }) => {
+          if (sandboxId === oldMaster) {
+            stopAcknowledged = true;
+            if (mode === "failed") remote.set(sandboxId, "failed");
+            // Acknowledgement deliberately does not make the remote machine stopped.
+          } else remote.set(sandboxId, "stopped");
+        },
+        get: async (id) => {
+          if (id === oldMaster && stopAcknowledged && unknown) {
+            unknown = false;
+            throw new ProviderError({
+              provider: "boat",
+              code: "unavailable",
+              retryable: true,
+              message: "observation unavailable",
+            });
+          }
+          return {
+            id,
+            name: id,
+            state: remote.get(id) === "stopped" ? "stopped" : remote.get(id) === "failed" ? "failed" : "ready",
+            providerState: remote.get(id)!,
+            labels: {},
+          };
+        },
+      };
+      const service = createGoldenCreateService({
+        sql: db,
+        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async () => {},
+      });
+      const input = { name: "retirement", visibility: "org" as const, repos: ["acme/web"] };
+      const first = await service.create(provider, actor, input);
+      const store = createSqlGoldenStore(db);
+      oldMaster = (await connectGolden(provider, store, actor, input.name)).sandbox.id;
+      const prior = (await store.findByName(actor.orgId, input.name))[0]!;
+      let waits = 0;
+      const attempt = service.create(
+        provider,
+        actor,
+        { ...input, existingGolden: prior },
+        {
+          sandboxPolls: 3,
+          sleep: async () => {
+            waits++;
+            const canonical = (await store.findByName(actor.orgId, input.name))[0]!;
+            expect(canonical.providerSandboxId).toBe(oldMaster!);
+            expect(canonical.providerSnapshotId).toBe(first.snapshot);
+            if (mode === "delayed" && waits === 2) remote.set(oldMaster!, "stopped");
+          },
+        },
+      );
+      if (mode === "delayed") {
+        await attempt;
+        expect(waits).toBe(2);
+        expect(remote.get(oldMaster)).toBe("stopped");
+        expect((await store.findByName(actor.orgId, input.name))[0]?.providerSandboxId).toBeNull();
+        expect((await store.findByName(actor.orgId, input.name))[0]?.providerSnapshotId).not.toBe(first.snapshot);
+      } else {
+        await expect(attempt).rejects.toMatchObject({ code: "conflict" });
+        const canonical = (await store.findByName(actor.orgId, input.name))[0]!;
+        expect(canonical.providerSandboxId).toBe(oldMaster);
+        expect(canonical.providerSnapshotId).toBe(first.snapshot);
+        expect((await provider.get(oldMaster)).id).toBe(oldMaster);
+        if (mode === "timeout") expect(waits).toBe(2);
+      }
+      expect(stopAcknowledged).toBe(true);
+      expect(artifacts.has(first.snapshot)).toBe(true);
+      expect(deleted).not.toContain(first.snapshot);
+    } finally {
+      await db.close();
+    }
+  },
+);

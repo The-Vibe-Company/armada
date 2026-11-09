@@ -1,6 +1,7 @@
 import { encryptSecret, githubAppFromEnv, toBytea } from "@armada/core";
 import { type NextRequest, NextResponse } from "next/server";
 import { readViewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
 import {
   type ConnectDeps,
   completeGitHubConnection,
@@ -16,6 +17,7 @@ import {
   githubStateCookieOptions,
   installationJson,
 } from "@/lib/github";
+import { CLI_DONE_PATH, cliGitHubCallback, relayCliGitHubCallback } from "@/lib/github-cli";
 import { originFromHeaders } from "@/lib/routes";
 import { createClient } from "@/lib/supabase/server";
 
@@ -28,10 +30,23 @@ export const dynamic = "force-dynamic";
  * writes no column of github_connections directly and never reads the ciphertext back.
  *
  * OAuth failures are logged as `error` and `error_description` only.
+ *
+ * A state prefixed `armada_cli_` is the CLI's flow instead (see `@/lib/github-cli`): it skips all of the above.
  */
 export async function GET(request: NextRequest) {
   const origin = originFromHeaders(request.headers, request.url);
   const { searchParams } = request.nextUrl;
+
+  // The Armada CLI's flow (state prefixed `armada_cli_`): relayed to the API, which owns the state. It never
+  // reads or clears the web flow's state cookie, and nothing of the callback is logged or redirected.
+  const cli = cliGitHubCallback(searchParams);
+  if (cli) {
+    const outcome = cli.kind === "relay" ? await relayCliGitHubCallback(mcpUrl(), cli) : cli.outcome;
+    const response = NextResponse.redirect(new URL(`${CLI_DONE_PATH}?result=${outcome}`, origin), 303);
+    response.headers.set("cache-control", "no-store");
+    response.headers.set("referrer-policy", "no-referrer");
+    return response;
+  }
   const logged = githubOAuthErrorLog({
     error: searchParams.get("error"),
     error_description: searchParams.get("error_description"),

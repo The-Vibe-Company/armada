@@ -24,11 +24,11 @@ export interface GoldenBackendSlot {
 }
 
 export interface GoldenCreateOptions {
-  /** Server-only execution fence for a previously admitted durable job. */
+  /** Trusted durable-job execution fence, never supplied by a client. */
   job?: {
     id: string;
+    reservationId?: string | null;
     cleaned(safe: boolean): void;
-    reservationId: string;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
     lock(sql: Sql): Promise<void>;
@@ -71,6 +71,9 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     },
   });
   const slots: GoldenBackendSlot = options.backendSlot ?? sqlGoldenBackendSlots(options.sql);
+  // Identity proof of a callback failure whose managed transaction has completed rollback.
+  // A commit/transport error after a successful callback is deliberately never marked here.
+  const rolledBack = new WeakMap<object, string>();
   const deps: GoldenCreateDeps = {
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
@@ -78,16 +81,19 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     async reserve(provider, actor, existingGolden) {
       if (options.job) {
         await options.job.phase("authorization");
-        if (existingGolden) {
+        const reservation = options.job.reservationId ?? undefined;
+        if (provider.id === "boat" && !reservation)
+          throw new GoldenError("conflict", "Boat job has no owned backend reservation.");
+        if (existingGolden && reservation) {
           const identity = await provider.backendIdentity?.();
           if (!identity) throw new GoldenError("forbidden", "Provider cannot verify backend identity.");
           const binding = await options.sql.query(
             "select id from public.golden_backend_slots where provider=$1 and backend_id=$2 and golden_id=$3 and build_id=$4",
-            [provider.id, identity.id, existingGolden.id, options.job.reservationId],
+            [provider.id, identity.id, existingGolden.id, reservation],
           );
           if (!binding.rows.length) throw new GoldenError("conflict", "Build backend binding changed.");
         }
-        return options.job.reservationId;
+        return reservation;
       }
       if (!options.sql.transaction)
         throw new GoldenError("conflict", "Atomic golden persistence requires a database transaction.");
@@ -96,14 +102,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     async release(reservationId) {
       if (!options.job) await slots.release(reservationId);
     },
-    async canDiscardSnapshot(snapshot) {
-      const result = await options.sql.query<{ used: boolean }>(
-        "select exists(select 1 from public.goldens where provider_snapshot_id=$1) as used",
-        [snapshot],
-      );
-      return result.rows[0]?.used === false;
+    async canDiscardSnapshot(snapshot, error) {
+      return typeof error === "object" && error !== null && rolledBack.get(error) === snapshot;
     },
-    async persist({ actor, existingGolden, name, visibility, repos, init, snapshot, reservationId }) {
+    async persist({ actor, provider, modal, existingGolden, name, visibility, repos, init, snapshot, reservationId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -114,7 +116,6 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         ),
         init,
       };
-      // Fixed labels only: database exceptions can include SQL parameters and credentials.
       let step = "transaction";
       const persist = async (sql: Sql) => {
         step = "lease_fence";
@@ -128,34 +129,41 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
               name,
               visibility,
               ownerId: actor.userId,
-              provider: "boat",
-              modal: null,
+              provider,
+              modal,
               config,
             });
         if (existingGolden) {
           const current = await sql.query<{
             provider_snapshot_id: string | null;
+            provider_sandbox_id: string | null;
             owner_id: string;
             visibility: string;
             org_id: string;
-          }>("select provider_snapshot_id,owner_id,visibility,org_id from public.goldens where id=$1 for update", [
-            inserted.id,
-          ]);
+          }>(
+            "select provider_snapshot_id,provider_sandbox_id,owner_id,visibility,org_id from public.goldens where id=$1 for update",
+            [inserted.id],
+          );
           if (
             current.rows[0]?.provider_snapshot_id !== existingGolden.providerSnapshotId ||
+            current.rows[0]?.provider_sandbox_id !== existingGolden.providerSandboxId ||
             current.rows[0]?.owner_id !== existingGolden.ownerId ||
             current.rows[0]?.visibility !== existingGolden.visibility ||
             current.rows[0]?.org_id !== existingGolden.orgId
           )
             throw new GoldenError("conflict", "Golden changed during rebuild. Retry from its current revision.");
-          await transactionalStore.setConfig(inserted.id, config);
         }
         // Null master + ready snapshot is the durable restore-on-connect strategy. Never point
         // at the disposable builder, which the service always stops after this transaction.
         step = "snapshot_pointer";
-        await sql.query("update public.goldens set provider_sandbox_id=null, boat_sandbox_id=null where id=$1", [
+        await sql.query("update public.goldens set provider_sandbox_id=null,boat_sandbox_id=null where id=$1", [
           inserted.id,
         ]);
+        if (existingGolden) {
+          step = "golden_metadata";
+          await transactionalStore.setConfig(inserted.id, config);
+        }
+        step = "snapshot_pointer";
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
@@ -167,9 +175,23 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         return inserted.id;
       };
       if (!options.sql.transaction) throw new GoldenError("conflict", "Atomic golden persistence is unavailable.");
+      let callbackFailed = false;
+      let callbackError: unknown;
       try {
-        return await options.sql.transaction(persist);
+        return await options.sql.transaction(async (tx) => {
+          try {
+            return await persist(tx);
+          } catch (error) {
+            callbackFailed = true;
+            callbackError = error;
+            throw error;
+          }
+        });
       } catch (error) {
+        // Sql.transaction's contract acknowledges rollback before rejecting a callback failure.
+        // No callback failure means COMMIT may still be in flight, regardless of any later read.
+        const knownRollback = callbackFailed && error === callbackError && typeof error === "object" && error !== null;
+        if (knownRollback) rolledBack.set(error, snapshot);
         const databaseError = error && typeof error === "object" ? (error as { code?: unknown; errno?: unknown }) : {};
         // Bun wraps SQLSTATE in errno; pg/PGlite expose it in code. Never log message,
         // detail, constraint, query, parameters, or the error object itself.
@@ -212,11 +234,14 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
           }),
         );
         if (error instanceof GoldenError) throw error;
-        if (sqlState !== "unavailable")
-          throw new GoldenError(
+        if (sqlState !== "unavailable") {
+          const safe = new GoldenError(
             "build_failed",
-            `Golden publication failed (${sqlState}); publication outcome must be verified before retrying.`,
+            `Golden publication failed (${sqlState}); reconcile publication before retrying.`,
           );
+          if (knownRollback) rolledBack.set(safe, snapshot);
+          throw safe;
+        }
         throw error;
       }
     },

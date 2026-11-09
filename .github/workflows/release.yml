@@ -116,8 +116,12 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
+      - run: bun packages/agent-runtime/build.ts
+      - run: bun scripts/validate-runtime-native.ts
       - run: bun run typecheck
       - run: bun run test
+        env:
+          CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
 
   # As in CI, each binary is compiled and run on its own platform (macOS signs it ad hoc there).
   binary:
@@ -154,7 +158,9 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: armada-${{ matrix.target }}
-          path: dist/armada-${{ matrix.target }}
+          path: |
+            dist/armada-${{ matrix.target }}
+            dist/armada-server-${{ matrix.target }}
           if-no-files-found: error
           overwrite: true
 
@@ -163,7 +169,7 @@ jobs:
     needs: [check, binary]
     if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     environment: npm
     permissions:
       contents: read

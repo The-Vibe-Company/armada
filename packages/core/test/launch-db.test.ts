@@ -50,11 +50,67 @@ describe("launch database", () => {
       );
       expect(shared.sandbox).toMatchObject({ ownerId: people.member, status: "ready", conversationIds: [] });
 
+      const privateFork = await asUser(db, people.member, () =>
+        launchSandbox(boat.provider, stores, actor(people, "member"), {
+          golden: "shared",
+          harness: "claude",
+          visibility: "private",
+        }),
+      );
+      const sandboxId = privateFork.sandbox.id;
+      const serviceData = (await import("../../mcp-server/src/data.ts")).createSqlData(db);
+      for (const who of ["owner", "admin"] as const) {
+        expect(
+          await asUser(db, people[who], async () =>
+            (await sandboxes.listBefore("2100-01-01T00:00:00Z")).some((s) => s.id === sandboxId),
+          ),
+        ).toBe(false);
+        expect(
+          await serviceData({
+            userId: people[who],
+            orgs: [{ orgId: people.org, role: who === "admin" ? "admin" : "member" }],
+            via: "supabase",
+          }).sandboxes.get(sandboxId),
+        ).toBeNull();
+      }
+      expect(
+        await serviceData({ userId: people.member, orgs: [], via: "supabase" }).sandboxes.get(sandboxId),
+      ).toBeNull();
+      expect(
+        await serviceData({
+          userId: people.member,
+          orgs: [{ orgId: "ffffffff-ffff-4fff-8fff-ffffffffffff", role: "admin" }],
+          via: "supabase",
+        }).sandboxes.get(sandboxId),
+      ).toBeNull();
+      expect(
+        await asUser(db, people.member, async () =>
+          (await sandboxes.listBefore("2100-01-01T00:00:00Z")).some((s) => s.id === sandboxId),
+        ),
+      ).toBe(true);
+
       const visible = (userId: string) =>
         asUser(db, userId, async () => (await sandboxes.listBefore("2100-01-01T00:00:00Z")).map((row) => row.id));
       expect(await visible(people.owner)).toEqual(expect.arrayContaining([mine.sandbox.id, shared.sandbox.id]));
-      expect(await visible(people.member)).toEqual([shared.sandbox.id]);
+      expect(await visible(people.member)).toEqual(expect.arrayContaining([shared.sandbox.id, sandboxId]));
       expect(await visible(people.admin)).toEqual([shared.sandbox.id]);
+
+      await db.query("delete from members where user_id=$1 and org_id=$2", [people.member, people.org]);
+      expect(await visible(people.member)).toEqual([]);
+      const currentMemberships = (
+        await db.query<{ org_id: string; role: "admin" | "member" }>(
+          "select org_id,role from members where user_id=$1",
+          [people.member],
+        )
+      ).rows;
+      expect(
+        await serviceData({
+          userId: people.member,
+          orgs: currentMemberships.map((m) => ({ orgId: m.org_id, role: m.role })),
+          via: "supabase",
+        }).sandboxes.get(sandboxId),
+      ).toBeNull();
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [people.org, people.member]);
 
       const privateGolden = await db.query<{ id: string }>("select id from goldens where name = 'mine'");
       await expect(
@@ -115,9 +171,9 @@ describe("launch database", () => {
         retentionDays: 7,
         now: new Date(Date.now() + 8 * 86_400_000),
       });
-      expect(cleaned.deleted.sort()).toEqual([mine.sandbox.id, shared.sandbox.id].sort());
+      expect(cleaned.deleted.sort()).toEqual([mine.sandbox.id, shared.sandbox.id, sandboxId].sort());
       const remaining = await db.query<{ status: string }>("select status::text as status from sandboxes");
-      expect(remaining.rows.map((row) => row.status)).toEqual(["deleted", "deleted"]);
+      expect(remaining.rows.map((row) => row.status)).toEqual(["deleted", "deleted", "deleted"]);
     } finally {
       await db.close();
     }

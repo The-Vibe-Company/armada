@@ -10,8 +10,14 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
+import { createGitHubAccountApi } from "./github-account.ts";
 import { startGoldenWorker } from "./golden-worker.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
+import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
+import { bootstrapBoatMcp } from "./mcp-native.ts";
+import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createModalIntegration } from "./modal-integration.ts";
+import { createProviderMetadata } from "./provider-metadata.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
@@ -36,7 +42,54 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
-  const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
+  const mcp = createMcpHttpIntegration({
+    sql,
+    encryptionKey: config.encryptionKey,
+    publicUrl: config.publicUrl,
+    dashboardUrl: config.dashboardUrl,
+    development: config.development,
+    providerForSandbox: (id) => createMcpSandboxProviderResolver(sql, providers)(id),
+    authStore,
+    supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+  });
+  await mcp.drainInvalidations();
+  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
+    const provider = createBoatProvider({
+      apiKey,
+      beforeResume: async (provider, id) => {
+        if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
+        return mcp.beforeResume(provider, id, caller);
+      },
+      beforePrompt: async (provider, id) => {
+        if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
+        await mcp.beforePrompt(provider, id, caller);
+      },
+      beforeSnapshot: mcp.beforeSnapshot,
+    });
+    provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
+    return provider;
+  };
+  const providerMetadata = createProviderMetadata({
+    sql,
+    vault: store,
+    encryptionKey: config.encryptionKey,
+    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+  });
+  const modal = await createModalIntegration({
+    sql,
+    vault: store,
+    encryptionKey: config.encryptionKey,
+    publicUrl: config.publicUrl,
+    github: { store, app: githubApp },
+    beforePrompt: mcp.beforePrompt,
+  });
+  const providers = providerRegistry({
+    vault: store,
+    encryptionKey: config.encryptionKey,
+    providerFor,
+    modalProviderFor: modal.modalProviderFor,
+    modalTokensFor: modal.modalTokensFor,
+  });
   const goldenAdoption = createGoldenAdoption(sql);
 
   const goldenBuilds = new GoldenBuildJobs({
@@ -46,33 +99,38 @@ export async function startServer(
       github: { store, encryptionKey: config.encryptionKey, app: githubApp },
       installationApp: githubInstallationAppFromEnv(env),
     },
-    provider: async (actor, visibility) => {
-      const { resolveBoatKey } = await import("@armada/core/server");
-      const credential = await resolveBoatKey(store, config.encryptionKey, { ...actor, visibility });
-      return providerFor(credential.key);
-    },
+    provider: async (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ControlOptions = {
+    mcp: { registry: mcp.registry },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,
     encryptionKey: config.encryptionKey,
     data,
+    connections: mcp.connections,
     vault: store,
     github: { app: githubApp },
+    githubAccount: createGitHubAccountApi({
+      sql,
+      app: githubApp,
+      dashboardUrl: config.dashboardUrl,
+      development: env.NODE_ENV === "development",
+      encryptionKey: config.encryptionKey,
+      ...(env.GITHUB_APP_SLUG ? { slug: env.GITHUB_APP_SLUG } : {}),
+    }),
     providerFor,
+    providerMetadata,
+    providers,
+    goldenTarget: modal.goldenTarget,
     goldenBuilds,
     goldenAdoption,
-    providers: providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }),
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }).resolve(
-          sandbox,
-          caller,
-        ),
+        provider: await providers.resolve(sandbox, caller),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
@@ -88,20 +146,26 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
+    connections: mcp.connections,
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
     goldenBuilds,
     goldenAdoption,
     providerFor,
-    routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
+    providerMetadata,
+    modalProviderFor: modal.modalProviderFor,
+    modalTokensFor: modal.modalTokensFor,
+    goldenTarget: modal.goldenTarget,
+    routes: [modal.route, mcp.route, (request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),
   });
   const server = Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler });
-  const worker = startGoldenWorker(goldenBuilds);
+  const worker = startGoldenWorker(goldenBuilds, options.logError);
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
     worker.stop();
+    void mcp.close();
     return stop(closeActiveConnections);
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.

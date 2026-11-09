@@ -27,13 +27,29 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  modal_events: "ModalEventRow",
+  modal_images: "ModalImageRow",
+  modal_machines: "ModalMachineRow",
+  modal_server_apps: "ModalServerAppRow",
+  modal_server_scopes: "ModalServerScopeRow",
+  modal_server_harnesses: "ModalServerHarnessRow",
   credentials: "Credential",
+  github_authorizations: "GitHubAuthorization",
   github_connections: "GitHubConnection",
   golden_build_jobs: "GoldenBuildJob",
   golden_backend_slots: "GoldenBackendSlot",
   golden_adoption_receipts: "GoldenAdoptionReceipt",
   goldens: "Golden",
   mcp_tokens: "McpToken",
+  mcp_actor_epochs: "McpActorEpoch",
+  mcp_connections: "McpConnection",
+  mcp_grants: "McpGrant",
+  mcp_bindings: "McpBinding",
+  mcp_leases: "McpLease",
+  mcp_pending_oauth: "McpPendingOAuth",
+  mcp_invalidations: "McpInvalidationEvent",
+  mcp_invalidation_deliveries: "McpInvalidationDelivery",
+  mcp_bootstraps: "McpBootstrapReceipt",
   members: "Member",
   notify_subscriptions: "NotifySubscription",
   oauth_clients: "OAuthClient",
@@ -331,9 +347,9 @@ function field(name: string, tsType: string, optional: boolean, notNull: boolean
 function relationship(key: ForeignKey): string {
   return `          {
             foreignKeyName: ${JSON.stringify(key.name)};
-            columns: ${JSON.stringify(key.columns)};
+            columns: [${key.columns.map((name) => JSON.stringify(name)).join(", ")}];
             isOneToOne: ${key.isOneToOne};
             referencedRelation: ${JSON.stringify(key.referencedRelation)};
-            referencedColumns: ${JSON.stringify(key.referencedColumns)};
+            referencedColumns: [${key.referencedColumns.map((name) => JSON.stringify(name)).join(", ")}];
           }`;
 }

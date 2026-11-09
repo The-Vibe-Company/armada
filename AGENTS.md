@@ -20,6 +20,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 ## Commands
 
 - `bun install`
+- `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Linux CI builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
 - `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI runs the same as "Lint, typecheck and test".
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
