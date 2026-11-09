@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.9.1](https://github.com/The-Vibe-Company/armada/compare/v2.9.0...v2.9.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **auth:** make sandbox registration server-owned ([#591](https://github.com/The-Vibe-Company/armada/issues/591)) ([8525aba](https://github.com/The-Vibe-Company/armada/commit/8525aba33a114331281addeeb04d8da388a3ac75))
+* **dashboard:** drop statement_timeout startup param for Supabase pooler in /api/stats ([#582](https://github.com/The-Vibe-Company/armada/issues/582)) ([e720caa](https://github.com/The-Vibe-Company/armada/commit/e720caac447c615fd2bea794f55b7fc8d983470a))
+* **dashboard:** restore STATS_TOKEN-guarded GET /api/stats ([#577](https://github.com/The-Vibe-Company/armada/issues/577)) ([d94fce5](https://github.com/The-Vibe-Company/armada/commit/d94fce5edb9c2d4161feda914fbadea87d8d35bb))
+* **github:** invalidate reconnect cache and fence profile publication ([#592](https://github.com/The-Vibe-Company/armada/issues/592)) ([e0ff949](https://github.com/The-Vibe-Company/armada/commit/e0ff9492bdbdfdf467a1a373b2d5d88ac85dc7eb))
+* **modal:** keep stopped prompt status reads observational ([#590](https://github.com/The-Vibe-Company/armada/issues/590)) ([cc80cec](https://github.com/The-Vibe-Company/armada/commit/cc80cec6a304bffc6eefe513a57d556c20e21602))
+
 ## [2.9.0](https://github.com/The-Vibe-Company/armada/compare/v2.8.0...v2.9.0) (2026-11-09)
 
 
