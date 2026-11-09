@@ -85,6 +85,9 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     let (client, transport) = try await signedIn([
         .init(status: 200, body: #"{"id":"\#(sandboxID)","promptId":"pr_2","conversationId":"c_1","status":"running"}"#),
         .init(status: 502, body: "upstream details"),
+        // The provider accepted the prompt but its receipt was malformed: still a 400.
+        .init(status: 400, body: #"{"error":{"code":"unknown","message":"unexpected answer"}}"#),
+        .init(status: 400, body: #"{"error":{"code":"sandbox_not_ready","message":"not ready"}}"#),
         .init(status: 409, body: #"{"error":{"code":"conflict","message":"deleted"}}"#),
         .init(status: 200, body: #"{"id":"\#(sandboxID)","status":"stopping"}"#)
     ])
@@ -92,23 +95,28 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     #expect(receipt.promptId == "pr_2")
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Again"); Issue.record("Expected a failure") }
     catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
+    do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Unknown"); Issue.record("Expected a failure") }
+    catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
+    do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Early"); Issue.record("Expected a refusal") }
+    catch { #expect(SandboxMutationFailure.classify(error) == .refused) }
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Later"); Issue.record("Expected a refusal") }
     catch { #expect(SandboxMutationFailure.classify(error) == .refused) }
     await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "  \n") }
     #expect(try await client.stopSandbox(id: sandboxID).status == "stopping")
 
     let requests = Array(await transport.requests.dropFirst(2))
-    #expect(requests.map { $0.url!.path } == ["/api/v1/sandbox/send", "/api/v1/sandbox/send", "/api/v1/sandbox/send", "/api/v1/sandbox/stop"])
+    #expect(requests.map { $0.url!.path } == Array(repeating: "/api/v1/sandbox/send", count: 5) + ["/api/v1/sandbox/stop"])
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Idempotency-Key") == nil })
     #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "prompt": "Add tests"])
-    #expect(try body(requests[3]) == ["id": sandboxID, "org": "org-a"])
+    #expect(try body(requests[5]) == ["id": sandboxID, "org": "org-a"])
 }
 
 @Test func mutationFailuresClassifyConservatively() {
     #expect(SandboxMutationFailure.classify(ArmadaError.signedOut) == .signedOut)
     #expect(SandboxMutationFailure.classify(ArmadaError.forbidden) == .noAccess)
     #expect(SandboxMutationFailure.classify(ArmadaError.http(404)) == .noAccess)
-    #expect(SandboxMutationFailure.classify(ArmadaError.http(400)) == .refused)
+    #expect(SandboxMutationFailure.classify(ArmadaError.invalidRequest) == .refused)
+    #expect(SandboxMutationFailure.classify(ArmadaError.http(400)) == .unconfirmed)
     #expect(SandboxMutationFailure.classify(ArmadaError.conflict) == .refused)
     #expect(SandboxMutationFailure.classify(ArmadaError.unavailable) == .unconfirmed)
     #expect(SandboxMutationFailure.classify(ArmadaError.invalidResponse) == .unconfirmed)
@@ -132,4 +140,14 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     #expect(try decode("running", settled: false).canStop)
     #expect(try !decode("stopped", settled: true).canStop)
     #expect(try !decode("stopping", settled: true).canStop)
+}
+
+private struct Entry: Identifiable, Equatable { let id: String; let body: String }
+
+@Test func reReadEventsReplaceTheirBodyInPlaceAndNewOnesAppend() {
+    var events = [Entry(id: "prompt", body: "running"), Entry(id: "message", body: "Hel")]
+    #expect(EventStream.merge([Entry(id: "message", body: "Hello"), Entry(id: "prompt", body: "finished"), Entry(id: "next", body: "x")], into: &events))
+    #expect(events == [Entry(id: "prompt", body: "finished"), Entry(id: "message", body: "Hello"), Entry(id: "next", body: "x")])
+    #expect(!EventStream.merge([Entry(id: "next", body: "x")], into: &events))
+    #expect(events.count == 3)
 }

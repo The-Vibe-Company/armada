@@ -81,18 +81,38 @@ public enum SandboxMutationFailure: Sendable, Equatable {
     case signedOut
     /// Missing, concealed or not the caller's to open (403/404).
     case noAccess
-    /// Definitely not applied: validation (400) or the sandbox's state (409).
+    /// Definitely not applied: a known pre-admission refusal code (400) or the sandbox's state (409).
     case refused
-    /// May have been applied: transport failure or a server error.
+    /// May have been applied: transport failure, a server error or an unrecognized 400.
     case unconfirmed
 
     public static func classify(_ error: Error) -> SandboxMutationFailure {
         switch error as? ArmadaError {
         case .signedOut: .signedOut
         case .forbidden, .http(404): .noAccess
-        case .http(400), .invalidRequest, .conflict: .refused
+        case .invalidRequest, .conflict: .refused
         default: .unconfirmed
         }
+    }
+}
+
+/// Merges re-read events into a stream. The sandbox event contract re-sends an event with the same
+/// id and a newer body (a prompt that finished, a message that grew), so a known id is replaced in
+/// place and a new id is appended, in server order. Returns whether anything changed.
+public enum EventStream {
+    public static func merge<Event: Identifiable & Equatable>(_ incoming: [Event], into events: inout [Event]) -> Bool {
+        var index = Dictionary(events.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        var changed = false
+        for event in incoming {
+            if let position = index[event.id] {
+                if events[position] != event { events[position] = event; changed = true }
+            } else {
+                index[event.id] = events.count
+                events.append(event)
+                changed = true
+            }
+        }
+        return changed
     }
 }
 

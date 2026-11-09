@@ -23,7 +23,10 @@ final class SandboxConversationModel {
     private(set) var state: SandboxState?
     private(set) var pending: [PendingBubble] = []
     private(set) var stopping = false
+    /// The outcome of the person's last send or stop, kept until their next action.
     private(set) var notice: (text: String, isError: Bool)?
+    /// A background read that failed after the conversation was shown; cleared by the next success.
+    private(set) var readIssue: String?
     var draft = ""
     let feed = ConversationFeed()
 
@@ -54,7 +57,7 @@ final class SandboxConversationModel {
         case .starting: return "Starting. You can write once it is ready."
         case .stopping: return "Stopping…"
         case .failed: return state.statusReason.map { "This sandbox failed: \($0)" } ?? "This sandbox failed."
-        case .deleted: return "This sandbox was deleted. Its conversation is read-only."
+        case .deleted: return "This sandbox was deleted. Its conversation is no longer available."
         case .unknownStatus: return "This app does not know this sandbox's state yet."
         }
     }
@@ -63,13 +66,16 @@ final class SandboxConversationModel {
 
     var isWorking: Bool { state?.isWorking == true || feed.conversation.running }
 
+    /// A deleted sandbox has no machine left to read events from.
+    var isDeleted: Bool { state?.status == .deleted }
+
     // MARK: Reading
 
     /// Reads the interior state, then the first pages of the conversation. A refusal ends here.
     func open() async {
         guard await loadState() else { return }
         do throws(ServiceFailure) {
-            try await feed.refresh(fetch)
+            if !isDeleted { try await feed.refresh(fetch) }
             phase = .loaded
         } catch {
             handleReadFailure(error)
@@ -79,8 +85,10 @@ final class SandboxConversationModel {
     /// Pull to refresh: the turn's state and anything new in the conversation.
     func refresh() async {
         guard await loadState() else { return }
+        guard !isDeleted else { return }
         do throws(ServiceFailure) {
             try await feed.refresh(fetch)
+            readIssue = nil
             reconcilePending()
         } catch {
             handleReadFailure(error)
@@ -89,6 +97,7 @@ final class SandboxConversationModel {
 
     /// Follows the conversation until the screen disappears or the server stops it.
     func follow() async {
+        guard !isDeleted else { return }
         await feed.follow(fetch, onSignedOut: onSignedOut)
         if case .stopped(let failure) = feed.connection { handleReadFailure(failure) }
     }
@@ -119,6 +128,7 @@ final class SandboxConversationModel {
     private func loadState() async -> Bool {
         do throws(ServiceFailure) {
             state = try await service.sandboxState(id: sandboxID, orgID: orgID)
+            readIssue = nil
             return true
         } catch {
             handleReadFailure(error)
@@ -230,7 +240,7 @@ final class SandboxConversationModel {
             phase = .unavailable(reason)
         default:
             if phase == .loaded {
-                notice = (error.message, true)
+                readIssue = error.message
             } else {
                 phase = .failed(error.message)
             }

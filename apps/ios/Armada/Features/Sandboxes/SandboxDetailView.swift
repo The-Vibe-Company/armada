@@ -141,8 +141,10 @@ struct SandboxConversationView: View {
             items: model.feed.conversation.items,
             documents: model.feed.documents,
             pending: model.pending,
-            emptyTitle: "No messages yet",
-            emptyMessage: "Prompts you send and the agent's replies appear here.",
+            emptyTitle: model.isDeleted ? "Conversation unavailable" : "No messages yet",
+            emptyMessage: model.isDeleted
+                ? "This sandbox was deleted, so its conversation can no longer be read."
+                : "Prompts you send and the agent's replies appear here.",
             onRetryPending: nil,
             onDismissPending: { model.dismiss($0) }
         )
@@ -155,7 +157,8 @@ struct SandboxConversationView: View {
                 draft: $model.draft,
                 placeholder: "Message \(sandbox.agentLabel)",
                 unavailableReason: model.composerUnavailableReason,
-                isAgentWorking: model.isWorking,
+                // The server's turn state decides; this composer only ever sends a new turn.
+                isAgentWorking: model.state?.isWorking == true,
                 agentName: sandbox.agentLabel,
                 steerRestartsTurn: sandbox.harness?.steerRestartsTurn ?? false,
                 sending: model.pending.contains { $0.status == .sending },
@@ -199,6 +202,9 @@ struct SandboxConversationView: View {
             }
             if model.stopping {
                 InlineBanner(text: "Stopping… The disk and conversation are kept.", style: .info)
+            }
+            if let readIssue = model.readIssue {
+                InlineBanner(text: readIssue, style: .warning)
             }
             if let notice = model.notice {
                 InlineBanner(text: notice.text, style: notice.isError ? .error : .warning)

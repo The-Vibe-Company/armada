@@ -2,7 +2,8 @@ import ArmadaKit
 import Foundation
 
 /// The presentation services over the actual `ArmadaKit` client (#690). This file and
-/// `AppModel.swift` are the only places that import ArmadaKit. Kit types are always written
+/// `AppModel.swift` are the only places that import ArmadaKit (besides the pure
+/// `ArmadaKit.EventStream` merge rule `ConversationFeed` imports alone). Kit types are always written
 /// `ArmadaKit.X` because the app declares presentation types with the same names.
 ///
 /// What ArmadaKit publishes is used as-is: capabilities, list, detail, events, the durable
@@ -218,7 +219,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         do {
             return Self.state(try await client.sandboxDetail(id: id))
         } catch {
-            throw Self.readFailure(error)
+            throw Self.sandboxReadFailure(error)
         }
     }
 
@@ -233,7 +234,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
                 hasMore: page.hasMore
             )
         } catch {
-            throw Self.readFailure(error)
+            throw Self.sandboxReadFailure(error)
         }
     }
 
@@ -254,6 +255,14 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         } catch {
             throw Self.sandboxMutationFailure(error, refused: "Armada refused to stop this sandbox. Its latest state is shown.")
         }
+    }
+
+    /// Reads have no revision: a 409 is the sandbox's state, not another person's edit.
+    private static func sandboxReadFailure(_ error: any Error) -> ServiceFailure {
+        if case .conflict? = error as? ArmadaError {
+            return .rejected("This sandbox can't be read in its current state. Pull to refresh.")
+        }
+        return readFailure(error)
     }
 
     private static func sandboxMutationFailure(_ error: any Error, refused: String) -> ServiceFailure {
