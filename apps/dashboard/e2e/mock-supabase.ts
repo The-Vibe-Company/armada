@@ -698,7 +698,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       content: [
         {
           type: "text",
-          text: "This legacy Modal sandbox needs an explicit account binding. Stop it safely, then its owner can run 'armada bind-credential <sandbox-id> --credential-id <account-uuid>'.",
+          text: "This legacy Modal sandbox needs an explicit account binding by its owner. Stop it safely, then its owner chooses an account on the sandbox's dashboard page or runs 'armada bind-credential <sandbox-id> --credential-id <account-uuid>'. Its workspace and conversations are retained.",
         },
         { type: "text", text: "error code: credential_binding_required" },
       ],

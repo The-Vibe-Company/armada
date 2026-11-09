@@ -67,73 +67,83 @@ const section = (page: Page) => page.getByRole("region", { name: "Choose this sa
 
 test.beforeEach(reset);
 
-test("the owner of a legacy Modal sandbox stops it, deliberately binds an account, and the same conversation resumes", async ({
-  page,
-}) => {
-  await legacy();
-  await conversation();
-  await post("accounts", { user: [WORK, API, CODEX], org: [TEAM] });
-  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
-  const choice = section(page);
-  await expect(choice.getByRole("radio")).toHaveCount(3);
-  await expect(choice.getByRole("radio", { checked: true })).toHaveCount(0);
-  await expect(choice.getByText("Codex key")).toHaveCount(0);
-  await expect(choice.getByRole("button", { name: "Use this account" })).toHaveCount(0);
+for (const [view, size] of [
+  ["desktop", { width: 1280, height: 720 }],
+  ["mobile", { width: 390, height: 844 }],
+] as const)
+  test(`the owner of a legacy Modal sandbox stops it, deliberately binds an account, and the same conversation resumes (${view})`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(size);
+    await legacy();
+    await conversation();
+    await post("accounts", { user: [WORK, API, CODEX], org: [TEAM] });
+    await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+    const choice = section(page);
+    await expect(choice.getByRole("radio")).toHaveCount(3);
+    await expect(choice.getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(choice.getByText("Codex key")).toHaveCount(0);
+    await expect(choice.getByRole("button", { name: "Use this account" })).toHaveCount(0);
 
-  // Sending before a choice is refused by the server with a typed reason; the draft stays.
-  const box = page.getByRole("textbox", { name: "Message" });
-  await box.fill("Finish the last two fixtures");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.locator('form p[role="alert"]')).toHaveText(
-    "This sandbox needs an account before it can resume. Choose one above.",
-  );
-  await expect(box).toHaveValue("Finish the last two fixtures");
-  await page.screenshot({
-    path: "test-results/account-choice-running-desktop.png",
-    fullPage: true,
-    animations: "disabled",
+    // Sending before a choice is refused by the server with a typed reason; the draft stays.
+    const box = page.getByRole("textbox", { name: "Message" });
+    await box.fill("Finish the last two fixtures");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.locator('form p[role="alert"]')).toHaveText(
+      "This sandbox needs an account before it can resume. Choose one above.",
+    );
+    await expect(box).toHaveValue("Finish the last two fixtures");
+    await page.screenshot({
+      path: `test-results/account-choice-running-${view}.png`,
+      fullPage: true,
+      animations: "disabled",
+    });
+
+    await choice.getByRole("button", { name: "Stop" }).click();
+    await page.getByRole("button", { name: "Stop sandbox" }).click();
+    await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
+    const use = choice.getByRole("button", { name: "Use this account" });
+    await expect(use).toBeDisabled();
+    await choice.getByRole("radio", { name: /Team plan/ }).check();
+    await use.click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toContainText("Use Team plan for this sandbox?");
+    await expect(dialog).toHaveCSS("opacity", "1");
+    await page.screenshot({
+      path: `test-results/account-choice-confirm-${view}.png`,
+      fullPage: true,
+      animations: "disabled",
+    });
+
+    await post("fail-next-bind", { status: 503, code: "unavailable", message: "The Armada server is unavailable." });
+    await dialog.getByRole("button", { name: "Bind account" }).click();
+    await expect(choice.getByRole("alert")).toHaveText("The Armada server is unavailable.");
+    await expect(choice.getByRole("radio", { name: /Team plan/ })).toBeChecked();
+    await expect(box).toHaveValue("Finish the last two fixtures");
+
+    await use.click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Bind account" }).click();
+    await expect(choice).toHaveCount(0);
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("log", { name: "Messages" }).getByText("Finish the last two fixtures")).toBeVisible();
+    await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
+
+    const { bindCalls, toolCalls, launches } = await mockState();
+    expect(bindCalls).toEqual([
+      { id: IDS.running, credentialId: TEAM.id, org: ACME },
+      { id: IDS.running, credentialId: TEAM.id, org: ACME },
+    ]);
+    expect(toolCalls.filter((call) => call.name === "send")).toEqual([
+      { name: "send", args: { id: IDS.running, prompt: "Finish the last two fixtures", conversation_id: "conv-a" } },
+      { name: "send", args: { id: IDS.running, prompt: "Finish the last two fixtures", conversation_id: "conv-a" } },
+    ]);
+    expect(launches).toEqual([]);
+    await page.screenshot({
+      path: `test-results/account-choice-resumed-${view}.png`,
+      fullPage: true,
+      animations: "disabled",
+    });
   });
-
-  await choice.getByRole("button", { name: "Stop" }).click();
-  await page.getByRole("button", { name: "Stop sandbox" }).click();
-  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
-  const use = choice.getByRole("button", { name: "Use this account" });
-  await expect(use).toBeDisabled();
-  await choice.getByRole("radio", { name: /Team plan/ }).check();
-  await use.click();
-  const dialog = page.getByRole("alertdialog");
-  await expect(dialog).toContainText("Use Team plan for this sandbox?");
-  await expect(dialog).toHaveCSS("opacity", "1");
-  await page.screenshot({
-    path: "test-results/account-choice-confirm-desktop.png",
-    fullPage: true,
-    animations: "disabled",
-  });
-
-  await post("fail-next-bind", { status: 503, code: "unavailable", message: "The Armada server is unavailable." });
-  await dialog.getByRole("button", { name: "Bind account" }).click();
-  await expect(choice.getByRole("alert")).toHaveText("The Armada server is unavailable.");
-  await expect(choice.getByRole("radio", { name: /Team plan/ })).toBeChecked();
-  await expect(box).toHaveValue("Finish the last two fixtures");
-
-  await use.click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Bind account" }).click();
-  await expect(choice).toHaveCount(0);
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("log", { name: "Messages" }).getByText("Finish the last two fixtures")).toBeVisible();
-  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
-
-  const { bindCalls, toolCalls, launches } = await mockState();
-  expect(bindCalls).toEqual([
-    { id: IDS.running, credentialId: TEAM.id, org: ACME },
-    { id: IDS.running, credentialId: TEAM.id, org: ACME },
-  ]);
-  expect(toolCalls.filter((call) => call.name === "send")).toEqual([
-    { name: "send", args: { id: IDS.running, prompt: "Finish the last two fixtures", conversation_id: "conv-a" } },
-    { name: "send", args: { id: IDS.running, prompt: "Finish the last two fixtures", conversation_id: "conv-a" } },
-  ]);
-  expect(launches).toEqual([]);
-});
 
 test("a choice that lost a race to another binding says so instead of rebinding", async ({ page }) => {
   await legacy({ status: "stopped" });
@@ -191,6 +201,11 @@ test("only the owner chooses; no usable account points to Credentials; Boat and 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Conversation" })).toBeVisible();
   await expect(section(page)).toHaveCount(0);
+  // A failed legacy sandbox cannot be stopped and the server never binds it: no doomed choice, no account read.
+  await legacy({ status: "failed", credential_id: null, credential_version: null });
+  await page.reload();
+  await expect(section(page).getByText("It failed, so no account can be bound to it.")).toBeVisible();
+  await expect(section(page).getByRole("radio")).toHaveCount(0);
   await page.goto(`/sandboxes/${IDS.failed}`);
   await expect(page.getByRole("heading", { name: "Conversation" })).toBeVisible();
   await expect(section(page)).toHaveCount(0);

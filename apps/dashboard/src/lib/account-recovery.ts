@@ -39,10 +39,14 @@ export function needsAccountChoice(sandbox: RecoverySandbox): boolean {
   return sandbox.provider === "modal" && sandbox.credential_id === null && sandbox.status !== "deleted";
 }
 
-/** The server binds only a sandbox that is safely stopped; a live one is stopped first, with the usual Stop. */
-export function bindableStatus(status: SandboxStatus): "ready" | "stop-first" | "wait" {
-  if (status === "stopped" || status === "failed") return "ready";
+/**
+ * The server binds only a sandbox that is safely stopped; a live one is stopped first, with the usual Stop. A failed
+ * one cannot be stopped and is never bound, so it is not offered a choice at all.
+ */
+export function bindableStatus(status: SandboxStatus): "ready" | "stop-first" | "wait" | "failed" {
+  if (status === "stopped") return "ready";
   if (status === "stopping") return "wait";
+  if (status === "failed") return "failed";
   return "stop-first";
 }
 

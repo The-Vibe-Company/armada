@@ -1191,7 +1191,10 @@ test("owner explicitly recovers a stopped legacy Modal binding once, retaining i
     ] as const) {
       const refused = await post(ADA, chosen, action, extra);
       expect(refused.status).toBe(409);
-      expect(await refused.json()).toMatchObject({ error: { code: "credential_binding_required" } });
+      // The refusal names the owner's recovery route instead of leaving the caller without a way out.
+      expect(await refused.json()).toMatchObject({
+        error: { code: "credential_binding_required", message: expect.stringContaining("armada bind-credential") },
+      });
     }
     expect(providerResolutions).toBe(0);
     expect(

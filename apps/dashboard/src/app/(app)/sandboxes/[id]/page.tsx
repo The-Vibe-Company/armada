@@ -12,7 +12,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { needsAccountChoice } from "@/lib/account-recovery";
+import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { sandboxVisibility } from "@/lib/connections";
 import { readAccountChoices } from "@/lib/data/account-recovery";
@@ -65,7 +65,10 @@ export default async function SandboxPage({ params }: Props) {
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
   const recovery = needsAccountChoice(sandbox);
   const owner = sandbox.owner_id === viewer.id;
-  const choices = recovery && owner ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id) : undefined;
+  const choices =
+    recovery && owner && bindableStatus(sandbox.status) !== "failed"
+      ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+      : undefined;
 
   const facts: [string, string][] = [
     ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],

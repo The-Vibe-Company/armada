@@ -85,6 +85,10 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
 
       {!owner ? (
         <p className="text-sm text-muted-foreground">Only its owner can choose the account.</p>
+      ) : gate === "failed" ? (
+        <p className="text-sm text-muted-foreground">
+          It failed, so no account can be bound to it. Launch a new sandbox from its golden instead.
+        </p>
       ) : choices?.state === "unavailable" ? (
         <p role="alert" className="text-sm text-destructive">
           The accounts could not be loaded: {choices.message}
