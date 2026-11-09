@@ -136,6 +136,13 @@ export function SandboxChat(props: Props) {
     }
   }, [read]);
 
+  // A server action such as Stop re-renders the page with the new status: show it at once, not at the next poll.
+  useEffect(() => {
+    if (initialStatus === known.current) return;
+    known.current = initialStatus;
+    setStatus(initialStatus);
+  }, [initialStatus]);
+
   useEffect(() => {
     mounted.current = true;
     void tick();
