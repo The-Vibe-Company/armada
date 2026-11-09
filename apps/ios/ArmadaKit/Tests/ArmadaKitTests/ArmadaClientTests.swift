@@ -178,7 +178,7 @@ private actor RefreshTransport: ArmadaTransport {
     let restored = try ArmadaClient(transport: transport, storage: storage)
     try await restored.restore()
     #expect(await restored.pendingOperations.first?.state == .uncertain)
-    await #expect(throws: ArmadaError.http(400)) { _ = try await restored.submitOrchestratorOperation(command.id) }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await restored.submitOrchestratorOperation(command.id) }
     await #expect(throws: ArmadaError.conflict) { try await restored.discardOrchestratorOperation(command.id) }
     #expect(await restored.pendingOperations.first?.state == .uncertain)
     let receipt = try await restored.submitOrchestratorOperation(command.id)
@@ -248,8 +248,10 @@ private actor RefreshTransport: ArmadaTransport {
         harness: .codex, model: "model-a", modelAccountId: "account-a")
     let command = try await client.prepareOrchestratorCreate(bad)
     await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
-    await #expect(throws: ArmadaError.http(400)) { _ = try await client.submitOrchestratorOperation(command.id) }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.submitOrchestratorOperation(command.id) }
     #expect(await client.pendingOperations.first?.state == .failed)
+    #expect(await client.pendingOperations.first?.canDiscard == true)
+    #expect(await client.pendingOperations.first?.rejectedBeforeAdmission == true)
     try await client.discardOrchestratorOperation(command.id)
     let repaired = OrchestratorCreate(orgId: "org-a", name: "Repaired", goldenId: "golden-a", provider: .boat,
         harness: .codex, model: "model-a", modelAccountId: "account-a")
@@ -347,5 +349,67 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     #expect(submitted["repo"] == nil)
     #expect(throws: (any Error).self) {
         _ = try JSONDecoder().decode(MachineSize.self, from: Data(#""default""#.utf8))
+    }
+}
+
+@Test func bareValidationStatusAndGenericConflictNeverProveNoAdmission() async throws {
+    // Actual662 uses the same409 conflict even when both post-effect receipt
+    // publications fail. A proxy400 also carries no producer admission evidence.
+    for (status, body, expected) in [
+        (400, "proxy validation error", ArmadaError.http(400)),
+        (409, #"{"error":{"code":"conflict","message":"conflict"}}"#, ArmadaError.conflict)
+    ] {
+        let transport = ScriptedTransport([
+            .init(status: 200, body: login),
+            .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+            .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+            .init(status: status, body: body)
+        ])
+        let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+        try await client.verifyEmail(email: "person@example.test", code: "123456")
+        try await client.selectOrganization("org-a")
+        let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+        await #expect(throws: expected) { _ = try await client.submitOrchestratorOperation(command.id) }
+        #expect(await client.pendingOperations.first?.state == .uncertain)
+        #expect(await client.pendingOperations.first?.canDiscard == false)
+        await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
+        await #expect(throws: ArmadaError.conflict) {
+            _ = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 8)
+        }
+    }
+}
+
+@Test func futureEventKindsPreservePageCursorAndKnownNeighbors() async throws {
+    // Existing producer envelope/AgentEvent base with additive future kind variants.
+    let page = #"{"version":1,"events":[{"id":"future-outer","orchestratorId":"parent-a","at":"2026-11-09T00:00:00Z","revision":7,"kind":"future-progress","progress":{"done":3}},{"id":"future-agent","orchestratorId":"parent-a","at":"2026-11-09T00:00:00Z","revision":7,"kind":"agent","event":{"id":"native-future","at":99,"kind":"future-audio","sample":"opaque"}},{"id":"known","orchestratorId":"parent-a","at":"2026-11-09T00:00:01Z","revision":7,"kind":"state","state":"ready","continuity":"native"}],"cursor":"opaque+/=?&after-future","hasMore":true}"#
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: page)
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let result = try await client.orchestratorEvents(id: "parent-a")
+    #expect(result.events.map(\.id) == ["future-outer", "future-agent", "known"])
+    #expect(result.cursor == "opaque+/=?&after-future")
+    #expect(result.hasMore)
+    guard case .unknown(let kind, let payload) = result.events[0].body,
+          case .agent(let agent) = result.events[1].body,
+          case .unknown(let agentKind, let agentPayload) = agent.body,
+          case .state(.ready, .native) = result.events[2].body else {
+        Issue.record("Future kinds dropped the page or known neighbor"); return
+    }
+    #expect(kind == "future-progress")
+    guard case .object(let fields) = payload, case .object(let agentFields) = agentPayload else {
+        Issue.record("Unknown event bytes were not preserved as JSON"); return
+    }
+    #expect(fields["progress"] == .object(["done": .number(3)]))
+    #expect(agentKind == "future-audio")
+    #expect(agentFields["sample"] == .string("opaque"))
+    // A known state event missing mandatory continuity is not a future variant.
+    let malformed = #"{"version":1,"events":[{"id":"bad","orchestratorId":"parent-a","at":"2026-11-09T00:00:00Z","revision":7,"kind":"state","state":"ready"}],"cursor":"must-not-accept","hasMore":false}"#
+    #expect(throws: (any Error).self) {
+        _ = try JSONDecoder().decode(OrchestratorEventPage.self, from: Data(malformed.utf8))
     }
 }

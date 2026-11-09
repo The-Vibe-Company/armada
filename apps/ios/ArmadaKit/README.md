@@ -85,3 +85,25 @@ there is no app target or simulator screenshot in this ticket.
 MCP tools list envelope, control sandbox/list POST handler. This method requires
 the coupled #680 deployment; old servers do not provide the same safe DTO.
 It never calls interior routes and does not infer authority from display IDs.
+
+## Rejection and forward-compatibility consumer contract
+
+`PendingOrchestratorOperation.canDiscard` reflects durable terminal knowledge;
+`rejectedBeforeAdmission` is true only for a saved local rejection without a
+server operation receipt. The UI must consult these properties, not infer them
+from an HTTP status. Only the actual owner API's structured HTTP400
+`error.code == "invalid_request"` maps to `ArmadaError.invalidRequest`. On the
+first dispatch with no other attempt, this becomes terminal/discardable. Bare
+HTTP400, generic409 and any rejection after an earlier ambiguous attempt remain
+uncertain with the same saved key/body/CAS. A later refused retry cannot erase
+unknown effects. The delivered generic409 contract has no safe stale-CAS
+never-admitted discriminator; producer coordination is required, not a new-key
+client workaround.
+
+`OrchestratorEvent.Body.unknown(kind:payload:)` and
+`AgentEvent.Body.unknown(kind:payload:)` retain additive future variants as JSON.
+Consumers should render an unsupported-event placeholder or skip presentation,
+not interpret arbitrary payload as assistant text. The whole page, known
+neighbors, order, IDs and opaque cursor remain available. Known malformed event
+variants still fail validation; unknown-kind handling is not a blanket decoder
+fallback. No native continuity or conversation is synthesized.

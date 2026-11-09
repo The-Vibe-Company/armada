@@ -192,6 +192,14 @@ public actor ArmadaClient {
         case 200..<300: break
         case 401: throw ArmadaError.signedOut
         case 403: throw ArmadaError.forbidden
+        case 400:
+            struct Failure: Decodable { struct Detail: Decodable { let code: String }; let error: Detail }
+            if route == "orchestrators" || route.hasPrefix("orchestrators/") {
+                if let failure = try? JSONDecoder().decode(Failure.self, from: data), failure.error.code == "invalid_request" {
+                    throw ArmadaError.invalidRequest
+                }
+            }
+            throw ArmadaError.http(400)
         case 409: throw ArmadaError.conflict
         case 500...599: throw ArmadaError.unavailable
         default: throw ArmadaError.http(response.statusCode)

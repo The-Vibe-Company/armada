@@ -10,6 +10,9 @@ public struct PendingOrchestratorOperation: Codable, Sendable, Identifiable {
     public let action: OrchestratorAction
     public let state: OrchestratorOperationState
     public let receipt: OrchestratorOperation?
+    /// UI must consult durable command state, not infer admission from an HTTP status.
+    public var canDiscard: Bool { state == .succeeded || state == .failed }
+    public var rejectedBeforeAdmission: Bool { state == .failed && receipt == nil }
     let route: String
     let body: Data
     let key: String
@@ -82,14 +85,14 @@ extension ArmadaClient {
         guard let pending = pendingOperations.first(where: { $0.id == operationID }),
               pending.orgId == (try selectedOrganization()) else { throw ArmadaError.forbidden }
         if let receipt = pending.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
-        guard pending.state != .failed else { throw ArmadaError.http(400) }
+        guard pending.state != .failed else { throw ArmadaError.invalidRequest }
         let capabilities = try await orchestratorCapabilities()
         guard capabilities.enabled else { throw ArmadaError.unavailable }
         // Recheck after suspension: signout/account switching cannot submit old work.
         guard pendingOperations.contains(where: { $0.id == operationID }), selectedOrgID == pending.orgId else { throw CancellationError() }
         guard let current = pendingOperations.first(where: { $0.id == operationID }) else { throw CancellationError() }
         if let receipt = current.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
-        guard current.state != .failed else { throw ArmadaError.http(400) }
+        guard current.state != .failed else { throw ArmadaError.invalidRequest }
         let attempt = current.dispatchCount + 1
         try update(current.updating(state: .uncertain, receipt: current.receipt, attempts: attempt)) // persist BEFORE external effects
         do {
@@ -99,8 +102,8 @@ extension ArmadaClient {
                   pending.orchestratorId == nil || receipt.orchestratorId == pending.orchestratorId else { throw ArmadaError.invalidResponse }
             try update(pending.updating(state: receipt.state, receipt: receipt))
             return pendingOperations.first(where: { $0.id == operationID })?.receipt ?? receipt
-        } catch let error as ArmadaError where error == .http(400) {
-            // The actual handler's invalid_request response is pre-effect rejection.
+        } catch let error as ArmadaError where error == .invalidRequest {
+            // The actual handler's structured invalid_request response is pre-effect rejection.
             // Preserve any concurrent terminal receipt; otherwise allow explicit discard.
             if attempt == 1, pendingOperations.first(where: { $0.id == operationID })?.dispatchCount == attempt {
                 try update(pending.updating(state: .failed))
