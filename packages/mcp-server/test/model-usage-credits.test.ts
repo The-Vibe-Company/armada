@@ -138,3 +138,39 @@ test("sparse native updates keep last-known credit/bucket timestamps instead of 
   expect(value.status).toBe("stale");
   expect(value.windows.find((window) => window.id === "primary")?.usedPercent).toBe(31);
 });
+
+test("sparse compatibility changes retain only matching source credits and never overwrite distinct map views", async () => {
+  const f = fixture();
+  f.observe({
+    rateLimits: {
+      limitId: "codex",
+      primary: { usedPercent: 25, resetsAt: null },
+      credits: { hasCredits: false, unlimited: false, balance: "0" },
+    },
+    rateLimitsByLimitId: {
+      codex: {
+        primary: { usedPercent: 26, resetsAt: null },
+        credits: { hasCredits: true, unlimited: false, balance: "1.200" },
+      },
+      review: {
+        primary: { usedPercent: 42, resetsAt: null },
+        credits: { hasCredits: true, unlimited: false, balance: "12.3400" },
+      },
+    },
+  });
+  await f.read();
+  f.observe({ rateLimits: { limitId: "codex", primary: { usedPercent: 30, resetsAt: null }, credits: null } }, true);
+  const same = await f.read();
+  expect(same.credits?.balance).toBe("0");
+  expect(same.buckets?.find((bucket) => bucket.sourceId === "codex")?.credits?.balance).toBe("1.200");
+  f.observe({ rateLimits: { limitId: "review", primary: { usedPercent: 50, resetsAt: null }, credits: null } }, true);
+  const changed = await f.read();
+  expect(changed.creditsSourceId).toBe("review");
+  expect(changed.credits?.balance).toBe("12.3400");
+  expect(changed.buckets?.find((bucket) => bucket.sourceId === "review")?.credits?.balance).toBe("12.3400");
+  f.observe(
+    { rateLimits: { limitId: "new-meter", primary: { usedPercent: 60, resetsAt: null }, credits: null } },
+    true,
+  );
+  expect((await f.read()).credits).toBeUndefined();
+});

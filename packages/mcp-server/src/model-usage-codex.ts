@@ -45,10 +45,10 @@ export function codexReading(data: Record<string, unknown>, observedAt: string, 
     sparse ? (previous.buckets ?? []).map((bucket) => [bucket.sourceId, bucket]) : [],
   );
   let observed = false;
-  const ingest = (raw: unknown, sourceId: string | null, beforeOverride?: UsageBucket) => {
+  const normalize = (raw: unknown, sourceId: string | null, before?: UsageBucket): UsageBucket | undefined => {
     const row = record(raw);
     if (!Object.keys(row).length) return;
-    const before = beforeOverride ?? buckets.get(sourceId);
+    if (before?.sourceId !== sourceId) before = undefined;
     const label =
       typeof row.limitName === "string" && row.limitName
         ? row.limitName.slice(0, 120)
@@ -81,46 +81,47 @@ export function codexReading(data: Record<string, unknown>, observedAt: string, 
     const reported = credits(row.credits);
     if (reported) observed = true;
     const retained = reported ?? (sparse ? before?.credits : undefined);
-    buckets.set(sourceId, {
+    return {
       sourceId,
       label,
       windows: [...merged.values()],
       ...(retained
         ? { credits: retained, creditsObservedAt: reported ? observedAt : (before?.creditsObservedAt ?? observedAt) }
         : {}),
-    });
+    };
   };
-  // Preserve the backward-compatible view, then ingest every actual metered map entry.
-  if (Object.keys(compatibility).length)
-    ingest(compatibility, compatibilitySourceId, sparse ? previous.compatibility : undefined);
-  const compatibilityView = Object.keys(compatibility).length
-    ? buckets.get(compatibilitySourceId)
-    : sparse
-      ? previous.compatibility
-      : undefined;
+  // Compatibility and canonical map priors never cross source identities or overwrite each other.
+  let compatibilityView =
+    sparse && previous.compatibility?.sourceId === compatibilitySourceId ? previous.compatibility : undefined;
+  if (Object.keys(compatibility).length) {
+    compatibilityView = normalize(compatibility, compatibilitySourceId, compatibilityView);
+    const canonical = normalize(
+      compatibility,
+      compatibilitySourceId,
+      sparse ? buckets.get(compatibilitySourceId) : undefined,
+    );
+    if (canonical) buckets.set(compatibilitySourceId, canonical);
+  }
   for (const [id, row] of entries) {
     if (!source(id)) throw Error("invalid_native_quota_source_id");
-    ingest(row, id);
+    const bucket = normalize(row, id, sparse ? buckets.get(id) : undefined);
+    if (bucket) buckets.set(id, bucket);
   }
   if (!observed && sparse) return null;
   const all = [...buckets.values()];
   const compatibilityBucket = buckets.get(compatibilitySourceId);
-  const reported = credits(compatibility.credits);
   const single = !Object.keys(compatibility).length && all.length === 1 ? all[0] : undefined;
-  const reportedCredits =
-    reported ?? compatibilityBucket?.credits ?? single?.credits ?? (sparse ? previous.credits : undefined);
-  const creditsSourceId = reported
-    ? compatibilitySourceId
+  const view = compatibilityView?.credits
+    ? compatibilityView
     : compatibilityBucket?.credits
-      ? compatibilityBucket.sourceId
+      ? compatibilityBucket
       : single?.credits
-        ? single.sourceId
-        : previous.creditsSourceId;
-  const creditsObservedAt = reported
-    ? observedAt
-    : (compatibilityBucket?.creditsObservedAt ??
-      single?.creditsObservedAt ??
-      (sparse ? previous.creditsObservedAt : undefined));
+        ? single
+        : undefined;
+  const previousMatches = sparse && previous.creditsSourceId === compatibilitySourceId;
+  const reportedCredits = view?.credits ?? (previousMatches ? previous.credits : undefined);
+  const creditsSourceId = view ? view.sourceId : previousMatches ? previous.creditsSourceId : undefined;
+  const creditsObservedAt = view?.creditsObservedAt ?? (previousMatches ? previous.creditsObservedAt : undefined);
   const flatCompatibility = compatibilityView?.windows.length
     ? compatibilityView
     : compatibilityBucket?.windows.length
