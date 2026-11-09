@@ -174,6 +174,20 @@ describe("usage", () => {
     expect(parsed?.hiddenWindows).toBe(1);
     const view = parsed && usageView(parsed, { version: 1 });
     expect(view?.kind).toBe("fresh");
+    // Repeated identities are all shown under distinct keys, and none is counted as unreadable.
+    const repeated = parseUsage({
+      ...report,
+      windows: [
+        { kind: "five_hour", usedPercent: 10, resetsAt: null, group: "team" },
+        { kind: "five_hour", usedPercent: 20, resetsAt: null, group: "team" },
+      ],
+    });
+    expect(repeated?.windows.map((window) => [window.label, window.usedPercent])).toEqual([
+      ["Five hour (team)", 10],
+      ["Five hour (team)", 20],
+    ]);
+    expect(new Set(repeated?.windows.map((window) => window.id)).size).toBe(2);
+    expect(repeated?.hiddenWindows).toBe(0);
     // Only a report none of whose windows can be read is an unrecognized format.
     expect(parseUsage({ ...report, windows: [{ kind: "monthly", utilization: 0.4 }] })).toBeNull();
   });

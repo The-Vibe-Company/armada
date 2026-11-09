@@ -181,8 +181,9 @@ export function UsagePanel({
                   {left === null ? "Unavailable" : `${left}% left`}
                 </span>
               </div>
-              <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-muted">
-                {window.usedPercent !== null && (
+              {/* No track for an unavailable reading: an empty bar would read as 0% used. */}
+              {window.usedPercent !== null && (
+                <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-muted">
                   <div
                     className={cn(
                       "h-full rounded-full",
@@ -196,8 +197,8 @@ export function UsagePanel({
                     )}
                     style={{ width: `${window.usedPercent}%` }}
                   />
-                )}
-              </div>
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">
                 {window.usedPercent === null ? "Reading unavailable" : `${Math.round(window.usedPercent)}% used`}
                 {window.resetsAt ? (

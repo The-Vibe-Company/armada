@@ -293,9 +293,14 @@ export function parseUsage(value: unknown): AccountUsage | null {
   if (observedAt === undefined) return null;
   const rows: unknown[] = Array.isArray(value.windows) ? value.windows : [];
   const windows: UsageWindow[] = [];
+  const seen = new Map<string, number>();
   for (const row of rows) {
     const window = parseWindow(row);
-    if (window && !windows.some((item) => item.id === window.id)) windows.push(window);
+    if (!window) continue;
+    // Every readable window is shown; a repeated identity only gets a distinct key, never dropped or miscounted.
+    const count = (seen.get(window.id) ?? 0) + 1;
+    seen.set(window.id, count);
+    windows.push(count > 1 ? { ...window, id: `${window.id}#${count}` } : window);
   }
   // Only a report none of whose windows can be read is unrecognized; readable siblings are kept otherwise.
   if (rows.length > 0 && windows.length === 0) return null;
@@ -319,7 +324,7 @@ function parseWindow(row: unknown): UsageWindow | null {
   if (!kind || resetsAt === undefined) return null;
   if (used !== null && !(typeof used === "number" && Number.isFinite(used))) return null;
   const model = text(row.model, 60);
-  const qualifiers = [model, text(row.surface, 40)].filter(Boolean);
+  const qualifiers = [model, text(row.surface, 40), text(row.group, 40)].filter(Boolean);
   return {
     id: [kind, model, text(row.surface, 40), text(row.group, 40)].filter(Boolean).join("/"),
     label: `${humanize(kind)}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}`,
