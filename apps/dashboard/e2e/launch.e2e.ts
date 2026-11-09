@@ -3,6 +3,13 @@ import { MOCK, openLaunch, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
+const ACME = "00000000-0000-4000-8000-000000000010";
+
+async function post(path: string, body: object = {}) {
+  const response = await fetch(`${MOCK}${path}`, { method: "POST", body: JSON.stringify(body) });
+  expect(response.ok).toBe(true);
+}
+
 async function launches(): Promise<Record<string, unknown>[]> {
   return ((await (await fetch(`${MOCK}/__test/state`)).json()) as { launches: Record<string, unknown>[] }).launches;
 }
@@ -34,6 +41,10 @@ test("a task-only launch sends the configured defaults through the launch API", 
   await page.screenshot({ path: "test-results/launch-default-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 664 });
   await expectPinnedLaunch(page);
+  // Every default stays readable on a phone: the summary wraps instead of being cut off.
+  expect(await dialog.locator("[data-launch-summary]").evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(
+    true,
+  );
   await page.screenshot({ path: "test-results/launch-default-mobile.png", animations: "disabled" });
 
   await task.fill("Fix the flaky login test");
@@ -77,6 +88,8 @@ test("the open Advanced area scrolls inside the dialog with Launch still on scre
 test("errors are never hidden: an invalid override opens Advanced, a refused launch keeps the task", async ({
   page,
 }) => {
+  // Modal stays connected, so only the golden's own provider is missing once Boat is cleared.
+  await post("/__test/reset", { acmeModal: true });
   await signIn(page, "alice@example.com", "/goldens");
   const dialog = await openLaunch(page, "shared-golden");
   await dialog.getByLabel("Model", { exact: true }).selectOption("other");
@@ -90,12 +103,10 @@ test("errors are never hidden: an invalid override opens Advanced, a refused lau
 
   // A launch the server refuses keeps what was entered and moves focus to the reason.
   await dialog.getByRole("radio", { name: "Codex" }).check();
-  await dialog.locator('input[name="golden"]').evaluate((input) => {
-    (input as HTMLInputElement).value = "missing-golden";
-  });
+  await post("/__test/clear-legacy-boat", { org: ACME });
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   const refusal = dialog.getByRole("alert");
-  await expect(refusal).toHaveText("That golden is not available in this organization.");
+  await expect(refusal).toHaveText("Boat is not connected for this organization. An admin connects it in Settings.");
   await expect(refusal).toBeFocused();
   await expect(dialog.getByLabel("Task")).toHaveValue("Keep me");
   await expect(dialog.getByRole("radio", { name: "Codex" })).toBeChecked();

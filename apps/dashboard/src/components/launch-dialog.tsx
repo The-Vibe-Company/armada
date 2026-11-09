@@ -108,15 +108,20 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
     root.current?.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
   }, [access.held]);
 
+  const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
   const onChoice = useCallback((next: { model: string; effort: string }) => setChoice(next), []);
   const entry = catalog[harness];
   const modelLabel = entry.models.find((option) => option.id === choice.model)?.label ?? (choice.model || "Model id");
   const summary = [
     modelLabel,
     EFFORT_LABEL[choice.effort] ?? choice.effort,
+    // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
+    repositories.length === 1 ? project || "Default directory" : null,
     access.visibility === "org" ? "Org" : "Private",
-    access.unavailable ? "MCP unavailable" : access.selected === 0 ? "No MCP" : `${access.selected} MCP`,
-  ].join(" · ");
+    mcpFact(access),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div ref={root} className="flex min-h-0 flex-1 flex-col">
@@ -175,16 +180,21 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
             focusLaunch.current = true;
           })}
           <details ref={advanced} data-launch-advanced className="group rounded-md border">
+            {/* On a phone the summary wraps under the label: every default stays readable, none is cut off. */}
             <summary className="flex cursor-pointer list-none items-center gap-3 rounded-md px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
-              <span className="font-medium">Advanced</span>
-              <span data-launch-summary className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">
-                {summary}
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
+                <span className="font-medium">Advanced</span>
+                <span data-launch-summary className="min-w-0 text-xs text-muted-foreground sm:flex-1 sm:text-right">
+                  {summary}
+                </span>
               </span>
               <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="space-y-4 border-t p-3">
               <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} onChoice={onChoice} />
-              {repositories.length === 1 && <RepositoryField idPrefix={id} repositories={repositories} />}
+              {repositories.length === 1 && (
+                <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+              )}
               {access.fields(id)}
             </div>
           </details>
@@ -245,11 +255,24 @@ function Segmented<T extends string>({
  * The configured checkout the agent starts in. A golden with one repository starts there; with several, in the
  * default directory until one is chosen. Every repository stays available either way.
  */
-function RepositoryField({ idPrefix, repositories }: { idPrefix: string; repositories: readonly string[] }) {
+function RepositoryField({
+  idPrefix,
+  repositories,
+  onChange,
+}: {
+  idPrefix: string;
+  repositories: readonly string[];
+  onChange?: (dir: string) => void;
+}) {
   return (
     <div className="min-w-0 space-y-2">
       <Label htmlFor={`${idPrefix}-repo`}>Project</Label>
-      <NativeSelect id={`${idPrefix}-repo`} name="repo" defaultValue={repositories.length === 1 ? repositories[0] : ""}>
+      <NativeSelect
+        id={`${idPrefix}-repo`}
+        name="repo"
+        defaultValue={repositories.length === 1 ? repositories[0] : ""}
+        onChange={(event) => onChange?.(event.target.value)}
+      >
         <option value="">Default directory</option>
         {repositories.map((dir) => (
           <option key={dir} value={dir}>
@@ -358,7 +381,7 @@ function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: Launc
           ]}
           hint={{
             id: `${idPrefix}-visibility-hint`,
-            text: visibility === "org" ? "Org members can open and stop it." : "Only you.",
+            text: accessHint(visibility, goldenVisibility),
           }}
         />
         {"connections" in connections && (
@@ -477,4 +500,16 @@ function ConnectionOption({
       </div>
     </li>
   );
+}
+
+/** What the chosen access means; a private golden says why Org is not offered. */
+function accessHint(visibility: SandboxVisibility, goldenVisibility: SandboxVisibility): string {
+  if (visibility === "org") return "Org members can open and stop it.";
+  return goldenVisibility === "private" ? "Only you: a private golden launches private sandboxes." : "Only you.";
+}
+
+/** The MCP connections a launch gets, as one summary fact. */
+function mcpFact(access: { unavailable: boolean; selected: number }): string {
+  if (access.unavailable) return "MCP unavailable";
+  return access.selected === 0 ? "No MCP" : `${access.selected} MCP`;
 }
