@@ -819,13 +819,15 @@ html:has(> body .lp) {
   --ch-orange: #d97757;
   --ch-amber: #10a37f;
   --ch-night: #060709;
-  --ch-card: #15161b;
+  /* A night card: the hero's raised surface, under a hairline. */
+  --ch-card: #0f1013;
   /* What a chapter draws with: its background, its ink, its quiet ink, its accent and its command's chip. */
   --ch-accent: var(--done);
   --ch-bg: var(--bg);
   --ch-fg: var(--text);
   --ch-fg-2: var(--text-2);
-  --ch-line: var(--ch-paper);
+  /* Outlines at the hero's border contrast, not bright white (#628). */
+  --ch-line: rgba(255, 255, 255, 0.16);
   --ch-chip: var(--ch-accent);
   --ch-chip-fg: var(--ch-ink);
   --ch-chip-dim: rgba(6, 7, 9, 0.6);
@@ -929,8 +931,9 @@ html:has(> body .lp) {
   transition: transform 160ms var(--lp-ease);
 }
 .lp-ch .lp-copy-command {
-  white-space: normal;
-  /* Break between words; inside one (a UUID, a URL) only when it cannot fit. */
+  /* The command's own spaces, exactly as written and copied (#628): a line breaks only at one of them, and inside a
+     word (a UUID, a URL) only when it cannot fit. */
+  white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: normal;
 }
@@ -1033,7 +1036,7 @@ html:has(> body .lp) {
 }
 .lp-fig :is(rect, path, circle) {
   stroke: var(--ch-line);
-  stroke-width: 3.5;
+  stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
@@ -1059,9 +1062,11 @@ html:has(> body .lp) {
   fill: none;
   stroke-dasharray: 2 12;
 }
-.lp-fig-wire {
+.lp-fig .lp-fig-wire {
   fill: none;
-  stroke-dasharray: 1 9;
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 2;
+  stroke-dasharray: 1 7;
 }
 .lp-fig-wire.is-thick {
   stroke-dasharray: none;
@@ -1085,7 +1090,8 @@ html:has(> body .lp) {
 }
 .lp-fig .lp-fig-shackle {
   fill: none;
-  stroke-width: 7;
+  stroke: var(--ch-ink);
+  stroke-width: 4;
 }
 .lp-fig-node {
   fill: var(--ch-ink);
@@ -1094,8 +1100,7 @@ html:has(> body .lp) {
   fill: var(--ch-bg);
 }
 .lp-fig .lp-fig-ship {
-  stroke: var(--ch-ink);
-  stroke-width: 3;
+  stroke: none;
 }
 .lp-fig-ship.is-lime {
   fill: var(--ch-lime);
@@ -1122,10 +1127,11 @@ html:has(> body .lp) {
 .lp-fig .lp-fig-check path {
   fill: none;
   stroke: var(--ch-ink);
-  stroke-width: 3;
+  stroke-width: 2.5;
 }
+/* A plain pill is the hero's ghost button: a faint fill, light text. */
 .lp-fig-pill {
-  fill: var(--ch-paper);
+  fill: rgba(255, 255, 255, 0.08);
 }
 .lp-fig .lp-fig-pill {
   stroke: none;
@@ -1139,35 +1145,36 @@ html:has(> body .lp) {
 .lp-fig .lp-fig-stop-x {
   fill: none;
   stroke: var(--ch-ink);
-  stroke-width: 4;
+  stroke-width: 2.5;
 }
 .lp-fig text {
   stroke: none;
   fill: var(--ch-ink);
 }
+/* The hero's UI hierarchy (#628): a medium label over a quiet one, not poster type. */
 .lp-fig-t {
-  font-size: 28px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 .lp-fig-t.is-big {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.045em;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 .lp-fig-s {
-  font-size: 23px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  font-size: 18px;
+  font-weight: 450;
+  letter-spacing: 0;
 }
 .lp-fig-s.is-mono {
   font-family: var(--font-mono);
-  font-size: 20px;
+  font-size: 16px;
   letter-spacing: 0;
 }
 .lp-fig-xs {
-  font-size: 20px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 600;
 }
 .lp-fig text.is-on-ink {
   fill: var(--ch-paper);
@@ -1181,9 +1188,12 @@ html:has(> body .lp) {
 .lp-fig text.is-ready {
   fill: var(--text);
 }
-/* On the night surface the wires and outlines are the hero's text; text on light shapes stays ink. */
+/* On the night surface, cards and ink shapes keep the hero's hairline; a lime card needs no outline of its own. */
 .lp-ch .lp-fig :is(.lp-fig-card.is-night, .lp-fig-ink) {
-  stroke: color-mix(in srgb, var(--text) 90%, transparent);
+  stroke: var(--ch-line);
+}
+.lp-ch .lp-fig :is(.lp-fig-card.is-lime, .lp-fig-pill, .lp-fig-check circle) {
+  stroke: none;
 }
 
 /* ------------------------------------------------------------------ try */

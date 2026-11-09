@@ -69,6 +69,26 @@ test("on a phone, the story's index reaches every section the navigation hides",
   await context.close();
 });
 
+test("every story command reads exactly as it is copied, words apart, at desktop and phone widths", async ({
+  browser,
+}) => {
+  for (const width of [1280, 390]) {
+    const context = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await context.newPage();
+    await page.goto("/landing");
+    const buttons = page.locator("main .lp-ch .lp-copy");
+    expect(await buttons.count()).toBeGreaterThan(5);
+    for (const button of await buttons.all()) {
+      const copied = (await button.getAttribute("aria-label"))?.replace(/^Copy: /, "");
+      // What a person reads: the rendered text, its line breaks taken as the spaces they replaced.
+      const shown = (await button.locator(".lp-copy-command").innerText()).replace(/^\$\s*/, "").replace(/\s+/g, " ");
+      expect(shown, `at ${width}px`).toBe(copied);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+    await context.close();
+  }
+});
+
 test("a signed-in member's / is the dashboard, not the landing", async ({ page }) => {
   await signIn(page, "alice@example.com", "/sandboxes");
   const front = await page.request.get("/", { maxRedirects: 0 });

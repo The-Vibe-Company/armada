@@ -125,7 +125,7 @@ export function FleetFigure() {
               {s.model}
             </text>
             <rect className="lp-fig-pill" x={518} y={y + 22} width={98} height={32} rx={16} />
-            <text className="lp-fig-xs" x={567} y={y + 45} textAnchor="middle">
+            <text className="lp-fig-xs is-on-ink" x={567} y={y + 45} textAnchor="middle">
               {s.effort}
             </text>
             <text className={`lp-fig-xs is-${s.status}`} x={567} y={y + 84} textAnchor="middle">
