@@ -43,10 +43,9 @@ test("an org's Boat and Modal are its sandbox providers in Settings: Credentials
   await signIn(page, "alice@example.com", "/credentials");
   // No org hosting card: its model keys are named accounts above, its Boat and Modal are providers in Settings.
   await expect(page.locator('[data-credentials="Acme (org)"]')).toHaveCount(0);
-  await expect(page.locator("[data-org-hosting]").getByRole("link", { name: "sandbox providers in Settings" })).toHaveAttribute(
-    "href",
-    "/settings",
-  );
+  await expect(
+    page.locator("[data-org-hosting]").getByRole("link", { name: "sandbox providers in Settings" }),
+  ).toHaveAttribute("href", "/settings");
   // A person's own hosting keys stay here.
   await expect(page.locator('[data-credentials="user"]').locator("li", { hasText: "boat.dev API key" })).toHaveCount(1);
 });
