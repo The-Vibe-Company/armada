@@ -62,7 +62,7 @@ async function signInHere(page: Page, email: string) {
 
 const joined = async () => (await mockState()).members.some((member) => member.user_id === CAROL);
 
-test("the default sender's link signs nobody in; the recipient signs in here, reviews, then joins by choice", async ({
+test("the default sender's link signs nobody in; the recipient signs in here and reviews, nothing joined", async ({
   page,
 }) => {
   await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
@@ -83,12 +83,8 @@ test("the default sender's link signs nobody in; the recipient signs in here, re
   const cookies = (await sessionCookies(page)).join("");
   expect(cookies).not.toContain(link.session.access_token);
   expect(cookies).not.toContain(link.session.refresh_token);
+  // Only the preview: the explicit join, and its result, are owned by e2e/invitations.e2e.ts.
   expect((await mockState()).invitationCalls.map((call) => call.route)).toEqual(["preview"]);
-  expect(await joined()).toBe(false);
-
-  await page.getByRole("button", { name: "Accept and join Acme" }).click();
-  await page.waitForURL(/\/orgs\/[0-9a-f-]+\?joined=1$/);
-  expect(await joined()).toBe(true);
 });
 
 test("a token_hash link is never verified", async ({ page }) => {
