@@ -1046,3 +1046,83 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
     expect(unauthenticated?.status).toBe(401);
   });
 });
+
+test("public sandbox logs omit account-private native quota and auth records", async () => {
+  await withServer(async ({ options, cli }) => {
+    const stan = cli(STAN);
+    await stan.run(["org", "create", "Quota privacy"]);
+    const boat = fakeBoat();
+    boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    const types = [
+      "usage_report",
+      "rate_limit_event",
+      "account/rateLimits/updated",
+      "account/rateLimits/read",
+      "account/updated",
+      "auth_status",
+    ];
+    boat.provider.events = async () => ({
+      events: [
+        ...types.map((type) => ({
+          id: type,
+          at: 1,
+          kind: "other" as const,
+          type,
+          data: { private: "personal-subscription-information" },
+        })),
+        {
+          id: "local",
+          at: 1,
+          kind: "other" as const,
+          type: "system",
+          data: { subtype: "local_command_output", content: "personal-subscription-information" },
+        },
+        {
+          id: "ordinary-system",
+          at: 1,
+          kind: "other" as const,
+          type: "system",
+          data: { subtype: "init", public: "ordinary-native-init" },
+        },
+        { id: "message", at: 2, kind: "message" as const, text: "public work", partial: false, tools: [] },
+      ],
+      hasMore: false,
+    });
+    options.logs = async () => ({ provider: boat.provider, providerSandboxId: "bx_1" });
+    const result = await stan.run(["logs", STAN, "--json"]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("public work");
+    expect(result.out).toContain("ordinary-native-init");
+    expect(result.out).not.toContain("personal-subscription-information");
+    for (const type of types) expect(result.out).not.toContain(type);
+  });
+});
+
+test("CLI named-account operations preserve safe IDs and CAS through the authenticated API", async () => {
+  await withServer(async ({ cli }) => {
+    const admin = cli(STAN);
+    await admin.run(["org", "create", "Accounts"]);
+    expect((await admin.run(["creds", "set", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
+    expect(
+      (await admin.run(["creds", "set", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
+    ).toBe(0);
+    const listed = await admin.run(["creds", "list", "--json"]);
+    expect(listed.out).not.toContain("work-test-key");
+    expect(listed.out).not.toContain("valueEnc");
+    const accounts = JSON.parse(listed.out).user;
+    expect(accounts).toHaveLength(2);
+    const id = accounts.find((row: { name: string }) => row.name === "Work").id;
+    expect((await admin.run(["creds", "rename", id, "Renamed"])).code).toBe(0);
+    expect((await admin.run(["creds", "default", id])).code).toBe(0);
+    expect(
+      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "new-test-key" }))
+        .code,
+    ).toBe(0);
+    expect(
+      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "stale-test-key" }))
+        .code,
+    ).not.toBe(0);
+    expect((await admin.run(["creds", "remove", id])).code).toBe(0);
+    expect(JSON.parse((await admin.run(["creds", "list", "--json"])).out).user).toHaveLength(1);
+  });
+});
