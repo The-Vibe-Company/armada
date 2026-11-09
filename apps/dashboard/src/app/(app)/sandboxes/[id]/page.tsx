@@ -1,5 +1,5 @@
 import { MODEL_CATALOG } from "@armada/core";
-import { ArrowLeftIcon, ClockAlertIcon, TriangleAlertIcon } from "lucide-react";
+import { ArrowLeftIcon, ClockAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -30,11 +30,10 @@ import { createClient } from "@/lib/supabase/server";
 export const metadata: Metadata = { title: "Sandbox" };
 export const dynamic = "force-dynamic";
 
-type Props = { params: Promise<{ id: string }>; searchParams: Promise<{ size?: string }> };
+type Props = { params: Promise<{ id: string }> };
 
-export default async function SandboxPage({ params, searchParams }: Props) {
+export default async function SandboxPage({ params }: Props) {
   const { id } = await params;
-  const sizeUnconfirmed = (await searchParams).size === "unconfirmed";
   if (!isUuid(id)) notFound();
   const viewer = await requireViewer();
   const supabase = await createClient();
@@ -119,17 +118,6 @@ export default async function SandboxPage({ params, searchParams }: Props) {
         </div>
       </div>
 
-      {/* Only while nothing is recorded: a crafted link cannot contradict recorded evidence. */}
-      {sizeUnconfirmed && sandbox.machine_size == null && (
-        <Alert data-size-unconfirmed className="border-warning/40">
-          <TriangleAlertIcon className="text-warning" />
-          <AlertTitle>Machine size not confirmed</AlertTitle>
-          <AlertDescription>
-            The Armada server did not record the requested size, so this sandbox may run at the provider&apos;s own
-            size.
-          </AlertDescription>
-        </Alert>
-      )}
       {life.notice && (
         <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
           <ClockAlertIcon className="text-warning" />

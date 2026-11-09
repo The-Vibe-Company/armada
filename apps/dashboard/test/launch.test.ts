@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
 import { ControlError } from "../src/lib/control.ts";
 import { launchSandbox } from "../src/lib/launch.ts";
 
@@ -21,30 +22,41 @@ const answering = (body: unknown, status = 200, seen: unknown[] = []) => ({
   }) as typeof fetch,
 });
 
-test("a size is sent only when chosen, and confirmed only by the server's recorded request", async () => {
-  const seen: Record<string, unknown>[] = [];
-  const recorded = {
-    id: "s1",
-    machineSize: { version: 1, requested: "large", effective: "large", source: "override" },
-  };
-  expect(await launchSandbox(answering({ sandbox: recorded }, 200, seen), { ...args, size: "large" })).toEqual({
-    id: "s1",
-    sizeRecorded: true,
-    sizeConfirmed: true,
+const answeringAt = (routes: string[], body: unknown, status = 200) => ({
+  serverUrl: "https://armada.test/mcp",
+  token: "t",
+  fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+    routes.push(`${new URL(String(input)).pathname} ${String(init?.body)}`);
+    return Response.json(body, { status });
+  }) as typeof fetch,
+});
+
+test("an explicit size or stored defaults use only the versioned sized route; neither uses the legacy one", async () => {
+  const routes: string[] = [];
+  const ok = { sandbox: { id: "s1" } };
+  expect(await launchSandbox(answeringAt(routes, ok), { ...args, size: "large" })).toEqual({ id: "s1" });
+  await launchSandbox(answeringAt(routes, ok), { ...args, sizePolicy: true });
+  await launchSandbox(answeringAt(routes, ok), args);
+  expect(routes.map((route) => route.split(" ")[0])).toEqual([
+    SIZED_LAUNCH_ROUTE_V1,
+    SIZED_LAUNCH_ROUTE_V1,
+    "/api/v1/sandbox/launch",
+  ]);
+  expect(JSON.parse(routes[0]?.slice(routes[0].indexOf(" ") + 1) ?? "")).toMatchObject({
+    size: "large",
+    sizePolicyVersion: 1,
   });
-  expect(seen[0]).toMatchObject({ size: "large" });
-  // A server before #653 ignores `size`: the sandbox exists, but the size is not confirmed.
-  expect(await launchSandbox(answering({ sandbox: { id: "s2" } }), { ...args, size: "large" })).toEqual({
-    id: "s2",
-    sizeRecorded: false,
-    sizeConfirmed: false,
-  });
-  expect(await launchSandbox(answering({ sandbox: { id: "s3" } }, 200, seen), args)).toEqual({
-    id: "s3",
-    sizeRecorded: false,
-    sizeConfirmed: true,
-  });
-  expect(seen[1]).not.toHaveProperty("size");
+  expect(JSON.parse(routes[1]?.slice(routes[1].indexOf(" ") + 1) ?? "")).toMatchObject({ sizePolicyVersion: 1 });
+  expect(JSON.parse(routes[2]?.slice(routes[2].indexOf(" ") + 1) ?? "")).not.toHaveProperty("sizePolicyVersion");
+});
+
+test("an older replica's 404 on the sized route fails the launch once, with no legacy retry", async () => {
+  const routes: string[] = [];
+  const unknown = { error: { code: "not_found", message: "Unknown route." } };
+  const error = await launchSandbox(answeringAt(routes, unknown, 404), { ...args, size: "large" }).catch((e) => e);
+  expect(error).toBeInstanceOf(ControlError);
+  expect(error.message).toBe("This Armada server does not offer launching with machine sizes yet.");
+  expect(routes).toHaveLength(1);
 });
 
 test("a provider refusal keeps the server's code, whatever its status", async () => {

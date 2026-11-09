@@ -43,8 +43,10 @@ type State = {
   failNextTool: string | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
-  /** Every `POST /api/v1/sandbox/launch` body, as the dashboard sent it. */
+  /** Every launch body that reached allocation, as the dashboard sent it. */
   launches: Row[];
+  /** The route of each of `launches`, in order. */
+  launchRoutes: string[];
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -59,8 +61,10 @@ type State = {
   sizePolicyCalls: Row[];
   /** A launch asking for this size is refused by the provider, as Boat refuses a plan-gated size. */
   refuseSize: string | null;
-  /** The database has #653's columns but the server predates it: `size` is ignored and its route is unknown. */
+  /** The database has #653's columns but the server predates it: `size` is ignored and its routes are unknown. */
   olderServer: boolean;
+  /** Sized launches refused before allocation (an older replica's 404, a missing version's 400). */
+  sizedRefusals: Row[];
   /** Every `golden/remove` body, as the dashboard sent it, and whether it carried a session. */
   goldenRemoveCalls: { body: Row; authorized: boolean }[];
   /** Every `golden/build/status` body, as the dashboard sent it. */
@@ -212,6 +216,8 @@ function seed(): State {
     sizePolicyCalls: [],
     refuseSize: null,
     olderServer: false,
+    sizedRefusals: [],
+    launchRoutes: [],
     providerStatusFail: null,
   };
   // The org golden records two repositories, so its launch form offers a working directory.
@@ -762,9 +768,10 @@ function mcp(message: RpcMessage, userId: string | null): Response {
  * exactly one of its `config.repos[].dir`, and a personal connection needs a private sandbox. The sandbox row
  * records what was launched, including `repository_dir`.
  */
-function launchRoute(body: Row, userId: string | null): Response {
+function launchRoute(body: Row, userId: string | null, route = "sandbox/launch"): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
+  state.launchRoutes.push(route);
   const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
@@ -1680,6 +1687,8 @@ function control(url: URL, body: Row): Response {
       goldenStatusCalls: state.goldenStatusCalls,
       goldenRemoveCalls: state.goldenRemoveCalls,
       sizePolicyCalls: state.sizePolicyCalls,
+      sizedRefusals: state.sizedRefusals,
+      launchRoutes: state.launchRoutes,
       capabilityCalls: state.capabilityCalls,
       githubCliCalls: state.githubCliCalls,
       controlCalls: state.controlCalls,
@@ -1704,6 +1713,16 @@ const server = Bun.serve({
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
+    if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
+      // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
+      // Either refusal comes before anything is allocated.
+      state.sizedRefusals.push(body);
+      if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
+      if (body.sizePolicyVersion !== 1)
+        return controlFail(400, "invalid", "The sized launch route requires sizePolicyVersion 1.");
+      state.sizedRefusals.pop();
+      return launchRoute(body, viewer(request), "sandbox/launch-sized-v1");
+    }
     if (url.pathname === "/api/v1/github/oauth/callback" && request.method === "POST") {
       return githubCliCallback(request, body);
     }

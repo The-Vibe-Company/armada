@@ -125,6 +125,18 @@ export function describeEvidence(provider: SandboxProviderId, row: { machine_siz
   return `${MACHINE_SIZE_LABELS[size]} (${source}) · ${sizeSpec(provider, size)}`;
 }
 
+/** Whether a stored `size_policy` sets any default (a cleared policy is `{version:1, golden:null, repositories:{}}`). */
+export function policyHasDefaults(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const policy = value as { golden?: unknown; repositories?: unknown };
+  return (
+    policy.golden != null ||
+    (typeof policy.repositories === "object" &&
+      policy.repositories !== null &&
+      Object.keys(policy.repositories).length > 0)
+  );
+}
+
 /** A golden's stored size policy as the dashboard can use it. */
 export type GoldenSizing =
   /** The server predates size policies (#653): no size is offered or sent. */

@@ -31,6 +31,8 @@ export type LaunchArgs = {
   repo?: string;
   /** An explicit machine size; absent, the server resolves the repository, then golden default (`@armada/core`). */
   size?: MachineSize;
+  /** The golden has size defaults the server must resolve: the launch needs the versioned sized route. */
+  sizePolicy?: boolean;
   prompt?: string;
 };
 

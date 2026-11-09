@@ -5,6 +5,8 @@ const MOCK = `http://127.0.0.1:${process.env.MOCK_PORT ?? "54399"}`;
 type State = {
   launches: Record<string, unknown>[];
   sizePolicyCalls: Record<string, unknown>[];
+  sizedRefusals: Record<string, unknown>[];
+  launchRoutes: string[];
   goldenCalls: unknown[];
 };
 
@@ -52,11 +54,17 @@ test("the launch shows the repository then golden default, keeps an override and
   await page.setViewportSize({ width: 1280, height: 720 });
   await dialog.getByRole("button", { name: "Launch" }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
-  expect((await mockState()).launches[0]).toMatchObject({ provider: "boat", repo: "web", size: "small" });
+  // An explicit size goes only to the fail-closed versioned route.
+  expect((await mockState()).launchRoutes[0]).toBe("sandbox/launch-sized-v1");
+  expect((await mockState()).launches[0]).toMatchObject({
+    sizePolicyVersion: 1,
+    provider: "boat",
+    repo: "web",
+    size: "small",
+  });
   await expect(page.locator("dd", { hasText: "Small (chosen at launch)" })).toHaveText(
     "Small (chosen at launch) · 2 vCPU · 4 GiB · 51 GB disk",
   );
-  await expect(page.locator("[data-size-unconfirmed]")).toHaveCount(0);
 
   // Modal, no defaults: the provider decides, nothing is invented and no size is sent.
   await page.goto("/goldens");
@@ -75,8 +83,11 @@ test("the launch shows the repository then golden default, keeps an override and
   await modal.getByRole("button", { name: "Launch" }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
   const launches = (await mockState()).launches;
+  // No defaults and no override: no sizing is promised, so the legacy route is the same launch.
+  expect((await mockState()).launchRoutes[1]).toBe("sandbox/launch");
   expect(launches[1]).toMatchObject({ provider: "modal" });
   expect(launches[1]).not.toHaveProperty("size");
+  expect(launches[1]).not.toHaveProperty("sizePolicyVersion");
   await expect(page.locator("dd", { hasText: "Modal default" })).toHaveText("Modal default, not recorded");
 });
 
@@ -129,7 +140,9 @@ test("a member sees an org golden's defaults read-only; the owner edits their pr
   await expect(page.locator('[data-golden="bob-private"] [data-size-defaults="editable"]')).toBeVisible();
 });
 
-test("a refused size says what can be changed, and an unconfirmed size is never shown as applied", async ({ page }) => {
+test("a refused size says what can be changed, and an older server allocates nothing for a sized launch", async ({
+  page,
+}) => {
   await reset({ sizePolicies: true, refuseSize: "xlarge" });
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
@@ -142,23 +155,26 @@ test("a refused size says what can be changed, and an unconfirmed size is never 
   );
   expect((await mockState()).launches.at(-1)).toMatchObject({ size: "xlarge" });
 
-  // The database has the columns but the server predates #653: it ignores the size, and the dashboard says so.
+  // The database has the columns but this replica predates #653: the sized route is unknown there, so the launch
+  // fails before allocation and is never retried on the legacy route, whether a size was chosen or a default kept.
   await reset({ sizePolicies: true, olderServer: true });
   await page.context().clearCookies();
   await signIn(page, "alice@example.com", "/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
-  await page.getByRole("dialog").getByLabel("Machine size").selectOption("large");
-  await page.getByRole("dialog").getByRole("button", { name: "Launch" }).click();
-  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}\?size=unconfirmed$/);
-  await expect(page.locator("[data-size-unconfirmed]")).toContainText("Machine size not confirmed");
-  await expect(page.locator("dd", { hasText: "Not recorded" })).toHaveText("Not recorded");
-
-  // Keeping the golden's default is not confirmed either when the server resolves none.
-  await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Launch" }).click();
-  await page.waitForURL(/\?size=unconfirmed$/);
-  expect((await mockState()).launches.at(-1)).not.toHaveProperty("size");
+  for (const choice of ["large", ""]) {
+    await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
+    const launch = page.getByRole("dialog");
+    await launch.getByLabel("Machine size").selectOption(choice);
+    await launch.getByRole("button", { name: "Launch" }).click();
+    await expect(launch.getByRole("alert")).toHaveText(
+      "This Armada server does not offer launching with machine sizes yet.",
+    );
+    await page.keyboard.press("Escape");
+  }
+  const older = await mockState();
+  expect(older.launches).toHaveLength(0);
+  expect(older.sizedRefusals).toHaveLength(2);
+  expect(older.sizedRefusals[0]).toMatchObject({ size: "large", sizePolicyVersion: 1 });
+  expect(older.sizedRefusals[1]).not.toHaveProperty("size");
 
   await page.goto("/goldens");
   const card = page.locator('[data-golden="shared-golden"]');

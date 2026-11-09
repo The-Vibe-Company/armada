@@ -17,7 +17,7 @@ import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { launchSandbox } from "@/lib/launch";
-import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS } from "@/lib/machine-size";
+import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -162,12 +162,16 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!repository.ok) return fail(repository.error);
 
   let id: string;
-  let sizeConfirmed: boolean;
-  let sizeRecorded: boolean;
   try {
-    ({ id, sizeConfirmed, sizeRecorded } = await launchSandbox(
+    ({ id } = await launchSandbox(
       { serverUrl, token: viewer.token },
-      { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
+      {
+        ...parsed.args,
+        ...selection.value,
+        ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+        // Stored defaults are a promise only the versioned sized route keeps; without any, legacy is the same launch.
+        ...(matches.some((golden) => policyHasDefaults(golden.size_policy)) ? { sizePolicy: true } : {}),
+      },
     ));
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
@@ -179,10 +183,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     return fail(error.message);
   }
   revalidatePath("/sandboxes");
-  // A golden with defaults expects the server to resolve one; a server that records nothing did not.
-  const expectsDefault = matches.some((golden) => golden.size_policy != null);
-  const unconfirmed = !sizeConfirmed || (!sizeRecorded && expectsDefault);
-  redirect(`/sandboxes/${id}${unconfirmed ? "?size=unconfirmed" : ""}`);
+  redirect(`/sandboxes/${id}`);
 }
 
 function modelFields(data: FormData): ModelFields {
