@@ -268,8 +268,17 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       );
     },
 
-    async get(sandboxId: string): Promise<SandboxInfo> {
-      const response = await call(() => api.get({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
+    async get(sandboxId: string, requestOptions?: { signal?: AbortSignal }): Promise<SandboxInfo> {
+      const response = await call(() =>
+        api.get(
+          { sandboxId },
+          {
+            signal: requestOptions?.signal
+              ? AbortSignal.any([requestOptions.signal, AbortSignal.timeout(10_000)])
+              : AbortSignal.timeout(10_000),
+          },
+        ),
+      );
       if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
       return sandboxInfo(response.sandbox);
     },
@@ -290,28 +299,35 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     },
 
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
+      let resumed = false;
+      const workflow = AbortSignal.timeout(90_000);
+      const signal = request.signal ? AbortSignal.any([workflow, request.signal]) : workflow;
+      signal.throwIfAborted();
       if (request.text.trim() === "") throw invalidRequest("A prompt needs text.");
       if (options.beforePrompt || options.beforeResume) {
-        let info = await provider.get(request.sandboxId);
+        let info = await provider.get(request.sandboxId, { signal });
         if (info.state === "stopped") {
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {
             try {
-              await call(() => api.resume({ sandboxId: request.sandboxId }));
+              await call(() => api.resume({ sandboxId: request.sandboxId }, { signal }));
             } catch (error) {
               if (!(error instanceof ProviderError) || error.status !== 409) throw error;
-              const concurrent = await provider.get(request.sandboxId);
+              const concurrent = await provider.get(request.sandboxId, { signal });
               if (!["starting", "ready", "running"].includes(concurrent.state)) throw error;
             }
           }
-          info = await provider.get(request.sandboxId);
+          resumed = true;
+          info = await provider.get(request.sandboxId, { signal });
         }
         for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
+          signal.throwIfAborted();
           await sleep(1000);
-          info = await provider.get(request.sandboxId);
+          info = await provider.get(request.sandboxId, { signal });
         }
         if (info.state !== "ready" && info.state !== "running")
           throw invalidRequest("Sandbox is not ready for native MCP configuration.");
+        signal.throwIfAborted();
         await options.beforePrompt?.(provider, request.sandboxId);
       }
       if (request.harness === "codex" && options.beforePrompt) {
@@ -325,22 +341,31 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
           "codex",
         );
       }
+      signal.throwIfAborted();
       const response = await call(() =>
-        api.prompt({
-          sandboxId: request.sandboxId,
-          promptRequest: {
-            provider: BOAT_PROVIDER_NAME[request.harness],
-            prompt: request.text,
-            ...(request.conversationId ? { conversationId: request.conversationId } : { _new: true }),
-            ...(request.model ? { model: request.model } : {}),
-            ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
-            ...(request.fast !== undefined ? { fast: request.fast } : {}),
+        api.prompt(
+          {
+            sandboxId: request.sandboxId,
+            promptRequest: {
+              provider: BOAT_PROVIDER_NAME[request.harness],
+              prompt: request.text,
+              ...(request.conversationId ? { conversationId: request.conversationId } : { _new: true }),
+              ...(request.model ? { model: request.model } : {}),
+              ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+              ...(request.fast !== undefined ? { fast: request.fast } : {}),
+            },
           },
-        }),
+          { signal },
+        ),
       );
       const conversationId = response.conversationId ?? response.promptRun?.conversationId;
       if (!response.promptId || !conversationId) throw unexpectedAnswer("prompt receipt");
-      return { promptId: response.promptId, conversationId, status: promptStatus(response.status) ?? "queued" };
+      return {
+        promptId: response.promptId,
+        conversationId,
+        status: promptStatus(response.status) ?? "queued",
+        ...(resumed ? { resumed: true } : {}),
+      };
     },
 
     async getPrompt(request: { sandboxId: string; promptId: string }): Promise<PromptState> {
@@ -433,7 +458,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {
-      await call(() => api.stop({ sandboxId: request.sandboxId }));
+      await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
     },
 
     async delete(request: { sandboxId: string }): Promise<DeleteReceipt> {

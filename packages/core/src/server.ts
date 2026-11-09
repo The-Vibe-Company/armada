@@ -32,4 +32,5 @@ export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-g
 export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
+export { sandboxActivity } from "./sandbox-activity.ts";
 export { type SshExecDeps, shellQuote, sshStdinCheckout } from "./ssh-executor.ts";

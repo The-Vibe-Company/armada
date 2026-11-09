@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
   type ComposedModalOptions,
@@ -1453,3 +1454,61 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
   });
 });
+
+for (const hardExit of [false, true])
+  test(`server deadline reconciler retains Modal data after ${hardExit ? "confirmed hard exit" : "graceful checkpoint"}`, async () => {
+    const f = fixture();
+    const machine = await runningFork(f);
+    const goldenId = crypto.randomUUID();
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1::uuid,$2::uuid,$3::uuid,$1::text,'private','modal',$1::text,'label-only','main','ap_pinned','{"repos":[],"init":[]}'::jsonb)`,
+      [goldenId, scope.orgId, scope.userId],
+    );
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,expires_at)
+    values($1,$2,$3,$4,'modal',$5,'claude','running',now()-interval '1 second')`,
+      [id, goldenId, scope.orgId, scope.userId, machine.id],
+    );
+    const before = await f.store.get(machine.id);
+    if (hardExit) {
+      if (!before.physicalId) throw Error("missing physical machine");
+      const physical = await f.client.sandboxes.fromId(before.physicalId);
+      if (!physical) throw Error("missing SDK sandbox");
+      // External physical expiry: SDK poll reports exit, and the native runner is gone.
+      await physical.terminate();
+      f.onRpc(async () => {
+        throw Error("runner expired");
+      });
+    }
+    const baseline = f.log.length;
+    let resolved = 0;
+    const lifecycle = createSandboxLifecycle(db, async () => {
+      resolved++;
+      return f.provider;
+    });
+    await lifecycle.reconcileOne();
+    const row = (
+      await db.query<{ status: string; stopped_at: Date | null; status_reason: string | null }>(
+        "select status,stopped_at,status_reason from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(row?.status).toBe(hardExit ? "failed" : "stopped");
+    expect(row?.stopped_at).not.toBeNull();
+    expect(f.log).not.toContain("delete-image");
+    if (hardExit) {
+      expect(row?.status_reason).toContain("without a new verified recovery checkpoint");
+      expect((await f.store.get(machine.id)).phase).toBe("active");
+      expect((await f.store.get(machine.id)).imageId).toBe(before.imageId);
+      expect(f.log.slice(baseline)).not.toContain("checkpoint");
+      expect(f.log.slice(baseline)).not.toContain("snapshot");
+      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      expect(await lifecycle.reconcileOne()).toBe(false);
+      expect(resolved).toBe(1);
+    } else {
+      expect((await f.store.get(machine.id)).phase).toBe("stopped");
+      expect(f.log).toContain("terminate");
+    }
+  });

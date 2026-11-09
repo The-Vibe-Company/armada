@@ -124,6 +124,7 @@ describe("launch", () => {
     expect(world.execs[2]?.command).toBe("pnpm i");
     expect(world.prompts).toEqual([
       {
+        signal: expect.any(AbortSignal),
         sandboxId: "bx_1",
         harness: "claude",
         text: "Fix the build",
@@ -655,7 +656,14 @@ function setup(options: Setup) {
   const preparations: { sandboxId: string; harness: string; cwd: string }[] = [];
   const forks: ForkRequest[] = [];
   const execs: { command: string; cwd?: string }[] = [];
-  const prompts: { sandboxId: string; harness: string; text: string; model?: string; reasoningEffort?: string }[] = [];
+  const prompts: {
+    signal?: AbortSignal;
+    sandboxId: string;
+    harness: string;
+    text: string;
+    model?: string;
+    reasoningEffort?: string;
+  }[] = [];
   const stopped: string[] = [];
   const deleted: string[] = [];
   const rows = new Map<string, SandboxRecord>();
