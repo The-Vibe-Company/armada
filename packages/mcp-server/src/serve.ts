@@ -9,7 +9,8 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
-import { type ControlOptions, handleControlRequest } from "./control.ts";
+import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
+import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -120,7 +121,8 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const control: ControlOptions = {
+  const control: ConfiguredControlOptions = {
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
