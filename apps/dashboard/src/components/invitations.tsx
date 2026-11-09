@@ -141,9 +141,15 @@ const SignedInAs = ({ email }: { email: string }) => (
 );
 
 /** The recipient's page. It only explains; joining is the explicit button of the `ready` preview. */
-type AcceptProps = { state: RecipientState; accept: Action; confirmLink: Action; now: Date };
+type AcceptProps = {
+  state: RecipientState;
+  accept: Action;
+  /** The `token_hash` link's two explicit steps, and "not now". */
+  link: { verify: Action; adopt: Action; discard: Action };
+  now: Date;
+};
 
-export function AcceptInvitation({ state, accept, confirmLink, now }: AcceptProps) {
+export function AcceptInvitation({ state, accept, link, now }: AcceptProps) {
   switch (state.kind) {
     case "missing":
       return (
@@ -173,14 +179,32 @@ export function AcceptInvitation({ state, accept, confirmLink, now }: AcceptProp
             This link includes a secure sign-in for the address the invitation was sent to. Continue to sign in with it,
             then review the organization. Signing in does not join it.
           </p>
-          <ActionForm action={confirmLink} className="flex flex-col gap-2">
-            <SubmitButton className="w-full sm:w-auto">Continue with this link</SubmitButton>
+          <ActionForm action={link.verify} className="flex flex-col gap-2">
+            <SubmitButton className="w-full sm:w-auto">Check this link</SubmitButton>
           </ActionForm>
           <p className="text-xs">
             <Link href={INVITATION_LOGIN_HREF} className="underline underline-offset-4">
               Sign in with your email address instead
             </Link>
           </p>
+        </InvitationShell>
+      );
+    case "link_confirm":
+      return (
+        <InvitationShell title={`Continue as ${state.email}?`}>
+          <p>
+            This sign-in link is for <strong className="break-words text-foreground">{state.email}</strong>, invited to{" "}
+            <strong className="text-foreground">{state.orgName}</strong>. Signing in lets you review the invitation; it
+            does not join the organization.
+          </p>
+          <ActionForm action={link.adopt} className="flex flex-col gap-2">
+            <SubmitButton className="w-full">Continue as {state.email}</SubmitButton>
+          </ActionForm>
+          <ActionForm action={link.discard} className="flex flex-col gap-2">
+            <SubmitButton variant="outline" className="w-full">
+              Not now
+            </SubmitButton>
+          </ActionForm>
         </InvitationShell>
       );
     case "unavailable":

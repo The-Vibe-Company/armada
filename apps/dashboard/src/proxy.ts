@@ -8,6 +8,7 @@ import {
   INVITATION_COOKIE,
   INVITATION_LINK_COOKIE,
   INVITATION_LINK_MAX_AGE,
+  INVITATION_LINK_SESSION_COOKIE,
   invitationCookieOptions,
   isInvitationToken,
 } from "@/lib/invitations";
@@ -47,11 +48,14 @@ function stashInvitation(request: NextRequest): NextResponse {
     request.nextUrl.searchParams.get("type"),
     request.nextUrl.searchParams.get("token_hash"),
   );
+  // A newer invitation link replaces any earlier one's sign-in: an old `token_hash` never outlives its invitation.
   if (link)
     response.cookies.set(INVITATION_LINK_COOKIE, link, {
       ...invitationCookieOptions(secure),
       maxAge: INVITATION_LINK_MAX_AGE,
     });
+  else response.cookies.delete(INVITATION_LINK_COOKIE);
+  response.cookies.delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
   return response;
 }
 

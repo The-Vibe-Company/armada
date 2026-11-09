@@ -1,5 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { INVITATION_ACCEPT_PATH, INVITATION_COOKIE, INVITATION_LINK_COOKIE } from "@/lib/invitations";
+import {
+  INVITATION_ACCEPT_PATH,
+  INVITATION_COOKIE,
+  INVITATION_LINK_COOKIE,
+  INVITATION_LINK_SESSION_COOKIE,
+} from "@/lib/invitations";
 import { originFromHeaders } from "@/lib/routes";
 import { createClient } from "@/lib/supabase/server";
 
@@ -16,6 +21,7 @@ export async function POST(request: NextRequest) {
   if (!switching) {
     response.cookies.delete(INVITATION_COOKIE);
     response.cookies.delete(INVITATION_LINK_COOKIE);
+    response.cookies.delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
   }
   return response;
 }

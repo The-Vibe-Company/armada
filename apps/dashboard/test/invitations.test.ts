@@ -134,6 +134,9 @@ describe("invitation link", () => {
     const cookies = withInvitation.headers.getSetCookie().join("\n");
     expect(cookies).toContain(`${INVITATION_LINK_COOKIE}=magiclink%3Apkce_abc123456`);
     expect(cookies).toMatch(/armada_invitation_link=[^;]+;[^\n]*HttpOnly/i);
+    // A newer invitation link without one clears an earlier link's sign-in.
+    const newer = (await proxy(request(`/invitations/accept?token=${TOKEN}`))).headers.getSetCookie().join("\n");
+    expect(newer).toMatch(new RegExp(`${INVITATION_LINK_COOKIE}=;[^\\n]*Expires=Thu, 01 Jan 1970`, "i"));
     const alone = await proxy(request("/invitations/accept?token_hash=pkce_abc123456&type=magiclink"));
     expect(alone.headers.get("set-cookie")).toBeNull();
     expect(decodeEmailLink("magiclink:pkce_abc123456")).toEqual({ type: "magiclink", tokenHash: "pkce_abc123456" });

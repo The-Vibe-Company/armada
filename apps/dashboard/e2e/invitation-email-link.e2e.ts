@@ -127,7 +127,7 @@ test("an expired email link says to sign in with the email address", async ({ pa
   await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
 });
 
-test("a token_hash link is verified only when the recipient continues, once", async ({ page }) => {
+test("a token_hash link shows whose account it is before signing in, and joins nothing", async ({ page }) => {
   await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
   const { token_hash } = await mock("email-link-hash", { email: "carol@example.com" });
   await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${token_hash}&type=magiclink`);
@@ -135,10 +135,35 @@ test("a token_hash link is verified only when the recipient continues, once", as
   await expect(page.getByRole("heading", { name: "Sign in to review your invitation" })).toBeVisible();
   expect((await mockState()).authCalls).toEqual([]);
 
-  await page.getByRole("button", { name: "Continue with this link" }).click();
-  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
+  await page.getByRole("button", { name: "Check this link" }).click();
+  await expect(page.getByRole("heading", { name: "Continue as carol@example.com?" })).toBeVisible();
+  await expect(page.getByText("invited to Acme")).toBeVisible();
+  // Verified at GoTrue, but nobody is signed in yet.
   expect((await mockState()).authCalls[0]).toBe("/verify");
+  expect(await page.context().cookies()).not.toContainEqual(
+    expect.objectContaining({ name: expect.stringMatching(/auth-token/) }),
+  );
+
+  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
   expect(await joined()).toBe(false);
+});
+
+test("a newer invitation link drops an earlier link's sign-in", async ({ page }) => {
+  await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
+  const { token_hash } = await mock("email-link-hash", { email: "carol@example.com" });
+  await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${token_hash}&type=magiclink`);
+  await expect(page.getByRole("heading", { name: "Sign in to review your invitation" })).toBeVisible();
+  await page.goto(`/invitations/accept?token=${INVITATION}`);
+  await expect(page.getByRole("heading", { name: "You are invited to an organization on Armada" })).toBeVisible();
+});
+
+test("an unverified account from the link is refused", async ({ page }) => {
+  await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
+  await mock("unverified-email", { email: "carol@example.com" });
+  await page.goto(incoming(await emailLink("carol@example.com")));
+  await expect(alert(page)).toContainText("not verified");
+  expect((await mockState()).invitationCalls).toEqual([]);
 });
 
 test("a pending invitation does not take over another sign-in's return target", async ({ page }) => {

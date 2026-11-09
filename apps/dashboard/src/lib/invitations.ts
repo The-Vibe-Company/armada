@@ -189,6 +189,8 @@ export type RecipientState =
   | { kind: "sign_in" }
   /** Signed out, with the email's own sign-in (`token_hash`): continuing verifies it and signs in as its address. */
   | { kind: "link_sign_in" }
+  /** That link, verified: whose account it signs in as and for which org, before anything is stored. */
+  | { kind: "link_confirm"; email: string; orgName: string }
   | { kind: "unavailable"; message: string; signInAgain: boolean }
   | { kind: "preview"; preview: RecipientPreview; signedInAs: string };
 
@@ -264,6 +266,8 @@ export const invitationCookieOptions = (secure: boolean) => ({
  * Either way, signing in is its own explicit step, separate from joining, and never replaces another account silently.
  */
 export const INVITATION_LINK_COOKIE = "armada_invitation_link";
+/** The session a verified `token_hash` minted, waiting for the explicit "continue as …" (path: the acceptance page). */
+export const INVITATION_LINK_SESSION_COOKIE = "armada_invitation_link_session";
 /** A confirmation link is short-lived at GoTrue too; this only bounds how long the browser keeps it. */
 export const INVITATION_LINK_MAX_AGE = 10 * 60;
 
