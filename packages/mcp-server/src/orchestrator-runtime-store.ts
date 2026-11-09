@@ -486,6 +486,7 @@ export class OrchestratorRuntimeStore {
       parentState?: OrchestratorState;
       conversationId?: string;
       errorCode?: string;
+      continuity?: OrchestratorContinuity;
     },
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
@@ -511,12 +512,13 @@ export class OrchestratorRuntimeStore {
       await tx.query(
         `update public.orchestrator_runtime set updated_at=now(),blocked_reason=$2,
         last_activity_at=case when $3 then now() else last_activity_at end,
-        continuity=case when $4 then 'unverified' else continuity end where orchestrator_id=$1`,
+        continuity=case when $5::text is not null then $5 when $4 then 'unverified' else continuity end where orchestrator_id=$1`,
         [
           identity.id,
           result.errorCode ?? null,
           result.state === "succeeded" && ["message", "steer"].includes(operation.kind),
           !!result.conversationId && current.continuity === "not_started",
+          result.continuity ?? null,
         ],
       );
       if (result.conversationId)

@@ -41,3 +41,7 @@ revoke all on sequence public.orchestrator_runtime_events_sequence_seq from publ
 grant all on public.orchestrator_runtime,public.orchestrator_runtime_create_keys,public.orchestrator_runtime_events to service_role;
 grant all on sequence public.orchestrator_runtime_events_sequence_seq to service_role;
 -- Reads also use owner/current-membership server policy. No direct JWT write surface.
+
+-- Safe correlated native stop receipt/dispatch fence; no token/checkpoint bytes.
+-- #663 owns lifecycle publication; read-only reconciliation never repeats the effect.
+alter table public.orchestrator_operations add column runtime_result jsonb;

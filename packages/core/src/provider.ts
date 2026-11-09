@@ -39,6 +39,8 @@ export interface Provider {
     binding: { epoch: string; physicalGeneration: string };
     url: string;
   }): Promise<{ acknowledged: boolean }>;
+  /** Private active-incarnation interrupt; never activates stopped compute. */
+  quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
   scrubOrchestratorEpoch?(request: {
     sandboxId: string;
     physicalGeneration: string;

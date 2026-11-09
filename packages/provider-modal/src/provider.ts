@@ -672,6 +672,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return { acknowledged: true };
       });
     },
+    async quiesceOrchestrator({ sandboxId, physicalGeneration }) {
+      return admit(sandboxId, async (row, save) => {
+        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Quiescence requires the bound active physical generation.");
+        const active = await healthyAdmission(row, save);
+        if (physicalGeneration !== String(active.generation))
+          throw refusal("conflict", "Physical generation changed during quiescence.");
+        await runner.call(active, "interrupt", {});
+        return { acknowledged: true };
+      });
+    },
     async scrubOrchestratorEpoch({ sandboxId, physicalGeneration, tokenHash }) {
       return admit(sandboxId, async (row, save) => {
         if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))

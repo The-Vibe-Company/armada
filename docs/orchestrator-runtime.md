@@ -147,3 +147,51 @@ Runtime does not force that list to the parent's single account/harness, nor
 infer permission for all owner accounts. Each child still passes fresh #661
 scope/owner/org/golden/account/harness authorization. Production consent/default
 resolution remains uncomposed until the actual account producer is integrated.
+
+## Trusted managed stop and #663 caller
+
+The actual #663 source-contracts-v2 archive (SHA-256
+`d20be62aed82a960e9812e1f37fc9d0ba2a7d45752bd56dfe423a18adfb745ca`)
+is inspected only under `.git/663-source-v2`. No lifecycle implementation/schema
+is copied into this delivery. A strict inherited-tsconfig assignment verifies
+that `runtime.lifecycleRuntime` implements its actual
+`OrchestratorLifecycleRuntime` (`observe`, `stop`, `reconcileStop`), not guessed
+method signatures.
+
+`OrchestratorRuntimeOptions.managed` supplies trusted SQL and
+`resolveManaged(machine, selection)`; selection is only persisted owner/org,
+golden and provider metadata. It must not require a current membership or model
+credential to stop already-owned compute. Create/resume admission requires this
+cleanup lane. Owner HTTP/MCP stop uses the same native dispatch as the lifecycle
+lane (`stopOwner`), after normal fresh owner authorization, and deliberately does
+not resolve model credentials. This keeps revoked model access from preventing
+compute cleanup; it does not give removed users API access.
+
+`ManagedNativeBackend` requires:
+
+- `observe(machine, signal?) -> ManagedObservation`, correlated native work
+  evidence, not a heartbeat/capability flag;
+- `checkpointAndStop(machine, operationId, signal?) -> ManagedStopReceipt` with
+  the exact #663 operation/machine/generation/state/continuity fields;
+- `readStopReceipt(machine, operationId, signal?) -> ManagedStopReceipt | null`,
+  strictly read-only: no stop retry, restore or allocation.
+
+The actual208 stop receipt must exist before dispatch. Proposed210 adds only a
+safe `runtime_result` projection to that receipt, not a second operation store.
+The controller records an uncertain dispatch fence before native I/O, revokes and
+compare-scrubs before checkpoint, and saves only correlated safe receipt fields
+under logical revision and sandbox-generation locks. Duplicate stop goes through
+read-only reconciliation, never repeats the native effect. #663 retains lifecycle
+publication/lease ownership; this controller does not publish parent state from a
+late receipt. Unverified owner stop/resume clears the native-continuity hint.
+Concrete native observation/checkpoint/read-only provider adapters are still
+required before enablement; these mandatory ports are not a proof by themselves.
+
+Active parent stop first revokes authority and uses optional private
+`Provider.quiesceOrchestrator({sandboxId,physicalGeneration})` (Modal routes this
+to the existing Runner interrupt under the active-incarnation lease). A native
+observer must then return correlated quiescent evidence before compare-scrub and
+checkpoint. An interrupt ACK alone is not quiescence proof. This avoids asking
+an active native client to hot-reload/scrub credentials or accidentally restoring
+stopped compute through the generic interrupt path. Unknown observations retain
+an uncertain receipt and clear the native hint; no checkpoint is claimed.

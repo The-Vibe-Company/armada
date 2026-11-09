@@ -9,6 +9,7 @@ import type {
 } from "@armada/core";
 import type { Caller } from "./caller.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
+import { createManagedOrchestratorRuntime } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeFoundation, OrchestratorRuntimeTransport } from "./orchestrator-runtime-foundation.ts";
 import {
   OrchestratorRuntimeError,
@@ -17,6 +18,8 @@ import {
   type RuntimeReservation,
 } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorTransport } from "./orchestrator-transport.ts";
+
+class NativeContinuityLost extends Error {}
 
 /** Trusted server adapter: never populated from HTTP request fields or guest flags.
  * Each implementation needs operator-verified, version-bound native proof. */
@@ -34,8 +37,6 @@ export interface OrchestratorRuntimeBackend {
   launch(reservation: RuntimeReservation): Promise<void>;
   /** Provider-native, no synthetic prompt. Absent means resume is unavailable. */
   resumeWithoutText?: (identity: RuntimeIdentity) => Promise<void>;
-  /** Requires committed native checkpoint plus durable event acknowledgement, not physical exit. */
-  checkpointAndStop(identity: RuntimeIdentity): Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
   revalidate(identity: RuntimeIdentity): Promise<void>;
 }
@@ -44,6 +45,8 @@ export interface OrchestratorRuntimeOptions {
   store: OrchestratorRuntimeStore;
   authority: OrchestratorRuntimeFoundation["authority"];
   skillRevision: string;
+  /** Trusted removed-owner cleanup lane; no user/model credential resolution. */
+  managed?: Pick<Parameters<typeof createManagedOrchestratorRuntime>[0], "sql" | "resolveManaged">;
   /** Actual #663 lifecycle projection; absence is unavailable, never invented empty waits. */
   lifecycleDetail?: (
     ownerId: string,
@@ -60,7 +63,12 @@ export interface OrchestratorRuntimeOptions {
 
 /** One owner policy surface for HTTP and MCP. Construction alone never enables a provider. */
 export class OrchestratorRuntime {
-  constructor(private readonly options: OrchestratorRuntimeOptions) {}
+  readonly lifecycleRuntime: ReturnType<typeof createManagedOrchestratorRuntime> | undefined;
+  constructor(private readonly options: OrchestratorRuntimeOptions) {
+    this.lifecycleRuntime = options.managed
+      ? createManagedOrchestratorRuntime({ ...options.managed, authority: options.authority })
+      : undefined;
+  }
 
   private owner(caller: Caller, orgId: string): string {
     if (!caller.orgs.some((org) => org.orgId === orgId)) throw new OrchestratorRuntimeError("not_found");
@@ -111,6 +119,7 @@ export class OrchestratorRuntime {
   }
 
   async create(caller: Caller, configuration: OrchestratorCreate, key: string): Promise<OrchestratorOperation> {
+    if (!this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
     const ownerId = this.owner(caller, configuration.orgId);
     const backend = await this.options.resolveBackend(configuration, ownerId);
     await backend.assertNativeProof();
@@ -142,6 +151,7 @@ export class OrchestratorRuntime {
       text?: string;
     },
   ): Promise<OrchestratorOperation> {
+    if (input.action === "resume" && !this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
     const ownerId = this.owner(caller, input.orgId);
     const identity = await this.options.store.read(ownerId, input.orgId, input.id);
     if (
@@ -149,9 +159,14 @@ export class OrchestratorRuntime {
       (!input.text?.trim() || input.text.length > 100_000)
     )
       throw new OrchestratorRuntimeError("invalid_request");
-    const backend = await this.options.resolveBackend(identity.configuration, ownerId, identity);
-    await backend.assertNativeProof();
-    if (input.action === "resume" && !backend.resumeWithoutText) throw new OrchestratorRuntimeError("unavailable");
+    const backend =
+      input.action === "stop"
+        ? undefined
+        : await this.options.resolveBackend(identity.configuration, ownerId, identity);
+    if (backend) await backend.assertNativeProof();
+    if (input.action === "stop" && identity.state !== "stopped" && !this.lifecycleRuntime)
+      throw new OrchestratorRuntimeError("unavailable");
+    if (input.action === "resume" && !backend?.resumeWithoutText) throw new OrchestratorRuntimeError("unavailable");
     const reservation = await this.options.store.reserve({
       ownerId,
       orgId: input.orgId,
@@ -164,14 +179,34 @@ export class OrchestratorRuntime {
     if (!reservation.fresh) return reservation.operation;
     return this.execute(reservation, async () => {
       const current = reservation.identity;
-      await backend.revalidate(current);
       if (input.action === "stop") {
         if (current.state === "stopped") return { parentState: "stopped" as const };
-        // Admission is already closed by the pending receipt. Revoke before any checkpoint I/O.
-        await this.options.authority.scrubBeforeCheckpoint(current.id, await this.transport(backend, current));
-        await backend.checkpointAndStop(current);
-        return { parentState: "stopped" as const };
+        if (!this.lifecycleRuntime || !current.sandboxId || !current.providerSandboxId || current.generation === null)
+          throw new OrchestratorRuntimeError("unavailable");
+        const stopped = await this.lifecycleRuntime.stopOwner(
+          {
+            orchestratorId: current.id,
+            sandboxId: current.sandboxId,
+            providerSandboxId: current.providerSandboxId,
+            generation: String(current.generation),
+          },
+          reservation.operation.id,
+        );
+        if (
+          stopped.operationId !== reservation.operation.id ||
+          stopped.orchestratorId !== current.id ||
+          stopped.sandboxId !== current.sandboxId ||
+          stopped.providerSandboxId !== current.providerSandboxId ||
+          stopped.generation !== String(current.generation)
+        )
+          throw new OrchestratorRuntimeError("unavailable");
+        if (stopped.continuity === "lost") throw new NativeContinuityLost();
+        if (stopped.state !== "stopped" || stopped.continuity !== "native")
+          throw new OrchestratorRuntimeError("unavailable");
+        return { parentState: "stopped" as const, continuity: "native" as const };
       }
+      if (!backend) throw new OrchestratorRuntimeError("unavailable");
+      await backend.revalidate(current);
       if (input.action === "resume") {
         if (current.state === "ready") return { parentState: "ready" as const };
         if (current.state !== "stopped" || !current.conversationId || current.continuity !== "native")
@@ -242,6 +277,7 @@ export class OrchestratorRuntime {
     effect: () => Promise<{
       parentState?: "ready" | "stopped";
       conversationId?: string;
+      continuity?: "native";
     }>,
   ): Promise<OrchestratorOperation> {
     try {
@@ -249,16 +285,24 @@ export class OrchestratorRuntime {
       if (!(await this.options.store.complete(reservation, { state: "succeeded", ...result })))
         throw new OrchestratorRuntimeError("conflict");
       return { ...reservation.operation, state: "succeeded" };
-    } catch {
+    } catch (error) {
+      const lost = error instanceof NativeContinuityLost;
+      const state = lost ? ("failed" as const) : ("uncertain" as const);
+      const errorCode = lost ? "native_continuity_lost" : "runtime_uncertain";
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.
       const published = await this.options.store.complete(reservation, {
-        state: "uncertain",
+        state,
         parentState: "blocked",
-        errorCode: "runtime_uncertain",
+        errorCode,
+        ...(lost
+          ? { continuity: "lost" as const }
+          : ["stop", "resume"].includes(reservation.operation.kind)
+            ? { continuity: reservation.identity.continuity === "lost" ? ("lost" as const) : ("unverified" as const) }
+            : {}),
       });
       if (!published) throw new OrchestratorRuntimeError("conflict");
-      return { ...reservation.operation, state: "uncertain", errorCode: "runtime_uncertain" };
+      return { ...reservation.operation, state, errorCode };
     }
   }
 }
