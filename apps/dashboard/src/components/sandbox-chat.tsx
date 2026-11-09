@@ -7,10 +7,10 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleSlashIcon,
+  CircleStopIcon,
   Loader2Icon,
   RadioIcon,
   SlidersHorizontalIcon,
-  SquareIcon,
   XIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -162,8 +162,8 @@ export function SandboxChat(props: Props) {
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
   return (
-    <div className="space-y-4">
-      <Card className="gap-0 overflow-hidden py-0">
+    <div data-fit="chat" className="space-y-2 sm:space-y-4">
+      <Card data-fit="card" className="gap-0 overflow-hidden py-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <h2 className="text-base leading-none font-semibold">Conversation</h2>
@@ -302,10 +302,30 @@ export function Transcript({
     else setUnseen(true);
   }, [signature]);
 
+  // The history's own height changes too (details, the model panel, the keyboard, the window): a pinned view stays on
+  // the latest message, and an unpinned one updates whether it is at the bottom.
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) {
+        element.scrollTop = element.scrollHeight;
+        return;
+      }
+      // Grown back within reach of the bottom without a scroll: it follows new messages again, as a scroll would.
+      const bottom = isAtBottom(element);
+      pinned.current = bottom;
+      setAtBottom(bottom);
+      if (bottom) setUnseen(false);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   function onScroll() {
     const element = scroller.current;
     if (!element) return;
-    const bottom = element.scrollHeight - element.scrollTop - element.clientHeight <= PINNED_PX;
+    const bottom = isAtBottom(element);
     pinned.current = bottom;
     setAtBottom(bottom);
     if (bottom) setUnseen(false);
@@ -334,7 +354,7 @@ export function Transcript({
         : "";
 
   return (
-    <div className="relative">
+    <div data-fit="history" className="relative">
       <p role="status" className="sr-only">
         {announcement}
       </p>
@@ -346,6 +366,7 @@ export function Transcript({
         aria-live="off"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the history scrolls on its own; the keyboard must reach it.
         tabIndex={0}
+        data-fit="history-scroll"
         className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
       >
         {items.length === 0 ? (
@@ -394,6 +415,10 @@ export function Transcript({
       )}
     </div>
   );
+}
+
+function isAtBottom(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= PINNED_PX;
 }
 
 type Group = { kind: "item"; item: ChatItem } | { kind: "tools"; key: string; tools: ToolActivity[] };
@@ -617,6 +642,8 @@ function Composer({
   const restarts = STEER_RESTARTS_TURN[harness];
   /** The highlighted button, which Ctrl/Cmd+Enter presses: steering while a turn runs, unless the model changes. */
   const primary: Intent = running && !override ? "steer" : "send";
+  /** Steer is unavailable because of a model change: say so, unless an error needs the space. */
+  const steerHint = running && override && result?.ok !== false;
 
   function change(data: FormData) {
     const field = (name: string) => String(data.get(name) ?? "");
@@ -693,7 +720,7 @@ function Composer({
       noValidate
       onSubmit={onSubmit}
       onChange={readOverride}
-      className="space-y-3 border-t bg-muted/30 px-4 py-3 sm:px-6"
+      className="space-y-3 border-t bg-muted/30 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6"
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
@@ -704,12 +731,12 @@ function Composer({
       <Textarea
         id={`${fieldId}-message`}
         name="prompt"
-        rows={3}
+        rows={2}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
         placeholder={running ? "Steer the running turn, or send the next one" : "What should the agent do next?"}
-        className="max-h-60 min-h-20 resize-y bg-background"
+        className="max-h-60 min-h-14 resize-y bg-background sm:min-h-20"
       />
       <div id={`${fieldId}-model`} hidden={!showModel}>
         <ModelFields
@@ -720,7 +747,7 @@ function Composer({
           launchedModel={launchedModel}
         />
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
         <Button
           type="button"
           variant="ghost"
@@ -728,37 +755,58 @@ function Composer({
           aria-expanded={showModel}
           aria-controls={`${fieldId}-model`}
           onClick={() => setShowModel((value) => !value)}
-          className={cn("text-muted-foreground", override && "text-foreground")}
+          className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
         >
           <SlidersHorizontalIcon />
-          {override ? "Model changed" : "Model"}
+          {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
+          {override && (
+            <span className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden" aria-hidden="true" />
+          )}
+          {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
+          <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
         </Button>
-        {result && (
+        {steerHint ? (
+          // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
+          // It takes the place of an earlier success message, never of an error.
           <p
-            role={result.ok ? "status" : "alert"}
-            className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
+            id={`${fieldId}-steer-hint`}
+            className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
           >
-            {result.ok ? result.message : result.error}
+            <span className="sr-only">Model change: </span>
+            New turn only
           </p>
+        ) : (
+          result && (
+            <p
+              role={result.ok ? "status" : "alert"}
+              className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
+            >
+              {result.ok ? result.message : result.error}
+            </p>
+          )
         )}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
           {running && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
+              className="max-sm:px-2"
               disabled={pending !== null}
               onClick={() => run("interrupt")}
             >
-              {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-              Interrupt
+              {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <CircleStopIcon />}
+              <span className="max-sm:sr-only">Interrupt</span>
             </Button>
           )}
           {running && (
             <Button
+              aria-label={restarts ? "Steer (restarts turn)" : "Steer"}
+              aria-describedby={steerHint ? `${fieldId}-steer-hint` : undefined}
               type="button"
               variant={primary === "steer" ? "default" : "outline"}
               size="sm"
+              className="max-sm:px-2.5"
               disabled={pending !== null || override}
               title={
                 override
@@ -770,18 +818,34 @@ function Composer({
               onClick={() => run("steer")}
             >
               {pending === "steer" && <Loader2Icon className="animate-spin" />}
-              {restarts ? "Steer (restarts turn)" : "Steer"}
+              {restarts ? (
+                <>
+                  <span className="max-sm:hidden">Steer (restarts turn)</span>
+                  <span className="sm:hidden">Steer</span>
+                </>
+              ) : (
+                "Steer"
+              )}
             </Button>
           )}
           <Button
+            aria-label={running ? "Send as new turn" : undefined}
             type="button"
             size="sm"
+            className="max-sm:px-2.5"
             variant={primary === "send" ? "default" : "outline"}
             disabled={pending !== null}
             onClick={() => run("send")}
           >
             {pending === "send" && <Loader2Icon className="animate-spin" />}
-            {running ? "Send as new turn" : "Send"}
+            {running ? (
+              <>
+                <span className="max-sm:hidden">Send as new turn</span>
+                <span className="sm:hidden">New turn</span>
+              </>
+            ) : (
+              "Send"
+            )}
           </Button>
         </div>
       </div>
@@ -794,13 +858,13 @@ function TechnicalEvents({ events }: { events: ChatEvent[] }) {
   if (events.length === 0) return null;
   return (
     <details
-      className="rounded-lg border px-4 py-3 text-sm sm:px-6"
+      className="rounded-lg border px-4 py-2 text-sm sm:px-6 sm:py-3"
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary className="cursor-pointer font-medium">Technical events ({events.length})</summary>
       {open && (
-        <ol className="mt-3 space-y-2" aria-label="Technical events">
+        <ol data-fit="technical-list" className="mt-3 space-y-2" aria-label="Technical events">
           {events.map((event) => (
             <li key={event.id} className="rounded-md border bg-muted/30 px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">

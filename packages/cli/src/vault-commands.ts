@@ -13,6 +13,7 @@ import { flag, parseArgs, single } from "./args.ts";
 import { armadaApiUrl } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
+import { invitationCommand } from "./invitation-commands.ts";
 
 export interface VaultIo {
   auth: AuthIo;
@@ -93,10 +94,12 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       );
       return 0;
     }
+    case "invitations":
+      return invitationCommand(rest, io);
     case "members":
       return members(rest, io);
     default:
-      throw usage("Run armada org create, list, setup, connect or members.");
+      throw usage("Run armada org create, list, setup, connect, invitations or members.");
   }
 }
 
