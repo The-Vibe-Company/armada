@@ -721,6 +721,21 @@ describe("tools", () => {
       (await db.query("select credential_id,credential_version from sandboxes where id=$1", [launched.data.id]))
         .rows[0],
     ).toEqual({ credential_id: first.id, credential_version: 1 });
+    const admin = await client(await token(people.admin));
+    const beforeAdmin = { prompts: boat.prompts.length, steers: boat.steers.length };
+    expect(
+      (await call(admin, "send", { id: launched.data.id, prompt: "Cannot use owner's personal account" })).isError,
+    ).toBe(true);
+    expect(
+      (await call(admin, "steer", { id: launched.data.id, text: "Cannot restart with owner's account" })).isError,
+    ).toBe(true);
+    expect({ prompts: boat.prompts.length, steers: boat.steers.length }).toEqual(beforeAdmin);
+    const listed = await call(admin, "list");
+    expect(
+      (listed.data.sandboxes as Record<string, unknown>[]).every(
+        (row) => !("credentialId" in row) && !("credentialVersion" in row),
+      ),
+    ).toBe(true);
     await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
       action: "default",
       scope: "user",
