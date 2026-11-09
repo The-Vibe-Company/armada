@@ -160,8 +160,9 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     func settle(handle: String) async {
         guard let id = UUID(uuidString: handle),
               await client.pendingOperations.first(where: { $0.id == id })?.receipt != nil else { return }
-        // Same saved bytes and key: the server answers with the original operation's receipt.
-        _ = try? await submit(handle: handle)
+        // Actual detail.operations read, not another mutation through backend preflight.
+        // Missing/nonterminal receipts remain unresolved; absence never permits a new key.
+        _ = try? await client.reconcileOrchestratorOperation(id)
     }
 
     // MARK: Sandboxes

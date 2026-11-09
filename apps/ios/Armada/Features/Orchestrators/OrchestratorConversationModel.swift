@@ -86,14 +86,15 @@ final class OrchestratorConversationModel {
         await recoverOpenCommand()
     }
 
-    /// An accepted command stays saved until its final receipt is read. Once detail no longer
-    /// lists its operation as open, read that receipt (same command, same key) so it is forgotten.
+    /// Only an authoritative terminal receipt resolves the saved command. A detail
+    /// page omitting an open operation is not itself proof that the effect finished.
     private func settleFinishedCommand() async {
         guard let detail,
               let open = await service.unresolved(orgID: detail.summary.orgID, orchestratorID: orchestratorID),
               let receipt = open.receipt,
               !detail.openOperations.contains(where: { $0.id == receipt.id }) else { return }
         await service.settle(handle: open.handle)
+        guard await service.unresolved(orgID: detail.summary.orgID, orchestratorID: orchestratorID)?.handle != open.handle else { return }
         if lifecycleHandle == open.handle, case .inProgress = lifecycle { finishLifecycle() }
     }
 

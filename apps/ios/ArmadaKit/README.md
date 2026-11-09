@@ -111,3 +111,23 @@ not interpret arbitrary payload as assistant text. The whole page, known
 neighbors, order, IDs and opaque cursor remain available. Known malformed event
 variants still fail validation; unknown-kind handling is not a blanket decoder
 fallback. No native continuity or conversation is synthesized.
+
+## Read-only receipt settlement
+
+`reconcileOrchestratorOperation(_ UUID) -> OrchestratorOperation?` reads the
+actual owner `GET /orchestrators/:id?orgId=...` detail.operations surface.
+It requires an already-known server receipt ID and matches parent/action/revision;
+only an authoritative succeeded/failed receipt resolves the journal. It does not
+POST, allocate, require enabled capabilities, or traverse native backend preflight.
+Missing, unrelated and nonterminal receipts return nil/unresolved, never proof
+of non-admission. The app settlement adapter uses this read, not a re-POST.
+A lost first response with no receipt ID cannot be correlated from revision/text
+alone: safe first-dispatch CAS recovery still needs producer-owned exact-command
+admission/receipt evidence. Activation remains blocked on that real limitation.
+
+Source witness: frozen662 `1db793edf3877fe7ae5daf47cf3aa375a10fc12e`, read-only
+witness report/manifest supplied by root (not a second review gate); owner API/DTO
+match the actual delivered handler. Raw1db source is not readable from worker
+GitHub (`No commit found`,404), so this worker does not claim independent14-file
+hash verification. Actual earlier delivered owner handler/DTO and detail method
+were inspected; original producer must publish any new correlation contract.

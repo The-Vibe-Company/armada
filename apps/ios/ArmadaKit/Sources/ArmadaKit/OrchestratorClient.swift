@@ -119,6 +119,28 @@ extension ArmadaClient {
             throw error
         }
     }
+    /// Read-only settlement through the actual owner detail.operations surface.
+    /// No capability/native preflight or POST. Absence is never non-admission proof.
+    /// A lost first response without a receipt ID still needs producer correlation.
+    public func reconcileOrchestratorOperation(_ operationID: UUID) async throws -> OrchestratorOperation? {
+        guard let pending = pendingOperations.first(where: { $0.id == operationID }) else { return nil }
+        guard pending.orgId == (try selectedOrganization()) else { throw ArmadaError.forbidden }
+        if let terminal = terminalReceipt(operationID) { return terminal }
+        guard let known = pending.receipt else { return nil }
+        let parent = pending.orchestratorId ?? known.orchestratorId
+        let detail = try await orchestratorDetail(id: parent)
+        guard selectedOrgID == pending.orgId,
+              let current = pendingOperations.first(where: { $0.id == operationID }) else { throw CancellationError() }
+        if let terminal = terminalReceipt(operationID) { return terminal }
+        guard detail.orchestrator.id == parent, detail.orchestrator.configuration.orgId == pending.orgId,
+              current.receipt?.id == known.id else { throw ArmadaError.invalidResponse }
+        guard let receipt = detail.operations.first(where: { $0.id == known.id }) else { return nil }
+        guard receipt.version == 1, receipt.orchestratorId == parent, receipt.kind == pending.action,
+              receipt.revision == known.revision else { throw ArmadaError.invalidResponse }
+        guard receipt.state == .succeeded || receipt.state == .failed else { return nil }
+        try update(current.updating(state: receipt.state, receipt: receipt))
+        return terminalReceipt(operationID)
+    }
     private func terminalReceipt(_ id: UUID) -> OrchestratorOperation? {
         guard let receipt = pendingOperations.first(where: { $0.id == id })?.receipt,
               receipt.state == .succeeded || receipt.state == .failed else { return nil }
