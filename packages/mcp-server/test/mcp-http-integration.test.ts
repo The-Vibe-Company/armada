@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import type { McpConnectionDto } from "@armada/core";
-import { createSqlVaultStore, type Provider } from "@armada/core/server";
+import { createSqlVaultStore, type Provider, type SandboxRecord } from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { endpoint } from "../../mcp-gateway/src/index.ts";
 import { configFromEnv } from "../src/config.ts";
@@ -80,8 +80,25 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
         throw Error("Off path must not touch guest tools, broker or sockets");
       },
     });
-    const runtimeSandbox = { id: sandboxId, orgId: org, ownerId: user, providerSandboxId: "bx_route" };
-    await integration.connections.prepare?.(provider, runtimeSandbox, { userId: user, orgId: org });
+    const runtimeSandbox: SandboxRecord = {
+      id: sandboxId,
+      orgId: org,
+      ownerId: user,
+      providerSandboxId: "bx_route",
+      provider: "boat",
+      goldenId,
+      harness: "claude",
+      status: "ready",
+      conversationIds: [],
+      createdAt: new Date().toISOString(),
+      stoppedAt: null,
+      deletedAt: null,
+      statusReason: null,
+      repositoryDir: null,
+      model: null,
+      reasoningEffort: null,
+    };
+    await integration.connections.prepare?.(provider, runtimeSandbox, { userId: user, orgId: org, role: "admin" });
     await integration.beforePrompt(provider, "bx_route", { userId: user, orgId: org });
     await integration.reconcileSandbox(provider, runtimeSandbox);
     expect(
