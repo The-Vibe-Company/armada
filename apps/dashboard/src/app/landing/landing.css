@@ -736,7 +736,7 @@ html:has(> body .lp) {
   color: var(--text-2);
 }
 .lp-terminal-body {
-  height: 460px;
+  display: grid;
   padding: 18px 20px;
   overflow: hidden;
   font: 12.5px / 1.65 var(--font-mono);
@@ -746,6 +746,7 @@ html:has(> body .lp) {
 .lp-terminal-run + .lp-terminal-run {
   margin-top: 18px;
 }
+.lp-terminal-gcmd,
 .lp-terminal-command {
   color: var(--text);
   /* A command wraps rather than lose its end (#587): it is what you would type. */
@@ -1402,7 +1403,13 @@ html:has(> body .lp) {
     --dx-sign: 16px;
   }
   .lp-terminal-body {
-    height: 440px;
+    font-size: 12px;
+  }
+  /* A diagram row holds on two lines: the name, then its chips, aligned. */
+  .dg-n .dg-name {
+    flex-basis: 100%;
+  }
+  .dg-tag {
     font-size: 12px;
   }
 }
@@ -1588,4 +1595,14 @@ html:has(> body .lp) {
 }
 .dx .lp-copy .lp-copy-note {
   color: #a9a9b1;
+}
+
+/* The terminal's two layers share one cell: the ghost sizes it, the live one is seen. */
+.lp-terminal-ghost,
+.lp-terminal-live {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.lp-terminal-ghost {
+  visibility: hidden;
 }
