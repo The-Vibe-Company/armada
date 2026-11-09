@@ -9,20 +9,48 @@ test.beforeEach(async () => {
 });
 
 for (const mobile of [false, true]) {
-  test(`switching scopes and persists from a detail (${mobile ? "mobile keyboard submission" : "desktop"})`, async ({
+  test(`choosing an org switches at once and persists from a detail (${mobile ? "mobile keyboard" : "desktop"})`, async ({
     page,
   }) => {
     if (mobile) await page.setViewportSize({ width: 390, height: 800 });
     await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
     const select = page.getByLabel("Active organization");
     await expect(select).toHaveValue(ACME);
-    await select.selectOption(ZENITH);
-    await expect(select).toHaveValue(ZENITH);
-    await select.focus();
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Enter");
+    if (mobile) {
+      // The arrow key alone commits the next org; focus stays on the selector across the switch.
+      await select.focus();
+      await page.keyboard.press("ArrowDown");
+    } else {
+      // Hold the switch in flight: the selector shows the chosen org, busy, and a second choice starts nothing.
+      const actions: string[] = [];
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await page.route("**/*", async (route) => {
+        if (route.request().headers()["next-action"]) {
+          actions.push(route.request().postData() ?? "");
+          await held;
+        }
+        await route.continue();
+      });
+      await select.selectOption(ZENITH);
+      await expect(select).toHaveAttribute("aria-busy", "true");
+      // A busy selector is not disabled (it keeps its focus), so a choice can still reach it, as a person's would.
+      await select.evaluate((element: HTMLSelectElement, org) => {
+        element.value = org;
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      }, ACME);
+      await expect(select).toHaveValue(ZENITH);
+      release();
+      await expect(select).toHaveAttribute("aria-busy", "false");
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toContain(ZENITH);
+      await page.unroute("**/*");
+    }
     await expect(page).toHaveURL(/\/sandboxes$/);
     await expect(select).toHaveValue(ZENITH);
+    if (mobile) await expect(select).toBeFocused();
     await expect(page.getByRole("link", { name: "bx_zenith" })).toBeVisible();
     await expect(page.getByText("bx_alice_running")).toHaveCount(0);
     await expect(page.getByLabel("Golden", { exact: true }).getByRole("option", { name: "shared-golden" })).toHaveCount(
@@ -43,7 +71,6 @@ for (const mobile of [false, true]) {
     await page.screenshot({ path: `test-results/organization-${mobile ? "mobile" : "desktop"}.png`, fullPage: true });
     await page.goto("/sandboxes?golden=00000000-0000-4000-8000-000000000023");
     await select.selectOption(ACME);
-    await page.getByRole("button", { name: "Switch organization" }).click();
     await expect(page).toHaveURL(/\/sandboxes$/);
     await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
   });
@@ -59,13 +86,14 @@ test("forged and removed preferences fall back; forged switch is refused server-
     element.append(option);
   });
   await select.selectOption("00000000-0000-4000-8000-000000000099");
-  await page.getByRole("button", { name: "Switch organization" }).click();
   await expect(alert(page)).toContainText("no longer available");
+  // A refused switch does not keep showing the refused org: the selector is back on the org the page shows.
+  await expect(select).toHaveValue(ACME);
+  await expect(select).toHaveAccessibleDescription(/no longer available/);
   await context.addCookies([{ name: "armada-org", value: "forged", url: page.url() }]);
   await page.reload();
   await expect(select).toHaveValue(ACME);
   await select.selectOption(ZENITH);
-  await page.getByRole("button", { name: "Switch organization" }).click();
   await expect(select).toHaveValue(ZENITH);
   // The chosen option shows before the switch is saved; Zenith's sandbox shows only once it is.
   await expect(page.getByRole("link", { name: "bx_zenith" })).toBeVisible();
@@ -80,7 +108,7 @@ test("mutation targets cannot escape the selected org even when the viewer admin
 }) => {
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByLabel("Active organization").selectOption(ZENITH);
-  await page.getByRole("button", { name: "Switch organization" }).click();
+  await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
   const golden = page.locator('[data-golden="zenith-golden"]');
   await golden.locator('input[name="golden"]').evaluate((input) => {
     (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000020";

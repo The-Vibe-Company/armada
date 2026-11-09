@@ -147,7 +147,6 @@ test("a member waits for an admin, sees no credential field, and keeps switching
   await expect(page).toHaveURL(/\/sandboxes$/);
   const select = page.getByLabel("Active organization");
   await select.selectOption(ORION);
-  await page.getByRole("button", { name: "Switch organization" }).click();
   // Orion has a running sandbox: it stays listed and stoppable; only new work is held.
   await expect(page).toHaveURL(/\/sandboxes$/);
   await expect(page.getByRole("link", { name: "bx_orion_running" })).toBeVisible();
@@ -168,7 +167,6 @@ test("a member waits for an admin, sees no credential field, and keeps switching
 
   // Switching away from the setup page lands on the other org's page, not back in setup.
   await select.selectOption(ACME);
-  await page.getByRole("button", { name: "Switch organization" }).click();
   await expect(page).toHaveURL(`/orgs/${ACME}`);
 });
 
@@ -178,7 +176,9 @@ test("existing orgs are ready from a legacy column, a Boat row or a Modal row; a
   await signIn(page, "alice@example.com", `/orgs/${ACME}/setup`);
   await expect(page.locator('[data-setup-state="ready"]')).toContainText("Boat connected");
   await page.getByLabel("Active organization").selectOption(ZENITH);
-  await page.getByRole("button", { name: "Switch organization" }).click();
+  // Switching from a setup page lands on the org's page; Zenith's own setup is ready from its Boat row.
+  await expect(page).toHaveURL(`/orgs/${ZENITH}`);
+  await page.goto(`/orgs/${ZENITH}/setup`);
   await expect(page.locator('[data-setup-state="ready"]')).toContainText("Boat connected");
 
   // Carol holds a personal Boat key; Orion still has no org provider.
