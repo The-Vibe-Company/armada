@@ -93,6 +93,16 @@ type State = {
   providerCalls: { route: string; body: Row; authorized: boolean }[];
   /** While set, `org/provider/status` answers this failure instead of the stored state; `html` is an edge page body. */
   providerStatusFail: { status: number; code?: string; message: string; html?: string } | null;
+  /** Organization invitations (#640 contract v1). `token` is what the email link carries; no response includes it. */
+  invitations: Row[];
+  /** The delivery state the next create or resend records: what the mail transport answered. */
+  nextDelivery: "not_configured" | "pending" | "sent" | "failed";
+  /** Every `org/invitations/*` call: its route, the body as sent and whether it carried a session. */
+  invitationCalls: { route: string; body: Row; authorized: boolean }[];
+  /** Accounts whose email address is not verified yet. */
+  unverifiedEmails: string[];
+  /** GoTrue calls that establish or check an identity (`/verify`, `/token`, `/user`), in order. */
+  authCalls: string[];
 };
 
 function seed(): State {
@@ -178,6 +188,11 @@ function seed(): State {
     capabilities: { boat: { maxGoldens: 1, fail: null }, modal: { maxGoldens: null, fail: null } },
     githubCliCalls: [],
     otpEmails: [],
+    invitations: [],
+    nextDelivery: "sent",
+    invitationCalls: [],
+    unverifiedEmails: [],
+    authCalls: [],
     connections: [
       mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
         url: "https://docs.acme.test/mcp",
@@ -649,6 +664,7 @@ function rpc(name: string, args: Row, userId: string): Response {
 
 function auth(request: Request, url: URL, body: Row): Response {
   const path = url.pathname.replace("/auth/v1", "");
+  if (path === "/verify" || path === "/token" || path === "/user") state.authCalls.push(path);
   if (path === "/otp") {
     state.otpEmails.push(String(body.email));
     return json({});
@@ -918,6 +934,109 @@ function visibleConnections(orgId: string, userId: string): Row[] {
 function connectionDto(row: Row): Row {
   const { owner: _owner, authentication: _secret, statusBeforeDisable: _previous, ...dto } = row;
   return dto;
+}
+
+const invitationDto = (row: Row) => {
+  const { token: _token, ...dto } = row;
+  return dto;
+};
+
+/**
+ * `org/invitations/{create,list,resend,revoke,accept}`, as #640's control API v1 serves them: admin-only management,
+ * a fresh token on every send (a resend invalidates the previous link), and an accept bound to the signed-in user's
+ * email, single-use, that adds the membership only then. Delivery is whatever the test set the transport to answer.
+ */
+function invitations(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.invitationCalls.push({ route, body, authorized: Boolean(userId) });
+  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
+  const fresh = () => `mock-invitation-${++sequence}-0123456789abcdef`;
+  if (route === "preview" || route === "accept") {
+    const row = state.invitations.find((item) => item.token === body.token);
+    const email = users.get(userId)?.email;
+    // The server's order: the address must match before anything about the org is said. The first failing check wins.
+    const checks: [boolean, string][] = [
+      [!row, "not_found"],
+      [row?.email !== email, "wrong_email"],
+      [state.unverifiedEmails.includes(String(email)), "unverified_email"],
+      [row?.status === "revoked", "revoked"],
+      [row?.status === "accepted", "used"],
+      [Date.parse(String(row?.expiresAt)) <= Date.now(), "expired"],
+      [Boolean(row) && isMember(row?.orgId, userId), "already_member"],
+    ];
+    const reason = checks.find(([failed]) => failed)?.[1] ?? null;
+    if (route === "preview") {
+      const named = row && reason !== "not_found" && reason !== "wrong_email" && reason !== "unverified_email";
+      const org = named ? state.orgs.find((item) => item.id === row.orgId) : null;
+      return json({
+        state: reason ?? "ready",
+        context: org ? { orgId: org.id, orgName: org.name, role: row?.role, expiresAt: row?.expiresAt } : null,
+      });
+    }
+    if (reason || !row) {
+      const refusal: Record<string, [number, string]> = {
+        wrong_email: [403, "forbidden"],
+        unverified_email: [403, "forbidden"],
+        used: [409, "conflict"],
+        already_member: [409, "conflict"],
+      };
+      const [status, code] = refusal[String(reason)] ?? [404, "not_found"];
+      return json({ error: { code, message: "The invitation cannot be accepted.", reason } }, status);
+    }
+    row.status = "accepted";
+    state.members.push({ org_id: row.orgId, user_id: userId, role: row.role, created_at: new Date().toISOString() });
+    return json({ orgId: row.orgId, accepted: true });
+  }
+  const org = state.orgs.find((item) => item.id === body.org);
+  if (!org || !isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin manages invitations.");
+  if (route === "list")
+    return json({ invitations: state.invitations.filter((row) => row.orgId === org.id).map(invitationDto) });
+  if (route === "create") {
+    const email = String(body.email ?? "").toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email) || (body.role !== "member" && body.role !== "admin"))
+      return controlFail(400, "invalid", "An invitation needs an email and a role.");
+    const member = [...users.values()].find((user) => user.email === email);
+    if (member && isMember(org.id, member.id))
+      return json(
+        { error: { code: "conflict", message: `${email} is already a member.`, reason: "already_member" } },
+        409,
+      );
+    if (state.invitations.some((row) => row.orgId === org.id && row.email === email && row.status === "pending"))
+      return json(
+        {
+          error: {
+            code: "conflict",
+            message: `${email} already has a pending invitation. Resend it instead.`,
+            reason: "pending_exists",
+          },
+        },
+        409,
+      );
+    const row: Row = {
+      id: id(++sequence),
+      orgId: org.id,
+      email,
+      role: body.role,
+      expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      status: "pending",
+      delivery: state.nextDelivery,
+      token: fresh(),
+    };
+    state.invitations.push(row);
+    return json({ invitation: invitationDto(row) });
+  }
+  const row = state.invitations.find((item) => item.id === body.id && item.orgId === org.id);
+  if (row?.status !== "pending") return controlFail(404, "not_found", "Invitation not found.");
+  if (route === "resend") {
+    row.token = fresh();
+    row.delivery = state.nextDelivery;
+    return json({ invitation: invitationDto(row) });
+  }
+  if (route === "revoke") {
+    row.status = "revoked";
+    return json({ invitation: invitationDto(row) });
+  }
+  return controlFail(404, "not_found", "Unknown route.");
 }
 
 function controlFail(status: number, code: string, message: string): Response {
@@ -1752,6 +1871,49 @@ function control(url: URL, body: Row): Response {
     failSandboxConnections = true;
     return json({ ok: true });
   }
+  /**
+   * What GoTrue's `/verify` hands the browser for #649's email OTP (sent without a PKCE challenge): a live session for
+   * the address, which the redirect puts in the URL fragment. The tests build the incoming URL from it to prove the
+   * dashboard never uses it. No email is sent.
+   */
+  if (url.pathname === "/__test/email-link-session") {
+    const user = [...users.values()].find((candidate) => candidate.email === body.email);
+    return user ? json(session(user.id)) : json({ error: "unknown user" }, 404);
+  }
+  if (url.pathname === "/__test/unverified-email") {
+    state.unverifiedEmails.push(String(body.email));
+    return json({ ok: true });
+  }
+  /** Marks an invitation as the server would after a revoke or an acceptance elsewhere. */
+  if (url.pathname === "/__test/invitation-status") {
+    const row = state.invitations.find((item) => item.token === body.token);
+    if (row) row.status = body.status;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/invitation-delivery") {
+    state.nextDelivery = body.delivery as State["nextDelivery"];
+    return json({ ok: true });
+  }
+  /** The link an invitation email would carry right now: the current token of that address's pending invitation. */
+  if (url.pathname === "/__test/invitation-link") {
+    const row = state.invitations.find((item) => item.email === body.email && item.status === "pending");
+    return json({ token: row?.token ?? null });
+  }
+  /** A pending invitation as the server would hold it, for the recipient pages (expired ones included). */
+  if (url.pathname === "/__test/seed-invitation") {
+    const row: Row = {
+      id: id(++sequence),
+      orgId: ACME,
+      email: body.email,
+      role: body.role ?? "member",
+      expiresAt: new Date(Date.now() + Number(body.expiresInMs ?? 7 * 86_400_000)).toISOString(),
+      status: "pending",
+      delivery: "sent",
+      token: body.token,
+    };
+    state.invitations.push(row);
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/state") {
     return json({
       orgBoatKeys: state.orgs.filter((org) => org.boat_api_key_enc).map((org) => org.id),
@@ -1770,6 +1932,10 @@ function control(url: URL, body: Row): Response {
       githubCliCalls: state.githubCliCalls,
       controlCalls: state.controlCalls,
       providerCalls: state.providerCalls,
+      invitationCalls: state.invitationCalls,
+      authCalls: state.authCalls,
+      invitations: state.invitations.map(invitationDto),
+      members: state.members,
       connections: state.connections.map((row) => ({ ...row })),
     });
   }
@@ -1822,6 +1988,8 @@ const server = Bun.serve({
         return json({ user: state.accounts.user, orgs: [{ id: ACME, name: "Acme", credentials: state.accounts.org }] });
       }
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
+      if (route.startsWith("org/invitations/"))
+        return invitations(route.slice("org/invitations/".length), body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);

@@ -20,6 +20,7 @@ import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelUsageApi } from "./model-usage.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -121,6 +122,7 @@ export async function startServer(
   });
   const control: ConfiguredControlOptions = {
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+    modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },

@@ -1052,6 +1052,57 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
   });
 });
 
+test("public sandbox logs omit account-private native quota and auth records", async () => {
+  await withServer(async ({ options, cli }) => {
+    const stan = cli(STAN);
+    await stan.run(["org", "create", "Quota privacy"]);
+    const boat = fakeBoat();
+    boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    const types = [
+      "usage_report",
+      "rate_limit_event",
+      "account/rateLimits/updated",
+      "account/rateLimits/read",
+      "account/updated",
+      "auth_status",
+    ];
+    boat.provider.events = async () => ({
+      events: [
+        ...types.map((type) => ({
+          id: type,
+          at: 1,
+          kind: "other" as const,
+          type,
+          data: { private: "personal-subscription-information" },
+        })),
+        {
+          id: "local",
+          at: 1,
+          kind: "other" as const,
+          type: "system",
+          data: { subtype: "local_command_output", content: "personal-subscription-information" },
+        },
+        {
+          id: "ordinary-system",
+          at: 1,
+          kind: "other" as const,
+          type: "system",
+          data: { subtype: "init", public: "ordinary-native-init" },
+        },
+        { id: "message", at: 2, kind: "message" as const, text: "public work", partial: false, tools: [] },
+      ],
+      hasMore: false,
+    });
+    options.logs = async () => ({ provider: boat.provider, providerSandboxId: "bx_1" });
+    const result = await stan.run(["logs", STAN, "--json"]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("public work");
+    expect(result.out).toContain("ordinary-native-init");
+    expect(result.out).not.toContain("personal-subscription-information");
+    for (const type of types) expect(result.out).not.toContain(type);
+  });
+});
+
 test("CLI named-account operations preserve safe IDs and CAS through the authenticated API", async () => {
   await withServer(async ({ cli }) => {
     const admin = cli(STAN);
