@@ -1,187 +1,213 @@
-# Armada
+<p align="center">
+  <a href="https://armada.thevibecompany.co">
+    <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code and Codex in Boat or Modal sandboxes, built from your repositories.">
+  </a>
+</p>
 
-Armada launches coding agents (Claude Code, Codex) on [boat.dev](https://boat.dev) sandboxes, from a golden snapshot, with or without a prompt. Orchestrators drive the agents through a remote MCP server; people use the `armada` CLI, which ships in the same binary.
+<p align="center">
+  <a href="https://armada.thevibecompany.co"><b>Open Armada in your browser</b></a>
+  &nbsp;·&nbsp;
+  <a href="#install"><b>Install the CLI</b></a>
+  &nbsp;·&nbsp;
+  <a href="#quickstart">Quickstart</a>
+  &nbsp;·&nbsp;
+  <a href="#documentation">Docs</a>
+</p>
 
-Armada is a launcher, not an orchestrator: it does not split work, merge pull requests or read a tracker.
+**Armada gives every coding task its own machine.** Snapshot your repositories once as a *golden*. Launch Claude Code or Codex into a fresh Boat or Modal sandbox with the model and reasoning effort you choose. Follow every event, redirect the agent mid-turn, stop the machine and pick the same conversation back up later, from the web, the terminal or any MCP client.
 
-- **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
-- **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
+```sh
+npm install -g @the-vibe-company/armada
+armada login
+```
 
-> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada golden create`, `armada launch` and `armada logs` are all server-orchestrated through the Armada API (a login session or `ARMADA_TOKEN`; no boat.dev key needed locally): the server clones over the caller's own GitHub connection, scans for leaked tokens, and only saves a ready snapshot. `armada login` and `armada token` sign a person in and mint service tokens. `armada org` and `armada creds` manage orgs, members and encrypted credentials (#461). `armada serve` runs the remote MCP server (#464): orchestrators list and create goldens, launch, and then drive the agent (status, wait, logs, send, steer, interrupt, exec, stop).
+Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and agents on your own model credentials.
 
-## Layout
+## Why Armada
 
-A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by every package).
+<table>
+<tr>
+<td width="50%" valign="top">
 
-| Package | Name | Role |
-| --- | --- | --- |
-| `packages/core` | `@armada/core` | The contract every other package shares: types, the golden config and workflow, AES-256-GCM for `*_enc` columns (`ARMADA_ENCRYPTION_KEY`), the generated database types, the version. |
-| `packages/provider-boat` | `@armada/provider-boat` | The boat.dev placement: the provider adapter over the boat.dev API. |
-| `packages/cli` | `@armada/cli` | The `armada` command; `src/main.ts` is the entry of the compiled binary. |
-| `packages/auth` | `@armada/auth` | Supabase login (GitHub, Google), the MCP OAuth server, service tokens and bearer checks. |
-| `packages/mcp-server` | `@armada/mcp-server` | The remote MCP server (hosted on Railway) that orchestrators call. |
-| `apps/dashboard` | `@armada/dashboard` | The web dashboard (Next.js, Tailwind, shadcn/ui) over Supabase: orgs, goldens, credentials, sandboxes. |
+### Start from a ready workspace
+A golden holds your repositories, branches and setup, scanned for secrets and snapshotted on the provider. Every launch forks it and pulls the latest commits instead of starting from an empty machine.
 
-`scripts/build.ts` compiles the binary. Every package carries the same version, the one `armada --version` prints (`packages/core/package.json`); a test fails if they drift apart.
+</td>
+<td width="50%" valign="top">
 
-## Database
+### Choose the agent and the brain
+Claude Code or Codex, with an explicit model and reasoning effort. The choice is saved with the sandbox, so later turns keep it unless you change it. Armada never swaps in another model.
 
-`supabase/migrations` is the schema, applied by the [Supabase CLI](https://supabase.com/docs/guides/cli) (`supabase db reset` on a local project, or `supabase migration up`). It assumes a fresh Supabase database: Auth's `auth.users` and `auth.uid()`, and the `authenticated` and `service_role` roles.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
 
-`packages/core/src/database.types.ts` is generated from those migrations. After changing them, run `bun run db:types` and commit the result. A test fails if the file drifts. The migrations themselves are checked on a fresh in-memory Postgres, including the row level security rules.
+### One task, one sandbox
+Each launch is its own Boat or Modal machine with a lifetime you set. It receives only the chosen agent's credentials, and `git` and `gh` act as you once you connect GitHub.
+
+</td>
+<td width="50%" valign="top">
+
+### See and steer every move
+Read the agent's events live, send the next prompt, steer the running turn, interrupt it or run a command beside it. Stop removes the machine but keeps the disk and the conversation; the next prompt resumes it.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Bring your tools
+Register the MCP servers your agents need, personal or shared with your org, connect them once, and attach the connected ones to a launch.
+
+</td>
+<td width="50%" valign="top">
+
+### Built for teams and bots
+Organizations with admin and member roles, private goldens and sandboxes, write-only encrypted credentials, and service tokens for orchestrators and CI.
+
+</td>
+</tr>
+</table>
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
+  <img src="docs/images/armada-how-it-works-light.svg" width="100%" alt="How Armada works, in four steps. Golden: your repositories are cloned over your GitHub connection, set up, scanned for secrets and snapshotted per provider. Launch: Claude Code or Codex with an explicit model and effort, on Boat or Modal, with your connected MCP servers. Sandbox: a fresh fork where git acts as you and only that agent's keys are present. Drive: follow events, send, steer, interrupt, exec, stop and resume. The web dashboard, the armada CLI and the Armada MCP server go through the same server and the same rules.">
+</picture>
+
+The dashboard, the `armada` CLI and Armada's MCP server all call the same Armada server, so a sandbox launched from one is visible and controllable from the others, under the same permissions.
 
 ## Install
 
 ```sh
-npx @the-vibe-company/armada --help     # or: bun x @the-vibe-company/armada --help
 npm install --global @the-vibe-company/armada
+armada --version
 ```
 
-The npm package ships the compiled binary for linux and macOS, x64 and arm64 (one optional dependency per platform), so it needs neither Bun nor a build. Getting started against production: [docs/dave-onboarding.md](docs/dave-onboarding.md). Publishing: [docs/releasing.md](docs/releasing.md).
+Or run it once without installing: `npx @the-vibe-company/armada --help` (or `bun x @the-vibe-company/armada --help`).
 
-## Commands
+The package ships a prebuilt binary for Linux and macOS, x64 and arm64, so it needs Node 18 or later and nothing else. Do not install with `--omit=optional`: the binary is the optional dependency that matches your machine.
 
-Requires [Bun](https://bun.sh) 1.4.2 (`packageManager` in `package.json`).
+The CLI only talks to the Armada API. It keeps your Armada session (or reads `ARMADA_TOKEN`) and never holds provider, database or Supabase credentials.
+
+## Quickstart
+
+Installing is the first step; an agent also needs a sandbox provider, model credentials, GitHub access and a ready golden. Each step below also has a page in the [dashboard](https://armada.thevibecompany.co), which walks a new organization through the same setup.
+
+**1. Sign in.** The browser opens, or you get a sign-in email. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
 
 ```sh
-bun install
-bun scripts/prepare-runtime.ts # portable runtime artifact required by local server tests
-bun test                 # every package's tests, including one that compiles the binary and runs it
-bun run lint             # Biome
-bun run format           # Biome, with safe fixes applied
-bun run typecheck        # tsc --noEmit, strict
-bun run verify           # lint, typecheck and tests: what CI runs
-bun run armada --help    # the CLI from source
-bun run armada golden create <name> --repo <url>[@branch] --init "<cmd>" [--setup <file>] [--private]
-                                           # server-orchestrated through the Armada API, no BOAT_API_KEY
-bun run armada golden connect <name>
-bun run armada golden snapshot <name>
-bun run armada golden list
-bun run armada launch <golden> --agent claude|codex ["prompt"] [--repo owner/repo] [--ttl 4h] [--json]
-bun run armada login --url armada.thevibecompany.co # discover settings; email or enabled social login
-bun run armada login --email you@example.com   # a sign-in email: click its link, or type its code
-bun run armada token create --org <name> --label <label>
-bun run armada org create <name>
-bun run armada org members add <email> [--role admin|member]
-pbpaste | bun run armada creds set claude-oauth [--org <name>]   # also anthropic, openai, codex-auth (--file), boat
-bun run armada creds list
-bun run armada serve     # the remote MCP server and the control API, configured by the environment below
-
-bun run build                        # dist/armada for this machine
-bun run build --target linux-arm64   # dist/armada-linux-arm64
-bun run build:all                    # dist/armada-<target> for linux and macOS, x64 and arm64
-./dist/armada --version
+armada login
 ```
 
-## Launching
-
-`armada launch` forks a golden's saved snapshot, pulls each repo, runs the init commands and, with a prompt, starts the agent. Without a prompt the sandbox waits, ready, for its first prompt. The fork gets `noEnv`, an explicit TTL (default 4 hours) and Armada's labels, and an environment with only the credentials of the chosen agent. Nothing is written to the golden. A Codex `auth.json` is carried in the environment and written to `~/.codex/auth.json` in the sandbox.
-
-To start the native agent in a particular repository already recorded in the golden:
+**2. Choose an organization and connect a sandbox provider.** Create one (you become its admin) or ask an admin to add you with `armada org members add <your-email> --org <org>` after your first sign-in. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
 
 ```sh
-armada launch <golden> --agent codex --repo owner/repo "Fix the tests"
-armada launch <golden> --agent claude --repo owner/repo  # idle; prepared for the first send
+armada org create acme
+armada org use acme
+printenv BOAT_API_KEY | armada org connect boat --org acme
+# Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
+armada org setup --org acme
 ```
 
-`--repo owner/repo` is a single manifest selector, not a URL, path, or the repeated
-`golden create --repo <url>[@branch]` option. It establishes the native Claude/Codex process's
-real initial cwd in that repository's recorded directory after pulls and init, before the first
-prompt. Idle launches prepare it immediately for a later send. The API request is
-`POST /api/v1/sandbox/launch` with `{"golden":"my-golden","harness":"codex","repo":"owner/repo"}`;
-the MCP `launch` tool accepts the same optional `repo` string.
-Invalid, unknown, or ambiguous selectors and providers without native cwd preparation are
-rejected before a machine is allocated. Omitting `repo` preserves legacy launch behavior,
-including existing multi-repo workers. Authorization, provider routing, models and TTL are unchanged.
-
-
-The credentials and the boat.dev key come from the encrypted store: the caller's own, else the org's (`resolveCredentials`, `resolveBoatKey`). A private golden uses its owner's personal boat key when there is one. `armada launch` asks the server for them (`ARMADA_URL`); it holds no encryption key and no service role key.
-
-Inside the sandbox, git and `gh` act as the person who launched it when they connected GitHub in the dashboard (Settings): the launch refreshes their GitHub App user token, injects `GH_TOKEN` and `GITHUB_TOKEN` (never into a golden), sets the git identity to `<id>+<login>@users.noreply.github.com` and configures git to use the token. Without a connection the launch still works and says `GitHub: not set up.` How it works, its limits and how to create the GitHub App: [docs/github-app.md](docs/github-app.md).
-
-`armada golden create` (and the MCP tool `golden_create`) builds a golden from one or more repositories entirely on the server: a disposable, no-env sandbox clones them over the caller's own cached GitHub connection, runs an optional setup script (`--setup` reads a local file and sends its content), and is scanned for leaked tokens before anything is saved. No `BOAT_API_KEY` is needed for this path. Details, its security model and the exact MCP/control API/CLI contracts: [docs/golden-create.md](docs/golden-create.md).
-
-## Identity, orgs and credentials
-
-`armada login --url armada.thevibecompany.co` discovers the public authentication settings and the control API address from `/.well-known/armada.json`. The production URL is the default; `ARMADA_URL` selects another deployment. No Supabase configuration is needed on the terminal. On an email-only deployment the CLI asks for your email; `--email <address>` also works directly. Click the email link or enter its code. Social login is available when enabled on the server (`--provider github|google`). The session saves the public settings and control API address, so subsequent commands and token refreshes need no environment variables. Every command acts as that user and takes `--org <name>` when needed. Explicit `SUPABASE_URL` and `SUPABASE_ANON_KEY` remain supported for local legacy setups when neither `--url` nor `ARMADA_URL` is supplied. The CLI never holds a service role key or the encryption key. Configure Supabase redirect URLs to allow `http://127.0.0.1:**` for CLI login callbacks.
-
-`armada org`, `armada creds` and `armada launch` call the server's control API (`handleControlRequest` in `@armada/mcp-server`, mounted by #464; the CLI discovers and saves its address during login (`ARMADA_URL` remains available for legacy sessions)). The server checks the Supabase access token, then uses the service role for what a user JWT cannot do (create an org with its first admin, find a person by email, read and write ciphertext).
-
-- Server env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_DATABASE_URL` (a privileged Postgres connection, the Supabase `postgres` role), `ARMADA_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`), and `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` for the user's GitHub identity in sandboxes ([docs/github-app.md](docs/github-app.md)).
-- Credentials are AES-256-GCM ciphertext in `credentials.value_enc` (org boat.dev key: `orgs.boat_api_key_enc`). Values are read from stdin or `--file`, never from an argument, and never shown again. Kinds: `claude-oauth` (the token from `claude setup-token`, injected as `CLAUDE_CODE_OAUTH_TOKEN`), `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), `codex-auth` (`~/.codex/auth.json`, written into the sandbox), `boat`. OpenCode is deferred.
-- Members are people who already signed in once. There are no pending invitations.
-
-## The MCP server
-
-`armada serve` listens on `PORT` (default 8080) and answers:
-
-- `/healthz`: `{"ok": true, "version": …}`, without a token.
-- The OAuth routes of `@armada/auth` (`/.well-known/*`, `/authorize`, `/token`, `/register`, …), mounted first.
-- The control API (`/api/v1/`, see above), which the CLI reaches at `ARMADA_URL`.
-- `/mcp`: MCP over Streamable HTTP (stateless, JSON responses). Every request is authenticated again, with no cache; a failure answers 401 with the OAuth challenge. The bearer is one of:
-  - an Armada service token or an OAuth access token, bound to one org;
-  - a Supabase access token of the project (the dashboard's session), checked by Supabase (`/auth/v1/user`) on each request: the person acts in every org they belong to, and `launch` takes `org` when a golden name is in several.
-
-The tools are `golden_list`, `launch` (the same rules as `armada launch`: `noEnv`, Armada credentials only, `claude` or `codex`), `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. A caller sees the org's goldens and sandboxes and its own private ones, never another member's.
-
-- A turn's state comes from `getPrompt`. A turn that ended on a usage limit or an expired login marks the sandbox `failed`, and the reason is recorded in `sandboxes.status_reason` (a failed launch records its error there too).
-- `logs` returns one bounded page (100 events) by default and keeps one event per id. Pass its cursor for incremental reads, or `all: true` to fetch available pages (bounded at 100 pages). The dashboard follows cursors automatically.
-- `steer` reports `restart` for Codex (the turn is interrupted and the text sent as a new one) and `native` for Claude Code.
-- The boat key for tools stays on the server: an org golden uses the org's key, a private golden its owner's personal key. `launch/resolve` on the control API returns the boat key to the signed-in CLI, which launches locally (#479's design).
-
-Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, server-side only; token, membership and credential lookups all use it, so the server holds no service role key), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (the origin clients reach), `ARMADA_ENCRYPTION_KEY` (32 bytes in base64, the key of the encrypted credentials) and `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` (the GitHub App, to refresh a launching user's token; see [docs/github-app.md](docs/github-app.md)).
-
-`Dockerfile` builds the binary and runs `armada serve`; `railway.json` deploys it on Railway from this repository, with `/healthz` as the health check.
-
-## Dashboard
-
-`apps/dashboard` is a Next.js App Router app (Tailwind v4, shadcn/ui, dark mode). It talks to Supabase as the signed-in user (their JWT from the session cookie, so row level security decides what they see) and never holds a service key.
-
-| Variable | Where | Role |
-| --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
-| `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
-| `ARMADA_MCP_URL` | runtime | The Armada MCP server. Without it the dashboard lists sandboxes but cannot read live logs or stop and message them. |
-| `ARMADA_ENCRYPTION_KEY` | build and runtime | 32 random bytes, base64 (`openssl rand -base64 32`). `@armada/core` seals credentials with AES-256-GCM before they are stored. The same name and helper are what credential resolution (#461) uses. Without the key the dashboard refuses to save one. Next.js inlines this name, so set it for the build as well as runtime. |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | runtime | The Armada GitHub App, for Connect GitHub in Settings. Without them Settings says GitHub is not configured. |
-| `GITHUB_APP_SLUG` | runtime | The App's slug. Connect sends the person to install it when they have no installation, and Settings links to it. |
-| `GITHUB_APP_ID` | runtime | Optional numeric GitHub App ID. When set with the slug, an installation must match both. |
-
-- **Sign-in.** Email: Supabase sends a link and a one-time code (the dashboard accepts either; the template decides what the email carries). GitHub and Google: enable the provider in Supabase Auth, then list it in `NEXT_PUBLIC_AUTH_PROVIDERS`. Add `<origin>/auth/callback` (production and previews) to the redirect URLs of the Supabase project.
-- **Credentials.** `encryptSecret` / `decryptSecret` in `@armada/core` seal a value under `ARMADA_ENCRYPTION_KEY`. `value_enc` holds `iv (12 bytes) || ciphertext || tag` (`toBytea` is the PostgREST form). Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (the caller's own, then the org's) is `resolveCredentials` in the launcher.
-- **GitHub.** Settings has Connect GitHub: the dashboard sends the person to the GitHub App's authorization page (`/github/connect`, with a state cookie). `/github/callback` stores the sealed refresh token as them, and if they have not installed the App it sends them to install it first. An install that starts on GitHub itself is saved when this browser is signed in. Create the App with [docs/github-app.md](docs/github-app.md).
-- **Logs, stop, send.** boat.dev keys stay on the server, so the dashboard asks the Armada MCP server (`logs`, `stop`, `send` tools, over Streamable HTTP, with the user's session token). The logs panel polls every two seconds from the last cursor while the sandbox is active.
-- **Writes row level security cannot express** (creating an org, adding a member by email, changing a golden's visibility) go through the functions of `supabase/migrations/20261108150000_dashboard_functions.sql`, which check `auth.uid()` themselves. That migration follows the OAuth and golden-sandbox migrations: it does not grant the OAuth tables, and replacing `goldens_guard` still allows `boat_sandbox_id` to change.
+**3. Store your model credentials.** Your own credentials win over the organization's. Values are encrypted and never shown again.
 
 ```sh
-cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in
-bun run dashboard          # next dev
-bun run dashboard:build    # next build
-bun run e2e                # Playwright against a mock of Supabase and the Armada server
+printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
+armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
+armada creds list
 ```
 
-Vercel: project root directory `apps/dashboard` (`vercel.json` there sets the Next.js framework and the Bun install and build). `bunx playwright install chromium` once before the first `bun run e2e`.
+**4. Connect GitHub.** Goldens are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
-## CI
+```sh
+armada github connect
+```
 
-`.github/workflows/ci.yml` runs on every pull request and on `main`:
+**5. Build a golden.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal, and `--private` to keep it to yourself.
 
-- **Lint, typecheck and test**: `bun run lint`, `bun run typecheck`, `bun run test`.
-- **Dashboard e2e**: `bun run e2e` (Playwright, Chromium) on a production build of the dashboard.
-- **Binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64)**: each binary is compiled with `bun build --compile` on a runner of its own platform, checked with `armada --version` there, staged as npm packages (`scripts/npm.ts`), packed with `npm pack`, installed with npm and Bun and run (`scripts/npm-smoke.sh`), and uploaded as the `armada-<target>` artifact of the run.
+```sh
+armada golden create web --repo https://github.com/acme/web@main --init "bun install" --org acme
+armada golden list
+```
 
-Release Please opens the version PR from conventional commits. Merging it runs `.github/workflows/release.yml` to publish `@the-vibe-company/armada` and its platform packages to npm with provenance ([release and recovery guide](docs/releasing.md)).
+A long build keeps running on the server: `armada golden build-status <job-id>` reports it.
+
+**6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt.
+
+```sh
+armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
+  "Find why the checkout test is flaky and fix it"
+```
+
+**7. Drive it.**
+
+```sh
+armada logs <sandbox-id> --follow
+armada steer <sandbox-id> "Keep the public API unchanged"
+armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh
+armada stop <sandbox-id>                     # the machine goes; the disk and conversation stay
+armada send <sandbox-id> "Push the branch"   # resumes the stopped sandbox
+```
+
+`armada --help` lists every command. Without flags, Claude Code runs `claude-opus-5-5` and Codex `gpt-6.1-sol`, both at `medium` effort.
+
+## Bring your MCP servers
+
+Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line.
+
+```sh
+armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
+armada mcp connect <connection-id>
+armada launch web --agent codex --connections <connection-id> "Update the API reference"
+armada mcp sandbox-connections <sandbox-id>
+```
+
+Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-mcp-shortcuts.md).
+
+## Drive Armada from your own agent
+
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own orchestrator, and that agent can list and build goldens, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`.
+
+MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
+
+```sh
+armada token create --org acme --label ci   # printed once; Armada keeps only its hash
+```
+
+Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+
+## Teams
+
+| | Admin | Member |
+| --- | :---: | :---: |
+| Launch, watch and stop the organization's agents | ✓ | ✓ |
+| Create private goldens and private sandboxes | ✓ | ✓ |
+| Change organization goldens, members and provider keys | ✓ | |
+
+A private golden or sandbox is visible only to its owner, not even to admins. Members are people who have signed in once; there are no pending invitations.
+
+## What Armada is not
+
+Armada is a launcher, not an orchestrator. It does not split work into tasks, read your issue tracker, review code or merge pull requests: point your own orchestrator at its MCP server for that. It does not host machines or models either; sandboxes and agents run, and are billed, on the provider and model accounts you connect.
+
+## Documentation
+
+| Read this | When you want to |
+| --- | --- |
+| [Production onboarding](docs/dave-onboarding.md) | Go from nothing to a running agent, CLI or MCP, step by step |
+| [Golden creation](docs/golden-create.md) | Understand the secure build, its security model and its API |
+| [GitHub identity in sandboxes](docs/github-app.md) | Know what `git` and `gh` can do as you, and set up the GitHub App |
+| [Run, deploy and develop](docs/self-hosting.md) | Run `armada-server` and the dashboard yourself, or work on this repository |
+| [Releasing](docs/releasing.md) | Publish the CLI to npm |
+| [Specification](https://github.com/The-Vibe-Company/armada/issues/455) | Read the v2 design |
 
 ## Armada v1
 
-This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queue, dashboard, desktop app, the `@the-vibe-company/armada` npm package up to 0.2.73). It is archived:
-
-- Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final); its release tags (`v0.1.0` to `v0.2.73`) and the whole history stay in this repository.
-- Its code is not on `main` anymore. Pieces worth keeping (for example the Claude Code and Codex adapters) are brought over by hand, as v2 needs them: `git show armada-v1-final:<path>`.
-- v1 versions remain on npm as history. v2 replaces them under the same `@the-vibe-company/armada` package; installing its latest version upgrades the global CLI.
+This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queue, desktop app; npm versions up to 0.2.73). Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final), and its history and release tags stay here. v2 replaces it under the same `@the-vibe-company/armada` package: installing the latest version upgrades the global CLI.
 
 ## License
 
 [MIT](LICENSE)
-
-MCP-host CLI discovery defaults to email login. Set the server-only `ARMADA_AUTH_PROVIDERS=github,google` only for social providers enabled in Supabase. The dashboard uses `NEXT_PUBLIC_AUTH_PROVIDERS` for its own discovery document.

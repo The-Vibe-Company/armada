@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" role="img" aria-labelledby="t d">
+  <title id="t">Armada</title>
+  <desc id="d">Run a fleet of coding agents. See every move. Claude Code and Codex in Boat or Modal sandboxes, built from your repositories.</desc>
+  <defs>
+    <radialGradient id="glow" cx="0.18" cy="0.12" r="0.75">
+      <stop offset="0" stop-color="#b6f15a" stop-opacity="0.16"/>
+      <stop offset="0.45" stop-color="#b6f15a" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#b6f15a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="trail" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#b6f15a" stop-opacity="0"/>
+      <stop offset="1" stop-color="#b6f15a" stop-opacity="0.5"/>
+    </linearGradient>
+    <clipPath id="frame"><rect width="1280" height="460" rx="24"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="460" fill="#060709"/>
+    <rect width="1280" height="460" fill="url(#glow)"/>
+    <circle cx="919" cy="422" r="1.6" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="293" cy="419" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="1086" cy="338" r="0.8" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="495" cy="67" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="51" cy="296" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="990" cy="203" r="1.2" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="1186" cy="292" r="1.6" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="454" cy="239" r="1.6" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="979" cy="445" r="1" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="462" cy="202" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="204" cy="67" r="1" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="277" cy="253" r="0.8" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="611" cy="173" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="562" cy="97" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="42" cy="410" r="0.8" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="623" cy="386" r="0.8" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="916" cy="376" r="1.2" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="1166" cy="431" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="174" cy="443" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="874" cy="447" r="1.2" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="797" cy="95" r="1.6" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="255" cy="126" r="1" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="363" cy="375" r="0.8" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="949" cy="344" r="0.8" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="1155" cy="89" r="1" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="1057" cy="121" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="1193" cy="214" r="1.6" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="1091" cy="256" r="1" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="140" cy="451" r="1" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="1042" cy="43" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="65" cy="330" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="612" cy="417" r="1.6" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="1027" cy="174" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="191" cy="398" r="1" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="618" cy="436" r="1" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="1249" cy="92" r="0.8" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="217" cy="191" r="1.2" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="340" cy="75" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="170" cy="196" r="1.6" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="1203" cy="390" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="195" cy="409" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="1179" cy="200" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="598" cy="386" r="1.6" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="1201" cy="266" r="0.8" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="814" cy="112" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="662" cy="250" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="189" cy="381" r="1.6" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="554" cy="294" r="1" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="276" cy="270" r="1" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="864" cy="53" r="0.8" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="531" cy="29" r="1.2" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="726" cy="187" r="0.8" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="799" cy="450" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="301" cy="454" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="1114" cy="284" r="1.2" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="299" cy="76" r="1.6" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="664" cy="209" r="1.2" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="539" cy="362" r="1.6" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="699" cy="48" r="1" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="365" cy="226" r="0.8" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="868" cy="69" r="1.6" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="1249" cy="287" r="1" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="123" cy="347" r="1.2" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="1023" cy="332" r="1" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="840" cy="457" r="0.8" fill="#f2f1ee" fill-opacity="0.18"/>
+    <circle cx="1166" cy="75" r="1.2" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="731" cy="323" r="1.6" fill="#f2f1ee" fill-opacity="0.28"/>
+    <circle cx="422" cy="345" r="1.2" fill="#f2f1ee" fill-opacity="0.4"/>
+    <circle cx="1116" cy="456" r="1.6" fill="#f2f1ee" fill-opacity="0.55"/>
+    <circle cx="215" cy="42" r="0.8" fill="#f2f1ee" fill-opacity="0.18"/>
+    <path d="M720 460 C 880 410, 1000 340, 1110 296" fill="none" stroke="url(#trail)" stroke-width="1.5" stroke-dasharray="2 7"/>
+    <g transform="translate(1096 250) scale(1.9)" opacity="0.9">
+      <path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"/>
+      <path d="M10 13L14 20H6Z" fill="#f2f1ee"/>
+      <path d="M22 13L26 20H18Z" fill="#f2f1ee"/>
+      <path d="M4 21.5L8 28.5H0Z" fill="#f2f1ee" fill-opacity="0.45"/>
+      <path d="M28 21.5L32 28.5H24Z" fill="#f2f1ee" fill-opacity="0.45"/>
+    </g>
+    <g transform="translate(1176 330) scale(1.1)" opacity="0.55">
+      <path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"/>
+      <path d="M10 13L14 20H6Z" fill="#f2f1ee"/>
+      <path d="M22 13L26 20H18Z" fill="#f2f1ee"/>
+      <path d="M4 21.5L8 28.5H0Z" fill="#f2f1ee" fill-opacity="0.45"/>
+      <path d="M28 21.5L32 28.5H24Z" fill="#f2f1ee" fill-opacity="0.45"/>
+    </g>
+    <g transform="translate(1010 352) scale(1.0)" opacity="0.4">
+      <path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"/>
+      <path d="M10 13L14 20H6Z" fill="#f2f1ee"/>
+      <path d="M22 13L26 20H18Z" fill="#f2f1ee"/>
+      <path d="M4 21.5L8 28.5H0Z" fill="#f2f1ee" fill-opacity="0.45"/>
+      <path d="M28 21.5L32 28.5H24Z" fill="#f2f1ee" fill-opacity="0.45"/>
+    </g>
+    <g transform="translate(1214 236) scale(0.7)" opacity="0.35">
+      <path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"/>
+      <path d="M10 13L14 20H6Z" fill="#f2f1ee"/>
+      <path d="M22 13L26 20H18Z" fill="#f2f1ee"/>
+      <path d="M4 21.5L8 28.5H0Z" fill="#f2f1ee" fill-opacity="0.45"/>
+      <path d="M28 21.5L32 28.5H24Z" fill="#f2f1ee" fill-opacity="0.45"/>
+    </g>
+  </g>
+  <rect x="0.5" y="0.5" width="1279" height="459" rx="23.5" fill="none" stroke="#24262b"/>
+  <g transform="translate(72 70) scale(2.6)" opacity="1.0">
+      <path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"/>
+      <path d="M10 13L14 20H6Z" fill="#f2f1ee"/>
+      <path d="M22 13L26 20H18Z" fill="#f2f1ee"/>
+      <path d="M4 21.5L8 28.5H0Z" fill="#f2f1ee" fill-opacity="0.45"/>
+      <path d="M28 21.5L32 28.5H24Z" fill="#f2f1ee" fill-opacity="0.45"/>
+    </g>
+  <text x="166" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="-1.5" fill="#f2f1ee">Armada</text>
+  <text x="74" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="50" font-weight="700" letter-spacing="-1.2" fill="#f2f1ee">Run a fleet of coding agents.</text>
+  <text x="74" y="314" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="50" font-weight="700" letter-spacing="-1.2" fill="#b6f15a">See every move.</text>
+  <text x="76" y="372" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" fill="#b6b6bd">Claude Code and Codex in Boat or Modal sandboxes, built from your repositories.</text>
+  <text x="76" y="406" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#8e8e97">web  ·  cli  ·  mcp</text>
+  <text x="828" y="70" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" letter-spacing="2" fill="#8e8e97">SANDBOXES</text>
+  <g transform="translate(828 86)">
+      <rect width="388" height="40" rx="10" fill="#14151a" stroke="#24262b"/>
+      <circle cx="20" cy="20" r="5" fill="#b6f15a"/>
+      <text x="36" y="26" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#f2f1ee">claude-opus-5-5</text>
+      <text x="236" y="26" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#8e8e97">high</text>
+      <text x="372" y="26" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#b6f15a">running</text>
+    </g><g transform="translate(828 136)">
+      <rect width="388" height="40" rx="10" fill="#14151a" stroke="#24262b"/>
+      <circle cx="20" cy="20" r="5" fill="#60aaf3"/>
+      <text x="36" y="26" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#f2f1ee">gpt-6.1-sol</text>
+      <text x="236" y="26" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#8e8e97">medium</text>
+      <text x="372" y="26" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#60aaf3">ready</text>
+    </g><g transform="translate(828 186)">
+      <rect width="388" height="40" rx="10" fill="#14151a" stroke="#24262b"/>
+      <circle cx="20" cy="20" r="5" fill="#8e8e97"/>
+      <text x="36" y="26" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#f2f1ee">claude-sonnet-5-5</text>
+      <text x="236" y="26" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="16" fill="#8e8e97">low</text>
+      <text x="372" y="26" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#8e8e97">stopped</text>
+    </g>
+</svg>
