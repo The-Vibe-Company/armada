@@ -38,7 +38,7 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
         where l.orchestrator_id=(select candidate.orchestrator_id from public.orchestrator_lifecycle candidate
         join public.orchestrators o on o.id=candidate.orchestrator_id
         join public.sandboxes s on s.id=o.sandbox_id
-        where (o.state='ready' or (o.state='blocked' and candidate.reason='wait_cap_exhausted') or (o.state in ('stopping','blocked') and candidate.stop_operation_id is not null)) and candidate.reconcile_after<=$2
+        where (o.state in ('ready','blocked') or (o.state='stopping' and candidate.stop_operation_id is not null)) and candidate.reconcile_after<=$2
         and (candidate.lease_until is null or candidate.lease_until<$2)
         order by candidate.reconcile_after for update of candidate skip locked limit 1)
         returning l.orchestrator_id,l.stop_operation_id,l.stop_reason,l.stop_physical_generation,
@@ -180,7 +180,7 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
             and d.epoch=o.authority_epoch and d.revoked_at is null and d.acknowledged_at is not null) as epoch_expires_at
           from public.orchestrators o join public.sandboxes s on s.id=o.sandbox_id
           join public.orchestrator_lifecycle l on l.orchestrator_id=o.id
-          where o.id=$1 and (o.state='ready' or (o.state='blocked' and l.reason='wait_cap_exhausted')) and l.lease=$2 and l.lease_until>$3
+          where o.id=$1 and o.state in ('ready','blocked') and l.lease=$2 and l.lease_until>$3
           and s.id=$4 and s.provider_sandbox_id=$5 for update of o,s,l`,
             [machine.orchestratorId, lease, at, machine.sandboxId, machine.providerSandboxId],
           )
@@ -211,7 +211,11 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
         else if (new Date(current.expires_at).getTime() - at.getTime() <= 600_000) stop = "hard_ttl";
         else if (current.epoch_expires_at && new Date(current.epoch_expires_at).getTime() - at.getTime() <= 600_000)
           stop = "epoch_expiry";
-        else if (!blockers) {
+        else if (current.parent_state === "blocked" && current.lifecycle_reason !== "wait_cap_exhausted") {
+          // Retained failed compute still needs deadline/removal cleanup, never an idle inference.
+          state = "unknown";
+          code = current.lifecycle_reason;
+        } else if (!blockers) {
           state = "unknown";
           code = "work_observation_unknown";
         } else if (blockers.operations) {

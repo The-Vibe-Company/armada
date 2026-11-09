@@ -647,3 +647,30 @@ test("proven lost native state remains lost and blocked across unavailable or co
     await f.db.close();
   }
 });
+
+// An owner operation failure must not abandon retained compute or hide its failure reason.
+for (const cleanup of ["hard_ttl", "owner_removed"] as const) {
+  test(`blocked owner failure retains its reason and receives ${cleanup} cleanup`, async () => {
+    const f = await fixture();
+    try {
+      await f.db.query("update orchestrators set state='blocked' where id=$1", [f.id]);
+      await f.db.query("update orchestrator_runtime set blocked_reason='runtime_uncertain' where orchestrator_id=$1", [
+        f.id,
+      ]);
+      const detail = await new LifecycleRuntimeStore(f.sql, reserveOrchestratorOperation).read(
+        f.people.owner,
+        f.people.org,
+        f.id,
+      );
+      expect(detail.blockedReason).toBe("runtime_uncertain");
+      if (cleanup === "hard_ttl")
+        await f.db.query("update sandboxes set expires_at='2030-01-01T00:05:00Z' where id=$1", [f.parent.id]);
+      else await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+      expect(await f.worker.reconcileOne()).toBe(true);
+      expect(f.calls().stopCalls).toBe(1);
+      expect((await f.state())?.reason).toBe(`${cleanup}_stopped_native`);
+    } finally {
+      await f.db.close();
+    }
+  });
+}

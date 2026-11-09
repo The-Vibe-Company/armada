@@ -109,7 +109,7 @@ export class LifecycleRuntimeStore extends OrchestratorRuntimeStore {
       lastActivityAt: last.toISOString(),
       idleDeadline:
         row.observation_state === "quiescent" ? new Date(last.getTime() + row.idle_seconds * 1000).toISOString() : null,
-      blockedReason: identity.state === "blocked" ? row.reason : identity.blockedReason,
+      blockedReason: identity.state === "blocked" ? (identity.blockedReason ?? row.reason) : identity.blockedReason,
     };
   }
 }
