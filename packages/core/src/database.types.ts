@@ -1280,6 +1280,62 @@ export type Database = {
           },
         ];
       };
+      organization_invitations: {
+        Row: {
+          id: string;
+          org_id: string;
+          email: string;
+          role: Database["public"]["Enums"]["member_role"];
+          hash: string;
+          expires_at: string;
+          status: string;
+          delivery: string;
+          token_enc: string | null;
+          attempts: number;
+          lease_until: string | null;
+          updated_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          email: string;
+          role: Database["public"]["Enums"]["member_role"];
+          hash: string;
+          expires_at: string;
+          status?: string;
+          delivery: string;
+          token_enc?: string | null;
+          attempts?: number;
+          lease_until?: string | null;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          email?: string;
+          role?: Database["public"]["Enums"]["member_role"];
+          hash?: string;
+          expires_at?: string;
+          status?: string;
+          delivery?: string;
+          token_enc?: string | null;
+          attempts?: number;
+          lease_until?: string | null;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "organization_invitations_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       orgs: {
         Row: {
           id: string;
@@ -1536,6 +1592,7 @@ export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
+export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

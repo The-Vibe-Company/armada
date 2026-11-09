@@ -143,7 +143,17 @@ Usage:
   armada account status|logout              Account identity / revoke current login session
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
                                            Browser authorization waits for real completion; --no-browser prints URL
+  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
+  armada org invitations list [--org <name|UUID>] [--json]
+  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
+                                           Admin invitation management; --org overrides org use selection.
+                                           Email sent means provider accepted, not confirmed inbox delivery.
+  armada org invitations accept [--file <path>] [--json]
+                                           Token from stdin/file only; log in personally with the matching
+                                           verified email first. Opening a link never joins an organization.
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
+                                           Direct membership administration; add requires an existing account,
+                                           grants membership immediately and does not send an invitation.
   armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds set <kind> [--org <name>] [--file <path>]
