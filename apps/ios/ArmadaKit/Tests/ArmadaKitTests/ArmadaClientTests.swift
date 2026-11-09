@@ -241,7 +241,7 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value == "opaque+/=?&prior")
 }
 
-@Test func preEffectRejectionAllowsExplicitRepairButAmbiguityCannotBeDiscarded() async throws {
+@Test func structuredInitialRejectionAllowsExplicitRepair() async throws {
     let transport = ScriptedTransport([
         .init(status: 200, body: login),
         .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
