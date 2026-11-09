@@ -6,8 +6,10 @@ if [[ "$(uname -s)" != Darwin ]]; then
   exit 1
 fi
 # Never substitute stubs for the real #690 package or #691 application.
-test -f ArmadaKit/Package.swift
-test -d Armada
+if [[ ! -f ArmadaKit/Package.swift || ! -d Armada ]]; then
+  echo "Missing real ArmadaKit package (#690) or Armada application (#691); integrate both before native verification." >&2
+  exit 1
+fi
 xcodebuild -version
 swift --version
 xcodegen --version
