@@ -19,19 +19,14 @@ export function isSetupProvider(value: unknown): value is SandboxProviderId {
   return value === "boat" || value === "modal";
 }
 
-export const SETUP_PROVIDER_INFO: Record<
-  SandboxProviderId,
-  { label: string; summary: string; docs: string; docsLabel: string }
-> = {
+export const SETUP_PROVIDER_INFO: Record<SandboxProviderId, { label: string; docs: string; docsLabel: string }> = {
   boat: {
     label: "Boat",
-    summary: "One API key",
     docs: "https://docs.boat.dev",
     docsLabel: "Get a Boat API key",
   },
   modal: {
     label: "Modal",
-    summary: "A token and its secret",
     docs: "https://modal.com/docs/reference/cli/token",
     docsLabel: "Get a Modal token",
   },

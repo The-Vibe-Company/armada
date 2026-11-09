@@ -46,7 +46,7 @@ test("a new org connects its first provider in Settings; new work waits for it; 
   await page.getByLabel("Name").fill("Side Project");
   await page.getByRole("button", { name: "Create org" }).click();
   await expect(page).toHaveURL(/\/settings$/);
-  await expect(providers(page)).toContainText("Where Side Project builds goldens and runs sandboxes.");
+  await expect(page.getByRole("heading", { name: "Sandbox providers for Side Project" })).toBeVisible();
   await expect(row(page, "boat")).toHaveAttribute("data-provider-state", "not-connected");
   await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "not-connected");
   const org = String((await post("/__test/state")).providerCalls.at(-1).body.org);

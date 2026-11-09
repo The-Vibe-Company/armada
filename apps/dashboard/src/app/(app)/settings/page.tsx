@@ -108,7 +108,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 <p className="text-sm font-medium">
                   {revoked ? `GitHub access for @${connection?.login} was revoked or expired.` : "Not connected."}
                 </p>
-                <p className="text-xs text-muted-foreground">Sandboxes have no GitHub identity.</p>
+                {revoked && <p className="text-xs text-muted-foreground">Sandboxes have no GitHub identity.</p>}
               </div>
               {configured && (
                 <Button asChild>
@@ -188,8 +188,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 </a>
                 .
               </>
-            ) : null}{" "}
-            Sandbox GitHub tokens last 8 hours.
+            ) : null}
           </p>
         </CardContent>
       </Card>
@@ -217,18 +216,9 @@ function SandboxProviders({
       <CardHeader>
         <CardTitle id="sandbox-providers-title" role="heading" aria-level={2} className="flex items-center gap-2">
           <ServerIcon className="size-4" />
-          Sandbox providers
+          {selected ? `Sandbox providers for ${selected.org.name}` : "Sandbox providers"}
         </CardTitle>
-        <CardDescription>
-          {selected ? (
-            <>
-              Where <span className="font-medium text-foreground">{selected.org.name}</span> builds goldens and runs
-              sandboxes. {isAdmin ? "You manage them as an admin." : "Only an admin changes them."}
-            </>
-          ) : (
-            "Providers belong to an organization."
-          )}
-        </CardDescription>
+        {selected && !isAdmin && <CardDescription>Only an admin changes them.</CardDescription>}
       </CardHeader>
       <CardContent className="space-y-4">
         {!selected || !setup ? (
@@ -293,11 +283,9 @@ function SandboxProviders({
               </p>
             )}
             <p className="text-xs text-muted-foreground">
-              Personal Boat and Modal keys stay in{" "}
               <Link className="underline underline-offset-4" href="/credentials">
-                Credentials
+                Personal keys in Credentials
               </Link>
-              ; they never connect a provider for the organization.
             </p>
           </>
         )}

@@ -91,7 +91,6 @@ export function ProviderConnection({
               {STATE_LABEL[state]}
             </Badge>
           </p>
-          <p className="text-xs text-muted-foreground">{info.summary}</p>
         </div>
         {manageable && !open && (
           <div className="flex flex-wrap items-center gap-2">
