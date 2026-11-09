@@ -1244,6 +1244,7 @@ export type Database = {
         Row: {
           id: number;
           sandbox_id: string;
+          admission_token: string;
           physical_id: string;
           generation: string;
           boot_id: string;
@@ -1254,6 +1255,7 @@ export type Database = {
         Insert: {
           id: number;
           sandbox_id: string;
+          admission_token: string;
           physical_id: string;
           generation: string;
           boot_id: string;
@@ -1264,6 +1266,7 @@ export type Database = {
         Update: {
           id?: number;
           sandbox_id?: string;
+          admission_token?: string;
           physical_id?: string;
           generation?: string;
           boot_id?: string;
@@ -1318,6 +1321,9 @@ export type Database = {
           reconcile_lease_until: string | null;
           machine_size: Json | null;
           resource_project: Json | null;
+          resource_sampling_token: string | null;
+          resource_sampling_after: string | null;
+          resource_sampling_generation: number | null;
         };
         Insert: {
           id?: string;
@@ -1355,6 +1361,9 @@ export type Database = {
           reconcile_lease_until?: string | null;
           machine_size?: Json | null;
           resource_project?: Json | null;
+          resource_sampling_token?: string | null;
+          resource_sampling_after?: string | null;
+          resource_sampling_generation?: number | null;
         };
         Update: {
           id?: string;
@@ -1392,6 +1401,9 @@ export type Database = {
           reconcile_lease_until?: string | null;
           machine_size?: Json | null;
           resource_project?: Json | null;
+          resource_sampling_token?: string | null;
+          resource_sampling_after?: string | null;
+          resource_sampling_generation?: number | null;
         };
         Relationships: [
           {

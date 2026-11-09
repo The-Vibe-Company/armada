@@ -32,7 +32,8 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     if (!row) throw Error("missing launch");
     expect(row.resource_project).toMatchObject({ version: 1, dir: "web", url: "https://github.com/example/web.git" });
     let collected = 0,
-      fail = false;
+      fail = false,
+      partial = false;
     // Synthetic transport counters only, never claimed as real provider utilization.
     server.boat.provider.observeResources = async (providerSandboxId): Promise<ProviderResourceObservation> => {
       if (fail) throw Error("collector unavailable");
@@ -50,13 +51,13 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
           bootId: "00000000-0000-0000-0000-000000000001",
           uptimeMs: collected * 10000,
           captureDurationMs: 10,
-          cpuLogicalCpus: 2,
+          cpuLogicalCpus: partial ? null : 2,
           cpuTotalTicks: collected * 1000,
           cpuBusyTicks: collected * 100,
           cpuStealTicks: 0,
           memoryTotalBytes: 4 * 1024 ** 3,
           memoryAvailableBytes: 3 * 1024 ** 3,
-          cpuPressureSomeUsec: 0,
+          cpuPressureSomeUsec: (collected - 1) * 1000000,
           oomKills: 0,
         },
       };
@@ -98,6 +99,9 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     expect(same.data.advice).toEqual(body.advice);
     expect(collected).toBe(1);
     server.clock.now = new Date(server.clock.now.getTime() + 10000);
+    const concurrent = await Promise.all([http(), http()]);
+    expect(concurrent.map((r) => r.status)).toEqual([200, 200]);
+    expect(collected).toBe(2);
     const second = (await (await http()).json()) as ResourceAdviceResponse;
     expect(second.advice.sampled).toMatchObject({
       points: 2,
@@ -107,6 +111,7 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
       oomKills: 0,
     });
     expect(second.advice.observations.cpuAverageBusyCores).toBeNull();
+    expect(second.advice.reason).toBe("resource_pressure");
     await expect(server.db.query("update sandboxes set resource_project=null where id=$1", [id])).rejects.toThrow(
       "immutable",
     );
@@ -119,6 +124,9 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     const denied = await http(await server.token(server.people.admin));
     expect(denied.status).toBe(404);
     expect(collected).toBe(2);
+    partial = true;
+    server.clock.now = new Date(server.clock.now.getTime() + 10000);
+    expect((await http()).status).toBe(200);
     fail = true;
     server.clock.now = new Date(server.clock.now.getTime() + 10000);
     expect((await http()).status).toBe(200);

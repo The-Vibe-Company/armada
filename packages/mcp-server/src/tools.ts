@@ -750,23 +750,25 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const found = await visible(args.id);
       const store = data.resourceObservations;
       if (!store) throw new ToolError("unavailable", "Resource observation persistence is unavailable.");
-      const before = await store.history(found.id, context.now());
-      const latest = before.targetObservation;
-      if (
-        found.resourceProject &&
-        found.machineSize?.capacity &&
-        ["ready", "running"].includes(found.status) &&
-        (!latest || context.now().getTime() - Date.parse(latest.at) >= 10000)
-      ) {
+      const admission =
+        found.resourceProject && found.machineSize?.capacity && ["ready", "running"].includes(found.status)
+          ? await store.claim(found.id, context.now())
+          : null;
+      if (admission) {
         let observation = null;
         try {
           observation = (await (await context.provider(found)).observeResources?.(found.providerSandboxId)) ?? null;
         } catch {
           /* Collection failure is unavailable; never ingest raw provider diagnostics. */
         }
-        if (observation && validateProviderResourceObservation(observation)) {
+        if (
+          observation &&
+          validateProviderResourceObservation(observation) &&
+          observation.reading.cpuLogicalCpus !== null &&
+          observation.reading.memoryTotalBytes !== null
+        ) {
           try {
-            await store.append(found.id, observation, context.now());
+            await store.append(found.id, observation, context.now(), admission);
           } catch (error) {
             if (!(error instanceof GoldenError && error.code === "conflict")) throw error;
           }

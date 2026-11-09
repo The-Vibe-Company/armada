@@ -151,7 +151,9 @@ export function summarizeResourceHistory(history: ResourceHistory, now: Date): R
         ? "unknown_capacity"
         : !points
           ? "collection_unavailable"
-          : "insufficient_coverage",
+          : (oom ?? 0) > 0 || (pressureSeconds > 0 && pressureUsec / (pressureSeconds * 1000000) > 0.01)
+            ? "resource_pressure"
+            : "insufficient_coverage",
     recommendedSize: null,
   };
 }

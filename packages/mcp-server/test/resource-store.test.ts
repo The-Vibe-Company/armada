@@ -107,39 +107,55 @@ async function fixture() {
     },
     limitations: ["sampled-memory-not-peak", "hypervisor-throttling-unavailable"],
   });
-  return { org, owner, other, golden, caller, store, sandbox, reading };
+  async function admit(id: string, at: Date) {
+    const token = await store.claim(id, at);
+    if (!token) throw Error("Expected resource sampling admission.");
+    return token;
+  }
+  return { org, owner, other, golden, caller, store, sandbox, reading, admit };
 }
 
-test("observations persist once, reject counter chronology/capacity conflicts and fence physical generations", async () => {
+test("observations persist once per admission and reject chronology, capacity and physical generation conflicts", async () => {
   const f = await fixture(),
     id = await f.sandbox(),
     first = f.reading(id);
-  await f.store.append(id, first, now);
-  await f.store.append(id, first, now);
+  const token = await f.admit(id, now);
+  await f.store.append(id, first, now, token);
+  await f.store.append(id, first, now, token);
   expect((await f.store.history(id, now)).sessions[0]?.observations).toHaveLength(1);
   await expect(
-    f.store.append(id, { ...first, reading: { ...first.reading, cpuBusyTicks: 201 } }, now),
+    f.store.append(id, { ...first, reading: { ...first.reading, cpuBusyTicks: 201 } }, now, token),
   ).rejects.toMatchObject({ code: "conflict" });
-  await expect(f.store.append(id, f.reading(id, 999), now)).rejects.toMatchObject({ code: "conflict" });
+  const next = new Date(now.getTime() + 10000),
+    nextToken = await f.admit(id, next);
+  await expect(f.store.append(id, f.reading(id, 999), next, nextToken)).rejects.toMatchObject({ code: "conflict" });
   await expect(
     f.store.append(
       id,
       { ...f.reading(id, 2000), reading: { ...first.reading, uptimeMs: 2000, cpuLogicalCpus: 8 } },
-      now,
+      next,
+      nextToken,
     ),
   ).rejects.toMatchObject({ code: "conflict" });
-  await f.store.append(id, f.reading(id, 500, "boot-2"), now);
-  await expect(f.store.append(id, f.reading(id, 3000), now)).rejects.toMatchObject({ code: "conflict" });
-  const history = await f.store.history(id, now);
+  await f.store.append(id, f.reading(id, 500, "boot-2"), next, nextToken);
+  const third = new Date(now.getTime() + 20000),
+    thirdToken = await f.admit(id, third);
+  await expect(f.store.append(id, f.reading(id, 3000), third, thirdToken)).rejects.toMatchObject({ code: "conflict" });
+  const history = await f.store.history(id, third);
   expect(history.sessions[0]?.observations.map((o) => [o.activity, o.observation.generation])).toEqual([
     ["unknown", "boot-1"],
     ["unknown", "boot-2"],
   ]);
   await expect(
-    f.store.append(id, { ...f.reading(id, 600, "boot-2"), providerSandboxId: "other-provider-id" }, now),
+    f.store.append(id, { ...f.reading(id, 600, "boot-2"), providerSandboxId: "other-provider-id" }, third, thirdToken),
   ).rejects.toMatchObject({ code: "conflict" });
   await expect(
-    f.store.append(id, { ...f.reading(id, 600, "boot-2"), runtimeProvenance: "modal-explicit-vm-v1" }, now),
+    f.store.append(
+      id,
+      { ...f.reading(id, 600, "boot-2"), runtimeProvenance: "modal-explicit-vm-v1" },
+      third,
+      thirdToken,
+    ),
   ).rejects.toMatchObject({ code: "conflict" });
 });
 
@@ -177,10 +193,16 @@ test("live membership and private owner visibility apply even under privileged S
     privateId = await f.sandbox({ visibility: "private" });
   const other = createResourceStore(sql, { userId: f.other, orgs: [{ orgId: f.org, role: "admin" }], via: "service" });
   await expect(other.history(privateId, now)).rejects.toMatchObject({ code: "not_found" });
-  await expect(other.append(privateId, f.reading(privateId), now)).rejects.toMatchObject({ code: "not_found" });
+  await expect(other.claim(privateId, now)).rejects.toMatchObject({ code: "not_found" });
+  await expect(other.append(privateId, f.reading(privateId), now, crypto.randomUUID())).rejects.toMatchObject({
+    code: "not_found",
+  });
   await db.query("delete from public.members where org_id=$1 and user_id=$2", [f.org, f.owner]);
   await expect(f.store.history(privateId, now)).rejects.toMatchObject({ code: "not_found" });
-  await expect(f.store.append(privateId, f.reading(privateId), now)).rejects.toMatchObject({ code: "not_found" });
+  await expect(f.store.claim(privateId, now)).rejects.toMatchObject({ code: "not_found" });
+  await expect(f.store.append(privateId, f.reading(privateId), now, crypto.randomUUID())).rejects.toMatchObject({
+    code: "not_found",
+  });
   const permissions = await db.query<{
     selectable: boolean;
     insertable: boolean;
@@ -194,13 +216,13 @@ test("retention prunes elapsed and excess samples while malformed payloads canno
     id = await f.sandbox();
   const seed = f.reading(id);
   await db.query(
-    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation)
-    select $1,$2,$3,$4::uuid,i,$5::timestamptz,$6::jsonb from generate_series(1,721) i`,
+    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_token)
+    select $1,$2,$3,$4::uuid,i,$5::timestamptz,$6::jsonb,gen_random_uuid() from generate_series(1,721) i`,
     [id, seed.physicalId, seed.generation, seed.reading.bootId, now.toISOString(), JSON.stringify(seed)],
   );
   await db.query(
-    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation)
-    values($1,$2,$3,$4::uuid,722,$5::timestamptz-interval '15 days',$6::jsonb)`,
+    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_token)
+    values($1,$2,$3,$4::uuid,722,$5::timestamptz-interval '15 days',$6::jsonb,gen_random_uuid())`,
     [
       id,
       seed.physicalId,
@@ -210,14 +232,15 @@ test("retention prunes elapsed and excess samples while malformed payloads canno
       JSON.stringify({ ...seed, reading: { ...seed.reading, uptimeMs: 722 } }),
     ],
   );
-  await f.store.append(id, f.reading(id, 1000), now);
+  const token = await f.admit(id, now);
+  await f.store.append(id, f.reading(id, 1000), now, token);
   const rows = await db.query<{ count: number; old: number }>(
     `select count(*)::int as count,count(*) filter(where observed_at<$2::timestamptz-interval '14 days')::int as old from public.resource_observations where sandbox_id=$1`,
     [id, now.toISOString()],
   );
   expect(rows.rows[0]).toEqual({ count: 720, old: 0 });
   const invalid = { ...f.reading(id, 2000), reading: { ...seed.reading, uptimeMs: 2000, cpuBusyTicks: -1 } };
-  await expect(f.store.append(id, invalid, now)).rejects.toMatchObject({ code: "invalid_request" });
+  await expect(f.store.append(id, invalid, now, token)).rejects.toMatchObject({ code: "invalid_request" });
   expect((await f.store.history(id, now)).sessions[0]?.observations).toHaveLength(720);
   await pruneResourceObservations(sql, new Date(now.getTime() + 15 * 86400000));
   const expired = await db.query<{ count: number }>(
@@ -230,14 +253,18 @@ test("retention prunes elapsed and excess samples while malformed payloads canno
 test("unknown launch/capacity and arbitrary extra transport fields never become evidence", async () => {
   const f = await fixture();
   const unknown = await f.sandbox({ project: null });
-  await expect(f.store.append(unknown, f.reading(unknown), now)).rejects.toMatchObject({ code: "conflict" });
+  expect(await f.store.claim(unknown, now)).toBeNull();
+  await expect(f.store.append(unknown, f.reading(unknown), now, crypto.randomUUID())).rejects.toMatchObject({
+    code: "conflict",
+  });
   const id = await f.sandbox();
-  const raw = f.reading(id);
+  const raw = f.reading(id),
+    token = await f.admit(id, now);
   await expect(
-    f.store.append(id, { ...raw, reading: { ...raw.reading, cpuLogicalCpus: null } }, now),
+    f.store.append(id, { ...raw, reading: { ...raw.reading, cpuLogicalCpus: null } }, now, token),
   ).rejects.toMatchObject({ code: "invalid_request" });
   await expect(
-    f.store.append(id, { ...raw, arbitrary: "must not ingest" } as ProviderResourceObservation, now),
+    f.store.append(id, { ...raw, arbitrary: "must not ingest" } as ProviderResourceObservation, now, token),
   ).rejects.toMatchObject({ code: "invalid_request" });
   expect((await f.store.history(id, now)).sessions[0]?.observations).toHaveLength(0);
 });
@@ -248,24 +275,80 @@ test("aggregation excludes actual-capacity mismatches, resets, boot crossings, g
     id = await f.sandbox(),
     other = await f.sandbox();
   const base = f.reading(id);
-  await f.store.append(id, base, now);
+  await f.store.append(id, base, now, await f.admit(id, now));
   const different = f.reading(other);
   different.reading.cpuLogicalCpus = 8;
-  await f.store.append(other, different, now);
+  await f.store.append(other, different, now, await f.admit(other, now));
   for (const change of [
     { uptimeMs: 11000, cpuTotalTicks: 900, cpuBusyTicks: 100 },
     { uptimeMs: 41001, cpuTotalTicks: 2000, cpuBusyTicks: 400 },
   ]) {
     const observation = { ...base, reading: { ...base.reading, ...change } };
-    await f.store.append(id, observation, new Date(now.getTime() + change.uptimeMs));
+    const at = new Date(now.getTime() + change.uptimeMs);
+    await f.store.append(id, observation, at, await f.admit(id, at));
   }
   const restored = f.reading(id, 1000, "boot-2");
   restored.reading.bootId = "00000000-0000-0000-0000-000000000002";
-  await f.store.append(id, restored, new Date(now.getTime() + 50000));
+  const restoredAt = new Date(now.getTime() + 52000);
+  await f.store.append(id, restored, restoredAt, await f.admit(id, restoredAt));
   const history = await f.store.history(id, new Date(now.getTime() + 60000));
   const advice = summarizeResourceHistory(history, new Date(now.getTime() + 60000));
   expect(advice.sampled).toMatchObject({ points: 4, intervals: 0, allActivityCpuAverageBusyCores: null });
   expect(advice.window).toMatchObject({ considered: 2, sufficient: 0 });
   expect(advice.recommendedSize).toBeNull();
   expect(summarizeResourceHistory(history, new Date(now.getTime() + 8 * 86400000)).sampled.points).toBe(0);
+});
+
+test("sampling admission is atomic, expires, and fences delayed unseen generations and lifecycle changes", async () => {
+  const f = await fixture(),
+    id = await f.sandbox();
+  const concurrent = await Promise.all([f.store.claim(id, now), f.store.claim(id, now)]);
+  expect(concurrent.filter((token) => token !== null)).toHaveLength(1);
+  const oldToken = concurrent.find((token) => token !== null);
+  if (!oldToken) throw Error("Expected one atomic admission.");
+  const next = new Date(now.getTime() + 10000),
+    newToken = await f.admit(id, next);
+  // Old generation was never persisted: only the admission fence can reject its delayed response.
+  await f.store.append(id, f.reading(id, 1000, "new-opaque-generation"), next, newToken);
+  await expect(
+    f.store.append(id, f.reading(id, 9000, "unseen-old-generation"), new Date(now.getTime() + 11000), oldToken),
+  ).rejects.toMatchObject({ code: "conflict" });
+  const third = new Date(now.getTime() + 20000),
+    thirdToken = await f.admit(id, third);
+  await f.store.append(id, f.reading(id, 2000, "new-opaque-generation"), third, thirdToken);
+  const changedAt = new Date(now.getTime() + 30000),
+    changedToken = await f.admit(id, changedAt);
+  await db.query("update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+  await expect(
+    f.store.append(id, f.reading(id, 3000, "new-opaque-generation"), changedAt, changedToken),
+  ).rejects.toMatchObject({ code: "conflict" });
+  const expiredAt = new Date(now.getTime() + 40000),
+    expiringToken = await f.admit(id, expiredAt);
+  await expect(
+    f.store.append(id, f.reading(id, 4000, "new-opaque-generation"), new Date(now.getTime() + 50000), expiringToken),
+  ).rejects.toMatchObject({ code: "conflict" });
+  const history = await f.store.history(id, new Date(now.getTime() + 60000));
+  expect(history.sessions[0]?.observations.map((o) => o.observation.generation)).toEqual([
+    "new-opaque-generation",
+    "new-opaque-generation",
+  ]);
+  expect(history.sessions[0]?.observations.map((o) => o.observation.reading.uptimeMs)).toEqual([1000, 2000]);
+});
+
+test("sampling does not admit or persist while a lifecycle operation owns the sandbox", async () => {
+  const f = await fixture(),
+    id = await f.sandbox();
+  await db.query("update public.sandboxes set activity_until=$2::timestamptz where id=$1", [
+    id,
+    new Date(now.getTime() + 10000).toISOString(),
+  ]);
+  expect(await f.store.claim(id, now)).toBeNull();
+  await db.query("update public.sandboxes set activity_until=null where id=$1", [id]);
+  const token = await f.admit(id, now);
+  await db.query("update public.sandboxes set reconcile_lease_until=$2::timestamptz where id=$1", [
+    id,
+    new Date(now.getTime() + 10000).toISOString(),
+  ]);
+  await expect(f.store.append(id, f.reading(id), now, token)).rejects.toMatchObject({ code: "conflict" });
+  expect((await f.store.history(id, now)).sessions[0]?.observations).toHaveLength(0);
 });

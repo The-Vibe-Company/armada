@@ -88,3 +88,10 @@ artifact; the new read-only operation is additive to protocol v1. Existing rows
 and unknown runtimes stay unavailable. Rolling the server back leaves nullable
 columns/table intact and does not resize or stop VM launches already created.
 No production migrations or provider resources are modified by development.
+
+Sampling admission is an atomic server-owned ten-second token claim, not a
+read-then-check cooldown. It snapshots the lifecycle generation and refuses busy
+lifecycle leases. Persistence locks the sandbox, requires the current unexpired
+token and matching lifecycle generation, and permits only one point per token.
+An unseen delayed old incarnation cannot overwrite a newer admission. Missing
+raw CPU/memory capacity abstains without returning a user-input error.
