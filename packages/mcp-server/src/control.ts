@@ -588,6 +588,7 @@ async function dispatch(
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
+      "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
       "sandbox/stop": "stop",
       "sandbox/wait": "wait",
