@@ -27,6 +27,11 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  orchestrator_activity: "OrchestratorActivity",
+  orchestrator_child_operations: "OrchestratorChildOperation",
+  orchestrator_lifecycle: "OrchestratorLifecycle",
+  orchestrator_lifecycle_mutations: "OrchestratorLifecycleMutation",
+  orchestrator_waits: "OrchestratorWait",
   orchestrator_runtime: "OrchestratorRuntimeRow",
   orchestrator_runtime_create_keys: "OrchestratorRuntimeCreateKeyRow",
   orchestrator_runtime_events: "OrchestratorRuntimeEventRow",

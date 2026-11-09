@@ -1589,6 +1589,146 @@ export type Database = {
           },
         ];
       };
+      orchestrator_activity: {
+        Row: {
+          orchestrator_id: string;
+          sandbox_id: string;
+          parent_generation: number;
+          event_id: string;
+          prompt_id: string;
+          conversation_id: string;
+          observed_at: string;
+        };
+        Insert: {
+          orchestrator_id: string;
+          sandbox_id: string;
+          parent_generation: number;
+          event_id: string;
+          prompt_id: string;
+          conversation_id: string;
+          observed_at: string;
+        };
+        Update: {
+          orchestrator_id?: string;
+          sandbox_id?: string;
+          parent_generation?: number;
+          event_id?: string;
+          prompt_id?: string;
+          conversation_id?: string;
+          observed_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_activity_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_activity_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_child_operations: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          owner_id: string;
+          org_id: string;
+          parent_generation: number;
+          parent_epoch: number;
+          action: string;
+          target_id: string;
+          scope_target: string;
+          idempotency_key: string;
+          request_digest: string;
+          state: string;
+          dispatched_at: string | null;
+          reconcile_after: string;
+          reconcile_lease: string | null;
+          reconcile_until: string | null;
+          provider_sandbox_id: string | null;
+          error_code: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          owner_id: string;
+          org_id: string;
+          parent_generation: number;
+          parent_epoch: number;
+          action: string;
+          target_id: string;
+          scope_target: string;
+          idempotency_key: string;
+          request_digest: string;
+          state?: string;
+          dispatched_at?: string | null;
+          reconcile_after?: string;
+          reconcile_lease?: string | null;
+          reconcile_until?: string | null;
+          provider_sandbox_id?: string | null;
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          owner_id?: string;
+          org_id?: string;
+          parent_generation?: number;
+          parent_epoch?: number;
+          action?: string;
+          target_id?: string;
+          scope_target?: string;
+          idempotency_key?: string;
+          request_digest?: string;
+          state?: string;
+          dispatched_at?: string | null;
+          reconcile_after?: string;
+          reconcile_lease?: string | null;
+          reconcile_until?: string | null;
+          provider_sandbox_id?: string | null;
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_child_operations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_child_operations_orchestrator_id_org_id_owner_fkey";
+            columns: ["orchestrator_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+          {
+            foreignKeyName: "orchestrator_child_operations_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_child_operations_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       orchestrator_children: {
         Row: {
           sandbox_id: string;
@@ -1674,6 +1814,128 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "orchestrator_delegations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_lifecycle: {
+        Row: {
+          orchestrator_id: string;
+          idle_seconds: number;
+          max_active_children: number | null;
+          last_activity_at: string;
+          observation_state: string;
+          observation_generation: number | null;
+          observation_evidence: string | null;
+          observed_at: string | null;
+          reconcile_after: string;
+          lease: string | null;
+          lease_until: string | null;
+          stop_operation_id: string | null;
+          stop_generation: number | null;
+          stop_physical_generation: string | null;
+          stop_sandbox_id: string | null;
+          stop_provider_sandbox_id: string | null;
+          stop_reason: string | null;
+          stop_dispatched: boolean;
+          reason: string;
+        };
+        Insert: {
+          orchestrator_id: string;
+          idle_seconds?: number;
+          max_active_children?: number | null;
+          last_activity_at?: string;
+          observation_state?: string;
+          observation_generation?: number | null;
+          observation_evidence?: string | null;
+          observed_at?: string | null;
+          reconcile_after?: string;
+          lease?: string | null;
+          lease_until?: string | null;
+          stop_operation_id?: string | null;
+          stop_generation?: number | null;
+          stop_physical_generation?: string | null;
+          stop_sandbox_id?: string | null;
+          stop_provider_sandbox_id?: string | null;
+          stop_reason?: string | null;
+          stop_dispatched?: boolean;
+          reason?: string;
+        };
+        Update: {
+          orchestrator_id?: string;
+          idle_seconds?: number;
+          max_active_children?: number | null;
+          last_activity_at?: string;
+          observation_state?: string;
+          observation_generation?: number | null;
+          observation_evidence?: string | null;
+          observed_at?: string | null;
+          reconcile_after?: string;
+          lease?: string | null;
+          lease_until?: string | null;
+          stop_operation_id?: string | null;
+          stop_generation?: number | null;
+          stop_physical_generation?: string | null;
+          stop_sandbox_id?: string | null;
+          stop_provider_sandbox_id?: string | null;
+          stop_reason?: string | null;
+          stop_dispatched?: boolean;
+          reason?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_lifecycle_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: true;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_lifecycle_mutations: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          actor_id: string;
+          action: string;
+          target: string;
+          idempotency_key: string;
+          request_digest: string;
+          result: Json;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          actor_id: string;
+          action: string;
+          target: string;
+          idempotency_key: string;
+          request_digest: string;
+          result: Json;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          actor_id?: string;
+          action?: string;
+          target?: string;
+          idempotency_key?: string;
+          request_digest?: string;
+          result?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_lifecycle_mutations_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_lifecycle_mutations_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: false;
             referencedRelation: "orchestrators";
@@ -1868,6 +2130,59 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "orchestrator_runtime_events_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_waits: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          parent_generation: number;
+          kind: string;
+          reference: string;
+          reason: string;
+          evidence: string;
+          evidence_at: string;
+          expires_at: string;
+          deadline: string;
+          created_at: string;
+          released_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          parent_generation: number;
+          kind: string;
+          reference: string;
+          reason: string;
+          evidence: string;
+          evidence_at: string;
+          expires_at: string;
+          deadline: string;
+          created_at: string;
+          released_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          parent_generation?: number;
+          kind?: string;
+          reference?: string;
+          reason?: string;
+          evidence?: string;
+          evidence_at?: string;
+          expires_at?: string;
+          deadline?: string;
+          created_at?: string;
+          released_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_waits_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: false;
             referencedRelation: "orchestrators";
@@ -2316,12 +2631,17 @@ export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
+export type OrchestratorActivity = Database["public"]["Tables"]["orchestrator_activity"]["Row"];
+export type OrchestratorChildOperation = Database["public"]["Tables"]["orchestrator_child_operations"]["Row"];
 export type OrchestratorChildRow = Database["public"]["Tables"]["orchestrator_children"]["Row"];
 export type OrchestratorDelegationRow = Database["public"]["Tables"]["orchestrator_delegations"]["Row"];
+export type OrchestratorLifecycle = Database["public"]["Tables"]["orchestrator_lifecycle"]["Row"];
+export type OrchestratorLifecycleMutation = Database["public"]["Tables"]["orchestrator_lifecycle_mutations"]["Row"];
 export type OrchestratorOperationRow = Database["public"]["Tables"]["orchestrator_operations"]["Row"];
 export type OrchestratorRuntimeRow = Database["public"]["Tables"]["orchestrator_runtime"]["Row"];
 export type OrchestratorRuntimeCreateKeyRow = Database["public"]["Tables"]["orchestrator_runtime_create_keys"]["Row"];
 export type OrchestratorRuntimeEventRow = Database["public"]["Tables"]["orchestrator_runtime_events"]["Row"];
+export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"]["Row"];
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];

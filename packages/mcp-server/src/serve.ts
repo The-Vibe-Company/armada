@@ -27,6 +27,8 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
 import type { createOrchestratorServices } from "./orchestrator-composition.ts";
+import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
+import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
@@ -51,7 +53,12 @@ export async function startServer(
       encryptionKey: string | undefined;
       connections: NonNullable<ConfiguredControlOptions["connections"]>;
       publicUrl: string;
-    }) => Promise<Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle">>;
+      scopedMcpUrl: string;
+    }) =>
+      | Promise<
+          Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle"> | OrchestratorServiceBundle
+        >
+      | OrchestratorServiceBundle;
     routes?: readonly Route[];
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
@@ -213,6 +220,7 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,
+    scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
@@ -239,7 +247,21 @@ export async function startServer(
     modalProviderFor: modal.modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
-    routes: [modal.route, mcp.route, (request) => handleControlRequest(request, control), ...(options.routes ?? [])],
+    routes: [
+      ...(orchestrators && "scopedToolsRoute" in orchestrators
+        ? [
+            orchestrators.scopedToolsRoute,
+            orchestrators.ownerLifecycleRoute({
+              authStore,
+              supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+            }),
+          ]
+        : []),
+      modal.route,
+      mcp.route,
+      (request) => handleControlRequest(request, control),
+      ...(options.routes ?? []),
+    ],
     ...(options.logError ? { log: options.logError } : {}),
   });
   const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {
@@ -252,7 +274,11 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneResourceObservations(sql, new Date()),
-    orchestrators?.lifecycle,
+    orchestrators
+      ? "lifecycle" in orchestrators
+        ? orchestrators.lifecycle
+        : [orchestrators.lifecycleWorker, orchestrators.childWorker]
+      : [],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
