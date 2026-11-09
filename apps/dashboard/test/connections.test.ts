@@ -14,6 +14,7 @@ import {
   parseStdioImport,
   sandboxVisibility,
   statusLabel,
+  unreadyDefaults,
 } from "../src/lib/connections.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -67,6 +68,14 @@ describe("launch defaults", () => {
     ["an org sandbox never gets a personal default", "org", [shared.id]],
   ] as const)("%s", (_name, visibility, expected) => {
     expect(launchDefaults(available, visibility)).toEqual([...expected]);
+  });
+
+  test("a default that is enabled but not connected is reported, never silently dropped", () => {
+    const personalExpired = connection(59, { scope: "personal", defaultForLaunch: true, status: "unavailable" });
+    const all = [...available, personalExpired];
+    expect(unreadyDefaults(all, "private").map((item) => item.id)).toEqual([expired.id, personalExpired.id]);
+    // An org sandbox never takes a personal default, so a broken one does not concern it.
+    expect(unreadyDefaults(all, "org").map((item) => item.id)).toEqual([expired.id]);
   });
 });
 

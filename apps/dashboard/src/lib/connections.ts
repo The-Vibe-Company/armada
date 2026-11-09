@@ -283,6 +283,21 @@ export function launchDefaults(available: readonly McpConnection[], visibility: 
 }
 
 /**
+ * Defaults this launch would get but cannot use yet: enabled, allowed at this visibility, and not connected. The
+ * server refuses a launch that omits connections while such a default exists, so the dialog names them instead of
+ * dropping them silently, and launches without them only once the person chooses to.
+ */
+export function unreadyDefaults(available: readonly McpConnection[], visibility: SandboxVisibility): McpConnection[] {
+  return available.filter(
+    (connection) =>
+      connection.defaultForLaunch &&
+      connection.status !== "disabled" &&
+      !isLaunchable(connection) &&
+      !(connection.scope === "personal" && visibility === "org"),
+  );
+}
+
+/**
  * The launch's visibility and connections, checked against what the control API listed for the selected org.
  * The server enforces the same rules; this check explains them before a launch is attempted.
  */

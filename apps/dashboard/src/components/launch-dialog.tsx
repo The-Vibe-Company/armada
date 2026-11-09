@@ -1,7 +1,7 @@
 "use client";
 
 import type { Harness, SandboxProviderId } from "@armada/core";
-import { GlobeIcon, LockIcon, RocketIcon } from "lucide-react";
+import { CircleAlertIcon, GlobeIcon, LockIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { launchFromGolden } from "@/app/actions/sandboxes";
@@ -20,7 +20,13 @@ import {
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { launchBlocker, launchDefaults, type McpConnection, type SandboxVisibility } from "@/lib/connections";
+import {
+  launchBlocker,
+  launchDefaults,
+  type McpConnection,
+  type SandboxVisibility,
+  unreadyDefaults,
+} from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { cn } from "@/lib/utils";
@@ -51,6 +57,8 @@ export function LaunchDialog({
   repositories: readonly string[];
 }) {
   const [harness, setHarness] = useState<Harness>("claude");
+  // A default that is not connected holds the launch until the person reconnects it or goes on without it.
+  const [held, setHeld] = useState(false);
   const id = useId();
   return (
     <Dialog>
@@ -90,7 +98,7 @@ export function LaunchDialog({
             catalog={catalog}
           />
           <RepositoryField key={JSON.stringify([orgId, provider, golden])} idPrefix={id} repositories={repositories} />
-          <AccessFields idPrefix={id} goldenVisibility={goldenVisibility} connections={connections} />
+          <AccessFields idPrefix={id} goldenVisibility={goldenVisibility} connections={connections} onHeld={setHeld} />
           <div className="space-y-2">
             <Label htmlFor={`${id}-prompt`}>First prompt</Label>
             <Textarea
@@ -100,7 +108,8 @@ export function LaunchDialog({
               placeholder="Optional. Leave empty for a sandbox that waits for the first message."
             />
           </div>
-          <SubmitButton>Launch</SubmitButton>
+          {/* Only set when held: SubmitButton's own pending lock must not be overridden by `disabled={false}`. */}
+          <SubmitButton {...(held ? { disabled: true } : {})}>Launch</SubmitButton>
         </ActionForm>
       </DialogContent>
     </Dialog>
@@ -147,10 +156,12 @@ function AccessFields({
   idPrefix,
   goldenVisibility,
   connections,
+  onHeld,
 }: {
   idPrefix: string;
   goldenVisibility: SandboxVisibility;
   connections: LaunchConnections;
+  onHeld: (held: boolean) => void;
 }) {
   const [visibility, setVisibility] = useState<SandboxVisibility>(goldenVisibility);
   // Null until the person changes the selection: the defaults for the current visibility apply until then.
@@ -160,6 +171,14 @@ function AccessFields({
   const list = "connections" in connections ? connections.connections : [];
   const chosen = picked ?? launchDefaults(list, visibility);
   const setChosen = (next: string[]) => setPicked(next);
+  const unready = picked === null ? unreadyDefaults(list, visibility) : [];
+  useEffect(() => onHeld(unready.length > 0), [unready.length, onHeld]);
+
+  /** Goes on with the usable defaults; the notice and its button leave, so focus moves to the connection list. */
+  function continueWithout() {
+    setPicked(launchDefaults(list, visibility));
+    group.current?.querySelector<HTMLInputElement>('input[name="connections"]:not(:disabled)')?.focus();
+  }
 
   // Native reset after a launch attempt empties the DOM; the controlled state must follow it.
   useEffect(() => {
@@ -226,6 +245,26 @@ function AccessFields({
           <p id={`${idPrefix}-connections-hint`} className="text-xs text-muted-foreground">
             Org connections only. Choose Private to use your own.
           </p>
+        )}
+        {unready.length > 0 && (
+          <div
+            role="alert"
+            data-unready-defaults
+            className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
+          >
+            <CircleAlertIcon className="size-4 shrink-0 text-warning" />
+            <span className="min-w-48 flex-1">
+              {unready.map((connection) => connection.name).join(", ")}{" "}
+              {unready.length === 1 ? "is a default but is" : "are defaults but are"} not connected.{" "}
+              <Link href="/connections" className="underline">
+                Reconnect
+              </Link>{" "}
+              or continue without {unready.length === 1 ? "it" : "them"}.
+            </span>
+            <Button type="button" variant="outline" size="xs" onClick={continueWithout}>
+              Continue without {unready.length === 1 ? "it" : "them"}
+            </Button>
+          </div>
         )}
         {"unavailable" in connections ? (
           <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">

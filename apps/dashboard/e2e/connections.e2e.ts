@@ -582,3 +582,32 @@ test("a launch starts with the usable defaults and sends exactly what is ticked,
     ["private", [ALICE_LINEAR]],
   ]);
 });
+
+test("a default that is not connected holds the launch until it is reconnected or left out", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/connections");
+  const sentry = card(page, "Acme Sentry");
+  await sentry.getByRole("switch", { name: "Include Acme Sentry by default" }).click();
+  await expect(sentry.getByRole("switch", { name: "Include Acme Sentry by default" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+
+  await page.goto("/goldens");
+  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  const dialog = page.getByRole("dialog");
+  const held = dialog.locator("[data-unready-defaults]");
+  await expect(held).toContainText("Acme Sentry is a default but is not connected.");
+  await expect(held.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/connections");
+  await expect(dialog.getByRole("button", { name: "Launch", exact: true })).toBeDisabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await held.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "test-results/launch-unready-default-mobile.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  await held.getByRole("button", { name: "Continue without it" }).click();
+  await expect(held).toHaveCount(0);
+  await expect(dialog.getByRole("checkbox", { name: "Acme Docs" })).toBeFocused();
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  expect((await mockState()).launches.map((launch) => [launch.visibility, launch.connections])).toEqual([["org", []]]);
+});
