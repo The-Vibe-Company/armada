@@ -84,6 +84,7 @@ import { InvitationError, type Invitations, invitationsFromEnv } from "./invitat
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -101,6 +102,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  modelUsage?: ModelUsageApi;
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
@@ -537,6 +539,15 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route === "creds/accounts/usage") {
+    if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
+    const id = required(body, "id"),
+      sandboxId = optional(body, "sandboxId");
+    if (!UUID.test(id) || (sandboxId !== undefined && !UUID.test(sandboxId)))
+      throw new VaultError("invalid", "Account and sandbox IDs must be UUIDs.");
+    const logs = options.logs;
+    return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
+  }
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
   if (route.startsWith("github/")) {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
@@ -1006,7 +1017,7 @@ async function readLogs(
     ? await promptOutcome(target.provider, { sandboxId: target.providerSandboxId, promptId: latest })
     : null;
   return {
-    events: dedupe(events),
+    events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,
     hasMore,
     settled:
@@ -1309,6 +1320,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     github: { app: githubApp },
     store,
     providerFor,
+    modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),
     providers,
     data: createSqlData(sql),

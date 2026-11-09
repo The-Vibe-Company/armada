@@ -44,6 +44,7 @@ import { describeFailure } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
+import { isPrivateModelEvent } from "./model-usage.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -1212,7 +1213,7 @@ async function readLogs(
     }
     cursor = next;
   }
-  return { events: dedupe(events), cursor: cursor ?? null, hasMore };
+  return { events: dedupe(events).filter((event) => !isPrivateModelEvent(event)), cursor: cursor ?? null, hasMore };
 }
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {

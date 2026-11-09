@@ -492,15 +492,20 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     },
 
     async events(request: EventsRequest): Promise<EventPage> {
+      request.signal?.throwIfAborted();
       const response = await call(() =>
-        api.events({
-          sandboxId: request.sandboxId,
-          sort: "asc",
-          ...(request.cursor ? { cursor: request.cursor } : {}),
-          ...(request.conversationId ? { conversation: request.conversationId } : {}),
-          ...(request.limit ? { limit: request.limit } : {}),
-        }),
+        api.events(
+          {
+            sandboxId: request.sandboxId,
+            sort: "asc",
+            ...(request.cursor ? { cursor: request.cursor } : {}),
+            ...(request.conversationId ? { conversation: request.conversationId } : {}),
+            ...(request.limit ? { limit: request.limit } : {}),
+          },
+          request.signal ? { signal: request.signal } : undefined,
+        ),
       );
+      request.signal?.throwIfAborted();
       const raw = response.events ?? [];
       const last = raw.at(-1);
       const cursor = (last && eventCursor(last)) ?? response.pageInfo?.nextCursor ?? request.cursor;
