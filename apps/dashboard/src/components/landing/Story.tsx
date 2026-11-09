@@ -232,7 +232,7 @@ export function Story() {
             </li>
           ))}
         </ul>
-        <Link href="/login" className="lp-button is-lime is-sm">
+        <Link href="/login" className="lp-button is-sm dx-approve">
           Sign in to try Armada
         </Link>
       </nav>
@@ -257,8 +257,8 @@ export function Story() {
             {UNCHANGED[k] && <Fold>{UNCHANGED[k]}</Fold>}
           </div>
         ))}
+        <Review />
       </div>
-      <Review />
     </div>
   );
 }
