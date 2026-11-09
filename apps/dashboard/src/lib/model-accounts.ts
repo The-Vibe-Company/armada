@@ -355,15 +355,15 @@ function extraUsage(extra: unknown): AccountUsage["extraUsage"] {
     return null;
   }
   const amount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
-  // #624 v1 sends major units (`used`, `limit`) beside the canonical minor ones: prefer them, else convert minor.
-  const major = (value: unknown, minor: unknown) => {
-    const direct = amount(value);
-    if (direct !== null) return direct;
+  // #624 v1 sends major units (`used`, `limit`) beside the canonical minor ones. A major field the producer sent wins,
+  // and its explicit null means it could not tell: only a report without that field is converted from minor units.
+  const major = (key: "used" | "limit", minor: unknown) => {
+    if (key in extra) return amount(extra[key]);
     const units = amount(minor);
     return units === null ? null : units / 10 ** digits;
   };
-  const used = major(extra.used, extra.usedMinor);
-  return used === null ? null : { used, limit: major(extra.limit, extra.limitMinor), currency };
+  const used = major("used", extra.usedMinor);
+  return used === null ? null : { used, limit: major("limit", extra.limitMinor), currency };
 }
 
 /** The report for an account the server answered but in a shape this dashboard cannot read. */
@@ -401,7 +401,7 @@ export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount
   if (usage.status === "error") return { kind: "error", reason: "The last read failed. Reload the page to try again." };
   // Reported spend alone is shown without windows: no window or zero allowance is invented for it.
   if (usage.status === "unavailable" || !usage.observedAt || (usage.windows.length === 0 && !usage.extraUsage))
-    return { kind: "unavailable", reason: "This account does not report its allowance." };
+    return { kind: "unavailable", reason: "No allowance reading is available for this account yet." };
   const stale = usage.status === "stale" || usage.version !== account.version;
   return {
     kind: stale ? "stale" : "fresh",

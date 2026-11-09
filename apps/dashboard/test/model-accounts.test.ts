@@ -161,6 +161,10 @@ describe("usage", () => {
     expect(
       extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: 450, limit: null }),
     ).toEqual({ used: 450, limit: null, currency: "HUF" });
+    // An explicit null major amount is the producer saying it could not tell: no conversion of its own.
+    expect(
+      extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: null, limit: null }),
+    ).toBeNull();
     expect(extra({ enabled: false, currency: "USD", usedMinor: 450, limitMinor: 2000 })).toBeNull();
     expect(extra({ enabled: true, currency: null, usedMinor: 450, limitMinor: 2000 })).toBeNull();
   });
