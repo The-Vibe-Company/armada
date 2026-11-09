@@ -41,6 +41,8 @@ test("an org's Boat and Modal are its sandbox providers in Settings: Credentials
   page,
 }) => {
   await signIn(page, "alice@example.com", "/credentials");
+  // The real page, not its loading state, before anything is checked as absent.
+  await expect(page.locator('[data-credentials="user"]')).toBeVisible();
   // No org hosting card: its model keys are named accounts above, its Boat and Modal are providers in Settings.
   await expect(page.locator('[data-credentials="Acme (org)"]')).toHaveCount(0);
   await expect(
@@ -58,6 +60,7 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
 }) => {
   await signIn(page, "alice@example.com", "/credentials");
   const mine = page.locator('[data-credentials="user"]');
+  await expect(mine.getByLabel("Kind")).toBeVisible();
   await expect(mine.getByLabel("Kind").locator("option", { hasText: "Modal" })).toHaveCount(0);
   const modal = mine.locator("[data-modal-token]");
   await modal.getByLabel("Token ID").fill(MODAL_ID);
@@ -111,6 +114,7 @@ for (const email of ["alice@example.com", "bob@example.com"])
     page,
   }) => {
     await signIn(page, email, "/credentials");
+    await expect(page.locator('[data-credentials="user"] [data-modal-token]')).toBeVisible();
     await expect(page.locator('[data-credentials="Acme (org)"] [data-modal-token]')).toHaveCount(0);
     // Their own form, pointed at the org: hosting for an org is connected in Settings, checked by the server first.
     const modal = page.locator('[data-credentials="user"] [data-modal-token]');
