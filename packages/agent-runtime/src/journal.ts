@@ -64,6 +64,16 @@ export class Journal {
     )?.session;
   }
   saveSession(conversation: string, harness: string, session: string) {
+    if (
+      !conversation ||
+      conversation.length > 256 ||
+      !session ||
+      session.length > 256 ||
+      !["claude", "codex"].includes(harness) ||
+      this.redact(conversation) !== conversation ||
+      this.redact(session) !== session
+    )
+      throw Error("invalid_native_session_identity");
     const saved = this.db
       .query(`INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(conversation) DO UPDATE SET
       harness=excluded.harness,session=excluded.session

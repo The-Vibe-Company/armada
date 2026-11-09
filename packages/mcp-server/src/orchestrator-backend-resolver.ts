@@ -26,7 +26,7 @@ import { OrchestratorRuntimeError, type RuntimeIdentity } from "./orchestrator-r
  * never a fallback to another harness/provider or a declared resume capability bit. */
 export interface OrchestratorNativeAdapter {
   assertPrerequisites(provider: Provider, golden: GoldenRecord, configuration: OrchestratorCreate): Promise<void>;
-  resumeWithoutText?(provider: Provider, identity: RuntimeIdentity): Promise<void>;
+  resumeWithoutText?(provider: Provider, identity: RuntimeIdentity, operationId: string): Promise<void>;
   managed(provider: Provider, machine: ManagedMachine, selection: ManagedSelection): ManagedNativeBackend;
 }
 export interface NamedOrchestratorCredentials extends LaunchCredentialResolver {
@@ -206,7 +206,12 @@ export function createOrchestratorBackendResolver(input: {
             resolve: (a, h, id, version) => input.credentials.resolve(a, h, id, version),
           },
         }),
-      ...(resume ? { resumeWithoutText: (current: RuntimeIdentity) => resume(provider, current) } : {}),
+      ...(resume
+        ? {
+            resumeWithoutText: (current: RuntimeIdentity, operationId: string) =>
+              resume(provider, current, operationId),
+          }
+        : {}),
     };
     return backend;
   };

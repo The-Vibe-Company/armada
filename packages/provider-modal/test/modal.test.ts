@@ -2348,3 +2348,105 @@ test("only newly managed VM incarnations expose resource observations", async ()
   expect(await f.provider.observeResources?.(fork.id)).toBeNull();
   expect(f.log.filter((x) => x === "resourceObservation")).toHaveLength(calls);
 });
+
+test("orchestrator native checkpoint is operation-correlated and restore verifies identity without a prompt", async () => {
+  const hooks: string[] = [];
+  const f = fixture(scope, db, async (provider, sandboxId) => {
+    hooks.push("beforePrompt");
+    await provider.configureMcp({ sandboxId, configuration: { revision: "restored-current-auth", servers: {} } });
+  });
+  const golden = await f.provider.createGolden({});
+  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `orch-checkpoint-${crypto.randomUUID()}` });
+  const parent = await f.provider.fork({ from: image.name });
+  const native = (row: Machine) => ({
+    physicalGeneration: String(row.generation),
+    conversationId: "logical",
+    nativeSessionId: "native",
+    verified: true as const,
+  });
+  f.onRpc(async (row, op) =>
+    op === "observeOrchestrator"
+      ? { ...native(row), state: "quiescent", eventWatermark: 0, acknowledgedSequence: 0 }
+      : op === "resumeNativeSession"
+        ? native(row)
+        : undefined,
+  );
+  const operationId = crypto.randomUUID();
+  const checkpoint = await f.provider.checkpointOrchestrator({
+    sandboxId: parent.id,
+    operationId,
+    physicalGeneration: "1",
+    conversationId: "logical",
+    harness: "codex",
+    model: "gpt-6.1-sol",
+  });
+  expect(checkpoint).toMatchObject({
+    state: "stopped",
+    operationId,
+    physicalGeneration: "1",
+    nativeSessionId: "native",
+    eventWatermark: 0,
+    acknowledgedSequence: 0,
+  });
+  expect(checkpoint.checkpointId).toBeString();
+  const effects = f.log.length,
+    creates = f.creates;
+  expect(await f.provider.readOrchestratorCheckpoint({ sandboxId: parent.id, operationId })).toEqual(checkpoint);
+  expect(
+    await f.provider.readOrchestratorCheckpoint({ sandboxId: parent.id, operationId: crypto.randomUUID() }),
+  ).toBeNull();
+  expect(f.log.length).toBe(effects);
+  expect(f.creates).toBe(creates);
+  const restored = await f.provider.restoreOrchestratorCheckpoint({
+    sandboxId: parent.id,
+    operationId: crypto.randomUUID(),
+    checkpoint,
+  });
+  expect(restored).toEqual({ ...native({ generation: 2 } as Machine) });
+  expect(hooks).toEqual(["beforePrompt"]);
+  expect(f.log.filter((op) => op === "prompt")).toHaveLength(0);
+  expect(f.log.filter((op) => op === "resumeNativeSession")).toHaveLength(1);
+  const after = f.creates;
+  await expect(
+    f.provider.restoreOrchestratorCheckpoint({ sandboxId: parent.id, operationId: crypto.randomUUID(), checkpoint }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(f.creates).toBe(after);
+});
+
+test("unknown native checkpoint dispatch never repeats snapshot and unacknowledged native events prevent stop", async () => {
+  const f = fixture();
+  const golden = await f.provider.createGolden({});
+  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `orch-uncertain-${crypto.randomUUID()}` });
+  const parent = await f.provider.fork({ from: image.name });
+  let ack = false;
+  f.onRpc(async (row, op) =>
+    op === "observeOrchestrator"
+      ? {
+          physicalGeneration: String(row.generation),
+          state: "quiescent",
+          nativeSessionId: "native",
+          eventWatermark: ack ? 0 : 1,
+          acknowledgedSequence: 0,
+        }
+      : undefined,
+  );
+  const request = {
+    sandboxId: parent.id,
+    operationId: crypto.randomUUID(),
+    physicalGeneration: "1",
+    conversationId: "logical",
+    harness: "codex" as const,
+    model: "gpt-6.1-sol",
+  };
+  await expect(f.provider.checkpointOrchestrator(request)).rejects.toMatchObject({ code: "conflict" });
+  expect((await f.provider.get(parent.id)).state).toBe("ready");
+  expect(await f.provider.readOrchestratorCheckpoint(request)).toBeNull();
+  ack = true;
+  f.failSnapshot(true);
+  await expect(f.provider.checkpointOrchestrator(request)).rejects.toBeDefined();
+  const snapshots = f.log.filter((op) => op === "snapshot").length;
+  f.failSnapshot(false);
+  expect(await f.provider.checkpointOrchestrator(request)).toMatchObject({ state: "pending", checkpointId: null });
+  expect(await f.provider.readOrchestratorCheckpoint(request)).toMatchObject({ state: "pending", checkpointId: null });
+  expect(f.log.filter((op) => op === "snapshot")).toHaveLength(snapshots);
+});

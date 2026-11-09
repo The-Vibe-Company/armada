@@ -47,7 +47,11 @@ export interface ProcessBaseline {
   namespace: { pid: string; mount: string };
   processes: { pid: number; start: string }[];
 }
+
+import type { ModalOrchestratorCheckpointRecord } from "./orchestrator-checkpoint.ts";
+
 export interface Machine {
+  orchestratorCheckpoint?: ModalOrchestratorCheckpointRecord;
   info: SandboxInfo;
   generation: number;
   /** Assigned only when reserving a NEW managed launch; legacy/unknown rows stay unknown. */

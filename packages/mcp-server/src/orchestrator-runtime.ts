@@ -39,7 +39,7 @@ export interface OrchestratorRuntimeBackend {
    * Must pass the durable operation ID as provider fork idempotency/correlation key. */
   launch(reservation: RuntimeReservation): Promise<void>;
   /** Provider-native, no synthetic prompt. Absent means resume is unavailable. */
-  resumeWithoutText?: (identity: RuntimeIdentity) => Promise<void>;
+  resumeWithoutText?: (identity: RuntimeIdentity, operationId: string) => Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
   revalidate(identity: RuntimeIdentity): Promise<void>;
 }
@@ -215,7 +215,7 @@ export class OrchestratorRuntime {
         if (current.state !== "stopped" || !current.conversationId || current.continuity !== "native")
           throw new OrchestratorRuntimeError("conflict");
         await this.options.authority.revoke(current.id);
-        await backend.resumeWithoutText?.(current);
+        await backend.resumeWithoutText?.(current, reservation.operation.id);
         const restored = await this.options.store.preparing(reservation);
         if (restored.conversationId !== current.conversationId) throw new OrchestratorRuntimeError("conflict");
         reservation.identity = restored;

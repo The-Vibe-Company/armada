@@ -170,6 +170,11 @@ export function createManagedOrchestratorRuntime(options: {
         `update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1 and revision=$3 returning id`,
         [operationId, JSON.stringify(receipt(machine, operationId, value)), revision],
       );
+      if (saved.rows.length === 1 && value.state === "stopped")
+        await tx.query(
+          `update public.sandboxes set status='stopped',stopped_at=coalesce(stopped_at,now()),last_observed_at=now() where id=$1 and lifecycle_generation=$2`,
+          [machine.sandboxId, machine.generation],
+        );
       return saved.rows.length === 1;
     });
   }

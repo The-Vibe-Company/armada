@@ -6,7 +6,7 @@ import { createOrchestratorBackendResolver } from "../src/orchestrator-backend-r
 import { OrchestratorRuntimeStore } from "../src/orchestrator-runtime-store.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
-test("production resolver pins selected golden/account/resources and cleanup survives model/member revocation", async () => {
+test("production selection pins golden/account/resources and avoids model lookup on managed cleanup", async () => {
   const { db, people: p } = await database();
   const sql: core.Sql = {
     query: (q, v) => db.query(q, v),
