@@ -122,11 +122,12 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
         guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
-        if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
-           receipt.state == .succeeded || receipt.state == .failed {
-            return Self.operation(receipt)
-        }
         do {
+            if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
+               receipt.state == .succeeded || receipt.state == .failed {
+                // SDK validates the current organization even for cached results.
+                return Self.operation(try await client.submitOrchestratorOperation(id))
+            }
             // Preserve the OFF reason while reconciling any concurrently known
             // terminal outcome, including failures during capability preflight.
             try await requireEnabled()
@@ -137,7 +138,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         } catch {
             if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
                receipt.state == .succeeded || receipt.state == .failed {
-                return Self.operation(receipt)
+                do { return Self.operation(try await client.submitOrchestratorOperation(id)) }
+                catch { throw await submitFailure(error, id: id) }
             }
             throw await submitFailure(error, id: id)
         }
