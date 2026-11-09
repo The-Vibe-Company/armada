@@ -1,6 +1,6 @@
 # Onboarding: launching agents on Armada (production)
 
-This guide takes a new user from nothing to a coding agent running on boat.dev through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, an orchestrator).
+This guide takes a new user from nothing to a coding agent running on Boat or Modal through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, an orchestrator).
 
 | What | Value |
 | --- | --- |
