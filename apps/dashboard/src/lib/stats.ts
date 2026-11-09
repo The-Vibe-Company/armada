@@ -68,9 +68,13 @@ export async function statsRoute(
     const a = await deps.accounts();
     if (!a) return Response.json(UNKNOWN, { headers: NO_STORE });
     return Response.json(await readStats(a.client, (deps.now ?? (() => new Date()))()), { headers: NO_STORE });
-  } catch {
-    // Do not log driver errors: they may contain connection credentials.
-    console.error("armada dashboard: stats query failed");
+  } catch (err) {
+    // Only diagnostic identifiers: driver messages and other fields may contain credentials.
+    const error = err as { name?: unknown; code?: unknown } | null | undefined;
+    console.error("armada dashboard: stats query failed", {
+      name: typeof error?.name === "string" ? error.name : undefined,
+      code: typeof error?.code === "string" ? error.code : undefined,
+    });
     return Response.json({ error: "stats unavailable" }, { status: 503, headers: NO_STORE });
   }
 }
