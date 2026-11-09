@@ -1,4 +1,5 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
+import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
   createGoldenAdoption,
   createSqlVaultStore,
@@ -16,6 +17,7 @@ import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
+import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
@@ -23,6 +25,8 @@ import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolv
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
+import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
+import type { createOrchestratorServices } from "./orchestrator-composition.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
@@ -39,6 +43,15 @@ export { bunSql };
 export async function startServer(
   env: Record<string, string | undefined>,
   options: {
+    /** Trusted composition only; absent until native matrix and producer contracts are verified. */
+    orchestrators?: (context: {
+      sql: Sql;
+      providers: ProviderRegistry;
+      credentials: NamedOrchestratorCredentials;
+      encryptionKey: string | undefined;
+      connections: NonNullable<ConfiguredControlOptions["connections"]>;
+      publicUrl: string;
+    }) => Promise<Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle">>;
     routes?: readonly Route[];
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
@@ -185,7 +198,25 @@ export async function startServer(
       };
     },
   };
+  // Actual604 exposes the same ownership object on control.modelAuth. Reflect keeps
+  // pre-producer deployments type-safe; no second ownership/redaction registry is created.
+  const credentials = Reflect.apply(launchCredentials, undefined, [
+    store,
+    config.encryptionKey,
+    { store, app: githubApp },
+    Reflect.get(control, "modelAuth"),
+  ]) as NamedOrchestratorCredentials;
+  const orchestrators = await options.orchestrators?.({
+    sql,
+    providers,
+    credentials,
+    encryptionKey: config.encryptionKey,
+    connections: mcp.connections,
+    publicUrl: config.publicUrl,
+  });
+  if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
+    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
@@ -215,8 +246,13 @@ export async function startServer(
     workerDone: Promise.resolve(),
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
-  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError, goldenRetirements, () =>
-    pruneResourceObservations(sql, new Date()),
+  const workers = startServerWorkers(
+    goldenBuilds,
+    lifecycle,
+    options.logError,
+    goldenRetirements,
+    () => pruneResourceObservations(sql, new Date()),
+    orchestrators?.lifecycle,
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

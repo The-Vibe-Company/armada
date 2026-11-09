@@ -1639,6 +1639,7 @@ export type Database = {
           expires_at: string;
           acknowledged_at: string | null;
           revoked_at: string | null;
+          native_generation: string | null;
         };
         Insert: {
           id?: string;
@@ -1653,6 +1654,7 @@ export type Database = {
           expires_at: string;
           acknowledged_at?: string | null;
           revoked_at?: string | null;
+          native_generation?: string | null;
         };
         Update: {
           id?: string;
@@ -1667,6 +1669,7 @@ export type Database = {
           expires_at?: string;
           acknowledged_at?: string | null;
           revoked_at?: string | null;
+          native_generation?: string | null;
         };
         Relationships: [
           {
@@ -1689,6 +1692,7 @@ export type Database = {
           revision: number;
           state: string;
           error_code: string | null;
+          runtime_result: Json | null;
         };
         Insert: {
           id?: string;
@@ -1700,6 +1704,7 @@ export type Database = {
           revision: number;
           state?: string;
           error_code?: string | null;
+          runtime_result?: Json | null;
         };
         Update: {
           id?: string;
@@ -1711,6 +1716,7 @@ export type Database = {
           revision?: number;
           state?: string;
           error_code?: string | null;
+          runtime_result?: Json | null;
         };
         Relationships: [
           {
@@ -1722,6 +1728,146 @@ export type Database = {
           },
           {
             foreignKeyName: "orchestrator_operations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_runtime: {
+        Row: {
+          orchestrator_id: string;
+          configuration: Json;
+          skill_revision: string;
+          conversation_id: string | null;
+          checkpoint: Json | null;
+          provider_cursor: string | null;
+          continuity: string;
+          updated_at: string;
+          last_activity_at: string;
+          idle_deadline: string | null;
+          blocked_reason: string | null;
+          created_at: string;
+        };
+        Insert: {
+          orchestrator_id: string;
+          configuration: Json;
+          skill_revision: string;
+          conversation_id?: string | null;
+          checkpoint?: Json | null;
+          provider_cursor?: string | null;
+          continuity?: string;
+          updated_at?: string;
+          last_activity_at?: string;
+          idle_deadline?: string | null;
+          blocked_reason?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          orchestrator_id?: string;
+          configuration?: Json;
+          skill_revision?: string;
+          conversation_id?: string | null;
+          checkpoint?: Json | null;
+          provider_cursor?: string | null;
+          continuity?: string;
+          updated_at?: string;
+          last_activity_at?: string;
+          idle_deadline?: string | null;
+          blocked_reason?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_runtime_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: true;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_runtime_create_keys: {
+        Row: {
+          owner_id: string;
+          org_id: string;
+          idempotency_key: string;
+          request_digest: string;
+          orchestrator_id: string;
+        };
+        Insert: {
+          owner_id: string;
+          org_id: string;
+          idempotency_key: string;
+          request_digest: string;
+          orchestrator_id: string;
+        };
+        Update: {
+          owner_id?: string;
+          org_id?: string;
+          idempotency_key?: string;
+          request_digest?: string;
+          orchestrator_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_runtime_create_keys_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_runtime_create_keys_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_runtime_create_keys_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_runtime_events: {
+        Row: {
+          sequence: number;
+          orchestrator_id: string;
+          revision: number;
+          generation: number | null;
+          conversation_id: string | null;
+          upstream_id: string | null;
+          event: Json;
+          created_at: string;
+        };
+        Insert: {
+          sequence: number;
+          orchestrator_id: string;
+          revision: number;
+          generation?: number | null;
+          conversation_id?: string | null;
+          upstream_id?: string | null;
+          event: Json;
+          created_at?: string;
+        };
+        Update: {
+          sequence?: number;
+          orchestrator_id?: string;
+          revision?: number;
+          generation?: number | null;
+          conversation_id?: string | null;
+          upstream_id?: string | null;
+          event?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_runtime_events_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: false;
             referencedRelation: "orchestrators";
@@ -1947,6 +2093,7 @@ export type Database = {
           resource_sampling_claim_id: string | null;
           resource_sampling_after: string | null;
           resource_sampling_generation: number | null;
+          orchestrator_native_generation: string | null;
         };
         Insert: {
           id?: string;
@@ -1989,6 +2136,7 @@ export type Database = {
           resource_sampling_claim_id?: string | null;
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
+          orchestrator_native_generation?: string | null;
         };
         Update: {
           id?: string;
@@ -2031,6 +2179,7 @@ export type Database = {
           resource_sampling_claim_id?: string | null;
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
+          orchestrator_native_generation?: string | null;
         };
         Relationships: [
           {
@@ -2170,6 +2319,9 @@ export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
 export type OrchestratorChildRow = Database["public"]["Tables"]["orchestrator_children"]["Row"];
 export type OrchestratorDelegationRow = Database["public"]["Tables"]["orchestrator_delegations"]["Row"];
 export type OrchestratorOperationRow = Database["public"]["Tables"]["orchestrator_operations"]["Row"];
+export type OrchestratorRuntimeRow = Database["public"]["Tables"]["orchestrator_runtime"]["Row"];
+export type OrchestratorRuntimeCreateKeyRow = Database["public"]["Tables"]["orchestrator_runtime_create_keys"]["Row"];
+export type OrchestratorRuntimeEventRow = Database["public"]["Tables"]["orchestrator_runtime_events"]["Row"];
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];

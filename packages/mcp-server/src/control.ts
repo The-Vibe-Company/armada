@@ -104,9 +104,13 @@ export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+import { orchestratorHttp } from "./orchestrator-api.ts";
+import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
+
 export interface ControlOptions {
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
+  orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   credentialBindingRecovery?: CredentialBindingRecovery;
   modelUsage?: ModelUsageApi;
@@ -198,6 +202,16 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "token/create") return tokenCreateRoute(request, options);
   if (route === "token/revoke") return tokenRevokeRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
+  if (route === "orchestrators" || route.startsWith("orchestrators/")) {
+    try {
+      const caller = await authenticatedCaller(request, options);
+      return orchestratorHttp(request, caller, options.orchestrators);
+    } catch (error) {
+      return error instanceof AuthUnavailable
+        ? fail(503, "unavailable", "Authentication unavailable.")
+        : fail(401, "unauthorized", "Run armada login.");
+    }
+  }
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);

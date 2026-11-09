@@ -27,6 +27,9 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  orchestrator_runtime: "OrchestratorRuntimeRow",
+  orchestrator_runtime_create_keys: "OrchestratorRuntimeCreateKeyRow",
+  orchestrator_runtime_events: "OrchestratorRuntimeEventRow",
   model_auth_ownership: "ModelAuthOwnershipRow",
   model_auth_state: "ModelAuthStateRow",
   modal_events: "ModalEventRow",

@@ -45,6 +45,9 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import { callOrchestrator } from "./orchestrator-api.ts";
+import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
+import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -52,6 +55,7 @@ import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  orchestrators?: OrchestratorRuntime;
   caller: Caller;
   data: ScopedData;
   /** The launch's credentials: the caller's own for the harness, else the golden's org's. Decrypted in this process. */
@@ -249,6 +253,58 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       }) as never,
     );
   };
+
+  for (const action of [
+    "capabilities",
+    "create",
+    "list",
+    "detail",
+    "events",
+    "message",
+    "steer",
+    "stop",
+    "resume",
+    "reconcile",
+  ]) {
+    server.registerTool(
+      `orchestrator_${action}`,
+      {
+        description: "Owner-private persistent orchestrator operation. Unverified native backends remain disabled.",
+        inputSchema: { args: z.record(z.string(), z.unknown()), idempotencyKey: z.string().optional() },
+        outputSchema: z.object({ version: z.literal(1) }).passthrough(),
+      },
+      async ({ args, idempotencyKey }) => {
+        try {
+          const result = await callOrchestrator(context.orchestrators, context.caller, action, args, idempotencyKey);
+          return {
+            structuredContent: result as Record<string, unknown>,
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          };
+        } catch (error) {
+          const code = error instanceof OrchestratorRuntimeError ? error.code : "unavailable";
+          return {
+            isError: true,
+            content: [
+              { type: "text" as const, text: code },
+              { type: "text" as const, text: `error code: ${code}` },
+              ...(error instanceof OrchestratorRuntimeError && error.admission
+                ? [
+                    {
+                      type: "text" as const,
+                      text: JSON.stringify({
+                        code,
+                        admission: error.admission,
+                        ...(error.operation ? { operation: error.operation } : {}),
+                      }),
+                    },
+                  ]
+                : []),
+            ],
+          };
+        }
+      },
+    );
+  }
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {
     const found = await data.sandboxes.get(sandboxId);

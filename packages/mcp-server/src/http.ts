@@ -37,7 +37,10 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
+import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
+
 export interface HandlerOptions {
+  orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -68,7 +71,11 @@ export interface HandlerOptions {
   modalProviderFor?: (
     tokens: ModalTokenPair,
     binding: ModalBinding,
-    context: { target: ProviderTarget; caller: { userId: string }; credentialScope: "user" | "org" },
+    context: {
+      target: ProviderTarget;
+      caller: { userId: string; orchestratorCleanup?: import("@armada/core").OrchestratorCleanupScope };
+      credentialScope: "user" | "org";
+    },
   ) => Provider | Promise<Provider>;
   /** Server-owned persisted credential provenance overrides fallback for an existing Modal binding. */
   modalTokensFor?: (
@@ -160,6 +167,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
+        ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
       },
       VERSION,
     );

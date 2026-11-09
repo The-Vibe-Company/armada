@@ -11,7 +11,7 @@ export async function POST(request: Request, context: { params: Promise<{ path: 
 
 export async function GET(request: Request, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
-  if (path.join("/") !== "auth/authorize") return NextResponse.json({ error: "Not found." }, { status: 404 });
+  if (path.join("/") !== "auth/authorize") return forwardControl(request, path);
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return NextResponse.json({ error: "Armada API is not configured." }, { status: 503 });
   const target = new URL("/api/v1/auth/authorize", upstream);
