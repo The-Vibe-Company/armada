@@ -8,8 +8,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
-import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
-import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -112,8 +111,7 @@ export async function startServer(
     },
     provider: async (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const control: ConfiguredControlOptions = {
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+  const control: ControlOptions = {
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },

@@ -8,7 +8,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { HarnessEnvironment, Machine, Scope } from "@armada/provider-modal";
-import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding-recovery.ts";
+import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 
 export interface ModalLaunchEnvironmentOptions {

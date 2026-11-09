@@ -39,7 +39,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
-import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding-recovery.ts";
+import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
