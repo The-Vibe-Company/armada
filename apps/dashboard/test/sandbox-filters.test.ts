@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { filtersToSearch, parseSandboxFilters } from "../src/lib/sandbox-filters.ts";
 
-const GOLDEN = "00000000-0000-4000-8000-000000000020";
-
 describe("sandbox filters", () => {
   test("known values are read off the URL and anything else is ignored", () => {
+    // The listed metadata names no golden (#680), so an old golden filter in a URL is ignored.
     expect(
-      parseSandboxFilters({ status: "running", harness: "codex", golden: GOLDEN, owner: "me", page: "3" }),
+      parseSandboxFilters({
+        status: "running",
+        harness: "codex",
+        golden: "00000000-0000-4000-8000-000000000020",
+        owner: "me",
+        page: "3",
+      }),
     ).toEqual({
       status: "running",
       harness: "codex",
-      golden: GOLDEN,
       owner: "me",
       page: 3,
     });
@@ -25,7 +29,6 @@ describe("sandbox filters", () => {
     ).toEqual({
       status: null,
       harness: null,
-      golden: null,
       owner: null,
       page: 1,
     });

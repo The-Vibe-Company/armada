@@ -1,5 +1,5 @@
-import { MODEL_CATALOG } from "@armada/core";
-import { ArrowLeftIcon, ClockAlertIcon } from "lucide-react";
+import { MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
+import { ArrowLeftIcon, ClockAlertIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -13,18 +13,18 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
-import { sandboxVisibility } from "@/lib/connections";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { listGoldenHistory } from "@/lib/data/goldens";
-import { getSandbox } from "@/lib/data/sandboxes";
+import { getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
-import { lifecycleView, readLifecycle } from "@/lib/lifecycle";
+import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
+import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Sandbox" };
@@ -52,12 +52,18 @@ export default async function SandboxPage({ params }: Props) {
       ),
     ),
   ]);
-  if (!sandbox) notFound();
+  if (!sandbox) {
+    // The interior read is refused to a member who is neither the owner nor an admin (#680). Only then is the safe
+    // metadata read, so nothing of the interior is fetched and hidden; a sandbox the server does not list is not found.
+    const listed = await getSandboxMetadata(supabase, id);
+    // A listed sandbox the caller may open but whose interior was not returned is inconsistent: never guess at it.
+    if (!listed || listed.canOpen) notFound();
+    return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
+  }
   const golden = goldens.find((item) => item.id === sandbox.golden_id);
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
   const applied = await listSandboxConnections(sandbox);
-  const visibility = sandboxVisibility(sandbox);
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
@@ -69,14 +75,6 @@ export default async function SandboxPage({ params }: Props) {
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
-    ...(visibility
-      ? [
-          ["Visibility", visibility === "private" ? "Private (only its owner)" : "Org (every member)"] as [
-            string,
-            string,
-          ],
-        ]
-      : []),
     ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
@@ -144,17 +142,7 @@ export default async function SandboxPage({ params }: Props) {
               <CardTitle className="text-base">Details</CardTitle>
             </CardHeader>
             <CardContent>
-              <dl className="divide-y text-sm">
-                {facts.map(([label, value]) => (
-                  <div
-                    key={label}
-                    className="flex min-w-0 items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0"
-                  >
-                    <dt className="shrink-0 text-muted-foreground">{label}</dt>
-                    <dd className="min-w-0 text-right font-medium break-words">{value}</dd>
-                  </div>
-                ))}
-              </dl>
+              <Facts facts={facts} />
             </CardContent>
           </Card>
 
@@ -169,6 +157,83 @@ export default async function SandboxPage({ params }: Props) {
         </SandboxDetailsPanel>
       </div>
     </div>
+  );
+}
+
+/**
+ * What a member who may not open a sandbox sees at its address: the metadata every member already has on the list,
+ * and why the rest is closed. Its conversation, files and connections are never read for this page.
+ */
+function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; owner: string }) {
+  const life = lifecycleView(sandbox.status, readLifecycle(sandbox), new Date());
+  const facts: [string, string][] = [
+    ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
+    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Model", sandbox.model ?? "Provider default"],
+    ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
+    ["Machine size", sandbox.machineSize ? machineSizeLabel(sandbox.machineSize) : "Not recorded"],
+    ["Owner", owner],
+    ["Created", formatDate(sandbox.createdAt)],
+    // The metadata has the lifetime in force, not whether it was requested: say no more than that.
+    ...(sandbox.effectiveTtlSeconds === null
+      ? []
+      : [["Lifetime", formatDuration(sandbox.effectiveTtlSeconds)] as [string, string]]),
+    ...(sandbox.expiresAt
+      ? [
+          ["Deadline", `${formatDate(sandbox.expiresAt)}${life.remaining ? `, ${life.remaining}` : ""}`] as [
+            string,
+            string,
+          ],
+        ]
+      : []),
+    ["Stopped", sandbox.stoppedAt ? formatDate(sandbox.stoppedAt) : "Not stopped"],
+  ];
+  return (
+    <div className="space-y-3 md:space-y-6">
+      <div className="space-y-3">
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
+          <Link href="/sandboxes">
+            <LinkPendingIcon>
+              <ArrowLeftIcon />
+            </LinkPendingIcon>
+            Sandboxes
+          </Link>
+        </Button>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">{sandboxName(sandbox)}</h1>
+          <StatusBadge status={sandbox.status} />
+        </div>
+      </div>
+      <Alert data-restricted role="status">
+        <LockIcon />
+        <AlertTitle>Owner and admins only</AlertTitle>
+        <AlertDescription>
+          Only its owner and organization admins can open this sandbox. Every member sees that it exists; its
+          conversation, files and connections stay closed to them.
+        </AlertDescription>
+      </Alert>
+      <Card className="max-w-xl gap-4">
+        <CardHeader>
+          <CardTitle className="text-base">Details</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Facts facts={facts} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function Facts({ facts }: { facts: [string, string][] }) {
+  return (
+    <dl className="divide-y text-sm">
+      {facts.map(([label, value]) => (
+        <div key={label} className="flex min-w-0 items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0">
+          <dt className="shrink-0 text-muted-foreground">{label}</dt>
+          <dd className="min-w-0 text-right font-medium break-words">{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

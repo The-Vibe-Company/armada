@@ -109,6 +109,15 @@ function seed(): State {
         ...sandbox(id(31), "bx_alice_failed", id(26), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),
         provider: "modal",
         boat_id: null,
+        // The effective size is listed; the evidence behind it (the repository, the capacity) is not (#680).
+        machine_size: {
+          version: 1,
+          requested: null,
+          effective: "large",
+          source: "repository",
+          repositoryDir: "api",
+          capacity: null,
+        },
       },
       {
         ...sandbox(id(32), "bx_bob_secret", id(22), BOB, "claude", "ready", "2026-11-08T10:03:00.000Z"),
@@ -378,11 +387,9 @@ function visibleRows(table: string, userId: string): Row[] {
       // that should not show it filters `removed_at=is.null` itself.
       return state.goldens.filter((row) => canReadGolden(row, userId));
     case "sandboxes":
-      return state.sandboxes.filter((row) => {
-        if (row.visibility === "private" && row.owner_id !== userId) return false;
-        const parent = state.goldens.find((item) => item.id === row.golden_id);
-        return parent ? canReadGolden(parent, userId) : false;
-      });
+      // As in the #680 contract: the raw row is the interior, read only by its owner or a current admin. Legacy
+      // visibility and the source golden take no part.
+      return state.sandboxes.filter((row) => canOpenSandbox(row, userId));
     case "credentials":
       return state.credentials.filter((row) =>
         row.scope === "user" ? row.owner_id === userId : isMember(row.owner_id, userId),
@@ -392,6 +399,68 @@ function visibleRows(table: string, userId: string): Row[] {
     default:
       return [];
   }
+}
+
+function canOpenSandbox(row: Row, userId: string): boolean {
+  return isMember(row.org_id, userId) && (row.owner_id === userId || isAdmin(row.org_id, userId));
+}
+
+/**
+ * `public.sandbox_list_metadata()` of the #680 contract: every sandbox of the caller's current organizations, as the
+ * exact `SandboxListMetadata` allowlist, whoever owns it and whatever its legacy visibility or golden.
+ */
+function sandboxListMetadata(userId: string): Row[] {
+  // As PostgREST serializes timestamptz.
+  const at = (value: unknown) =>
+    typeof value === "string" ? new Date(value).toISOString().replace(/\.\d{3}Z$/, "+00:00") : null;
+  return state.sandboxes
+    .filter((row) => isMember(row.org_id, userId))
+    .map((row) => {
+      const open = canOpenSandbox(row, userId);
+      const effective = (row.machine_size as { effective?: unknown } | null | undefined)?.effective;
+      const size = ["small", "medium", "large", "xlarge"].includes(String(effective)) ? effective : null;
+      return {
+        providerSandboxId: row.provider_sandbox_id || null,
+        boatId: row.provider === "boat" ? row.provider_sandbox_id || null : null,
+        id: row.id,
+        orgId: row.org_id,
+        ownerId: row.owner_id,
+        provider: row.provider,
+        harness: row.harness,
+        model: row.model ?? null,
+        reasoningEffort: row.reasoning_effort ?? null,
+        status: row.status,
+        createdAt: at(row.created_at),
+        stoppedAt: at(row.stopped_at),
+        expiresAt: at(row.expires_at),
+        effectiveTtlSeconds: row.effective_ttl_seconds ?? null,
+        machineSize: size,
+        displayLabel: `Sandbox ${row.id}`,
+        canOpen: open,
+        canManage: open,
+      };
+    });
+}
+
+/** PostgREST's filters, first order key, range and exact count over rows a function returned. */
+function page(all: Row[], url: URL): Response {
+  let rows = all.filter((row) => matches(row, url.searchParams));
+  const [column = "", direction = "asc"] = (url.searchParams.get("order") ?? "").split(",")[0]?.split(".") ?? [];
+  if (column)
+    rows = [...rows].sort(
+      (a, b) => String(a[column]).localeCompare(String(b[column])) * (direction === "desc" ? -1 : 1),
+    );
+  const total = rows.length;
+  const offset = Number(url.searchParams.get("offset") ?? 0);
+  // As PostgREST: an offset past the rows is not satisfiable.
+  if (offset > 0 && offset >= total)
+    return json({ code: "PGRST103", message: "Requested range not satisfiable", details: null, hint: null }, 416, {
+      "content-range": `*/${total}`,
+    });
+  const limit = url.searchParams.get("limit");
+  rows = rows.slice(offset, limit ? offset + Number(limit) : undefined);
+  const range = rows.length ? `${offset}-${offset + rows.length - 1}/${total}` : `*/${total}`;
+  return json(rows, 200, { "content-range": range });
 }
 
 function writableRow(table: string, row: Row, userId: string): boolean {
@@ -454,6 +523,8 @@ async function rest(request: Request, url: URL): Promise<Response> {
   if (!userId) return json({ message: "JWT required", code: "PGRST301" }, 401);
   const path = url.pathname.replace("/rest/v1/", "");
 
+  // A set-returning function is filtered, ordered, counted and paged by PostgREST like a table.
+  if (path === "rpc/sandbox_list_metadata") return page(sandboxListMetadata(userId), url);
   if (path.startsWith("rpc/")) return rpc(path.slice(4), await request.json(), userId);
 
   const table = path;
@@ -1432,6 +1503,11 @@ function control(url: URL, body: Row): Response {
       state.members.push({ org_id: id(11), user_id: ALICE, role: "member", created_at: now });
       state.goldens.push({ ...golden(id(23), "zenith-golden", "org", ALICE, "snap-zenith"), org_id: id(11) });
       state.sandboxes.push({ ...sandbox(id(33), "bx_zenith", id(23), ALICE, "codex", "ready", now), org_id: id(11) });
+      // Carol's, in an org where Alice is a plain member: listed to Alice there, never opened by her.
+      state.sandboxes.push({
+        ...sandbox(id(34), "bx_zenith_carol", id(23), id(3), "claude", "ready", now),
+        org_id: id(11),
+      });
       state.connections.push(
         mcpConnection(id(64), "Zenith Search", id(11), "org", ALICE, {
           url: "https://search.zenith.test/mcp",

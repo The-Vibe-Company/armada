@@ -356,7 +356,10 @@ test("a launch picks connections; personal ones need a private sandbox even from
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
 
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
-  await expect(page.getByText("Private (only its owner)")).toBeVisible();
+  // Who may open a sandbox is its owner and the admins (#680): the page states no per-sandbox visibility.
+  const facts = page.locator("dl").first();
+  await expect(facts).toContainText("Owner");
+  await expect(facts.getByText("Visibility")).toHaveCount(0);
   expect((await mockState()).controlCalls.find((call) => call.operation === "sandbox-connections")?.body).toEqual({
     org: ACME,
     id: page.url().split("/").pop(),
@@ -414,7 +417,6 @@ test("a sandbox's applied connections come from the registry, and a failed read 
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
   const section = page.locator("[data-slot=card]", { hasText: "MCP connections" });
   await expect(section).toContainText("Launched without MCP connections you can see.");
-  await expect(page.getByText("Org (every member)")).toBeVisible();
   await fetch(`${MOCK}/__test/fail-sandbox-connections`, { method: "POST" });
   await page.reload();
   await expect(section.getByRole("alert")).toContainText("could not be loaded");

@@ -609,12 +609,3 @@ export function authLabel(authType: ConnectionAuthType): string {
 export function transportLabel(transport: ConnectionTransport): string {
   return transport === "stdio" ? "stdio (in sandbox)" : transport === "sse" ? "SSE" : "Streamable HTTP";
 }
-
-/**
- * Who can see a sandbox, from its row (`sandboxes.visibility`, recorded at launch). Null for a row that predates
- * the column; the page then shows nothing rather than guessing.
- */
-export function sandboxVisibility(row: object): SandboxVisibility | null {
-  const value = (row as { visibility?: unknown }).visibility;
-  return oneOf(SANDBOX_VISIBILITIES, value) ? value : null;
-}

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { alert, IDS, MOCK, signIn } from "./helpers";
+import { alert, IDS, LABELS, MOCK, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
@@ -66,11 +66,8 @@ for (const mobile of [false, true]) {
     await expect(page).toHaveURL(/\/sandboxes$/);
     await expect(select).toHaveValue(ZENITH);
     if (mobile) await expect(select).toBeFocused();
-    await expect(page.getByRole("link", { name: "bx_zenith" })).toBeVisible();
-    await expect(page.getByText("bx_alice_running")).toHaveCount(0);
-    await expect(page.getByLabel("Golden", { exact: true }).getByRole("option", { name: "shared-golden" })).toHaveCount(
-      0,
-    );
+    await expect(page.getByRole("link", { name: LABELS.zenith })).toBeVisible();
+    await expect(page.getByText(LABELS.running)).toHaveCount(0);
     await expect(
       page.getByLabel("Owner", { exact: true }).getByRole("option", { name: "bob@example.com" }),
     ).toHaveCount(0);
@@ -87,7 +84,7 @@ for (const mobile of [false, true]) {
     await page.goto("/sandboxes?golden=00000000-0000-4000-8000-000000000023");
     await select.selectOption(ACME);
     await expect(page).toHaveURL(/\/sandboxes$/);
-    await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
+    await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
   });
 }
 
@@ -111,11 +108,11 @@ test("forged and removed preferences fall back; forged switch is refused server-
   await select.selectOption(ZENITH);
   await expect(select).toHaveValue(ZENITH);
   // The chosen option shows before the switch is saved; Zenith's sandbox shows only once it is.
-  await expect(page.getByRole("link", { name: "bx_zenith" })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.zenith })).toBeVisible();
   await fetch(`${MOCK}/__test/remove-zenith-membership`, { method: "POST" });
   await page.reload();
   await expect(select).toHaveValue(ACME);
-  await expect(page.getByText("bx_zenith")).toHaveCount(0);
+  await expect(page.getByText(LABELS.zenith)).toHaveCount(0);
 });
 
 test("mutation targets cannot escape the selected org even when the viewer administers the other org", async ({
@@ -161,7 +158,7 @@ test("without memberships the shell offers organization setup and no scoped reso
   await signIn(page, "carol@example.com");
   await expect(page.getByRole("link", { name: "Create an organization", exact: true })).toBeVisible();
   await expect(page.getByLabel("Active organization")).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "bx_alice_running" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.running })).toHaveCount(0);
   await page.getByRole("link", { name: "Create an organization", exact: true }).click();
   await expect(page.getByRole("button", { name: "Create org", exact: true })).toBeVisible();
 });

@@ -2,7 +2,7 @@ import type { Database as Generated, Json, MemberRole, Visibility } from "@armad
 
 /**
  * The generated tables plus the functions of `20261108150000_dashboard_functions.sql` and
- * `save_github_connection` (`20261108210000_github_installations.sql`).
+ * `save_github_connection` (`20261108210000_github_installations.sql`), and the generated #680 metadata read port.
  */
 export type Database = Omit<Generated, "public"> & {
   public: Omit<Generated["public"], "Functions"> & {
@@ -14,6 +14,7 @@ export type Database = Omit<Generated, "public"> & {
       };
       add_org_member: { Args: { target_org: string; member_email: string; member_role: MemberRole }; Returns: string };
       set_golden_visibility: { Args: { target_golden: string; new_visibility: Visibility }; Returns: undefined };
+      sandbox_list_metadata: Generated["public"]["Functions"]["sandbox_list_metadata"];
       save_github_connection: {
         Args: {
           github_user_id: number;

@@ -12,7 +12,6 @@ import {
   oauthCallbackInput,
   oauthReturn,
   parseStdioImport,
-  sandboxVisibility,
   statusLabel,
   unreadyDefaults,
 } from "../src/lib/connections.ts";
@@ -222,10 +221,4 @@ test("a stdio connection reads as configured for launch, never as a live connect
   expect(statusLabel({ transport: "stdio", status: "connected" })).toBe("Configured for launch");
   expect(statusLabel({ transport: "stdio", status: "not_connected" })).toBe("Not configured");
   expect(statusLabel({ transport: "http", status: "connected" })).toBe("Connected");
-});
-
-test("a sandbox's visibility is read from its row, and is unknown for a row without it", () => {
-  expect(sandboxVisibility({ visibility: "private" })).toBe("private");
-  expect(sandboxVisibility({ visibility: "public" })).toBeNull();
-  expect(sandboxVisibility({})).toBeNull();
 });
