@@ -108,16 +108,21 @@ test("existing native children use new GitHub material and register it before gh
     expect(second.split("\n")[0]).toBe(`${createHash("sha256").update(`${next}\n`).digest("hex")}  -`);
     expect(second).not.toContain("inherited-stale");
     expect(second).not.toContain(current);
-    child.stdin.write("gh pr view https://github.com/foreign/repo/pull/1; echo URL_STATUS:$?; echo PHASE_DONE\n");
+    child.stdin.write(
+      "gh pr view https://github.com/foreign/repo/pull/1; echo URL_STATUS:$?; gh repo view foreign/repo; echo REPO_STATUS:$?; echo PHASE_DONE\n",
+    );
     while (!pending.includes("PHASE_DONE\n")) {
       const item = await reader.read();
       if (item.done) throw Error("fixture exited");
       pending += new TextDecoder().decode(item.value);
     }
     expect(pending).toContain("URL_STATUS:1");
+    expect(pending).toContain("REPO_STATUS:1");
     child.stdin.end();
     await child.exited;
-    expect(await new Response(child.stderr).text()).toBe("Managed GitHub credentials unavailable.\n");
+    expect(await new Response(child.stderr).text()).toBe(
+      "Managed GitHub credentials unavailable.\nManaged GitHub credentials unavailable.\n",
+    );
   } finally {
     socket.close();
     await rm(root, { recursive: true, force: true });

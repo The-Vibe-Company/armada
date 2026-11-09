@@ -248,6 +248,20 @@ try:
             if arg.startswith('https://github.com/'):
                 selected=re.match(r'^https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',arg)
                 if not selected or repository(selected.group(1)).lower()!=repo.lower(): raise ValueError()
+        if args and args[0]=='repo':
+            # Only exact repository view selectors are supported; other repo mutations fail closed.
+            if len(args)<2 or args[1]!='view': raise ValueError()
+            rest=args[2:]
+            flags_with_values={'--json','--jq','-q','--template','-t','--branch','-b'}
+            i=0
+            while i<len(rest):
+                arg=rest[i]
+                if arg in flags_with_values:
+                    if i+1>=len(rest): raise ValueError()
+                    i+=2; continue
+                if any(arg.startswith(flag+'=') for flag in flags_with_values) or arg in ('--web','-w'): i+=1; continue
+                if repository(arg).lower()!=repo.lower(): raise ValueError()
+                i+=1
         if args and args[0]=='api':
             for arg in args[1:]:
                 endpoint=arg.removeprefix('https://api.github.com/').lstrip('/')
