@@ -126,11 +126,14 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         try await requireEnabled()
         do {
             let receipt = try await client.submitOrchestratorOperation(id)
-            if receipt.state == .succeeded || receipt.state == .failed {
-                try? await client.discardOrchestratorOperation(id)
-            }
+            // Keep terminal knowledge available to concurrent same-handle callers.
+            // It does not block preparing a new command; explicit cleanup is separate.
             return Self.operation(receipt)
         } catch {
+            if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
+               receipt.state == .succeeded || receipt.state == .failed {
+                return Self.operation(receipt)
+            }
             throw await submitFailure(error, id: id)
         }
     }
@@ -245,23 +248,21 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     /// is safely discardable. Generic409 can follow effects; a refused retry does
     /// not resolve earlier ambiguity. Never advertise a new-key retry in that case.
     private func submitFailure(_ error: any Error, id: UUID) async -> ServiceFailure {
+        if let armada = error as? ArmadaError, armada == .signedOut { return .signedOut }
+        // Absence after concurrent cleanup is not proof of non-admission.
+        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .uncertain }
         if let armada = error as? ArmadaError {
             switch armada {
-            case .signedOut: return .signedOut
             case .forbidden, .http(404): return .noAccess
             case .conflict, .invalidRequest, .http(400):
-                guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else {
-                    return .rejected("This request is no longer saved on this device.")
-                }
-                guard saved.canDiscard else { return .uncertain }
+                let neverDispatched = saved.state == .pending && saved.receipt == nil && saved.canDiscard
+                // Permission to clean up a succeeded receipt is NOT rejection evidence.
+                guard saved.rejectedBeforeAdmission || neverDispatched else { return .uncertain }
                 do { try await client.discardOrchestratorOperation(id) }
                 catch { return .uncertain }
                 return armada == .conflict ? .staleRevision : .rejected("Armada refused this request.")
             default: break
             }
-        }
-        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else {
-            return .rejected("This request is no longer saved on this device.")
         }
         if saved.state == .pending, saved.receipt == nil { return .offline }
         return .uncertain

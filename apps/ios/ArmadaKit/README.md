@@ -92,7 +92,10 @@ It never calls interior routes and does not infer authority from display IDs.
 or a local command with zero dispatches (including capability refusal);
 `rejectedBeforeAdmission` is true only for a saved local rejection without a
 server operation receipt. The UI must consult these properties, not infer them
-from an HTTP status. Only the actual owner API's structured HTTP400
+from an HTTP status. Cleanup permission also covers succeeded receipts and is
+NOT rejection evidence. Known terminal receipts win over concurrent transport
+failures; the app adapter retains them until explicit cleanup rather than
+restoring a draft from a stale failure. Only the actual owner API's structured HTTP400
 `error.code == "invalid_request"` maps to `ArmadaError.invalidRequest`. On the
 first dispatch with no other attempt, this becomes terminal/discardable. Bare
 HTTP400, generic409 and any rejection after an earlier ambiguous attempt remain

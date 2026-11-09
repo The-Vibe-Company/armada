@@ -267,7 +267,21 @@ private actor RefreshTransport: ArmadaTransport {
 
 private actor SubmissionRaceTransport: ArmadaTransport {
     private let firstMutationSucceeds: Bool
-    init(firstMutationSucceeds: Bool = true) { self.firstMutationSucceeds = firstMutationSucceeds }
+    private let gateMutations: Bool
+    private let laterMutationStatus: Int
+    init(firstMutationSucceeds: Bool = true, gateMutations: Bool = false, laterMutationStatus: Int = 400) {
+        self.firstMutationSucceeds = firstMutationSucceeds
+        self.gateMutations = gateMutations
+        self.laterMutationStatus = laterMutationStatus
+    }
+    private var mutationReleases: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var mutationEntered: [Int: CheckedContinuation<Void, Never>] = [:]
+    private(set) var mutationRequests: [URLRequest] = []
+    func waitForMutation(_ index: Int) async {
+        if mutationReleases[index] != nil { return }
+        await withCheckedContinuation { mutationEntered[index] = $0 }
+    }
+    func releaseMutation(_ index: Int) { mutationReleases.removeValue(forKey: index)?.resume() }
     private var capabilityCount = 0
     private var releases: [Int: CheckedContinuation<Void, Never>] = [:]
     private var entered: [Int: CheckedContinuation<Void, Never>] = [:]
@@ -292,14 +306,22 @@ private actor SubmissionRaceTransport: ArmadaTransport {
             body = #"{"version":1,"enabled":true}"#
         default:
             mutationCount += 1
-            if mutationCount == 1, firstMutationSucceeds {
+            let mutation = mutationCount
+            mutationRequests.append(request)
+            if gateMutations {
+                await withCheckedContinuation { continuation in
+                    mutationReleases[mutation] = continuation
+                    mutationEntered.removeValue(forKey: mutation)?.resume()
+                }
+            }
+            if mutation == 1, firstMutationSucceeds {
                 status = 202
                 body = #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"stop","state":"succeeded","revision":8,"errorCode":null}"#
             } else {
-                status = mutationCount == 1 ? 503 : 400
-                body = mutationCount == 1
-                    ? #"{"error":{"code":"unavailable","message":"unavailable"}}"#
-                    : #"{"error":{"code":"invalid_request","message":"invalid_request"}}"#
+                status = mutation == 1 ? 503 : laterMutationStatus
+                if status == 503 { body = #"{"error":{"code":"unavailable","message":"unavailable"}}"# }
+                else if status == 409 { body = #"{"error":{"code":"conflict","message":"conflict"}}"# }
+                else { body = #"{"error":{"code":"invalid_request","message":"invalid_request"}}"# }
             }
         }
         return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
@@ -421,4 +443,33 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     #expect(throws: (any Error).self) {
         _ = try JSONDecoder().decode(OrchestratorEventPage.self, from: Data(malformed.utf8))
     }
+}
+
+@Test func concurrentPostFailureReturnsAlreadyKnownTerminalReceipt() async throws {
+    let transport = SubmissionRaceTransport(gateMutations: true, laterMutationStatus: 409)
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    let first = Task { try await client.submitOrchestratorOperation(command.id) }
+    await transport.waitForCapability(1)
+    await transport.releaseCapability(1)
+    await transport.waitForMutation(1)
+    let second = Task { try await client.submitOrchestratorOperation(command.id) }
+    await transport.waitForCapability(2)
+    await transport.releaseCapability(2)
+    await transport.waitForMutation(2)
+    // Both actual POSTs are in flight. One authoritative success arrives before
+    // the other generic409; cleanup permission must never turn it into rejection.
+    await transport.releaseMutation(1)
+    let receipt = try await first.value
+    #expect(receipt.state == .succeeded)
+    await transport.releaseMutation(2)
+    #expect(try await second.value.id == receipt.id)
+    #expect(await client.pendingOperations.first?.receipt?.state == .succeeded)
+    #expect(await client.pendingOperations.first?.rejectedBeforeAdmission == false)
+    let requests = await transport.mutationRequests
+    #expect(requests.count == 2)
+    #expect(requests[0].httpBody == requests[1].httpBody)
+    #expect(requests[0].value(forHTTPHeaderField: "Idempotency-Key") == requests[1].value(forHTTPHeaderField: "Idempotency-Key"))
 }

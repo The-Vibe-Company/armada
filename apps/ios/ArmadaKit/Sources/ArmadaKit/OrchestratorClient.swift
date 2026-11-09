@@ -105,6 +105,7 @@ extension ArmadaClient {
             try update(pending.updating(state: receipt.state, receipt: receipt))
             return pendingOperations.first(where: { $0.id == operationID })?.receipt ?? receipt
         } catch let error as ArmadaError where error == .invalidRequest {
+            if let receipt = terminalReceipt(operationID) { return receipt }
             // The actual handler's structured invalid_request response is pre-effect rejection.
             // Preserve any concurrent terminal receipt; otherwise allow explicit discard.
             if attempt == 1, pendingOperations.first(where: { $0.id == operationID })?.dispatchCount == attempt {
@@ -113,9 +114,15 @@ extension ArmadaClient {
             // A refused retry cannot establish the earlier unknown outcome.
             throw error
         } catch {
+            if let receipt = terminalReceipt(operationID) { return receipt }
             // Previously persisted uncertain bytes remain even if the response was lost.
             throw error
         }
+    }
+    private func terminalReceipt(_ id: UUID) -> OrchestratorOperation? {
+        guard let receipt = pendingOperations.first(where: { $0.id == id })?.receipt,
+              receipt.state == .succeeded || receipt.state == .failed else { return nil }
+        return receipt
     }
     /// A never-dispatched local command, terminal receipt or proven initial
     /// validation rejection may be discarded. Server-pending/uncertain effects cannot.
