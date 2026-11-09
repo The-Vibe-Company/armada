@@ -25,7 +25,7 @@ export interface ResourceStore {
   history(sandboxId: string, now: Date): Promise<ResourceHistory>;
 }
 interface ResourceRow extends SandboxRow {
-  resource_sampling_token: string | null;
+  resource_sampling_claim_id: string | null;
   resource_sampling_after: string | Date | null;
   resource_sampling_generation: string | number | bigint | null;
   activity_until: string | Date | null;
@@ -60,7 +60,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
       if (!UUID.test(id)) throw notFound();
       const token = crypto.randomUUID();
       const admitted = await sql.query<{ token: string }>(
-        `update public.sandboxes s set resource_sampling_token=$4::uuid,
+        `update public.sandboxes s set resource_sampling_claim_id=$4::uuid,
            resource_sampling_after=$5::timestamptz+interval '10 seconds',resource_sampling_generation=s.lifecycle_generation
          where ${VISIBLE} and s.id=$3::uuid and s.status in ('ready','running')
            and s.resource_project is not null and s.resource_project<>'null'::jsonb and s.machine_size->'capacity' is not null
@@ -68,7 +68,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
            and (s.resource_sampling_after is null or s.resource_sampling_after <= $5::timestamptz)
            and (s.activity_until is null or s.activity_until <= $5::timestamptz)
            and (s.reconcile_lease_until is null or s.reconcile_lease_until <= $5::timestamptz)
-         returning s.resource_sampling_token::text as token`,
+         returning s.resource_sampling_claim_id::text as token`,
         [...scope, id, token, at],
       );
       if (admitted.rows[0]) return admitted.rows[0].token;
@@ -91,7 +91,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
         const row = await target(db, id, true);
         const replay = await db.query<{ same: boolean }>(
           `select o.observation=$5::text::jsonb as same from public.resource_observations o
-           join public.sandboxes s on s.id=o.sandbox_id where ${VISIBLE} and s.id=$3::uuid and o.admission_token=$4::uuid`,
+           join public.sandboxes s on s.id=o.sandbox_id where ${VISIBLE} and s.id=$3::uuid and o.admission_claim_id=$4::uuid`,
           [...scope, id, admissionToken, JSON.stringify(observation)],
         );
         if (replay.rows[0]) {
@@ -99,7 +99,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
           return;
         }
         if (
-          row.resource_sampling_token !== admissionToken ||
+          row.resource_sampling_claim_id !== admissionToken ||
           row.resource_sampling_generation === null ||
           row.lifecycle_generation === undefined ||
           String(row.resource_sampling_generation) !== String(row.lifecycle_generation) ||
@@ -163,7 +163,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
           }
         }
         await db.query(
-          `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_token)
+          `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_claim_id)
            select s.id,$4,$5,$6::uuid,$7,$8::timestamptz,$9::text::jsonb,$10::uuid from public.sandboxes s
            where ${VISIBLE} and s.id=$3::uuid`,
           [

@@ -1,6 +1,6 @@
 -- Additive, server-owned evidence only. Historical project/capacity evidence is not reconstructed.
 alter table public.sandboxes add column resource_project jsonb,
-  add column resource_sampling_token uuid,
+  add column resource_sampling_claim_id uuid,
   add column resource_sampling_after timestamptz,
   add column resource_sampling_generation bigint;
 grant select (resource_project) on public.sandboxes to authenticated;
@@ -19,7 +19,7 @@ for each row execute function public.guard_resource_project();
 create table public.resource_observations (
   id bigint generated always as identity primary key,
   sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
-  admission_token uuid not null unique,
+  admission_claim_id uuid not null unique,
   physical_id text not null check (length(physical_id) between 1 and 512),
   generation text not null check (length(generation) between 1 and 256),
   boot_id uuid not null,

@@ -216,12 +216,12 @@ test("retention prunes elapsed and excess samples while malformed payloads canno
     id = await f.sandbox();
   const seed = f.reading(id);
   await db.query(
-    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_token)
+    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_claim_id)
     select $1,$2,$3,$4::uuid,i,$5::timestamptz,$6::jsonb,gen_random_uuid() from generate_series(1,721) i`,
     [id, seed.physicalId, seed.generation, seed.reading.bootId, now.toISOString(), JSON.stringify(seed)],
   );
   await db.query(
-    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_token)
+    `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_claim_id)
     values($1,$2,$3,$4::uuid,722,$5::timestamptz-interval '15 days',$6::jsonb,gen_random_uuid())`,
     [
       id,
