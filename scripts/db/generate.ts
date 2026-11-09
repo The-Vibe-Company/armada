@@ -66,6 +66,7 @@ const ROW_ALIASES: Record<string, string> = {
   oauth_codes: "OAuthCode",
   orgs: "Org",
   organization_invitations: "OrganizationInvitationRow",
+  resource_observations: "ResourceObservation",
   sandboxes: "Sandbox",
   service_tokens: "ServiceToken",
 };

@@ -170,6 +170,7 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     },
     () => {},
     undefined,
+    undefined,
     {
       reconcileOne: async () => {
         orchEntered.resolve("orchestrator");
@@ -203,6 +204,38 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     held.resolve(false);
     ordinaryDrain.resolve();
     orchDrain.resolve();
+    await workers.done;
+  }
+});
+
+test("retention maintenance runs independently and shutdown tracks an in-flight cleanup", async () => {
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const workers = startServerWorkers(
+    { runOne: async () => false, reconcileOne: async () => {} },
+    { reconcileOne: async () => false, drain: async () => {} },
+    () => {},
+    undefined,
+    async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  );
+  try {
+    await entered.promise;
+    workers.stop();
+    let done = false;
+    workers.done.then(() => {
+      done = true;
+    });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    release.resolve();
+    await workers.done;
+    expect(done).toBe(true);
+  } finally {
+    release.resolve();
+    workers.stop();
     await workers.done;
   }
 });

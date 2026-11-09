@@ -99,6 +99,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       expectedSessionId: string;
       input: Omit<RuntimePromptRequest, "text">;
     }
+  | { op: "resourceObservation" }
   | ConfigureMcpRequest
   | InstallOrchestratorEpochRequest
   | ScrubOrchestratorEpochRequest

@@ -46,7 +46,7 @@ export function createRunnerTransport(
       const budget =
         op === "exec" && !exec.input?.detached
           ? ((exec.input?.timeoutSeconds ?? 3600) + 30) * 1000
-          : op === "health"
+          : op === "health" || op === "resourceObservation"
             ? 5000
             : 120_000;
       const response = await fetcher(connection.url, {

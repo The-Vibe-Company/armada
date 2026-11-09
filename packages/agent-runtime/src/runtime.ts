@@ -21,6 +21,7 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { sampleVmResources } from "./resource-sampler.ts";
 export class Runner {
   private active = new Map<
     string,
@@ -148,6 +149,14 @@ export class Runner {
         const result = this.configureMcp(r.configuration);
         return Response.json({ version: 1, requestId: r.requestId, result });
       }
+      if (r.op === "resourceObservation") {
+        if (Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op"].includes(key)))
+          throw Error("invalid_request");
+        if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
+        // Observation is fresh read-only data: never replay cached request outcomes or journal it.
+        const result = await sampleVmResources();
+        return Response.json({ version: 1, requestId: r.requestId, result });
+      }
       const old = this.journal.db.query("SELECT body FROM requests WHERE id=?").get(r.requestId) as {
         body: string;
       } | null;
@@ -215,7 +224,10 @@ export class Runner {
     return { revision: configuration.revision };
   }
   private async dispatch(
-    r: Exclude<RunnerRequest, { op: "configureMcp" | "installOrchestratorEpoch" | "scrubOrchestratorEpoch" }>,
+    r: Exclude<
+      RunnerRequest,
+      { op: "configureMcp" | "resourceObservation" | "installOrchestratorEpoch" | "scrubOrchestratorEpoch" }
+    >,
   ): Promise<unknown> {
     if (r.op === "observeOrchestrator") {
       if (
