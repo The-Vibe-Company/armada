@@ -29,6 +29,7 @@ test("create preserves explicit account/repository/model choices and leaves defa
   expect(command).toEqual({
     action: "create",
     key: "create-1",
+    orgId: "org-1",
     json: true,
     all: false,
     follow: false,
@@ -53,6 +54,8 @@ test("mutations preserve the caller key/revision and resume never manufactures a
     const command = parseOrchestratorCommand([
       action,
       "orchestrator-1",
+      "--org",
+      "org-1",
       ...(message ? ["continue the review"] : []),
       "--idempotency-key",
       "original-key",
@@ -63,6 +66,7 @@ test("mutations preserve the caller key/revision and resume never manufactures a
       action: action === "send" ? "message" : action,
       id: "orchestrator-1",
       key: "original-key",
+      orgId: "org-1",
       body: { expectedRevision: 7, ...(message ? { text: "continue the review" } : {}) },
       json: false,
       all: false,
@@ -79,17 +83,20 @@ test("rejects ambiguous or unfenced mutations before transport", () => {
     ["stop", "id", "--expected-revision", "1.5", "--idempotency-key", "key"],
     ["stop", "id", "--expected-revision", "9007199254740992", "--idempotency-key", "key"],
     ["stop", "id", "--expected-revision", "2", "--idempotency-key", "key\nvalue"],
+    ["stop", "id", "--expected-revision", "2", "--idempotency-key", " key "],
     ["stop", "id", "--expected-revision", "2", "--idempotency-key", "key", "--idempotency-key", "other"],
     ["send", "id", " ", "--expected-revision", "2", "--idempotency-key", "key"],
     ["list", "--org", "org", "--follow"],
   ])
-    expect(() => parseOrchestratorCommand(argv)).toThrow();
+    expect(() => parseOrchestratorCommand(argv.includes("--org") ? argv : [...argv, "--org", "org-1"])).toThrow();
 });
 
 test("cursor remains opaque and query encoding is safe for reconnect", () => {
   const command = parseOrchestratorCommand([
     "events",
     "id",
+    "--org",
+    "org-1",
     "--cursor",
     "a+/=&?",
     "--limit",
@@ -99,10 +106,10 @@ test("cursor remains opaque and query encoding is safe for reconnect", () => {
   ]);
   expect(command.action).toBe("events");
   if (!("query" in command)) throw new Error("Expected read command");
-  expect(command.query.toString()).toBe("cursor=a%2B%2F%3D%26%3F&limit=500");
+  expect(command.query.toString()).toBe("orgId=org-1&cursor=a%2B%2F%3D%26%3F&limit=500");
   expect(command.follow).toBe(true);
   for (const limit of ["0", "501", "1e2"])
-    expect(() => parseOrchestratorCommand(["events", "id", "--limit", limit])).toThrow();
+    expect(() => parseOrchestratorCommand(["events", "id", "--org", "org-1", "--limit", limit])).toThrow();
 });
 
 test("operation summary does not claim an admitted resume completed", () => {

@@ -5,22 +5,26 @@ import {
   type OrchestratorCreate,
   type OrchestratorDetail,
   type OrchestratorEvent,
+  type OrchestratorEventPage,
   type OrchestratorFence,
   type OrchestratorList,
   type OrchestratorMessage,
   type OrchestratorOperation,
 } from "@armada/core";
 import { type Args, parseArgs, single } from "./args.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
+import type { AuthIo } from "./auth-commands.ts";
 
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
          --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>]
          [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
-  detail <id>
-  send|steer <id> <text> --expected-revision <revision> --idempotency-key <key>
-  stop|resume <id> --expected-revision <revision> --idempotency-key <key>
-  events <id> [--cursor <cursor>] [--limit <1..500>] [--all|--follow]
+  capabilities
+  detail <id> --org <id>
+  send|steer <id> <text> --org <id> --expected-revision <revision> --idempotency-key <key>
+  stop|resume <id> --org <id> --expected-revision <revision> --idempotency-key <key>
+  events <id> --org <id> [--cursor <cursor>] [--limit <1..500>] [--all|--follow]
   All commands accept --json. Events with --json emit one JSON page per line,
   including the server cursor for reconnect. Reuse the original key and identical
   arguments after an uncertain mutation; inspect detail/events for completion.
@@ -28,11 +32,12 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   availability, account access, continuity and lifecycle; no local quota policy.
 `;
 
-type ReadCommand = { action: "list" | "detail" | "events"; id?: string; query: URLSearchParams };
+type ReadCommand = { action: "list" | "detail" | "events" | "capabilities"; id?: string; query: URLSearchParams };
 type MutationCommand = {
   action: "create" | "message" | "steer" | "stop" | "resume";
   id?: string;
   key: string;
+  orgId: string;
   body: OrchestratorCreate | OrchestratorFence | OrchestratorMessage;
 };
 export type OrchestratorCommand = (ReadCommand | MutationCommand) & {
@@ -101,17 +106,18 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
         ORCHESTRATOR_DEFAULTS.minIdleSeconds,
         ORCHESTRATOR_DEFAULTS.maxIdleSeconds,
       );
-    command = { action, key: idempotencyKey(args), body };
-  } else if (action === "list" || action === "detail" || action === "events") {
-    if (positionals.length !== (action === "list" ? 0 : 1))
+    command = { action, key: idempotencyKey(args), orgId: body.orgId, body };
+  } else if (action === "list" || action === "detail" || action === "events" || action === "capabilities") {
+    if (positionals.length !== (action === "list" || action === "capabilities" ? 0 : 1))
       usage(`${action} ${action === "list" ? "takes no ID" : "needs one ID"}.`);
     const query = new URLSearchParams();
-    if (action === "list") {
-      allow("--org", "--cursor", "--limit");
+    if (action !== "capabilities") {
+      allow("--org");
       query.set("orgId", required(args, "--org"));
     }
+    if (action === "list") allow("--cursor", "--limit");
     if (action === "events") allow("--cursor", "--limit", "--all", "--follow");
-    if (action !== "detail") {
+    if (action === "list" || action === "events") {
       const cursor = single(args, "--cursor");
       if (cursor !== undefined) query.set("cursor", cursor);
       if (single(args, "--limit") !== undefined)
@@ -122,7 +128,7 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
     const message = action === "send" || action === "steer";
     if (positionals.length !== (message ? 2 : 1) || (message && !positionals[1]?.trim()))
       usage(`${action} needs one ID${message ? " and one nonempty text argument" : ""}.`);
-    allow("--expected-revision", "--idempotency-key");
+    allow("--expected-revision", "--idempotency-key", "--org");
     const fence: OrchestratorFence = {
       expectedRevision: integer(args, "--expected-revision", 0, Number.MAX_SAFE_INTEGER),
     };
@@ -130,9 +136,10 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       action: action === "send" ? "message" : action,
       id: positionals[0] as string,
       key: idempotencyKey(args),
+      orgId: required(args, "--org"),
       body: message ? { ...fence, text: positionals[1] as string } : fence,
     };
-  } else usage("Choose create, list, detail, send, steer, stop, resume or events.");
+  } else usage("Choose create, list, detail, send, steer, stop, resume events or capabilities.");
   for (const option of args.options.keys()) {
     if (!allowed.has(option)) usage(`${option} is not supported by ${action}.`);
     single(args, option);
@@ -154,7 +161,8 @@ function integer(args: Args, name: string, min: number, max: number): number {
 }
 function idempotencyKey(args: Args): string {
   const key = required(args, "--idempotency-key");
-  if (!/^[\x20-\x7e]{1,128}$/.test(key)) usage("--idempotency-key must contain 1–128 printable ASCII characters.");
+  if (key.trim() !== key || !/^[\x20-\x7e]{1,128}$/.test(key))
+    usage("--idempotency-key must contain 1–128 printable ASCII characters without leading or trailing spaces.");
   return key;
 }
 function usage(message: string): never {
@@ -182,4 +190,80 @@ export function orchestratorSummary(value: OrchestratorList | OrchestratorDetail
 export function orchestratorEventSummary(event: OrchestratorEvent): string {
   // Preserve new event kinds rather than silently dropping their contents.
   return `${event.id}\t${event.at}\t${JSON.stringify(event)}`;
+}
+
+/** Candidate #662 HTTP contract. No provider, authority, store or control-proxy implementation here. */
+export async function orchestratorCommand(argv: readonly string[], auth: AuthIo): Promise<number> {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "help") {
+    auth.out(ORCHESTRATOR_HELP);
+    return 0;
+  }
+  const command = parseOrchestratorCommand(argv);
+  const client = await createArmadaApiClient(auth, { preserveServerErrors: true });
+  const root = "/api/v1/orchestrators";
+  if ("body" in command) {
+    const path =
+      command.action === "create" ? root : `${root}/${encodeURIComponent(command.id ?? "")}/${command.action}`;
+    const result = versioned(
+      await client.request<OrchestratorOperation>(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": command.key },
+        body: JSON.stringify({ ...command.body, orgId: command.orgId }),
+      }),
+    );
+    auth.out(`${command.json ? JSON.stringify(result) : orchestratorSummary(result)}\n`);
+    return result.state === "failed" || result.state === "uncertain" ? 1 : 0;
+  }
+  if (command.action === "capabilities") {
+    const result = versioned(
+      await client.request<{ version: 1; enabled: boolean; reason: string }>(`${root}/capabilities`),
+    );
+    auth.out(
+      `${command.json ? JSON.stringify(result) : `Orchestrators ${result.enabled ? "enabled" : "disabled"}: ${result.reason}`}\n`,
+    );
+    return 0;
+  }
+  const path =
+    command.action === "list"
+      ? root
+      : `${root}/${encodeURIComponent(command.id ?? "")}${command.action === "events" ? "/events" : ""}`;
+  if (command.action !== "events") {
+    const result = versioned(await client.request<OrchestratorList | OrchestratorDetail>(`${path}?${command.query}`));
+    auth.out(`${command.json ? JSON.stringify(result) : orchestratorSummary(result)}\n`);
+    return 0;
+  }
+  // No mutation retries, no synthetic prompts, and no cursor advancement before page delivery.
+  // A failed poll exits with the last delivered cursor still present in stdout for reconnect.
+  for (;;) {
+    const page = versioned(await client.request<OrchestratorEventPage>(`${path}?${command.query}`));
+    if (
+      !Array.isArray(page.events) ||
+      typeof page.hasMore !== "boolean" ||
+      (page.cursor !== null && typeof page.cursor !== "string")
+    )
+      throw new AuthError("Invalid orchestrator event page.", "unavailable");
+    auth.out(
+      command.json
+        ? `${JSON.stringify(page)}\n`
+        : `${page.events.map(orchestratorEventSummary).join("\n")}${page.events.length ? "\n" : ""}Cursor: ${JSON.stringify(page.cursor)}\n`,
+    );
+    if (!command.all && !command.follow) return 0;
+    const previous = command.query.get("cursor");
+    if (page.cursor !== null) command.query.set("cursor", page.cursor);
+    if (page.hasMore && (page.cursor === null || page.cursor === previous))
+      throw new AuthError(
+        "Orchestrator event cursor did not advance; reconnect from the last delivered cursor.",
+        "unavailable",
+      );
+    if (!page.hasMore) {
+      if (!command.follow) return 0;
+      await (auth.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(1000);
+    }
+  }
+}
+
+function versioned<T extends { version: number }>(value: T): T {
+  if (!value || value.version !== ORCHESTRATOR_CONTRACT_VERSION)
+    throw new AuthError("Unsupported orchestrator response version.", "unavailable");
+  return value;
 }
