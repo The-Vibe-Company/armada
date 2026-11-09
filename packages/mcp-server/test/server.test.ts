@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore } from "@armada/core/server";
+import { createSqlVaultStore, mutateCredentialAccount } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
@@ -682,6 +682,54 @@ describe("tools", () => {
     const all = await call(mcp, "logs", { id: launched.data.id, all: true });
     expect(all.data.events).toHaveLength(206);
     expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
+  });
+
+  test("real launch persists account binding and send/restart steer refuse a removed source without using a new default", async () => {
+    const { token, client, people, db, boat } = await start();
+    const store = createSqlVaultStore(db);
+    const first = await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
+      action: "set",
+      scope: "user",
+      kind: "openai",
+      name: "Work",
+      value: "work-subscription",
+    });
+    const second = await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
+      action: "set",
+      scope: "user",
+      kind: "openai",
+      name: "Other",
+      value: "other-subscription",
+    });
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", credentialId: first.id });
+    expect(launched.isError).not.toBe(true);
+    expect(
+      (await db.query("select credential_id,credential_version from sandboxes where id=$1", [launched.data.id]))
+        .rows[0],
+    ).toEqual({ credential_id: first.id, credential_version: 1 });
+    await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
+      action: "default",
+      scope: "user",
+      id: second.id!,
+    });
+    const sent = await call(mcp, "send", { id: launched.data.id, prompt: "Continue" });
+    expect(sent.isError).not.toBe(true);
+    const count = boat.prompts.length;
+    await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
+      action: "remove",
+      scope: "user",
+      id: first.id!,
+    });
+    const refused = await call(mcp, "send", { id: launched.data.id, prompt: "Must not use another account" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("No fallback was used");
+    expect(boat.prompts).toHaveLength(count);
+    const steerCount = boat.steers.length;
+    const steerRefused = await call(mcp, "steer", { id: launched.data.id, text: "Must not restart" });
+    expect(steerRefused.isError).toBe(true);
+    expect(steerRefused.text).toContain("No fallback was used");
+    expect(boat.steers).toHaveLength(steerCount);
   });
 
   test("send continues the conversation and marks the sandbox running", async () => {

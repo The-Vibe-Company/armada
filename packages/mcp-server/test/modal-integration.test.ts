@@ -84,7 +84,7 @@ test("private image org-fallback provenance survives adding a personal key, rota
     });
     async function orgCredential(suffix: string) {
       await db.query(
-        "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2) on conflict(scope,owner_id,kind) do update set value_enc=excluded.value_enc",
+        "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2) on conflict(scope,owner_id,kind) where kind in ('boat','modal') do update set value_enc=excluded.value_enc",
         [people.org, await encryptSecret(JSON.stringify(pair(suffix)), ENCRYPTION_KEY)],
       );
     }
