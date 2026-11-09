@@ -634,6 +634,49 @@ test("a stopped-only beforeResume hook refuses the provider resume API on fence 
   expect(methods).toEqual(["GET"]);
 });
 
+test("resource collection uses bounded fixed file reads, boot fencing and no commands or telemetry writes", async () => {
+  // Synthetic protocol response, not real provider utilization evidence.
+  const boot = "00000000-0000-0000-0000-000000000001";
+  const data: [string, string][] = [
+    ["/proc/sys/kernel/random/boot_id", boot],
+    ["/proc/uptime", "10.00 0"],
+    ["/proc/stat", "cpu 10 0 10 80 0 0 0 0 0 0\ncpu0 10 0 10 80 0 0 0 0 0 0\n"],
+    ["/proc/meminfo", "MemTotal: 4096 kB\nMemAvailable: 2048 kB\n"],
+    ["/proc/pressure/cpu", "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"],
+    ["/proc/vmstat", "oom_kill 0\n"],
+    ["/proc/uptime", "10.01 0"],
+    ["/proc/sys/kernel/random/boot_id", boot],
+  ];
+  const state = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
+  const boat = fakeBoat(
+    state,
+    ...data.map(([path, content]) => ({
+      body: {
+        ok: true,
+        success: true,
+        type: "file.read",
+        path,
+        content,
+        size: content?.length,
+        encoding: "utf8",
+      },
+    })),
+    state,
+  );
+  const observation = await boat.provider.observeResources?.(ID);
+  expect(observation).toMatchObject({
+    generation: boot,
+    physicalId: `${ID}/${boot}`,
+    runtimeProvenance: "boat-dedicated-vm",
+    reading: { cpuBusyTicks: 20, memoryAvailableBytes: 2097152 },
+  });
+  expect(boat.requests.every((request) => request.method === "GET")).toBe(true);
+  expect(boat.requests.slice(1, -1).map((request) => request.query.get("path"))).toEqual(data.map(([path]) => path));
+  const stopped = fakeBoat({ body: { ok: true, sandbox: sandbox({ state: "stopped" }) } });
+  expect(await stopped.provider.observeResources?.(ID)).toBeNull();
+  expect(stopped.requests).toHaveLength(1);
+});
+
 test("quota event cancellation reaches the actual SDK fetch without entering request data", async () => {
   const controller = new AbortController();
   let propagated = false;
