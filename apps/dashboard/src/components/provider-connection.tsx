@@ -53,20 +53,30 @@ export function ProviderConnection({
   const info = SETUP_PROVIDER_INFO[provider];
   const connected = state === "connected";
   const [open, setOpen] = useState(false);
-  const [result, action] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
+  // The last outcome, and the status it reported: a success is shown only while the row is still in that status, and
+  // an error only in the form that caused it, so neither outlives a later change.
+  const [feedback, setFeedback] = useState<{ result: ActionResult; state: ProviderRowState } | null>(null);
+  const [, action] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
     const next = await connectProvider(previous, data);
+    setFeedback({ result: next, state: next.ok ? "connected" : state });
     if (next.ok) setOpen(false);
     return next;
   }, null);
-  const formId = useId();
   const toggle = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(false);
-  // Closing the form returns focus to the button that opened it.
+  const previousState = useRef(state);
+  // Closing the form, or a disconnect that removed the dialog's button, returns focus to this row's main button.
   useEffect(() => {
     if (wasOpen.current && !open) toggle.current?.focus();
     wasOpen.current = open;
   }, [open]);
+  useEffect(() => {
+    if (previousState.current === "connected" && state === "not-connected") toggle.current?.focus();
+    previousState.current = state;
+  }, [state]);
   const manageable = canManage && state !== "unavailable";
+  const success = feedback?.result.ok && feedback.state === state && !open ? feedback.result.message : null;
+  const error = feedback && !feedback.result.ok && open ? feedback.result.error : null;
 
   return (
     <li className="space-y-4 p-4" data-provider-row={provider} data-provider-state={state}>
@@ -89,26 +99,38 @@ export function ProviderConnection({
               ref={toggle}
               variant={connected ? "outline" : "default"}
               size="sm"
-              aria-expanded={open}
-              aria-controls={formId}
-              onClick={() => setOpen(true)}
+              onClick={() => {
+                setFeedback(null);
+                setOpen(true);
+              }}
             >
               {connected ? `Replace ${provider === "boat" ? "key" : "token"}` : `Connect ${info.label}`}
             </Button>
-            {connected && <DisconnectProvider orgId={orgId} orgName={orgName} provider={provider} />}
+            {connected && (
+              <DisconnectProvider
+                orgId={orgId}
+                orgName={orgName}
+                provider={provider}
+                onDisconnected={(result) => setFeedback({ result, state: "not-connected" })}
+              />
+            )}
           </div>
         )}
       </div>
 
       {open && (
-        <form id={formId} action={action} className="space-y-3 rounded-lg border bg-muted/30 p-4">
+        <form
+          action={action}
+          aria-label={`${connected ? "Replace" : "Connect"} ${info.label}`}
+          className="space-y-3 rounded-lg border bg-muted/30 p-4"
+        >
           <input type="hidden" name="org" value={orgId} />
           <input type="hidden" name="provider" value={provider} />
           <input type="hidden" name="mode" value={connected ? "replace" : "connect"} />
           <ProviderFields provider={provider} />
-          {result && !result.ok && (
+          {error && (
             <p role="alert" className="text-sm text-destructive">
-              {result.error}
+              {error}
             </p>
           )}
           <div className="flex flex-wrap items-center gap-2">
@@ -119,9 +141,9 @@ export function ProviderConnection({
           </div>
         </form>
       )}
-      {result?.ok && !open && (
+      {success && (
         <p role="status" className="text-sm text-success">
-          {result.message}
+          {success}
         </p>
       )}
     </li>
@@ -218,18 +240,27 @@ function ConnectButton({ label, replacing }: { label: string; replacing: boolean
   );
 }
 
-/** Disconnects after a confirmation that says what stops and what stays. Stays open on a refusal. */
+/**
+ * Disconnects after a confirmation that says what stops and what stays. Stays open on a refusal; a success is
+ * reported by the row, since this dialog leaves with its button.
+ */
 function DisconnectProvider({
   orgId,
   orgName,
   provider,
+  onDisconnected,
 }: {
   orgId: string;
   orgName: string;
   provider: SandboxProviderId;
+  onDisconnected: (result: ActionResult) => void;
 }) {
   const label = SETUP_PROVIDER_INFO[provider].label;
-  const [state, action, pending] = useActionState(disconnectProvider, null);
+  const [state, action, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
+    const next = await disconnectProvider(previous, data);
+    if (next.ok) onDisconnected(next);
+    return next;
+  }, null);
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>

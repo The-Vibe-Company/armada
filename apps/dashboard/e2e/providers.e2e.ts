@@ -264,6 +264,37 @@ test("keyboard: open, cancel and confirm with the keyboard; focus returns to the
   await expect(page.getByRole("alertdialog")).toBeHidden();
   await expect(row(page, "boat").getByRole("button", { name: "Disconnect" })).toBeFocused();
   expect(await writes()).toHaveLength(0);
+
+  // Confirmed from the keyboard: the dialog leaves with its button, so focus lands on the row's Connect button.
+  await page.keyboard.press("Enter");
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect Boat" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(row(page, "boat").getByRole("status")).toHaveText("Boat disconnected.");
+  await expect(row(page, "boat").getByRole("button", { name: "Connect Boat" })).toBeFocused();
+});
+
+test("a row's message never outlives a later change: no stale success after disconnect, no stale error on reopen", async ({
+  page,
+}) => {
+  await signIn(page, "carol@example.com", "/settings");
+  await page.getByLabel("Active organization").selectOption(ORION);
+  await expect(providers(page)).toContainText("Orion");
+  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await row(page, "modal").getByLabel("Token ID").fill(`${MODAL_ID}rejected`);
+  await row(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
+  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await expect(row(page, "modal").getByRole("alert")).toHaveText("Modal refused these credentials.");
+  await row(page, "modal").getByRole("button", { name: "Cancel" }).click();
+  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await expect(row(page, "modal").getByRole("alert")).toHaveCount(0);
+  await row(page, "modal").getByRole("button", { name: "Cancel" }).click();
+
+  await connectModal(page);
+  await expect(row(page, "modal").getByRole("status")).toHaveText("Modal connected.");
+  await row(page, "modal").getByRole("button", { name: "Disconnect" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect Modal" }).click();
+  await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "not-connected");
+  await expect(row(page, "modal").getByRole("status")).toHaveText("Modal disconnected.");
 });
 
 for (const mobile of [false, true]) {
