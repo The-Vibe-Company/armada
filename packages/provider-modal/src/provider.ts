@@ -89,6 +89,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     // App ID reached by an explicit token is authoritative; workspace label is never authentication.
     return app;
   }
+  async function snapshotBackend() {
+    try {
+      await bound();
+    } catch (error) {
+      const failure = modalError(error);
+      if (failure.code === "not_found")
+        throw refusal("provider_not_configured", "Snapshot backend authority cannot be verified.");
+      throw failure;
+    }
+  }
   function assertMachineSource(row: Machine) {
     assertAuthority(row);
     const origin = row.sourceImage?.scopeKey ?? scopeKey(options.scope);
@@ -482,6 +492,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   const provider: ModalProvider = {
     id: "modal",
+    backendIdentity: async () => {
+      await bound();
+      return {
+        id: JSON.stringify([
+          source.scope.binding.workspace,
+          source.scope.binding.environment,
+          source.scope.binding.appId,
+        ]),
+      };
+    },
+    managementIdentity: async () => ({
+      scope: managementAuthority.credentialScope,
+      ownerId: managementAuthority.credentialOwnerId,
+    }),
     harnesses: ["claude", "codex"],
     capabilities: distribution.capabilities,
     createGolden: (r) => {
@@ -793,6 +817,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             name: r.name,
             status: "saving",
             sourceSandboxId: r.sandboxId,
+            managementAuthority: {
+              scope: managementAuthority.credentialScope,
+              ownerId: managementAuthority.credentialOwnerId,
+            },
             createdAt: new Date(),
           };
           await store.saveImage({ info, sourceId: r.sandboxId, managementAuthority: { ...managementAuthority } });
@@ -809,6 +837,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.snapshotImages = [...(row.snapshotImages ?? []), { name: r.name, imageId: image.imageId }];
           await save(row);
           info.status = "ready";
+          info.artifactId = image.imageId;
           await store.saveImage({
             info,
             sourceId: r.sandboxId,
@@ -827,10 +856,25 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     },
     async getSnapshot(name) {
-      await bound();
+      await snapshotBackend();
       const image = await source.store.image(name);
       assertAuthority(image);
-      return image.info;
+      // Only canonical saved-image fields are provenance; cached optional info is not
+      // a substitute when an older/partial receipt lacks its artifact or authority.
+      const { artifactId: _artifact, managementAuthority: _authority, sourceSandboxId: _source, ...info } = image.info;
+      return {
+        ...info,
+        sourceSandboxId: image.sourceId,
+        ...(image.imageId ? { artifactId: image.imageId } : {}),
+        ...(image.managementAuthority
+          ? {
+              managementAuthority: {
+                scope: image.managementAuthority.credentialScope,
+                ownerId: image.managementAuthority.credentialOwnerId,
+              },
+            }
+          : {}),
+      };
     },
     async deleteSnapshot(name) {
       if (scopeKey(source.scope) !== scopeKey(options.scope))
@@ -838,7 +882,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           "forbidden",
           "Snapshot mutation requires the golden-source provider scope, not a private-fork adapter.",
         );
-      await bound();
+      await snapshotBackend();
       let image: SavedImage;
       try {
         image = await store.image(name);

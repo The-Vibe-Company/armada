@@ -46,6 +46,8 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/build/status",
   "golden/update",
   "golden/remove",
+  "golden/retirement/dry-run",
+  "golden/retirement/reconcile",
   "golden/snapshot",
   "golden/connect",
   "sandbox/launch",
