@@ -18,7 +18,7 @@ import { configureOrchestratorLifecycle } from "../src/orchestrator-lifecycle-se
 import { createOrchestratorWaits } from "../src/orchestrator-waits.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
-async function fixture() {
+async function fixture(parentState: "ready" | "running" = "running") {
   const { db, people: p } = await database();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -34,7 +34,7 @@ async function fixture() {
     orgId: p.org,
     ownerId: p.owner,
     harness: "codex",
-    status: "running",
+    status: parentState,
     model: "m",
     reasoningEffort: "high",
     visibility: "private",
@@ -49,7 +49,7 @@ async function fixture() {
   ]);
   await db.query(
     `insert into orchestrator_runtime(orchestrator_id,configuration,skill_revision,conversation_id,continuity)
-    values($1,$2::jsonb,$3,'existing-native-conversation','native')`,
+    values($1,$2::jsonb,$3,$4,$5)`,
     [
       id,
       JSON.stringify({
@@ -63,6 +63,8 @@ async function fixture() {
         modelAccountId: crypto.randomUUID(),
       }),
       "78884de87066851b75e09cbda134606c0a8bc6d7",
+      parentState === "ready" ? null : "existing-native-conversation",
+      parentState === "ready" ? "not_started" : "native",
     ],
   );
   await db.query(
@@ -839,7 +841,7 @@ test("registered failed child with confirmed stopped compute releases explicit c
 });
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
-  const { db, sql, p, id, parent, authority, token, selection } = await fixture();
+  const { db, sql, p, id, parent, authority, token, selection } = await fixture("ready");
   const { ORCHESTRATOR_SCOPED_PATH, orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
