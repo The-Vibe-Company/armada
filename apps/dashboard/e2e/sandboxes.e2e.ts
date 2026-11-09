@@ -59,6 +59,17 @@ test("stopping a sandbox asks first, then stops it", async ({ page }) => {
   await expect(page.getByText("Stop this sandbox?")).toBeVisible();
   await page.getByRole("button", { name: "Stop sandbox" }).click();
   await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
+  // The conversation shows the same state in the same paint, read at once rather than after its next poll (#627).
+  const conversation = page.getByRole("heading", { name: "Conversation" }).locator("xpath=ancestor::div[2]");
+  expect(await conversation.locator("[data-status]").getAttribute("data-status")).toBe("stopped");
+  await page.screenshot({ path: "test-results/conversation-status-after-stop-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "test-results/conversation-status-after-stop-mobile.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
 });
 
 const at = (seconds: number) => 1_762_596_300_000 + seconds * 1000;

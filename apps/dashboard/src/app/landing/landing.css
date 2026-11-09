@@ -730,17 +730,12 @@ html:has(> body .lp) {
   display: flex;
   gap: 8px;
 }
+/* The window's dots in the hero's quiet hairline tone, not a second palette (#628). */
 .lp-terminal-dots i {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #ff5f57;
-}
-.lp-terminal-dots i + i {
-  background: #febc2e;
-}
-.lp-terminal-dots i + i + i {
-  background: #28c840;
+  background: rgba(255, 255, 255, 0.14);
 }
 .lp-terminal-title {
   flex: 1;
@@ -775,7 +770,7 @@ html:has(> body .lp) {
   height: 15px;
   margin-left: 2px;
   vertical-align: -2px;
-  background: var(--frontier);
+  background: var(--done);
   animation: lp-caret 1s steps(1) infinite;
 }
 @keyframes lp-caret {
@@ -794,64 +789,57 @@ html:has(> body .lp) {
   color: var(--critical);
 }
 .lp-terminal-line.is-amber {
-  color: var(--active);
+  color: var(--text-2);
 }
+/* One accent in the session too (#628): a notice (amber or orange before) is quiet text, success is lime. */
 .lp-terminal-line.is-orange {
-  color: var(--accent);
+  color: var(--text-2);
 }
 .lp-terminal-line.is-lime {
   color: var(--done);
 }
 .lp-terminal-line.is-blue {
-  color: var(--frontier);
+  color: var(--text);
 }
 
 /* ---------------------------------------------------------------- story */
 
 /* The story below the hero (#587): one chapter per thing you do with Armada,
-   each a full-bleed panel of one flat colour with heavy, tight type beside a
-   diagram drawn in one outline weight. The hero's night and lime carry on;
-   the sky, the orange and the paper are its other hues, opened up. */
+   heavy, tight type beside a diagram drawn in one outline weight. It continues
+   the hero (#628): the same night surface, text, hairlines and glow, and the
+   hero's one accent, lime. No chapter has a colour of its own; the small ships
+   in the diagrams take the hero flock's harness colours, as its sky does. */
 .lp-ch {
   --ch-ink: #060709;
-  --ch-paper: #f6f4ee;
+  /* Light shapes and lines are the hero's text, not a paper colour. */
+  --ch-paper: var(--text);
   --ch-lime: var(--done);
-  --ch-sky: #a9c4ff;
-  --ch-orange: var(--accent);
-  --ch-amber: var(--active);
+  /* The hero flock's harness colours (flock.ts), for small ships only. */
+  --ch-sky: #bb87fc;
+  --ch-orange: #d97757;
+  --ch-amber: #10a37f;
   --ch-night: #060709;
-  --ch-card: #15161b;
-  /* What a chapter draws with: its background, its ink, its quiet ink, and its command's chip. */
-  --ch-bg: var(--ch-paper);
-  --ch-fg: var(--ch-ink);
-  --ch-fg-2: rgba(6, 7, 9, 0.78);
-  --ch-line: var(--ch-ink);
-  --ch-chip: var(--ch-ink);
-  --ch-chip-fg: var(--ch-paper);
-  --ch-chip-dim: rgba(246, 244, 238, 0.62);
-  position: relative;
-  padding: clamp(88px, 11vw, 168px) var(--lp-pad);
-  background: var(--ch-bg);
-  color: var(--ch-fg);
-}
-.lp-ch.is-lime {
-  --ch-bg: var(--ch-lime);
-}
-.lp-ch.is-sky {
-  --ch-bg: var(--ch-sky);
-}
-.lp-ch.is-orange {
-  --ch-bg: var(--ch-orange);
-}
-.lp-ch.is-night {
-  --ch-bg: var(--ch-night);
-  --ch-fg: var(--ch-paper);
-  --ch-fg-2: rgba(246, 244, 238, 0.74);
-  --ch-line: var(--ch-paper);
-  --ch-chip: var(--ch-paper);
+  /* A night card: the hero's raised surface, under a hairline. */
+  --ch-card: #0f1013;
+  /* What a chapter draws with: its background, its ink, its quiet ink, its accent and its command's chip. */
+  --ch-accent: var(--done);
+  --ch-bg: var(--bg);
+  --ch-fg: var(--text);
+  --ch-fg-2: var(--text-2);
+  /* Outlines at the hero's border contrast, not bright white (#628). */
+  --ch-line: rgba(255, 255, 255, 0.16);
+  --ch-chip: var(--ch-accent);
   --ch-chip-fg: var(--ch-ink);
   --ch-chip-dim: rgba(6, 7, 9, 0.6);
+  position: relative;
+  padding: clamp(88px, 11vw, 168px) var(--lp-pad);
+  border-top: 1px solid var(--line);
+  background:
+    radial-gradient(60% 55% at 88% 18%, color-mix(in srgb, var(--ch-accent) 6%, transparent), transparent 70%),
+    var(--ch-bg);
+  color: var(--ch-fg);
 }
+
 .lp-ch :focus-visible {
   outline-color: var(--ch-fg);
 }
@@ -943,8 +931,9 @@ html:has(> body .lp) {
   transition: transform 160ms var(--lp-ease);
 }
 .lp-ch .lp-copy-command {
-  white-space: normal;
-  /* Break between words; inside one (a UUID, a URL) only when it cannot fit. */
+  /* The command's own spaces, exactly as written and copied (#628): a line breaks only at one of them, and inside a
+     word (a UUID, a URL) only when it cannot fit. */
+  white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: normal;
 }
@@ -989,6 +978,50 @@ html:has(> body .lp) {
   }
 }
 
+/* The story's index (#628): a band under the hero, its chapters as the hero's ghost buttons and its way in as
+   the hero's lime one. */
+.lp-index {
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.lp-index-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: 20px var(--lp-pad);
+}
+.lp-index-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.lp-index-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 550;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.1);
+  transition: background var(--t-fast) var(--lp-ease);
+}
+@media (hover: hover) and (pointer: fine) {
+  .lp-index-links a:hover {
+    background: rgba(255, 255, 255, 0.09);
+  }
+}
+.lp-index-links a:focus-visible {
+  outline: 2px solid var(--done);
+  outline-offset: 2px;
+}
+
 /* ------------------------------------------------------------- diagrams */
 
 .lp-ch-figure {
@@ -1003,7 +1036,7 @@ html:has(> body .lp) {
 }
 .lp-fig :is(rect, path, circle) {
   stroke: var(--ch-line);
-  stroke-width: 3.5;
+  stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
@@ -1029,9 +1062,11 @@ html:has(> body .lp) {
   fill: none;
   stroke-dasharray: 2 12;
 }
-.lp-fig-wire {
+.lp-fig .lp-fig-wire {
   fill: none;
-  stroke-dasharray: 1 9;
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 2;
+  stroke-dasharray: 1 7;
 }
 .lp-fig-wire.is-thick {
   stroke-dasharray: none;
@@ -1055,17 +1090,21 @@ html:has(> body .lp) {
 }
 .lp-fig .lp-fig-shackle {
   fill: none;
-  stroke-width: 7;
+  stroke: var(--ch-ink);
+  stroke-width: 4;
 }
-.lp-fig-node {
-  fill: var(--ch-ink);
+/* A step on a timeline: filled in the hero's text, or hollow, ringed in it (#628). */
+.lp-fig .lp-fig-node {
+  fill: var(--text);
+  stroke: none;
 }
-.lp-fig-node.is-hollow {
+.lp-fig .lp-fig-node.is-hollow {
   fill: var(--ch-bg);
+  stroke: var(--text);
+  stroke-width: 2;
 }
 .lp-fig .lp-fig-ship {
-  stroke: var(--ch-ink);
-  stroke-width: 3;
+  stroke: none;
 }
 .lp-fig-ship.is-lime {
   fill: var(--ch-lime);
@@ -1092,10 +1131,11 @@ html:has(> body .lp) {
 .lp-fig .lp-fig-check path {
   fill: none;
   stroke: var(--ch-ink);
-  stroke-width: 3;
+  stroke-width: 2.5;
 }
+/* A plain pill is the hero's ghost button: a faint fill, light text. */
 .lp-fig-pill {
-  fill: var(--ch-paper);
+  fill: rgba(255, 255, 255, 0.08);
 }
 .lp-fig .lp-fig-pill {
   stroke: none;
@@ -1109,51 +1149,55 @@ html:has(> body .lp) {
 .lp-fig .lp-fig-stop-x {
   fill: none;
   stroke: var(--ch-ink);
-  stroke-width: 4;
+  stroke-width: 2.5;
 }
 .lp-fig text {
   stroke: none;
   fill: var(--ch-ink);
 }
+/* The hero's UI hierarchy (#628): a medium label over a quiet one, not poster type. */
 .lp-fig-t {
-  font-size: 28px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 .lp-fig-t.is-big {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.045em;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 .lp-fig-s {
-  font-size: 23px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  font-size: 18px;
+  font-weight: 450;
+  letter-spacing: 0;
 }
 .lp-fig-s.is-mono {
   font-family: var(--font-mono);
-  font-size: 20px;
+  font-size: 16px;
   letter-spacing: 0;
 }
 .lp-fig-xs {
-  font-size: 20px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 600;
 }
 .lp-fig text.is-on-ink {
   fill: var(--ch-paper);
 }
 .lp-fig text.is-on-ink.lp-fig-s {
-  fill: rgba(246, 244, 238, 0.74);
+  fill: var(--text-2);
 }
 .lp-fig text.is-running {
   fill: var(--ch-lime);
 }
 .lp-fig text.is-ready {
-  fill: var(--ch-sky);
+  fill: var(--text);
 }
-/* On a night chapter the wires and outlines are paper; text on paper shapes stays ink. */
-.lp-ch.is-night .lp-fig :is(.lp-fig-card.is-night, .lp-fig-ink) {
-  stroke: rgba(246, 244, 238, 0.9);
+/* On the night surface, cards and ink shapes keep the hero's hairline; a lime card needs no outline of its own. */
+.lp-ch .lp-fig :is(.lp-fig-card.is-night, .lp-fig-ink) {
+  stroke: var(--ch-line);
+}
+.lp-ch .lp-fig :is(.lp-fig-card.is-lime, .lp-fig-pill, .lp-fig-check circle) {
+  stroke: none;
 }
 
 /* ------------------------------------------------------------------ try */
@@ -1170,19 +1214,24 @@ html:has(> body .lp) {
   height: 64px;
   padding: 0 30px;
   border-radius: 18px;
-  background: var(--ch-ink);
-  color: var(--ch-paper);
+  /* The hero's lime button, at the story's size. */
+  background: var(--done);
+  color: var(--bg);
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  box-shadow: 6px 6px 0 rgba(6, 7, 9, 0.24);
+  box-shadow: 0 14px 44px -14px rgba(182, 241, 90, 0.6);
   transition:
     transform 160ms var(--lp-ease),
-    box-shadow 160ms var(--lp-ease);
+    background 160ms var(--lp-ease);
 }
 .lp-try-primary:active {
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 rgba(6, 7, 9, 0.24);
+  transform: translateY(1px);
+}
+@media (hover: hover) and (pointer: fine) {
+  .lp-try-primary:hover {
+    background: #c3f773;
+  }
 }
 .lp-try-link {
   font-size: 17px;
@@ -1214,8 +1263,8 @@ html:has(> body .lp) {
 }
 .lp-try-terminal .lp-terminal {
   box-shadow:
-    0 0 0 3.5px var(--ch-ink),
-    12px 12px 0 var(--ch-ink);
+    0 0 0 1px var(--line-2),
+    0 30px 80px -30px rgba(0, 0, 0, 0.9);
 }
 
 /* --------------------------------------------------------------- footer */
@@ -1282,7 +1331,7 @@ html:has(> body .lp) {
   }
   .lp-try-terminal .lp-terminal {
     box-shadow:
-      0 0 0 3px var(--ch-ink),
-      6px 6px 0 var(--ch-ink);
+      0 0 0 1px var(--line-2),
+      0 20px 50px -24px rgba(0, 0, 0, 0.9);
   }
 }

@@ -41,8 +41,8 @@ const REPOS = [
 
 /** One build per provider: a golden saved on Boat does not move to Modal; it is built there again. */
 const PROVIDERS = [
-  { name: "Boat", tone: "is-sky", y: 16 },
-  { name: "Modal", tone: "is-orange", y: 280 },
+  { name: "Boat", y: 16 },
+  { name: "Modal", y: 280 },
 ];
 
 export function GoldenFigure() {
@@ -55,12 +55,12 @@ export function GoldenFigure() {
         const y = 24 + k * 132;
         return (
           <g key={r.name}>
-            <rect className="lp-fig-card" x={8} y={y} width={256} height={100} rx={20} />
+            <rect className="lp-fig-card is-night" x={8} y={y} width={256} height={100} rx={20} />
             <circle className="lp-fig-dot" cx={40} cy={y + 50} r={10} />
-            <text className="lp-fig-t" x={62} y={y + 46}>
+            <text className="lp-fig-t is-on-ink" x={62} y={y + 46}>
               {r.name}
             </text>
-            <text className="lp-fig-s" x={62} y={y + 74}>
+            <text className="lp-fig-s is-on-ink" x={62} y={y + 74}>
               {r.branch}
             </text>
             <path className="lp-fig-wire" d={`M264 ${y + 50}C284 ${y + 50} 280 206 296 206`} />
@@ -71,8 +71,8 @@ export function GoldenFigure() {
       <circle className="lp-fig-node" cx={296} cy={206} r={8} />
       {PROVIDERS.map((p) => (
         <g key={p.name}>
-          <rect className={`lp-fig-card ${p.tone}`} x={322} y={p.y} width={310} height={244} rx={26} />
-          <text className="lp-fig-t is-big" x={346} y={p.y + 48}>
+          <rect className="lp-fig-card is-night" x={322} y={p.y} width={310} height={244} rx={26} />
+          <text className="lp-fig-t is-big is-on-ink" x={346} y={p.y + 48}>
             Built on {p.name}
           </text>
           <rect className="lp-fig-ink" x={338} y={p.y + 68} width={278} height={160} rx={16} />
@@ -125,7 +125,7 @@ export function FleetFigure() {
               {s.model}
             </text>
             <rect className="lp-fig-pill" x={518} y={y + 22} width={98} height={32} rx={16} />
-            <text className="lp-fig-xs" x={567} y={y + 45} textAnchor="middle">
+            <text className="lp-fig-xs is-on-ink" x={567} y={y + 45} textAnchor="middle">
               {s.effort}
             </text>
             <text className={`lp-fig-xs is-${s.status}`} x={567} y={y + 84} textAnchor="middle">
@@ -163,13 +163,13 @@ export function ToolsFigure() {
       </text>
       {TOOLS.map((t) => (
         <g key={t.name}>
-          <rect className="lp-fig-card" x={t.x} y={t.y} width={240} height={100} rx={20} />
+          <rect className="lp-fig-card is-night" x={t.x} y={t.y} width={240} height={100} rx={20} />
           <rect className="lp-fig-plug" x={t.x + 22} y={t.y + 32} width={36} height={36} rx={9} />
           <path className="lp-fig-prong" d={`M${t.x + 32} ${t.y + 32}v-10M${t.x + 48} ${t.y + 32}v-10`} />
-          <text className="lp-fig-t" x={t.x + 76} y={t.y + 46}>
+          <text className="lp-fig-t is-on-ink" x={t.x + 76} y={t.y + 46}>
             {t.name}
           </text>
-          <text className="lp-fig-s" x={t.x + 76} y={t.y + 76}>
+          <text className="lp-fig-s is-on-ink" x={t.x + 76} y={t.y + 76}>
             {t.how}
           </text>
         </g>
@@ -182,10 +182,10 @@ export function ToolsFigure() {
 function Kept({ x, y, fresh = false }: { x: number; y: number; fresh?: boolean }) {
   return (
     <g>
-      <rect className="lp-fig-card" x={x} y={y} width={58} height={44} rx={10} />
+      <rect className="lp-fig-card is-night" x={x} y={y} width={58} height={44} rx={10} />
       <path className="lp-fig-line" d={`M${x + 12} ${y + 30}h34`} />
       <path
-        className={`lp-fig-card ${fresh ? "is-lime" : ""}`}
+        className={`lp-fig-card ${fresh ? "is-lime" : "is-night"}`}
         d={`M${x + 74} ${y}h70a12 12 0 0 1 12 12v22a12 12 0 0 1-12 12h-48l-14 12v-12h-8a12 12 0 0 1-12-12v-22a12 12 0 0 1 12-12z`}
       />
       <path className="lp-fig-line" d={`M${x + 90} ${y + 16}h46M${x + 90} ${y + 30}h${fresh ? 30 : 38}`} />
@@ -213,12 +213,12 @@ export function ResumeFigure() {
             height={148}
             rx={26}
           />
-          <text className={`lp-fig-t ${s.machine === "gone" ? "" : "is-on-ink"}`} x={182} y={s.y + 50}>
+          <text className="lp-fig-t is-on-ink" x={182} y={s.y + 50}>
             {s.title}
           </text>
           <Kept x={440} y={s.y + 50} fresh={k === 2} />
           {s.machine === "gone" ? (
-            <text className="lp-fig-s" x={182} y={s.y + 84}>
+            <text className="lp-fig-s is-on-ink" x={182} y={s.y + 84}>
               no machine, no cost
             </text>
           ) : (
@@ -230,10 +230,10 @@ export function ResumeFigure() {
       <circle className="lp-fig-node" cx={70} cy={90} r={12} />
       <circle className="lp-fig-node is-hollow" cx={70} cy={270} r={12} />
       <circle className="lp-fig-node" cx={70} cy={450} r={12} />
-      <text className="lp-fig-t" x={92} y={190} textAnchor="end" transform="rotate(-90 92 190)">
+      <text className="lp-fig-t is-on-ink" x={92} y={190} textAnchor="end" transform="rotate(-90 92 190)">
         stop
       </text>
-      <text className="lp-fig-t" x={92} y={370} textAnchor="end" transform="rotate(-90 92 370)">
+      <text className="lp-fig-t is-on-ink" x={92} y={370} textAnchor="end" transform="rotate(-90 92 370)">
         send
       </text>
     </Figure>
@@ -250,7 +250,7 @@ function Glyph({ kind, x, y }: { kind: (typeof DOORS)[number]["glyph"]; x: numbe
   if (kind === "web")
     return (
       <g>
-        <rect className="lp-fig-card" x={x} y={y} width={56} height={42} rx={8} />
+        <rect className="lp-fig-card is-night" x={x} y={y} width={56} height={42} rx={8} />
         <path className="lp-fig-line" d={`M${x} ${y + 12}h56`} />
       </g>
     );
@@ -277,12 +277,12 @@ export function ControlFigure() {
     >
       {DOORS.map((d) => (
         <g key={d.name}>
-          <rect className="lp-fig-card" x={d.x} y={16} width={200} height={168} rx={22} />
+          <rect className="lp-fig-card is-night" x={d.x} y={16} width={200} height={168} rx={22} />
           <Glyph kind={d.glyph} x={d.x + 24} y={40} />
-          <text className="lp-fig-t" x={d.x + 24} y={130}>
+          <text className="lp-fig-t is-on-ink" x={d.x + 24} y={130}>
             {d.name}
           </text>
-          <text className="lp-fig-s" x={d.x + 24} y={160}>
+          <text className="lp-fig-s is-on-ink" x={d.x + 24} y={160}>
             {d.sub}
           </text>
           <path className="lp-fig-wire is-thick" d={`M${d.x + 100} 184V240`} />
@@ -298,7 +298,7 @@ export function ControlFigure() {
       <path className="lp-fig-wire is-thick" d="M320 352V404" />
       {["is-lime", "is-sky", "is-orange", "is-amber", "is-paper"].map((c, k) => (
         <g key={c}>
-          <rect className="lp-fig-card" x={8 + k * 128} y={404} width={112} height={112} rx={20} />
+          <rect className="lp-fig-card is-night" x={8 + k * 128} y={404} width={112} height={112} rx={20} />
           <Ship x={64 + k * 128} y={460} size={40} className={c} />
         </g>
       ))}

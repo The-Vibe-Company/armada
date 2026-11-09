@@ -1,0 +1,201 @@
+# The standard of Armada
+What the front holds to from now on: its direction, its tokens and its kit, each where it lives in the code, and its own rules.
+
+## Direction
+night-continuity: the story continues the accepted hero (#628). Below the hero, every chapter stands on the hero's own near-black surface, with its text, hairlines, radii and faint glow, in Geist and Geist Mono, and lime as the one accent. The art direction of the hero is a hard constraint: the story takes nothing from another palette, theme or metaphor. Structure: one chapter per thing you do with Armada, heavy type beside a diagram drawn in one outline weight, then the chapter's command.
+
+## Tokens
+- `--side: #0b0c0d` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--band: #131417` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--raised: #24262b` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--code: #0b0c0d` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--overlay: rgba(20, 21, 24, 0.96)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--line-soft: #1a1b1f` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--line-2: rgba(255, 255, 255, 0.1)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--red: #fd736d` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--amber: #f2af48` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--blue: #60aaf3` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--green: #61cb7c` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--step-done: #5a5e66` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--step-next: #26282d` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--font-sans: var(--font-geist-sans), "Geist", ui-sans-serif, sans-serif` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--font-mono: var(--font-geist-mono), "Geist Mono", ui-monospace, monospace` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--r-sm: 6px` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--r: 8px` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--sidebar: 228px` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--t-1: 150ms` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--t-fast: var(--t-1)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-ease: cubic-bezier(0.23, 1, 0.32, 1)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-ease-io: cubic-bezier(0.77, 0, 0.175, 1)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-icon-ease: cubic-bezier(0.2, 0, 0, 1)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-max: 1240px` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-pad: clamp(20px, 4vw, 32px)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-h2: clamp(38px, 5.4vw, 72px)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-glass: rgba(14, 14, 16, 0.62)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--lp-dim: #8a8a90` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--bg: #060709` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--surface: #0c0d10` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--card: #14151a` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--text: #f2f1ee` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--text-2: #b6b6bd` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--text-3: #8e8e97` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--line: rgba(255, 255, 255, 0.06)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--line-strong: rgba(255, 255, 255, 0.11)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--fill: rgba(255, 255, 255, 0.05)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--fill-2: rgba(255, 255, 255, 0.08)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--fill-3: rgba(255, 255, 255, 0.11)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--done: #b6f15a` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--done-dim: rgba(182, 241, 90, 0.13)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--accent: #ff8a4c` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--active: #ffb547` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--active-dim: rgba(255, 181, 71, 0.13)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--frontier: #7ea6ff` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--frontier-dim: rgba(126, 166, 255, 0.14)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--critical: #ff6b5b` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--track: rgba(255, 255, 255, 0.07)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
+- `--ch-ink: #060709` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-paper: var(--text)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-lime: var(--done)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-sky: #bb87fc` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-orange: #d97757` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-amber: #10a37f` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-night: #060709` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-card: #0f1013` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-accent: var(--done)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-bg: var(--bg)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-fg: var(--text)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-fg-2: var(--text-2)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-line: rgba(255, 255, 255, 0.16)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-chip: var(--ch-accent)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-chip-fg: var(--ch-ink)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-chip-dim: rgba(6, 7, 9, 0.6)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+
+## Components
+- `.lp` in `apps/dashboard/src/app/landing/landing.css`
+- `.sr-only` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-skip` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-grow` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-icon` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-mono` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-nav` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-nav-bar` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-brand` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-nav-links` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-nav-quiet` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-button` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-sm` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-lg` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-light` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-lime` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-ghost` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-copy` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-copy-text` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-copy-command` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-copy-note` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-prompt` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-copy-icon` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-done` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-copy` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-sky` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero-scrim` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero-inner` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero-copy` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero-mark` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-pill` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-pill-tag` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-arrow` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero-title` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-line` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-word` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-shine` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-lead` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hero-actions` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hint` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hint-sky` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-scroll` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-enter` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-hide-sm` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-caret` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-bar` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-dots` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-title` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-body` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-run` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-command` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-prompt` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-line` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-head` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-red` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-amber` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-orange` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-blue` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-inner` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-words` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-flip` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-title` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-wide` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-body` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-copy-word` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-index` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-index-inner` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-index-links` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-figure` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-card` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-sky` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-night` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-ink` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-ghost` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-wire` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-thick` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-cut` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-line` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-prong` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-plug` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-dot` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-prompt` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-shackle` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-node` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-hollow` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-ship` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-paper` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-ink` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-check` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-pill` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-key` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-stop` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-stop-x` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-t` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-big` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-s` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-mono` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-xs` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-on-ink` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-running` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-ready` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-actions` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-primary` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-link` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-sub` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-steps` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-terminal` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-dim` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-footer` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-footer-inner` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-footer-nav` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-footer-link` in `apps/dashboard/src/app/landing/landing.css`
+- `apps/dashboard/src/components/landing/Story.tsx`
+- `apps/dashboard/src/components/landing/Figures.tsx`
+- `apps/dashboard/src/components/landing/Terminal.tsx`
+
+## Rules
+- The hero, its navigation and its night sky stay exactly as they are: same DOM, computed styles and pixels at desktop and phone widths. The story begins under them.
+- Every chapter uses the hero's surface (`--bg`), text (`--text`, `--text-2`), hairlines (`--line`) and glow; no chapter has a background colour of its own, and no light, pastel or paper panel stands in the story.
+- Lime (`--done`) is the one accent: a chapter's command, the main action Sign in to try Armada, and the diagrams' focal card. Blue, orange, violet and green appear only as the small ships of the hero flock's harness colours.
+- A failing `one-direction` principle (the story not continuing the hero's direction) is a blocking finding, never an accepted exception.
+- Diagram cards are night cards: the hero's surface with a light outline and light text, as the fleet chapter draws them.
+- The story's index under the hero names the chapters with the navigation's words and holds the main action, so every width, and a phone above all, reaches each chapter.
+- Every command on the page is one `armada --help` documents, with flags from that command's own usage, shown whole and wrapping on a phone.
