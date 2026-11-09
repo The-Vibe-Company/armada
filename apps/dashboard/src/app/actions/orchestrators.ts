@@ -1,11 +1,12 @@
 "use server";
 
+import type { OrchestratorOperation } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { formString } from "@/lib/action";
 import { listGoldens } from "@/lib/data/goldens";
 import { listModelAccounts, viewerOrchestrators } from "@/lib/data/orchestrators";
-import { isSelectedOrganization } from "@/lib/data/selected-org";
+import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { OrchestratorApiError, type OrchestratorFailure } from "@/lib/orchestrator-api";
 import {
@@ -84,6 +85,23 @@ export async function createOrchestrator(
   redirect(`/orchestrators/${encodeURIComponent(orchestratorId)}`);
 }
 
+/**
+ * A 202 receipt is definite, but it may say the effect itself was not confirmed (`uncertain`, the orchestrator then
+ * held for reconciliation) or failed. Repeating the request would only return this same receipt: the draft is kept.
+ */
+function outcome(receipt: OrchestratorOperation, done: string): OrchestratorResult {
+  if (receipt.state === "succeeded" || receipt.state === "pending") return { ok: true, message: done };
+  const what = receipt.kind === "message" || receipt.kind === "steer" ? "the message" : `the ${receipt.kind}`;
+  return {
+    ok: false,
+    failure: "rejected",
+    error:
+      receipt.state === "uncertain"
+        ? `Armada could not confirm ${what}. The orchestrator is held until Armada reconciles it; nothing is repeated.`
+        : `Armada could not complete ${what}${receipt.errorCode ? ` (${receipt.errorCode})` : ""}.`,
+  };
+}
+
 const COMMANDS: readonly Command[] = ["message", "steer", "stop", "resume"];
 
 const DONE: Record<Command, string> = {
@@ -111,11 +129,22 @@ export async function orchestratorCommand(
   if ((command === "message" || command === "steer") && !text) return invalid("Write the message to send.");
   const api = viewerOrchestrators(await requireViewer());
   if (!api) return invalid("The Armada server is not configured for this dashboard.");
+  // The organization in scope, read on the server: the server checks the viewer's membership of it again.
+  const org = (await selectedOrganization())?.org.id;
+  if (!org) return invalid("Choose an organization first.");
+  let receipt: OrchestratorOperation;
   try {
-    await api.command(id, command, revision, key, command === "message" || command === "steer" ? text : undefined);
+    receipt = await api.command(
+      org,
+      id,
+      command,
+      revision,
+      key,
+      command === "message" || command === "steer" ? text : undefined,
+    );
   } catch (error) {
     return failed(error);
   }
   revalidatePath(`/orchestrators/${id}`);
-  return { ok: true, message: DONE[command] };
+  return outcome(receipt, DONE[command]);
 }

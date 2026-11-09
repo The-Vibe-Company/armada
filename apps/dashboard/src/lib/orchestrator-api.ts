@@ -112,16 +112,32 @@ export function createOrchestratorApi(options: OrchestratorApiOptions) {
   }
 
   return {
+    /**
+     * `GET /orchestrators/capabilities`: whether this server admits orchestrators now. Feature-off servers answer
+     * `enabled: false` with a reason (such as `native_conformance_required`); older servers have no such route.
+     */
+    async capabilities(): Promise<OrchestratorCapabilities> {
+      let payload: unknown;
+      try {
+        payload = await call("GET", `${ORCHESTRATORS_PATH}/capabilities`);
+      } catch (error) {
+        if (error instanceof OrchestratorApiError && error.failure === "unavailable")
+          return { enabled: false, reason: null, message: error.message };
+        throw error;
+      }
+      return parseCapabilities(payload);
+    },
     async list(orgId: string, cursor?: string | null): Promise<OrchestratorListView> {
       const query = new URLSearchParams({ orgId, limit: String(LIST_LIMIT) });
       if (cursor) query.set("cursor", cursor);
       return parseOrchestratorList(await call("GET", `${ORCHESTRATORS_PATH}?${query}`), orgId);
     },
-    async detail(id: string): Promise<OrchestratorDetail> {
-      return parseOrchestratorDetail(await call("GET", path(id)), id);
+    /** Every read and write names the organization (`orgId`): the server checks the viewer's membership in it. */
+    async detail(orgId: string, id: string): Promise<OrchestratorDetail> {
+      return parseOrchestratorDetail(await call("GET", `${path(id)}?${new URLSearchParams({ orgId })}`), id);
     },
-    async events(id: string, cursor?: string | null): Promise<OrchestratorFeedPage> {
-      const query = new URLSearchParams({ limit: String(EVENT_LIMIT) });
+    async events(orgId: string, id: string, cursor?: string | null): Promise<OrchestratorFeedPage> {
+      const query = new URLSearchParams({ orgId, limit: String(EVENT_LIMIT) });
       if (cursor) query.set("cursor", cursor);
       return parseOrchestratorEventPage(await call("GET", `${path(id, "/events")}?${query}`), id);
     },
@@ -131,23 +147,54 @@ export function createOrchestratorApi(options: OrchestratorApiOptions) {
     },
     /** `message` and `steer` carry text; `stop` and `resume` only the fence. */
     async command(
+      orgId: string,
       id: string,
       command: Command,
       expectedRevision: number,
       key: string,
       text?: string,
     ): Promise<OrchestratorOperation> {
-      const body = command === "message" || command === "steer" ? { expectedRevision, text } : { expectedRevision };
+      const body =
+        command === "message" || command === "steer" ? { orgId, expectedRevision, text } : { orgId, expectedRevision };
       return receipt(await call("POST", path(id, `/${command}`), body, requireKey(key)), id);
     },
   };
 }
 
 /** The server's `{error: {code, message}}` (already sanitized), classified for the page. */
+/** Words for the codes the server sends without a sentence. */
+const CODE_WORDS: Record<string, string> = {
+  not_found: "That orchestrator does not exist, or it is not yours.",
+  invalid_request: "The Armada server refused the request as invalid. Reload and try again.",
+  unavailable: "Orchestrators are unavailable on this Armada server right now.",
+};
+
+export type OrchestratorCapabilities = { enabled: boolean; reason: string | null; message: string };
+
+const REASONS: Record<string, string> = {
+  native_conformance_required:
+    "Orchestrators are turned off on this Armada server until each provider passes its native conformance checks.",
+};
+
+/** `{version: 1, enabled, reason?}`. Anything else, or another version, reads as not enabled. */
+export function parseCapabilities(value: unknown): OrchestratorCapabilities {
+  if (!isRecord(value) || value.version !== 1 || typeof value.enabled !== "boolean")
+    return { enabled: false, reason: null, message: "The Armada server sent unexpected orchestrator capabilities." };
+  const reason = typeof value.reason === "string" ? value.reason.slice(0, 80) : null;
+  if (value.enabled) return { enabled: true, reason, message: "" };
+  return {
+    enabled: false,
+    reason,
+    message: (reason && REASONS[reason]) ?? "Orchestrators are turned off on this Armada server.",
+  };
+}
+
 export function failureOf(status: number, payload: unknown): OrchestratorApiError {
   const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
   const code = typeof error?.code === "string" ? error.code : undefined;
-  const message = typeof error?.message === "string" ? error.message.slice(0, 300) : null;
+  const raw = typeof error?.message === "string" ? error.message.slice(0, 300) : null;
+  // The candidate server (#662) answers its bare code as the message: that is no sentence for a person.
+  const message = raw && raw !== code ? raw : (CODE_WORDS[code ?? ""] ?? null);
   // A server without these routes: an unknown POST route is 404 "Unknown route.", a GET is refused with 405.
   if (status === 405 || (status === 404 && (!message || message === "Unknown route.")))
     return new OrchestratorApiError(
@@ -158,9 +205,11 @@ export function failureOf(status: number, payload: unknown): OrchestratorApiErro
     );
   if (status === 401)
     return new OrchestratorApiError("Your session expired or was refused. Sign in again.", "session", status, code);
-  if (status === 409 && /stale|revision/i.test(`${code ?? ""} ${message ?? ""}`))
+  // A bare `conflict` (#662) covers a stale revision and a busy orchestrator alike: either way the page re-reads it and
+  // the person decides again, under a new key.
+  if (status === 409 && (code === "conflict" || /stale|revision/i.test(`${code ?? ""} ${raw ?? ""}`)))
     return new OrchestratorApiError(
-      "This orchestrator changed since you last saw it. It is up to date now: check it and try again.",
+      "This orchestrator changed or is busy. It is up to date now: check it and try again.",
       "stale",
       status,
       code,

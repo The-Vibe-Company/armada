@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readFailure, viewerOrchestrators } from "@/lib/data/orchestrators";
+import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { isOrchestratorId, type OrchestratorFeedEvent } from "@/lib/orchestrators";
 
@@ -22,13 +23,15 @@ export async function GET(request: Request, context: Context) {
       { error: "The Armada server is not configured for this dashboard.", failure: "unavailable" },
       { status: 503 },
     );
+  const org = (await selectedOrganization())?.org.id;
+  if (!org) return NextResponse.json({ error: "Not found.", failure: "rejected" }, { status: 404 });
   let cursor = new URL(request.url).searchParams.get("cursor");
   try {
-    const detail = await api.detail(id);
+    const detail = await api.detail(org, id);
     const events: OrchestratorFeedEvent[] = [];
     let hasMore = false;
     for (let page = 0; page < MAX_PAGES; page += 1) {
-      const read = await api.events(id, cursor);
+      const read = await api.events(org, id, cursor);
       events.push(...read.events);
       hasMore = read.hasMore;
       const moved = read.cursor !== null && read.cursor !== cursor;

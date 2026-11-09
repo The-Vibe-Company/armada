@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { MODEL_CATALOG, ORCHESTRATOR_DEFAULTS, type OrchestratorDetail } from "@armada/core";
-import { createOrchestratorApi, failureOf, OrchestratorApiError } from "../src/lib/orchestrator-api.ts";
+import {
+  createOrchestratorApi,
+  failureOf,
+  OrchestratorApiError,
+  parseCapabilities,
+} from "../src/lib/orchestrator-api.ts";
 import {
   attemptFor,
   type CreateFields,
@@ -265,7 +270,7 @@ function client(answer: (request: Request) => Response, seen: Request[] = []) {
   });
 }
 
-test("a command posts the fence and text with the idempotency key and the bearer to the orchestrator route", async () => {
+test("a command posts the org, fence and text with the idempotency key and the bearer to the orchestrator route", async () => {
   const seen: Request[] = [];
   const api = client(
     () =>
@@ -275,14 +280,14 @@ test("a command posts the fence and text with the idempotency key and the bearer
       ),
     seen,
   );
-  const receipt = await api.command(ID, "message", 4, "key-1", "Ship #12");
+  const receipt = await api.command(ORG, ID, "message", 4, "key-1", "Ship #12");
   expect(receipt.id).toBe("op-9");
   expect(seen[0]?.url).toBe(`https://armada.test/api/v1/orchestrators/${ID}/message`);
   expect(seen[0]?.headers.get("idempotency-key")).toBe("key-1");
   expect(seen[0]?.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
-  expect(await seen[0]?.json()).toEqual({ expectedRevision: 4, text: "Ship #12" });
-  await api.command(ID, "stop", 5, "key-2");
-  expect(await seen[1]?.json()).toEqual({ expectedRevision: 5 });
+  expect(await seen[0]?.json()).toEqual({ orgId: ORG, expectedRevision: 4, text: "Ship #12" });
+  await api.command(ORG, ID, "stop", 5, "key-2");
+  expect(await seen[1]?.json()).toEqual({ orgId: ORG, expectedRevision: 5 });
 });
 
 test("a server without orchestrator routes reads as unavailable, for GET and POST alike", async () => {
@@ -291,7 +296,7 @@ test("a server without orchestrator routes reads as unavailable, for GET and POS
     Response.json({ error: { code: "not_found", message: "Unknown route." } }, { status: 404 }),
   );
   const listed = await get.list(ORG).catch((error: unknown) => error);
-  const created = await post.command(ID, "resume", 1, "k").catch((error: unknown) => error);
+  const created = await post.command(ORG, ID, "resume", 1, "k").catch((error: unknown) => error);
   for (const error of [listed, created]) {
     expect(error).toBeInstanceOf(OrchestratorApiError);
     expect((error as OrchestratorApiError).failure).toBe("unavailable");
@@ -304,15 +309,13 @@ test("failures say whether the same request may be sent again, and never carry t
     "No native conversation.",
   );
   expect(failureOf(401, null).failure).toBe("session");
-  expect(failureOf(429, { error: { code: "limit", message: "Too many active orchestrators." } }).failure).toBe(
-    "rejected",
-  );
+  expect(failureOf(400, { error: { code: "invalid_request", message: "invalid_request" } }).failure).toBe("rejected");
   expect(failureOf(503, null).retrySameKey).toBe(true);
   expect(failureOf(409, { error: { code: "stale_revision", message: "x" } }).retrySameKey).toBe(false);
   const lost = await client(() => {
     throw new TypeError(`fetch failed ${TOKEN}`);
   })
-    .command(ID, "message", 1, "k", "hi")
+    .command(ORG, ID, "message", 1, "k", "hi")
     .catch((error: unknown) => error as OrchestratorApiError);
   expect(lost.failure).toBe("uncertain");
   expect(lost.message).not.toContain(TOKEN);
@@ -345,4 +348,54 @@ test("a worker limit is read only when the owner set one; its absence never beco
   expect(detail().orchestrator.configuration).not.toHaveProperty("maxActiveChildren");
   const chosen = detail({ configuration: { ...orchestrator().configuration, maxActiveChildren: 2 } });
   expect(chosen.orchestrator.configuration.maxActiveChildren).toBe(2);
+});
+
+test("reads name the organization and only the fields the server accepts", async () => {
+  const seen: Request[] = [];
+  const api = client((request) => {
+    if (request.url.includes("/events")) return Response.json({ version: 1, events: [], cursor: null, hasMore: false });
+    return Response.json({
+      version: 1,
+      orchestrator: orchestrator(),
+      operations: [],
+      waits: [],
+      delegation: null,
+      childSandboxIds: [],
+    });
+  }, seen);
+  await api.detail(ORG, ID);
+  await api.events(ORG, ID, "c1");
+  expect([...new URL(seen[0]?.url ?? "").searchParams]).toEqual([["orgId", ORG]]);
+  expect(Object.fromEntries(new URL(seen[1]?.url ?? "").searchParams)).toEqual({
+    orgId: ORG,
+    limit: "500",
+    cursor: "c1",
+  });
+});
+
+test("capabilities say whether orchestrators are on, and why not, in words", async () => {
+  const off = await client(() =>
+    Response.json({ version: 1, enabled: false, reason: "native_conformance_required" }),
+  ).capabilities();
+  expect(off).toMatchObject({ enabled: false, reason: "native_conformance_required" });
+  expect(off.message).toContain("native conformance");
+  expect((await client(() => Response.json({ version: 1, enabled: true })).capabilities()).enabled).toBe(true);
+  // An older server without the route: not enabled, never an error page.
+  const legacy = await client(() =>
+    Response.json({ error: { code: "invalid", message: "Use POST." } }, { status: 405 }),
+  ).capabilities();
+  expect(legacy.enabled).toBe(false);
+  expect(parseCapabilities({ version: 2, enabled: true }).enabled).toBe(false);
+});
+
+test("the server's bare error codes read as sentences, and a bare conflict as stale or busy", () => {
+  const conflict = failureOf(409, { error: { code: "conflict", message: "conflict" } });
+  expect(conflict.failure).toBe("stale");
+  expect(conflict.message).toContain("changed or is busy");
+  expect(failureOf(404, { error: { code: "not_found", message: "not_found" } }).message).toBe(
+    "That orchestrator does not exist, or it is not yours.",
+  );
+  const unavailable = failureOf(503, { error: { code: "unavailable", message: "unavailable" } });
+  expect(unavailable.retrySameKey).toBe(true);
+  expect(unavailable.message).not.toBe("unavailable");
 });

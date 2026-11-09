@@ -9,6 +9,7 @@ import { Empty } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { listGoldenHistory } from "@/lib/data/goldens";
 import { readFailure, viewerOrchestrators } from "@/lib/data/orchestrators";
+import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { isOrchestratorId } from "@/lib/orchestrators";
@@ -28,16 +29,24 @@ export default async function OrchestratorPage({ params }: Props) {
   if (!isOrchestratorId(id)) notFound();
   const viewer = await requireViewer();
   const api = viewerOrchestrators(viewer);
+  // Orchestrators belong to an organization: the one in scope is the one asked, and another org's is not found.
+  const org = (await selectedOrganization())?.org.id;
   let detail: OrchestratorDetail | null = null;
   let problem: ReturnType<typeof readFailure> | null = null;
   if (!api) problem = { failure: "unavailable", message: "The Armada server is not configured for this dashboard." };
-  else
-    try {
-      detail = await api.detail(id);
-    } catch (error) {
-      problem = readFailure(error);
-      if (problem.failure === "rejected") notFound();
-    }
+  else if (!org) notFound();
+  else {
+    const capabilities = await api.capabilities().catch((error: unknown) => readFailure(error));
+    if ("enabled" in capabilities && !capabilities.enabled)
+      problem = { failure: "unavailable", message: capabilities.message };
+    else
+      try {
+        detail = await api.detail(org, id);
+      } catch (error) {
+        problem = readFailure(error);
+        if (problem.failure === "rejected") notFound();
+      }
+  }
 
   const back = (
     <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">

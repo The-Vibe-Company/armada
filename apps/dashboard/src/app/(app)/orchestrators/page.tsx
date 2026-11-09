@@ -43,12 +43,19 @@ export default async function OrchestratorsPage() {
   let list: OrchestratorListView | null = null;
   let problem: ReturnType<typeof readFailure> | null = null;
   if (!api) problem = { failure: "unavailable", message: "The Armada server is not configured for this dashboard." };
-  else
-    try {
-      list = await readAll(api, selected.org.id);
-    } catch (error) {
-      problem = readFailure(error);
-    }
+  else {
+    // The server says whether it admits orchestrators at all; a list or a form is shown only when it does.
+    const capabilities = await api.capabilities().catch((error: unknown) => readFailure(error));
+    if ("enabled" in capabilities && !capabilities.enabled)
+      problem = { failure: "unavailable", message: capabilities.message };
+    else if ("failure" in capabilities) problem = capabilities;
+    else
+      try {
+        list = await readAll(api, selected.org.id);
+      } catch (error) {
+        problem = readFailure(error);
+      }
+  }
 
   const [goldens, accounts] = list
     ? await Promise.all([listGoldens(await createClient()), listModelAccounts(viewer, selected.org.id)])

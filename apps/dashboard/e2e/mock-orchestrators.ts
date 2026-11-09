@@ -1,4 +1,8 @@
 /**
+ * Shaped after the #662 runtime candidate (uncommitted, unreviewed): `orgId` on every call, unknown fields refused,
+ * bare error codes, `conflict` for a stale revision, `GET /capabilities`. Presentation only: it proves nothing about
+ * the real service, its storage or native behaviour.
+ *
  * The orchestrator routes of #647's v1 contract (`/api/v1/orchestrators`), as the browser tests need them: owner-only
  * visibility, revision fences, idempotent receipts and an event cursor. A stand-in for presentation tests only; the
  * real policy, persistence and runtime belong to the server producers and their own tests, not to this mock.
@@ -16,7 +20,10 @@ type Orchestrator = Row & { id: string; ownerId: string; revision: number; state
 type Event = Row & { id: string; orchestratorId: string };
 
 type OrchestratorState = {
-  enabled: boolean;
+  /** `enabled`: capabilities say yes. `off`: the candidate's feature-off answer. `legacy`: a server without the routes. */
+  mode: "enabled" | "off" | "legacy";
+  /** The next mutation is applied but its effect unconfirmed: a 202 `uncertain` receipt, the orchestrator held. */
+  uncertainNext: boolean;
   orchestrators: Orchestrator[];
   events: Event[];
   receipts: Map<string, { digest: string; receipt: Row }>;
@@ -67,7 +74,8 @@ function orchestrator(oid: string, owner: string, name: string, extra: Row = {})
 
 function seed(): OrchestratorState {
   const next: OrchestratorState = {
-    enabled: true,
+    mode: "enabled",
+    uncertainNext: false,
     orchestrators: [
       orchestrator(ORCHESTRATOR_IDS.alice, ALICE, "Release coordinator"),
       orchestrator(ORCHESTRATOR_IDS.bob, BOB, "Bob's private plan"),
@@ -171,7 +179,9 @@ function detail(row: Orchestrator): Row {
 /** Test controls: `/__test/orchestrators/{reset|disable|fail-next|offline|online|bump|patch|agent-reply|state}`. */
 export function orchestratorTestControl(action: string, body: Row): Response {
   if (action === "reset") state = seed();
-  else if (action === "disable") state.enabled = false;
+  else if (action === "disable") state.mode = "legacy";
+  else if (action === "feature-off") state.mode = "off";
+  else if (action === "uncertain-next") state.uncertainNext = true;
   else if (action === "fail-next") state.failNext = body as OrchestratorState["failNext"];
   else if (action === "offline") state.offline = true;
   else if (action === "online") state.offline = false;
@@ -225,12 +235,26 @@ export function credsList(userId: string | null): Response {
 }
 
 export function orchestratorRoute(request: Request, url: URL, body: Row, userId: string | null): Response {
-  if (!state.enabled) {
+  if (state.mode === "legacy") {
     // What the server answers today, without the routes: GET is refused, POST is an unknown route.
     return request.method === "GET" ? fail(405, "invalid", "Use POST.") : fail(404, "not_found", "Unknown route.");
   }
   if (!userId) return fail(401, "unauthorized", "Unauthorized.");
   const parts = url.pathname.slice("/api/v1/orchestrators".length).split("/").filter(Boolean);
+  if (request.method === "GET" && parts.length === 1 && parts[0] === "capabilities")
+    return json(
+      state.mode === "off"
+        ? { version: 1, enabled: false, reason: "native_conformance_required" }
+        : { version: 1, enabled: true },
+    );
+  if (state.mode === "off") return bare(503, "unavailable");
+  const orgId = request.method === "GET" ? url.searchParams.get("orgId") : body.orgId;
+  if (orgId !== ACME)
+    return bare(typeof orgId === "string" ? 404 : 400, typeof orgId === "string" ? "not_found" : "invalid_request");
+  if (request.method === "POST" && parts.length === 2) {
+    const allowed = ["orgId", "expectedRevision", ...(["message", "steer"].includes(parts[1] ?? "") ? ["text"] : [])];
+    if (Object.keys(body).some((field) => !allowed.includes(field))) return bare(400, "invalid_request");
+  }
   if (request.method === "GET" && parts.length === 0) {
     const orgId = url.searchParams.get("orgId");
     const items = state.orchestrators.filter(
@@ -239,7 +263,7 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
     return json({ version: 1, items, cursor: null });
   }
   const row = parts[0] ? state.orchestrators.find((item) => item.id === parts[0]) : undefined;
-  if (parts.length > 0 && (!row || row.ownerId !== userId)) return fail(404, "not_found", "No such orchestrator.");
+  if (parts.length > 0 && (!row || row.ownerId !== userId)) return bare(404, "not_found");
   if (request.method === "GET" && row && parts.length === 1) return json(detail(row));
   if (request.method === "GET" && row && parts[1] === "events") {
     if (state.offline) return fail(503, "unavailable", "Armada is temporarily unavailable.");
@@ -262,10 +286,7 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
   const receiptKey = `${userId}|${route}|${target}|${key}`;
   const digest = JSON.stringify(body);
   const seen = state.receipts.get(receiptKey);
-  if (seen)
-    return seen.digest === digest
-      ? json(seen.receipt, 202)
-      : fail(409, "idempotency_conflict", "That key was used for another request.");
+  if (seen) return seen.digest === digest ? json(seen.receipt, 202) : bare(409, "conflict");
   const lost = state.failNext;
   state.failNext = null;
   if (lost && lost.status !== 503) return fail(lost.status, lost.code, lost.message);
@@ -284,13 +305,20 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
     return lost ? fail(lost.status, lost.code, lost.message) : json(answer, 202);
   }
   if (!row || !["message", "steer", "stop", "resume"].includes(route)) return fail(404, "not_found", "Unknown route.");
-  if (body.expectedRevision !== row.revision)
-    return fail(409, "stale_revision", `Revision ${String(body.expectedRevision)} is stale.`);
+  if (body.expectedRevision !== row.revision) return bare(409, "conflict");
   apply(row, route, body);
   const answer = receipt(row, route);
+  if (state.uncertainNext) {
+    state.uncertainNext = false;
+    Object.assign(answer, { state: "uncertain", errorCode: "runtime_uncertain" });
+    Object.assign(row, { state: "blocked", blockedReason: "Armada is reconciling the last operation." });
+  }
   state.receipts.set(receiptKey, { digest, receipt: answer });
   return lost ? fail(lost.status, lost.code, lost.message) : json(answer, 202);
 }
+
+/** The candidate's error envelope: the code is its own message. */
+const bare = (status: number, code: string) => fail(status, code, code);
 
 function receipt(row: Orchestrator, kind: string): Row {
   state.sequence += 1;

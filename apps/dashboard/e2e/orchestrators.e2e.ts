@@ -44,6 +44,17 @@ test("the list shows only the viewer's orchestrators, compactly", async ({ page 
   expect(response?.status()).toBe(404);
 });
 
+test("a server with orchestrators turned off says why and offers no form", async ({ page }) => {
+  await testControl("feature-off");
+  await signIn(page, "alice@example.com", "/orchestrators");
+  await expect(page.getByText("Not available here yet")).toBeVisible();
+  await expect(page.getByText("until each provider passes its native conformance checks")).toBeVisible();
+  await expect(page.getByRole("button", { name: "New orchestrator" })).toHaveCount(0);
+  await page.goto(DETAIL);
+  await expect(page.getByText("until each provider passes its native conformance checks")).toBeVisible();
+  await expect(page.getByRole("form", { name: "Message the orchestrator" })).toHaveCount(0);
+});
+
 test("a server without orchestrators says so and offers no form it would refuse", async ({ page }) => {
   await testControl("disable");
   await signIn(page, "alice@example.com", "/orchestrators");
@@ -117,7 +128,7 @@ test("a stale revision is refused, refreshed and kept as a draft; the next send 
   const box = composer(page).getByLabel("Message");
   await box.fill("Merge order: #12 first.");
   await composer(page).getByRole("button", { name: "Send" }).click();
-  await expect(composer(page).getByRole("alert")).toContainText("changed since you last saw it");
+  await expect(composer(page).getByRole("alert")).toContainText("changed or is busy");
   await expect(box).toHaveValue("Merge order: #12 first.");
 
   // The refusal re-reads the orchestrator at once: the next send carries the new revision without retries.
@@ -236,4 +247,22 @@ test("an expired dashboard session stops reading and asks to sign in again", asy
   // At rest the page reads every 10 seconds.
   await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Reconnecting…")).toHaveCount(0);
+});
+
+test("a receipt whose effect was not confirmed says the orchestrator is held, keeps the draft", async ({ page }) => {
+  await signIn(page, "alice@example.com", DETAIL);
+  await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
+  await testControl("uncertain-next");
+  const box = composer(page).getByLabel("Message");
+  await box.fill("Merge #12.");
+  await composer(page).getByRole("button", { name: "Send" }).click();
+  await expect(composer(page).getByRole("alert")).toContainText("held until Armada reconciles it");
+  await expect(box).toHaveValue("Merge #12.");
+  await expect(page.locator("[data-orchestrator-state]")).toHaveText("Needs attention");
+  const [message] = (await calls()).filter((call) => call.route === "message");
+  expect(message?.body).toEqual({
+    orgId: "00000000-0000-4000-8000-000000000010",
+    expectedRevision: 3,
+    text: "Merge #12.",
+  });
 });
