@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.14.0](https://github.com/The-Vibe-Company/armada/compare/v2.13.0...v2.14.0) (2026-11-09)
+
+
+### Features
+
+* **auth:** support native subscription connections and renewal ([#677](https://github.com/The-Vibe-Company/armada/issues/677)) ([e2987f2](https://github.com/The-Vibe-Company/armada/commit/e2987f236ebc7e62eb4b1703ccf0643bcd2ec445))
+* **chat:** recover legacy workspaces with an explicit account choice ([#666](https://github.com/The-Vibe-Company/armada/issues/666)) ([e5fc554](https://github.com/The-Vibe-Company/armada/commit/e5fc554fd778e021f6c84984e8cee8ac4837ec09))
+* **cli:** align sandbox access and connection defaults ([#688](https://github.com/The-Vibe-Company/armada/issues/688)) ([f958b66](https://github.com/The-Vibe-Company/armada/commit/f958b664abc612c3b61bef2e2ac100c8a46b91ec))
+* **cli:** expose machine sizing defaults and resource advice ([#686](https://github.com/The-Vibe-Company/armada/issues/686)) ([ecce38b](https://github.com/The-Vibe-Company/armada/commit/ecce38bdc4a3a692a569bf3ab721c5d189af72ea))
+* **credentials:** add named model accounts, launch selection and usage cards ([#618](https://github.com/The-Vibe-Company/armada/issues/618)) ([9b3e302](https://github.com/The-Vibe-Company/armada/commit/9b3e30250b824f18fc98f258d4ed23f94f3364e6))
+* **dashboard:** create and chat with persistent orchestrators ([#676](https://github.com/The-Vibe-Company/armada/issues/676)) ([cf0f1e1](https://github.com/The-Vibe-Company/armada/commit/cf0f1e14d1f9a2e582886d37cb7d47136fa290e0))
+* **dashboard:** replace sandbox visibility choices with organization access ([#700](https://github.com/The-Vibe-Company/armada/issues/700)) ([ce3260d](https://github.com/The-Vibe-Company/armada/commit/ce3260d1bfca804a93545ad28d1e7dc83f9867f7))
+* **dashboard:** simplify the sandbox launch experience ([#696](https://github.com/The-Vibe-Company/armada/issues/696)) ([a6d2ace](https://github.com/The-Vibe-Company/armada/commit/a6d2acec147007b90005e93d5cb9dc575f1e32fe))
+* **ios:** add API-only ArmadaKit session and orchestrator client ([#694](https://github.com/The-Vibe-Company/armada/issues/694)) ([a3f125f](https://github.com/The-Vibe-Company/armada/commit/a3f125fb58776af31036085337847ab6a69cd20d))
+* **ios:** migrate Companion native UI for Armada orchestrators ([#695](https://github.com/The-Vibe-Company/armada/issues/695)) ([fc8410c](https://github.com/The-Vibe-Company/armada/commit/fc8410c41f5412b198f18254926bab391e1e9752))
+* **ios:** open a sandbox's conversation from the mobile app ([#713](https://github.com/The-Vibe-Company/armada/issues/713)) ([068bb93](https://github.com/The-Vibe-Company/armada/commit/068bb93e4264b89c762c705a5341cce94d4301c0))
+* **ios:** prepare generated project and TestFlight packaging lane ([#698](https://github.com/The-Vibe-Company/armada/issues/698)) ([731e5eb](https://github.com/The-Vibe-Company/armada/commit/731e5ebc475773510e42b02aab1aae5a70418b65))
+* **orchestrators:** add child admission and persistent lifecycle management ([#705](https://github.com/The-Vibe-Company/armada/issues/705)) ([0976883](https://github.com/The-Vibe-Company/armada/commit/0976883b70ee3ddedef5f965064bd75a248c5b6e))
+* **resources:** persist scoped sandbox sizing evidence and advice ([#672](https://github.com/The-Vibe-Company/armada/issues/672)) ([e7b22fe](https://github.com/The-Vibe-Company/armada/commit/e7b22fe2fef423ecedc56c630c87e0dc8f02fdad))
+* **runtime:** add persistent orchestrator runtime ([#704](https://github.com/The-Vibe-Company/armada/issues/704)) ([a7af4a7](https://github.com/The-Vibe-Company/armada/commit/a7af4a73ea2fda586778fe8994b991a6671f5ddf))
+
+
+### Bug Fixes
+
+* **auth:** make iOS and CLI email sign-in code-only ([#715](https://github.com/The-Vibe-Company/armada/issues/715)) ([df7f126](https://github.com/The-Vibe-Company/armada/commit/df7f12650c1170cf3b16be1e9b22fdae7918f5da))
+* **github:** gate managed runtime behind default-off server setting ([#720](https://github.com/The-Vibe-Company/armada/issues/720)) ([a7d63e6](https://github.com/The-Vibe-Company/armada/commit/a7d63e64aa17c827ac2ee9d247458ffb66487df8))
+* **github:** renew managed credentials in active sandboxes ([#703](https://github.com/The-Vibe-Company/armada/issues/703)) ([5ae3a07](https://github.com/The-Vibe-Company/armada/commit/5ae3a0723b3e8d7eb92b00d41b28b5126ff3a232))
+* **mcp:** attach personal defaults to owner launches ([#684](https://github.com/The-Vibe-Company/armada/issues/684)) ([a59f120](https://github.com/The-Vibe-Company/armada/commit/a59f120ca5338137ef53e33b96039a339ac56fce))
+
 ## [2.13.0](https://github.com/The-Vibe-Company/armada/compare/v2.12.0...v2.13.0) (2026-11-09)
 
 
