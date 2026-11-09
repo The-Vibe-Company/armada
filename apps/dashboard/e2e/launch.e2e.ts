@@ -37,7 +37,7 @@ test("a task-only launch sends the configured defaults through the launch API", 
   await expect(dialog.getByRole("radio", { name: "Claude Code" })).toBeChecked();
   await expect(dialog.getByLabel("Project")).toBeVisible();
   await expect(dialog.getByLabel("Model", { exact: true })).toBeHidden();
-  await expect(dialog.locator("[data-launch-summary]")).toHaveText("Claude Opus 5.5 · Medium · Org · No MCP");
+  await expect(dialog.locator("[data-launch-summary]")).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
   await page.screenshot({ path: "test-results/launch-default-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 664 });
   await expectPinnedLaunch(page);
@@ -60,8 +60,7 @@ test("a task-only launch sends the configured defaults through the launch API", 
       credentialId: "00000000-0000-4000-8000-000000000040",
       model: "claude-opus-5-5",
       reasoningEffort: "medium",
-      visibility: "org",
-      connections: [],
+      // Untouched, the launch names no connections: the server snapshots its defaults (#681).
       prompt: "Fix the flaky login test",
     },
   ]);
@@ -71,10 +70,9 @@ test("the open Advanced area scrolls inside the dialog with Launch still on scre
   await page.setViewportSize({ width: 390, height: 664 });
   await signIn(page, "alice@example.com", "/goldens");
   const dialog = await openLaunch(page, "shared-golden");
-  await dialog.getByRole("radio", { name: /^Private/ }).check();
   await dialog.getByLabel("Alice Linear").uncheck();
   await dialog.getByLabel("Acme Docs").check();
-  await expect(dialog.locator("[data-launch-summary]")).toHaveText("Claude Opus 5.5 · Medium · Private · 1 MCP");
+  await expect(dialog.locator("[data-launch-summary]")).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
   await dialog.getByLabel("Acme Docs").scrollIntoViewIfNeeded();
   await expectPinnedLaunch(page);
   await page.screenshot({ path: "test-results/launch-advanced-mobile.png", animations: "disabled" });
@@ -83,7 +81,8 @@ test("the open Advanced area scrolls inside the dialog with Launch still on scre
   await page.screenshot({ path: "test-results/launch-advanced-desktop.png", animations: "disabled" });
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
-  expect(await launches()).toMatchObject([{ visibility: "private", connections: [expect.any(String)] }]);
+  expect(await launches()).toMatchObject([{ connections: [expect.any(String)] }]);
+  expect((await launches())[0]).not.toHaveProperty("visibility");
   expect((await launches())[0]).not.toHaveProperty("prompt");
 });
 

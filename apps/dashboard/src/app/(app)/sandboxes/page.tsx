@@ -1,5 +1,5 @@
-import { HARNESSES } from "@armada/core";
-import { RocketIcon } from "lucide-react";
+import { HARNESSES, type SandboxListMetadata } from "@armada/core";
+import { LockIcon, RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -11,7 +11,6 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { listGoldenHistory } from "@/lib/data/goldens";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxes } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -19,6 +18,7 @@ import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -32,10 +32,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [{ rows, total }, goldens, directory, setup] = await Promise.all([
+  const [{ rows, total }, directory, setup] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
-    // Removed goldens included: a retained sandbox keeps naming (and filtering by) the golden it started from.
-    listGoldenHistory(supabase),
     listMemberships(supabase, viewer.id)
       .then((items) => items.filter((item) => item.org.id === selected?.org.id))
       .then((memberships) =>
@@ -46,12 +44,9 @@ export default async function SandboxesPage({ searchParams }: Props) {
       ),
     selected ? readProviderSetup(selected.org.id) : null,
   ]);
-  const goldenName = new Map(
-    goldens.map((golden) => [golden.id, golden.removed_at ? `${golden.name} (removed)` : golden.name]),
-  );
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
-  const filtered = Boolean(filters.status || filters.harness || filters.golden || filters.owner);
+  const filtered = Boolean(filters.status || filters.harness || filters.owner);
   // An organization without a sandbox provider goes to Settings to connect one; one with sandboxes to manage stays here.
   const setupPending = selected !== null && setup?.state === "pending";
   if (setupPending && !filtered && total === 0) redirect(PROVIDER_SETTINGS_PATH);
@@ -78,7 +73,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
       <form
         key={filtersToSearch(filters)}
         method="get"
-        className="grid grid-cols-2 gap-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]"
+        className="grid grid-cols-2 gap-2 lg:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
         aria-label="Filters"
       >
         <NativeSelect name="status" defaultValue={filters.status ?? ""} aria-label="Status">
@@ -94,14 +89,6 @@ export default async function SandboxesPage({ searchParams }: Props) {
           {HARNESSES.map((harness) => (
             <option key={harness} value={harness}>
               {HARNESS_LABELS[harness]}
-            </option>
-          ))}
-        </NativeSelect>
-        <NativeSelect name="golden" defaultValue={filters.golden ?? ""} aria-label="Golden">
-          <option value="">Any golden</option>
-          {goldens.map((golden) => (
-            <option key={golden.id} value={golden.id}>
-              {goldenName.get(golden.id)}
             </option>
           ))}
         </NativeSelect>
@@ -129,7 +116,13 @@ export default async function SandboxesPage({ searchParams }: Props) {
       </form>
 
       {rows.length === 0 ? (
-        filtered ? (
+        total > 0 ? (
+          <Empty title="This page is past the last one">
+            <Link href={`/sandboxes${filtersToSearch({ ...filters, page: 1 })}`} className="underline">
+              Go to the first page
+            </Link>
+          </Empty>
+        ) : filtered ? (
           <Empty title="No sandbox matches these filters">Try clearing a filter.</Empty>
         ) : (
           <Empty title="No sandboxes yet" action={launchAction}>
@@ -146,8 +139,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
                 <TableHead>Sandbox</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="hidden sm:table-cell">Provider</TableHead>
-                <TableHead className="hidden sm:table-cell">Golden</TableHead>
                 <TableHead className="hidden md:table-cell">Harness</TableHead>
+                <TableHead className="hidden md:table-cell">Size</TableHead>
                 <TableHead className="hidden md:table-cell">Owner</TableHead>
                 <TableHead className="hidden lg:table-cell">Created</TableHead>
               </TableRow>
@@ -155,19 +148,13 @@ export default async function SandboxesPage({ searchParams }: Props) {
             <TableBody>
               {rows.map((sandbox) => (
                 <TableRow key={sandbox.id}>
-                  <TableCell className="max-w-0 min-w-40 sm:max-w-none">
-                    <Link
-                      href={`/sandboxes/${sandbox.id}`}
-                      className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm font-medium underline-offset-4 hover:underline"
-                    >
-                      <span className="truncate">{sandbox.provider_sandbox_id}</span>
-                      <LinkPendingIcon />
-                    </Link>
+                  <TableCell className="w-full max-w-0 min-w-40">
+                    <SandboxName sandbox={sandbox} />
                     <p className="flex items-center gap-1 text-xs text-muted-foreground sm:hidden">
                       <ProviderName provider={sandbox.provider} className="shrink-0 gap-1" />
                       <span className="truncate">
-                        <span aria-hidden="true">·</span> {goldenName.get(sandbox.golden_id) ?? "Unknown golden"},{" "}
-                        {HARNESS_LABELS[sandbox.harness]}
+                        <span aria-hidden="true">·</span> {HARNESS_LABELS[sandbox.harness]}
+                        {sandbox.machineSize && `, ${machineSizeLabel(sandbox.machineSize)}`}
                       </span>
                     </p>
                   </TableCell>
@@ -178,15 +165,19 @@ export default async function SandboxesPage({ searchParams }: Props) {
                   <TableCell className="hidden sm:table-cell">
                     <ProviderName provider={sandbox.provider} />
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell">
-                    {goldenName.get(sandbox.golden_id) ?? "Unknown"}
-                  </TableCell>
                   <TableCell className="hidden md:table-cell">{HARNESS_LABELS[sandbox.harness]}</TableCell>
                   <TableCell className="hidden md:table-cell">
-                    {displayUser(directory, sandbox.owner_id, viewer.id)}
+                    {sandbox.machineSize ? (
+                      machineSizeLabel(sandbox.machineSize)
+                    ) : (
+                      <span className="text-muted-foreground">Not recorded</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    {displayUser(directory, sandbox.ownerId, viewer.id)}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground lg:table-cell">
-                    <CreatedAt iso={sandbox.created_at} now={now.getTime()} />
+                    <CreatedAt iso={sandbox.createdAt} now={now.getTime()} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -195,7 +186,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
         </div>
       )}
 
-      {pages > 1 && (
+      {/* Past the last page the empty state above already leads back; a pager there would count beyond the end. */}
+      {pages > 1 && filters.page <= pages && (
         <nav aria-label="Pages" className="flex items-center justify-between text-sm text-muted-foreground">
           <span>
             Page {filters.page} of {pages}, {total} sandboxes
@@ -215,6 +207,37 @@ export default async function SandboxesPage({ searchParams }: Props) {
         </nav>
       )}
     </>
+  );
+}
+
+/**
+ * The sandbox's listed name. Its owner and the organization's admins open it; any other member sees the same metadata
+ * without a link into its conversation, files or connections (#680). The server enforces that again on every read.
+ */
+function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
+  if (sandbox.canOpen)
+    return (
+      <Link
+        href={`/sandboxes/${sandbox.id}`}
+        className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm font-medium underline-offset-4 hover:underline"
+      >
+        <span className="truncate" title={sandboxName(sandbox)}>
+          {sandboxName(sandbox)}
+        </span>
+        <LinkPendingIcon />
+      </Link>
+    );
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm text-muted-foreground"
+      data-restricted
+    >
+      <span className="truncate" title={sandboxName(sandbox)}>
+        {sandboxName(sandbox)}
+      </span>
+      <LockIcon aria-hidden="true" className="size-3.5 shrink-0" />
+      <span className="sr-only">Only its owner and organization admins can open it</span>
+    </span>
   );
 }
 

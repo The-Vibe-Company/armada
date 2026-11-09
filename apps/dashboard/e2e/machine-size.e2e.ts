@@ -28,7 +28,7 @@ test("the launch shows the repository then golden default, keeps an override and
   const dialog = page.getByRole("dialog");
   // The size starts on its default, summarized on the collapsed Advanced area where it is overridden.
   const summary = dialog.locator("[data-launch-summary]");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Medium machine · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Medium machine · 1 MCP");
   await dialog.locator("[data-launch-advanced] > summary").click();
   const size = dialog.getByLabel("Machine size");
   const hint = dialog.locator("[data-size-source]");
@@ -44,13 +44,13 @@ test("the launch shows the repository then golden default, keeps an override and
   await expect(hint).toHaveAttribute("data-size-source", "repository");
   await expect(hint).toContainText("Large, the default for api. 8 vCPU · 16 GiB · 111 GB disk.");
   await expect(size.locator("option").first()).toHaveText("Default · Large (repository)");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Large machine · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Large machine · 1 MCP");
 
   await size.selectOption("small");
   await dialog.getByLabel("Project").selectOption("web");
   await expect(size).toHaveValue("small");
   await expect(hint).toContainText("Overrides the default (Medium, the golden's default).");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Small machine · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Small machine · 1 MCP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "test-results/machine-size-launch-mobile.png",
@@ -170,7 +170,7 @@ test("a refused size says what can be changed, and an older server allocates not
   await expect(dialog.getByLabel("Reasoning effort")).toHaveValue("medium");
   await expect(dialog.getByLabel("Machine size")).toHaveValue("xlarge");
   await expect(dialog.locator("[data-launch-summary]")).toHaveText(
-    "Claude Opus 5.5 · Medium · Extra large machine · Org · No MCP",
+    "Claude Opus 5.5 · Medium · Extra large machine · 1 MCP",
   );
   await page.setViewportSize({ width: 390, height: 664 });
   await page.screenshot({ path: "test-results/launch-refused-size-kept-mobile.png", animations: "disabled" });

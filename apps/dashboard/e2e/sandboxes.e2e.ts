@@ -1,50 +1,111 @@
 import { expect, test } from "@playwright/test";
-import { IDS, MOCK, openLaunch, reset, signIn } from "./helpers";
+import { IDS, LABELS, MOCK, openLaunch, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
-test("the list shows the sandboxes a member may see and filters them", async ({ page }) => {
+test("the list shows every sandbox of the organization and filters them", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "bx_alice_failed" })).toBeVisible();
-  await expect(page.getByText("bx_bob_secret")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
+  // An admin opens another member's sandbox, whatever its legacy visibility (#680).
+  await expect(page.getByRole("link", { name: LABELS.bobSecret })).toBeVisible();
+  // The golden is not in the listed metadata (#680).
+  await expect(page.getByRole("columnheader", { name: "Golden" })).toHaveCount(0);
 
   // Each row names its persisted provider beside the provider's mark, in a column or, on a phone, under the ID (#645).
   const row = (name: string) => page.getByRole("row").filter({ has: page.getByRole("link", { name }) });
-  await expect(row("bx_alice_running").getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
-  await expect(row("bx_alice_failed").getByRole("cell", { name: "Modal", exact: true })).toBeVisible();
-  await expect(row("bx_alice_failed").locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
+  await expect(row(LABELS.running).getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
+  await expect(row(LABELS.failed).getByRole("cell", { name: "Modal", exact: true })).toBeVisible();
+  await expect(row(LABELS.failed).locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
+  await expect(row(LABELS.failed).getByRole("cell", { name: "Large", exact: true })).toBeVisible();
+  await expect(row(LABELS.running).getByRole("cell", { name: "Not recorded", exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/sandbox-providers-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(row("bx_alice_failed").getByText("Modal", { exact: true }).filter({ visible: true })).toBeVisible();
-  await expect(row("bx_alice_running").getByText("Boat", { exact: true }).filter({ visible: true })).toBeVisible();
-  await expect(row("bx_alice_running").locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
+  await expect(row(LABELS.failed).getByText("Modal", { exact: true }).filter({ visible: true })).toBeVisible();
+  await expect(row(LABELS.running).getByText("Boat", { exact: true }).filter({ visible: true })).toBeVisible();
+  await expect(row(LABELS.running).locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
   await page.screenshot({ path: "test-results/sandbox-providers-mobile.png", fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
 
   await page.getByLabel("Harness").selectOption("codex");
   await page.getByRole("button", { name: "Filter" }).click();
   await expect(page).toHaveURL(/harness=codex/);
-  await expect(page.getByRole("link", { name: "bx_alice_failed" })).toBeVisible();
-  await expect(page.getByText("bx_alice_running")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
+  await expect(page.getByText(LABELS.running)).toHaveCount(0);
 
   await page.getByRole("link", { name: "Clear" }).click();
   await expect(page).toHaveURL(/\/sandboxes$/);
   await page.getByLabel("Status").selectOption("running");
   await page.getByRole("button", { name: "Filter" }).click();
-  await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
-  await expect(page.getByText("bx_alice_failed")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await expect(page.getByText(LABELS.failed)).toHaveCount(0);
 });
 
-test("another member's private sandbox is not found", async ({ page }) => {
+test("a member sees every sandbox's metadata but opens only their own", async ({ page }) => {
+  await signIn(page, "bob@example.com");
+  // Bob's own sandbox, launched private before #680, is his to open.
+  await expect(page.getByRole("link", { name: LABELS.bobSecret })).toBeVisible();
+  // Alice's sandboxes are listed with their metadata, quietly, without a way in.
+  const restricted = page.locator("[data-restricted]").filter({ hasText: LABELS.running });
+  await expect(restricted).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.running })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.failed })).toHaveCount(0);
+  const row = page.getByRole("row").filter({ has: restricted });
+  await expect(row.getByRole("cell", { name: "alice@example.com" })).toBeVisible();
+  await expect(row.getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
+  await expect(row.locator("time")).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
+  await page.screenshot({ path: "test-results/sandbox-access-member-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(restricted).toBeVisible();
+  await page.screenshot({
+    path: "test-results/sandbox-access-member-mobile.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  // Going to its address directly: the server refuses the interior, and the page says so without reading any of it.
+  await page.goto(`/sandboxes/${IDS.running}`);
+  await expect(page.getByRole("heading", { name: LABELS.running })).toBeVisible();
+  await expect(page.locator("[data-restricted]")).toContainText("Only its owner and organization admins");
+  await expect(page.locator("dl")).toContainText("alice@example.com");
+  await expect(page.getByText("Fix the failing test")).toHaveCount(0);
+  await expect(page.getByRole("log", { name: "Messages" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
+  const state = (await (await fetch(`${MOCK}/__test/state`)).json()) as { controlCalls: { operation: string }[] };
+  expect(state.controlCalls.filter((call) => call.operation === "sandbox-connections")).toEqual([]);
+  await page.screenshot({ path: "test-results/sandbox-access-denied-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "test-results/sandbox-access-denied-mobile.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+});
+
+test("a sandbox the selected organization does not list is not found, even one of the viewer's other org", async ({
+  page,
+}) => {
+  await fetch(`${MOCK}/__test/reset`, { method: "POST", body: JSON.stringify({ multiOrg: true }) });
   await signIn(page, "alice@example.com");
-  const response = await page.goto(`/sandboxes/${IDS.bobSecret}`);
+  // Acme is selected; Carol's sandbox is listed to Alice only in Zenith, where she may not open it. Outside the selected
+  // organization it is not found, not shown as restricted.
+  const response = await page.goto(`/sandboxes/${IDS.zenithCarol}`);
   expect(response?.status()).toBe(404);
+});
+
+test("a page past the last one is empty, with a way back", async ({ page }) => {
+  await signIn(page, "alice@example.com");
+  await page.goto("/sandboxes?page=99");
+  await expect(page.getByText("This page is past the last one")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Pages" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Go to the first page" }).click();
+  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
 });
 
 test("the logs of a running sandbox refresh without reloading the page", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.getByRole("link", { name: "bx_alice_running" }).click();
+  await page.getByRole("link", { name: LABELS.running }).click();
   await expect(page.getByRole("heading", { name: "bx_alice_running" })).toBeVisible();
   await expect(page.getByText("Fix the failing test")).toBeVisible();
   await expect(page.getByText("Looking at the test suite.")).toBeVisible();
@@ -376,10 +437,10 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   await page.getByLabel("Project").selectOption("api");
   // Switching the agent selects that agent's own defaults, and the summary follows.
   const summary = page.locator("[data-launch-summary]");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
   await page.getByRole("radio", { name: "Codex" }).check();
   await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
-  await expect(summary).toHaveText("GPT-6.1 Sol · Medium · Org · No MCP");
+  await expect(summary).toHaveText("GPT-6.1 Sol · Medium · 1 MCP");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
   await expect(page.getByLabel("Reasoning effort").locator("option[value=ultra]")).toHaveCount(0);
   await page.getByLabel("Reasoning effort").selectOption("high");
@@ -421,8 +482,7 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
       harness: "codex",
       model: "gpt-6-luna",
       reasoningEffort: "high",
-      visibility: "org",
-      connections: [],
+      // Untouched connections are not sent: the server applies the defaults (#681).
       repo: "api",
     },
   ]);
@@ -455,7 +515,7 @@ test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, n
   });
   await signIn(page, "alice@example.com");
   await expect(page.locator('[data-lifecycle="remaining"]')).toHaveText(/^1 h \d+ min left$/);
-  await page.getByRole("link", { name: "bx_alice_running" }).click();
+  await page.getByRole("link", { name: LABELS.running }).click();
   const facts = page.locator("dl").first();
   await expect(facts.getByText("8 h (default)")).toBeVisible();
   await expect(facts.getByText("Last checked")).toBeVisible();
@@ -473,8 +533,9 @@ test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, n
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "test-results/sandbox-lifecycle-mobile.png", fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
+  // The list's metadata carries the deadline but never the stop failure itself (#680): it says the deadline passed.
   await page.goto("/sandboxes");
-  await expect(page.locator('[data-lifecycle="retrying"]')).toHaveText("Stop retrying");
+  await expect(page.locator('[data-lifecycle="overdue"]')).toHaveText("Past deadline");
 });
 
 for (const [timezoneId, zone] of [
@@ -496,7 +557,7 @@ for (const [timezoneId, zone] of [
       await page.clock.pauseAt(new Date("2026-11-08T10:10:00Z"));
       await page.clock.runFor(30_000);
 
-      const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: "bx_alice_running" }) });
+      const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running }) });
       const created = row.locator("time");
       await expect(created).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
       await expect(created).toHaveText("5 min ago");
@@ -515,7 +576,7 @@ for (const [timezoneId, zone] of [
       await expect(tooltip).toHaveCount(0);
 
       // So does the pointer.
-      await page.getByRole("link", { name: "bx_alice_running" }).focus();
+      await page.getByRole("link", { name: LABELS.running }).focus();
       await trigger.hover();
       await page.clock.runFor(1_000);
       await expect(tooltip).toHaveText(zone);
@@ -524,7 +585,7 @@ for (const [timezoneId, zone] of [
       await expect(tooltip).toHaveCount(0);
       // A phone keeps the compact table: the Created column steps aside, the row link stays.
       await page.setViewportSize({ width: 390, height: 844 });
-      await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
+      await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
       await expect(created).toBeHidden();
       await page.screenshot({ path: `${shot}-mobile.png`, fullPage: true, animations: "disabled" });
 

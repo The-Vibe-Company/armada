@@ -7,8 +7,9 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
 
 /**
  * Launches a sandbox as the signed-in viewer. The body carries what the person chose: golden, org, agent, model and
- * effort, visibility and connections, the optional repository context (`repo`, a golden `repos[].dir`), the optional
- * machine size override (`size`), the model account (`credentialId`) and the optional first prompt. Answers the new sandbox's id.
+ * effort, the connections when the person chose them (absent: the server applies the defaults), the optional
+ * repository context (`repo`, a golden `repos[].dir`), the optional machine size override (`size`), the model account
+ * (`credentialId`) and the optional first prompt. Answers the new sandbox's id.
  *
  * Whenever sizing matters (an explicit size, or a golden whose size defaults the server must resolve) it goes only
  * to #653's fail-closed `SIZED_LAUNCH_ROUTE_V1` with `sizePolicyVersion: 1`. A server that does not know that route
@@ -27,8 +28,7 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
       harness: args.harness,
       model: args.model,
       reasoningEffort: args.reasoning_effort,
-      visibility: args.visibility,
-      connections: args.connections,
+      ...(args.connections === undefined ? {} : { connections: args.connections }),
       ...(args.repo === undefined ? {} : { repo: args.repo }),
       ...(args.credentialId === undefined ? {} : { credentialId: args.credentialId }),
       ...(args.size === undefined ? {} : { size: args.size }),

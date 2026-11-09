@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { alert, MOCK, signIn } from "./helpers";
+import { alert, LABELS, MOCK, signIn } from "./helpers";
 
 /**
  * Sandbox providers (#598): Settings connects, replaces and disconnects the active organization's Boat and Modal, as
@@ -139,7 +139,7 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   await expect(page.getByRole("heading", { name: "Build a golden" })).toHaveCount(0);
   await expect(card).toBeVisible();
   await page.goto("/sandboxes");
-  await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
   await expect(page.getByRole("link", { name: "Connect a provider" })).toHaveAttribute("href", "/settings");
 });
 

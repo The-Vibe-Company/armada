@@ -6,13 +6,11 @@ import {
   checkStdio,
   completeUpdate,
   connectAction,
-  launchDefaults,
   launchSelection,
   type McpConnection,
   oauthCallbackInput,
   oauthReturn,
   parseStdioImport,
-  sandboxVisibility,
   statusLabel,
   unreadyDefaults,
 } from "../src/lib/connections.ts";
@@ -36,18 +34,16 @@ describe("launch selection", () => {
   const expired = connection(52, { status: "needs_reconnect" });
   const available = [personal, shared, expired];
 
+  // #681: a launch's connections no longer depend on a sandbox visibility; personal and org connections both go.
   test.each([
-    ["a personal connection in a private sandbox from a shared golden", "private", "org", [personal.id], true],
-    ["org connections in an org sandbox", "org", "org", [shared.id, shared.id], true],
-    ["a personal connection in an org sandbox", "org", "org", [personal.id], "needs a private sandbox"],
-    ["an org sandbox from a private golden", "org", "private", [], "stays private"],
-    ["a connection that needs reconnecting", "private", "org", [expired.id], "Needs reconnect"],
-    ["an id not listed for the org", "private", "org", ["00000000-0000-4000-8000-000000000099"], "no longer available"],
-    ["a missing visibility", "", "org", [], "who can see"],
-  ] as const)("%s", (_name, visibility, goldenVisibility, connections, expected) => {
-    const result = launchSelection({ visibility, goldenVisibility, connections: [...connections], available });
+    ["personal and org connections together", [personal.id, shared.id, shared.id], true],
+    ["no connections, deliberately", [], true],
+    ["a connection that needs reconnecting", [expired.id], "Needs reconnect"],
+    ["an id not listed for the org", ["00000000-0000-4000-8000-000000000099"], "no longer available"],
+  ] as const)("%s", (_name, connections, expected) => {
+    const result = launchSelection({ connections: [...connections], available });
     if (expected === true) {
-      expect(result).toEqual({ ok: true, value: { visibility, connections: [...new Set(connections)] } });
+      expect(result).toEqual({ ok: true, value: { connections: [...new Set(connections)] } });
     } else {
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error).toContain(expected);
@@ -61,21 +57,12 @@ describe("launch defaults", () => {
   const optIn = connection(55);
   const expired = connection(56, { defaultForLaunch: true, status: "needs_reconnect" });
   const disabled = connection(57, { defaultForLaunch: true, status: "disabled" });
-  const available = [personal, shared, optIn, expired, disabled];
+  const personalExpired = connection(59, { scope: "personal", defaultForLaunch: true, status: "unavailable" });
+  const available = [personal, shared, optIn, expired, disabled, personalExpired];
 
-  test.each([
-    ["a private sandbox starts with every usable default", "private", [personal.id, shared.id]],
-    ["an org sandbox never gets a personal default", "org", [shared.id]],
-  ] as const)("%s", (_name, visibility, expected) => {
-    expect(launchDefaults(available, visibility)).toEqual([...expected]);
-  });
-
-  test("a default that is enabled but not connected is reported, never silently dropped", () => {
-    const personalExpired = connection(59, { scope: "personal", defaultForLaunch: true, status: "unavailable" });
-    const all = [...available, personalExpired];
-    expect(unreadyDefaults(all, "private").map((item) => item.id)).toEqual([expired.id, personalExpired.id]);
-    // An org sandbox never takes a personal default, so a broken one does not concern it.
-    expect(unreadyDefaults(all, "org").map((item) => item.id)).toEqual([expired.id]);
+  // The selection itself is owned by @armada/core's mcpLaunchSelection test; this guards the dialog's held list.
+  test("an unconnected default is held whatever its scope, never dropped", () => {
+    expect(unreadyDefaults(available).map((item) => item.id)).toEqual([expired.id, personalExpired.id]);
   });
 });
 
@@ -222,10 +209,4 @@ test("a stdio connection reads as configured for launch, never as a live connect
   expect(statusLabel({ transport: "stdio", status: "connected" })).toBe("Configured for launch");
   expect(statusLabel({ transport: "stdio", status: "not_connected" })).toBe("Not configured");
   expect(statusLabel({ transport: "http", status: "connected" })).toBe("Connected");
-});
-
-test("a sandbox's visibility is read from its row, and is unknown for a row without it", () => {
-  expect(sandboxVisibility({ visibility: "private" })).toBe("private");
-  expect(sandboxVisibility({ visibility: "public" })).toBeNull();
-  expect(sandboxVisibility({})).toBeNull();
 });

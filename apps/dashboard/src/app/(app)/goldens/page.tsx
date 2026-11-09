@@ -569,7 +569,6 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
               orgId={golden.org_id}
               catalog={MODEL_CATALOG}
               repositories={directories}
-              goldenVisibility={golden.visibility}
               connections={context.connections}
               accounts={context.accounts}
               {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}

@@ -22,10 +22,10 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  CONNECTION_CHOICE_FIELD,
   launchBlocker,
   launchDefaults,
   type McpConnection,
-  type SandboxVisibility,
   unreadyDefaults,
 } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
@@ -55,7 +55,6 @@ type LaunchProps = {
   provider: SandboxProviderId;
   orgId: string;
   catalog: ModelCatalog;
-  goldenVisibility: SandboxVisibility;
   connections: LaunchConnections;
   /** The model accounts the viewer may launch with, or why none are listed. */
   accounts: LaunchAccounts;
@@ -67,7 +66,8 @@ type LaunchProps = {
 /**
  * Launches an agent from a golden. The task comes first, then the agent and, for a golden with several
  * repositories, the project. Everything else starts on its configured default and is summarized on the collapsed
- * Advanced area, where it can be overridden.
+ * Advanced area, where it can be overridden. Who may open the sandbox is not a choice: its owner and the org's
+ * admins (#680).
  */
 export function LaunchDialog(props: LaunchProps) {
   return (
@@ -86,24 +86,14 @@ export function LaunchDialog(props: LaunchProps) {
 }
 
 /** Mounted with the dialog, so every opening starts from the defaults. */
-function LaunchForm({
-  golden,
-  provider,
-  orgId,
-  catalog,
-  goldenVisibility,
-  connections,
-  accounts,
-  repositories,
-  sizing,
-}: LaunchProps) {
+function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, repositories, sizing }: LaunchProps) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
   const [choice, setChoice] = useState({
     model: catalog.claude.defaultModel,
     effort: catalog.claude.defaultReasoningEffort,
   });
-  const access = useLaunchAccess(goldenVisibility, connections);
+  const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const advanced = useRef<HTMLDetailsElement>(null);
   useVisibleViewport(root);
@@ -151,7 +141,6 @@ function LaunchForm({
     // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
     repositories.length === 1 ? project || "Default directory" : null,
     sizing ? sizeFact(size) : null,
-    access.visibility === "org" ? "Org" : "Private",
     mcpFact(access),
   ]
     .filter(Boolean)
@@ -188,7 +177,8 @@ function LaunchForm({
         <input type="hidden" name="golden" value={golden} />
         <input type="hidden" name="provider" value={provider} />
         <input type="hidden" name="org" value={orgId} />
-        <input type="hidden" name="visibility" value={access.visibility} />
+        {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
+        <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
           <div className="space-y-2 pt-1">
             <Label htmlFor={`${id}-prompt`}>Task</Label>
@@ -394,17 +384,15 @@ function Segmented<T extends string>({
   value,
   options,
   onChange,
-  hint,
 }: {
   legend: string;
   name: string;
   value: T;
-  options: { value: T; label: string; disabled?: boolean }[];
+  options: { value: T; label: string }[];
   onChange: (value: T) => void;
-  hint?: { id: string; text: string };
 }) {
   return (
-    <fieldset className="min-w-0 space-y-2" aria-describedby={hint?.id}>
+    <fieldset className="min-w-0 space-y-2">
       <legend className="text-sm leading-none font-medium">{legend}</legend>
       <div className="grid h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30">
         {options.map((option) => (
@@ -417,7 +405,6 @@ function Segmented<T extends string>({
               name={name}
               value={option.value}
               checked={value === option.value}
-              disabled={option.disabled}
               onChange={() => onChange(option.value)}
               className="absolute inset-0 size-full cursor-pointer appearance-none rounded-sm opacity-0 disabled:cursor-not-allowed"
             />
@@ -425,11 +412,6 @@ function Segmented<T extends string>({
           </label>
         ))}
       </div>
-      {hint && (
-        <p id={hint.id} className="text-xs text-muted-foreground">
-          {hint.text}
-        </p>
-      )}
     </fieldset>
   );
 }
@@ -468,45 +450,31 @@ function RepositoryField({
 }
 
 /**
- * Visibility and connections. The selection starts with the connections marked include-by-default that this
- * sandbox can use, and follows the visibility until the person changes it; from then on it is exactly what they
- * ticked, and an empty selection launches with none. A requested default that is not connected is never dropped
- * silently: it holds the launch until it is reconnected or the person chooses to continue without it, as the server
- * does for a launch that names no connections. A personal connection carries its owner's identity, so it can only
- * go into a private sandbox: it is not selectable while Org is chosen, and choosing Org drops it.
+ * Connections, by the #681 selection. It starts with every enabled include-by-default connection, personal and org,
+ * whatever the golden; from the person's first change it is exactly what they ticked, and an empty selection launches
+ * with none. A default that is not connected is never dropped silently: it holds the launch until it is reconnected
+ * or the person chooses to continue without it, as the server does.
  *
  * The alerts render outside the collapsed Advanced area, so nothing that holds or limits a launch is hidden.
  */
-function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: LaunchConnections) {
-  const [visibility, setVisibility] = useState<SandboxVisibility>(goldenVisibility);
-  // Null until the person changes the selection: the defaults for the current visibility apply until then.
+function useLaunchAccess(connections: LaunchConnections) {
+  // Null until the person changes the selection: the defaults apply until then.
   const [picked, setPicked] = useState<string[] | null>(null);
   // A requested default that is not connected holds the launch until the person reconnects it or explicitly goes
   // on without it. Ticking other connections does not count: it would drop the default without saying so.
-  // By id, so a default that only becomes eligible later (switching to Private) is held again, not waived unseen.
   const [waived, setWaived] = useState<readonly string[]>([]);
-  const [notice, setNotice] = useState("");
   const list = "connections" in connections ? connections.connections : [];
-  const chosen = picked ?? launchDefaults(list, visibility);
-  const unready = unreadyDefaults(list, visibility).filter((connection) => !waived.includes(connection.id));
-
-  function choose(next: SandboxVisibility) {
-    setVisibility(next);
-    if (next !== "org" || picked === null) return setNotice("");
-    const personal = chosen.filter((item) => list.find((connection) => connection.id === item)?.scope === "personal");
-    if (personal.length === 0) return setNotice("");
-    setPicked(chosen.filter((item) => !personal.includes(item)));
-    setNotice(
-      `${personal.length === 1 ? "A personal connection was" : `${personal.length} personal connections were`} unselected: an org sandbox only gets org connections.`,
-    );
-  }
+  const blocked = unreadyDefaults(list);
+  // A default that is not connected cannot be ticked: it is held rather than submitted or dropped unseen.
+  const chosen = picked ?? launchDefaults(list).filter((item) => !blocked.some((connection) => connection.id === item));
+  const unready = blocked.filter((connection) => !waived.includes(connection.id));
 
   function toggle(connectionId: string, on: boolean) {
     setPicked(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
   }
 
   const selected = list.filter(
-    (connection) => chosen.includes(connection.id) && launchBlocker(connection, visibility) === null,
+    (connection) => chosen.includes(connection.id) && launchBlocker(connection) === null,
   ).length;
 
   const alerts = (onContinue: () => void): ReactNode => (
@@ -542,7 +510,8 @@ function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: Launc
       )}
       {"unavailable" in connections && (
         <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
-          Connections could not be loaded: {connections.unavailable} You can still launch without them.
+          Connections could not be loaded: {connections.unavailable} A launch uses your default connections, and is
+          refused if one of them is not connected.
         </p>
       )}
     </>
@@ -553,20 +522,6 @@ function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: Launc
     const shared = list.filter((item) => item.scope === "org");
     return (
       <>
-        <Segmented
-          legend="Access"
-          name={`${idPrefix}-visibility`}
-          value={visibility}
-          onChange={choose}
-          options={[
-            { value: "org", label: "Org", disabled: goldenVisibility === "private" },
-            { value: "private", label: "Private" },
-          ]}
-          hint={{
-            id: `${idPrefix}-visibility-hint`,
-            text: accessHint(visibility, goldenVisibility),
-          }}
-        />
         {"connections" in connections && (
           <fieldset className="min-w-0 space-y-2">
             <legend className="text-sm leading-none font-medium">MCP connections</legend>
@@ -594,7 +549,7 @@ function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: Launc
                             key={connection.id}
                             idPrefix={idPrefix}
                             connection={connection}
-                            blocker={launchBlocker(connection, visibility)}
+                            blocker={launchBlocker(connection)}
                             checked={chosen.includes(connection.id)}
                             onChange={(on) => toggle(connection.id, on)}
                           />
@@ -605,9 +560,6 @@ function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: Launc
                 )}
               </div>
             )}
-            <p role="status" className="text-xs text-warning empty:hidden">
-              {notice}
-            </p>
           </fieldset>
         )}
       </>
@@ -615,7 +567,8 @@ function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: Launc
   };
 
   return {
-    visibility,
+    // Only a listed selection the person changed is sent; otherwise the server snapshots the defaults.
+    explicit: picked !== null && "connections" in connections,
     selected,
     held: unready.length > 0,
     unavailable: "unavailable" in connections,
@@ -683,12 +636,6 @@ function ConnectionOption({
       </div>
     </li>
   );
-}
-
-/** What the chosen access means; a private golden says why Org is not offered. */
-function accessHint(visibility: SandboxVisibility, goldenVisibility: SandboxVisibility): string {
-  if (visibility === "org") return "Org members can open and stop it.";
-  return goldenVisibility === "private" ? "Only you: a private golden launches private sandboxes." : "Only you.";
 }
 
 /** The MCP connections a launch gets, as one summary fact. */

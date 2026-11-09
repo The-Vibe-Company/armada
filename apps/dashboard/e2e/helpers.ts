@@ -7,6 +7,16 @@ export const IDS = {
   running: "00000000-0000-4000-8000-000000000030",
   failed: "00000000-0000-4000-8000-000000000031",
   bobSecret: "00000000-0000-4000-8000-000000000032",
+  zenith: "00000000-0000-4000-8000-000000000033",
+  zenithCarol: "00000000-0000-4000-8000-000000000034",
+};
+
+/** How the list names a sandbox: the #680 metadata's provider display ID. */
+export const LABELS = {
+  running: "bx_alice_running",
+  failed: "bx_alice_failed",
+  bobSecret: "bx_bob_secret",
+  zenith: "bx_zenith",
 };
 
 /** The alert of the page itself, not the route announcer Next adds. */

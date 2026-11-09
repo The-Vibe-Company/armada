@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { MOCK, reset, signIn } from "./helpers";
+import { LABELS, MOCK, reset, signIn } from "./helpers";
 
 type GoldenCall = { route: string; body: Record<string, unknown>; authorized: boolean };
 type ToolCall = { name: string; args: Record<string, unknown> };
@@ -651,13 +651,10 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   expect((await mockState()).launches).toEqual([]);
   await stale.close();
 
-  // Its sandboxes keep their history and still name the golden they started from.
+  // Its sandboxes keep their history, and the sandbox's own page still names the golden it started from (the list's
+  // metadata names no golden, #680).
   await page.goto("/sandboxes");
-  await expect(page.getByRole("row", { name: /bx_alice_running/ })).toContainText("shared-golden (removed)");
-  await expect(
-    page.getByLabel("Golden", { exact: true }).getByRole("option", { name: "shared-golden (removed)" }),
-  ).toHaveCount(1);
-  await page.getByRole("link", { name: "bx_alice_running" }).click();
+  await page.getByRole("link", { name: LABELS.running }).click();
   await expect(page.getByRole("heading", { name: "bx_alice_running" })).toBeVisible();
   await expect(page.locator("dl").first()).toContainText("shared-golden (removed)");
   await expect(page.getByText("Fix the failing test")).toBeVisible();
