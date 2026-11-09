@@ -642,6 +642,8 @@ function Composer({
   const restarts = STEER_RESTARTS_TURN[harness];
   /** The highlighted button, which Ctrl/Cmd+Enter presses: steering while a turn runs, unless the model changes. */
   const primary: Intent = running && !override ? "steer" : "send";
+  /** Steer is unavailable because of a model change: say so, unless an error needs the space. */
+  const steerHint = running && override && result?.ok !== false;
 
   function change(data: FormData) {
     const field = (name: string) => String(data.get(name) ?? "");
@@ -763,23 +765,23 @@ function Composer({
           {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
           <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
         </Button>
-        {result ? (
+        {steerHint ? (
+          // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
+          // It takes the place of an earlier success message, never of an error.
           <p
-            role={result.ok ? "status" : "alert"}
-            className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
+            id={`${fieldId}-steer-hint`}
+            className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
           >
-            {result.ok ? result.message : result.error}
+            <span className="sr-only">Model change: </span>
+            New turn only
           </p>
         ) : (
-          running &&
-          override && (
-            // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
+          result && (
             <p
-              id={`${fieldId}-steer-hint`}
-              className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
+              role={result.ok ? "status" : "alert"}
+              className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
             >
-              <span className="sr-only">Model change: </span>
-              New turn only
+              {result.ok ? result.message : result.error}
             </p>
           )
         )}
@@ -800,7 +802,7 @@ function Composer({
           {running && (
             <Button
               aria-label={restarts ? "Steer (restarts turn)" : "Steer"}
-              aria-describedby={override && !result ? `${fieldId}-steer-hint` : undefined}
+              aria-describedby={steerHint ? `${fieldId}-steer-hint` : undefined}
               type="button"
               variant={primary === "steer" ? "default" : "outline"}
               size="sm"

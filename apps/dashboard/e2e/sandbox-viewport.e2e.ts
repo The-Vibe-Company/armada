@@ -181,8 +181,12 @@ test("on a common phone height, a running turn's composer and its controls are i
     }
     await expect(box).toHaveValue("Keep the old behaviour for empty input");
   }
-  // A model change makes Steer unavailable, and says so in words on a touch screen, without costing a row.
+  // A model change makes Steer unavailable, and says so in words on a touch screen, without costing a row, even
+  // after an earlier action left its result in the same place.
   await page.getByRole("button", { name: "Details" }).click();
+  await page.getByRole("button", { name: "Steer", exact: true }).click();
+  await expect(page.locator('form p[role="status"]')).toHaveText("Steered.");
+  await box.fill("Keep the old behaviour for empty input");
   await page.getByRole("button", { name: "Model", exact: true }).click();
   await page.getByLabel("Reasoning effort").selectOption("high");
   await page.getByRole("button", { name: "Model changed" }).click();
