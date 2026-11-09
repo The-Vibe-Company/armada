@@ -190,7 +190,7 @@ export function KeysFigure() {
         <Name>sandbox</Name> <Tag>GitHub, {GITHUB_TOKEN_HOURS} hours</Tag>
       </Node>
       <Node branch="out" dot="red" cut>
-        <Name>golden</Name> <Tag tone="is-no">no keys, ever</Tag> <Tag>a token found stops its snapshot</Tag>
+        <Name>golden</Name> <Tag tone="is-no">no keys, ever</Tag> <span className="dg-note">a token found stops its snapshot</span>
       </Node>
     </Figure>
   );
