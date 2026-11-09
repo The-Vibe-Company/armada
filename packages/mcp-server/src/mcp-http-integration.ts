@@ -623,7 +623,13 @@ export function createMcpHttpIntegration(options: {
     },
     async route(request: Request): Promise<Response | null> {
       const path = new URL(request.url).pathname;
-      if (path === "/.well-known/armada-mcp-client.json") return metadata(request);
+      if (path === "/.well-known/armada-mcp-client.json") {
+        // Bun sees HTTP behind TLS termination; keep the strict CIMD handler bound to
+        // the configured HTTPS identity, never a forwarded or caller-selected origin.
+        const host = request.headers.get("host");
+        const canonical = !host || host === publicAddress.host ? gatewayIngress(request) : null;
+        return canonical ? metadata(canonical) : new Response(null, { status: 404 });
+      }
       if (path.startsWith("/mcp/gateway/")) {
         const canonical = gatewayIngress(request);
         if (!canonical) return new Response(null, { status: 403 });
