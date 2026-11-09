@@ -56,12 +56,14 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
       return result.rows.map(mapGoldenRow);
     },
 
+    // Bind serialized JSON as text before parsing it: Bun's jsonb parameter encoder otherwise
+    // serializes an already-stringified value again, producing a JSON string instead of an object.
     async insert(input): Promise<GoldenRecord> {
       try {
         const result = await sql.query<GoldenRow>(
           `insert into public.goldens (org_id, name, visibility, owner_id, provider, modal_workspace,
              modal_environment, modal_app_id, config)
-           values ($1, $2, $3::public.visibility, $4, $5::public.sandbox_provider, $6, $7, $8, $9::jsonb)
+           values ($1, $2, $3::public.visibility, $4, $5::public.sandbox_provider, $6, $7, $8, $9::text::jsonb)
            returning ${COLUMNS}`,
           [
             input.orgId,
@@ -86,7 +88,7 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
     async setConfig(id: string, config: GoldenConfig): Promise<void> {
       await write(
         sql,
-        `update public.goldens set config = $2::jsonb where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
+        `update public.goldens set config = $2::text::jsonb where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
         [id, JSON.stringify(config)],
       );
     },
@@ -129,8 +131,11 @@ function mapWriteError(error: unknown): unknown {
   if (message.includes("goldens_org_name_key") || message.includes("goldens_private_name_key")) {
     return new GoldenError("conflict", "A golden with this name already exists.", { cause: error });
   }
-  if (message.includes("must not contain secrets")) {
-    return new GoldenError("invalid_config", "Golden config must not contain secrets.", { cause: error });
+  if (message === "golden config must be a JSON object") {
+    return new GoldenError("invalid_config", "Golden config must be a JSON object.");
+  }
+  if (message.startsWith("golden config must not contain secrets")) {
+    return new GoldenError("invalid_config", "Golden config must not contain secrets.");
   }
   return error;
 }
