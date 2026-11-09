@@ -116,3 +116,81 @@ test("errors are never hidden: an invalid override opens Advanced, a refused lau
   await page.screenshot({ path: "test-results/launch-error-mobile.png", animations: "disabled" });
   expect(await launches()).toHaveLength(0);
 });
+
+/**
+ * A phone keyboard, as browsers report it: the visual viewport shrinks while the layout viewport (and `dvh` on iOS)
+ * keeps its height. Headless Chromium has no soft keyboard, so the test stands in a visualViewport it controls.
+ */
+async function emulateKeyboard(page: Page) {
+  await page.addInitScript(() => {
+    const fake = new EventTarget() as EventTarget & Record<string, number>;
+    let covered = 0;
+    Object.defineProperties(fake, {
+      height: { get: () => window.innerHeight - covered },
+      width: { get: () => window.innerWidth },
+      offsetTop: { get: () => 0 },
+      offsetLeft: { get: () => 0 },
+      pageTop: { get: () => window.scrollY },
+      pageLeft: { get: () => window.scrollX },
+      scale: { get: () => 1 },
+    });
+    Object.defineProperty(window, "visualViewport", { configurable: true, get: () => fake });
+    (window as unknown as { keyboard: (px: number) => void }).keyboard = (px) => {
+      covered = px;
+      fake.dispatchEvent(new Event("resize"));
+    };
+  });
+  return (px: number) =>
+    page.evaluate((value) => (window as unknown as { keyboard: (px: number) => void }).keyboard(value), px);
+}
+
+/** What the person sees above the keyboard: everything the test names must be inside it. */
+async function expectAboveKeyboard(page: Page, keyboard: number, ...targets: ReturnType<Page["locator"]>[]) {
+  // The dialog eases into its new bounds: measure once it has settled.
+  await page
+    .getByRole("dialog")
+    .evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished)));
+  const visible = (page.viewportSize()?.height ?? 0) - keyboard;
+  for (const target of targets) {
+    const box = await target.boundingBox();
+    if (!box) throw new Error("not rendered");
+    expect(box.y, `${target} starts on screen`).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, `${target} ends above the keyboard`).toBeLessThanOrEqual(visible);
+  }
+}
+
+test("on a phone the keyboard never covers Launch, the field being typed or an error", async ({ page }) => {
+  const keyboard = await emulateKeyboard(page);
+  await page.setViewportSize({ width: 390, height: 664 });
+  await post("/__test/reset", { acmeModal: true });
+  await signIn(page, "alice@example.com", "/goldens");
+  const dialog = await openLaunch(page, "shared-golden", { advanced: false });
+  const task = dialog.getByLabel("Task");
+  const launch = dialog.getByRole("button", { name: "Launch", exact: true });
+  await expect(task).toBeFocused();
+  const KEYBOARD = 300;
+  await keyboard(KEYBOARD);
+  await task.fill("Fix the flaky login test");
+  await expectAboveKeyboard(page, KEYBOARD, task, launch);
+  await page.screenshot({ path: "test-results/launch-keyboard-mobile.png", animations: "disabled" });
+
+  // A field lower in the form, reached with the keyboard still open, is scrolled into the fields' region.
+  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog.getByLabel("Model", { exact: true }).focus();
+  await keyboard(KEYBOARD + 1);
+  await expectAboveKeyboard(page, KEYBOARD + 1, dialog.getByLabel("Model", { exact: true }), launch);
+
+  // A refused launch shows its reason next to Launch, above the keyboard, and keeps the task.
+  await post("/__test/clear-legacy-boat", { org: ACME });
+  await launch.click();
+  const refusal = dialog.getByRole("alert");
+  await expect(refusal).toBeFocused();
+  await expectAboveKeyboard(page, KEYBOARD + 1, refusal, launch);
+  await expect(task).toHaveValue("Fix the flaky login test");
+  await page.screenshot({ path: "test-results/launch-keyboard-error-mobile.png", animations: "disabled" });
+
+  // Closing the keyboard gives the dialog its normal bounds back.
+  await keyboard(0);
+  await expect(page.locator('[data-slot="dialog-content"]')).not.toHaveAttribute("data-visible-viewport");
+  await expectPinnedLaunch(page);
+});

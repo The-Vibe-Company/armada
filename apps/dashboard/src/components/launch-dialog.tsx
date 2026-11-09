@@ -3,7 +3,7 @@
 import type { Harness, SandboxProviderId } from "@armada/core";
 import { ChevronDownIcon, CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
@@ -77,6 +77,7 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
   const access = useLaunchAccess(goldenVisibility, connections);
   const root = useRef<HTMLDivElement>(null);
   const advanced = useRef<HTMLDetailsElement>(null);
+  useVisibleViewport(root);
 
   useEffect(() => {
     const node = root.current;
@@ -202,6 +203,49 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
       </ActionForm>
     </div>
   );
+}
+
+/**
+ * Keeps the dialog inside what the phone actually shows. An on-screen keyboard shrinks the visual viewport, while
+ * `dvh` (iOS) still measures the layout viewport, so a centered dialog would put Launch under the keyboard. While
+ * part of the layout viewport is hidden, the dialog is centered in the visible part and capped to its height, and
+ * the focused field is scrolled into the fields' own region. Nothing changes while the whole viewport is visible.
+ */
+function useVisibleViewport(root: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const content = root.current?.closest<HTMLElement>('[data-slot="dialog-content"]');
+    const fields = root.current?.querySelector<HTMLElement>("[data-launch-fields]");
+    if (!viewport || !content || !fields) return;
+    const release = () => {
+      content.style.removeProperty("top");
+      content.style.removeProperty("max-height");
+      delete content.dataset.visibleViewport;
+    };
+    const fit = () => {
+      if (window.innerHeight - viewport.height < 1 && viewport.offsetTop < 1) return release();
+      content.style.top = `${viewport.offsetTop + viewport.height / 2}px`;
+      content.style.maxHeight = `${Math.max(viewport.height - 16, 0)}px`;
+      content.dataset.visibleViewport = "";
+      // Only the fields scroll: bring the focused one into their region, never the page behind the dialog.
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !fields.contains(active)) return;
+      const box = active.getBoundingClientRect();
+      const region = fields.getBoundingClientRect();
+      if (box.bottom > region.bottom) fields.scrollTop += Math.min(box.bottom - region.bottom, box.top - region.top);
+      else if (box.top < region.top) fields.scrollTop -= region.top - box.top;
+    };
+    fit();
+    viewport.addEventListener("resize", fit);
+    viewport.addEventListener("scroll", fit);
+    fields.addEventListener("focusin", fit);
+    return () => {
+      viewport.removeEventListener("resize", fit);
+      viewport.removeEventListener("scroll", fit);
+      fields.removeEventListener("focusin", fit);
+      release();
+    };
+  }, [root]);
 }
 
 /** A compact radio group: every option visible, one choice, arrow keys move between them. */
