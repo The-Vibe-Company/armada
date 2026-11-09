@@ -52,6 +52,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["account", "status"],
     ["github", "status"],
     ["creds", "list"],
+    ["sandbox", "advice"],
     ["sandbox", "list"],
     ["sandbox", "wait"],
     ["sandbox", "exec"],
@@ -179,6 +180,8 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
     ["creds", "accounts", "auth-state", "callback"],
     ["internal", "runner", "auth-state"],
     ["sandbox", "auth-state"],
+    ["sandbox", "advice", "callback"],
+    ["sandbox", "advice-extra"],
   ]) {
     const blocked = await forwardControl(
       new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
