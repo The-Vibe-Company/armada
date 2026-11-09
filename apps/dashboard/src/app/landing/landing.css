@@ -712,31 +712,40 @@ html:has(> body .lp) {
 /* ------------------------------------------------------------- terminal */
 
 .lp-terminal {
-  border-radius: 12px;
-  background: #08090b;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  border-radius: 18px;
+  background: var(--code);
+  box-shadow:
+    0 0 0 1px oklch(1 0 0 / 0.08),
+    0 60px 120px -40px rgba(0, 0, 0, 0.9);
   overflow: hidden;
 }
 .lp-terminal-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 40px;
+  height: 42px;
   padding: 0 16px;
-  border-bottom: 1px solid var(--line-strong);
-  background: rgba(126, 166, 255, 0.06);
+  border-bottom: 1px solid var(--line);
 }
-.lp-terminal-sign {
-  font: 600 12px var(--font-mono);
-  color: var(--done);
+.lp-terminal-dots {
+  display: flex;
+  gap: 8px;
+}
+/* The window's dots in the hero's quiet hairline tone, not a second palette (#628). */
+.lp-terminal-dots i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
 }
 .lp-terminal-title {
   flex: 1;
+  margin-right: 49px;
+  text-align: center;
   font: 12px var(--font-mono);
-  color: var(--text-2);
+  color: var(--lp-dim);
 }
 .lp-terminal-body {
-  display: grid;
+  height: 460px;
   padding: 18px 20px;
   overflow: hidden;
   font: 12.5px / 1.65 var(--font-mono);
@@ -746,7 +755,6 @@ html:has(> body .lp) {
 .lp-terminal-run + .lp-terminal-run {
   margin-top: 18px;
 }
-.lp-terminal-gcmd,
 .lp-terminal-command {
   color: var(--text);
   /* A command wraps rather than lose its end (#587): it is what you would type. */
@@ -783,515 +791,466 @@ html:has(> body .lp) {
 .lp-terminal-line.is-amber {
   color: var(--active);
 }
+/* One accent in the session too (#628): a notice is quiet text, success is lime. */
 .lp-terminal-line.is-orange {
-  color: var(--accent);
+  color: var(--text-2);
 }
 .lp-terminal-line.is-lime {
   color: var(--done);
 }
 .lp-terminal-line.is-blue {
-  color: var(--frontier);
+  color: var(--text);
 }
 
-/* ----------------------------------------------------------------- diff */
+/* ---------------------------------------------------------------- story */
 
-/* The story below the hero, as one split diff (split-diff direction): the
-   hero's night goes on, its lime marks the added lines, a red one tints the
-   removed ones, its sky blue draws the hunk headers and the folds. Words in
-   Geist, gutters, signs and commands in Geist Mono. */
-.dx {
-  --dx-del: #f7e3dc;
-  --dx-del-gutter: #f0cfc4;
-  --dx-del-word: #f2bfb0;
-  --dx-del-ink: #a3301d;
-  --dx-add: #e2f0ea;
-  --dx-add-gutter: #cde5db;
-  --dx-add-word: #b5dccb;
-  --dx-hunk: #e4e9f7;
-  --dx-hunk-line: #c3cdea;
-  --dx-hunk-ink: #2a449f;
-  --dx-gutter: 56px;
-  --dx-sign: 24px;
-  --dx-edge: var(--line-strong);
+/* The story below the hero (#587): one chapter per thing you do with Armada,
+   heavy, tight type beside a diagram drawn in one outline weight. It continues
+   the hero (#628): the same night surface, text, hairlines and glow, and the
+   hero's one accent, lime. No chapter has a colour of its own; the small ships
+   in the diagrams take the hero flock's harness colours, as its sky does. */
+.lp-ch {
+  --ch-ink: #060709;
+  /* Light shapes and lines are the hero's text, not a paper colour. */
+  --ch-paper: var(--text);
+  --ch-lime: var(--done);
+  /* The hero flock's harness colours (flock.ts), for small ships only. */
+  --ch-sky: #bb87fc;
+  --ch-orange: #d97757;
+  --ch-amber: #10a37f;
+  --ch-night: #060709;
+  --ch-card: #15161b;
+  /* What a chapter draws with: its background, its ink, its quiet ink, its accent and its command's chip. */
+  --ch-accent: var(--done);
+  --ch-bg: var(--bg);
+  --ch-fg: var(--text);
+  --ch-fg-2: var(--text-2);
+  --ch-line: var(--ch-paper);
+  --ch-chip: var(--ch-accent);
+  --ch-chip-fg: var(--ch-ink);
+  --ch-chip-dim: rgba(6, 7, 9, 0.6);
   position: relative;
-  max-width: var(--lp-max);
+  padding: clamp(88px, 11vw, 168px) var(--lp-pad);
+  border-top: 1px solid var(--line);
+  background:
+    radial-gradient(60% 55% at 88% 18%, color-mix(in srgb, var(--ch-accent) 6%, transparent), transparent 70%),
+    var(--ch-bg);
+  color: var(--ch-fg);
+}
+
+.lp-ch :focus-visible {
+  outline-color: var(--ch-fg);
+}
+.lp-ch ::selection {
+  background: var(--ch-fg);
+  color: var(--ch-bg);
+}
+.lp-ch-inner {
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 8px var(--lp-pad) clamp(72px, 9vw, 120px);
-  /* The hero's night carries on edge to edge under the diff, with no seam. */
-  border-image: linear-gradient(var(--bg) 0 0) fill 0 / 0 / 0 100vmax;
-}
-.dx-file {
-  /* A review surface in paper under the night sky: its own ink and hues. */
-  --surface: #f6f3ec;
-  --card: #ebe6da;
-  --text: #16171b;
-  --text-2: #464851;
-  --text-3: #5b5d66;
-  --line-strong: rgba(22, 23, 27, 0.15);
-  --fill-2: rgba(22, 23, 27, 0.07);
-  --done: #0b6b5c;
-  --done-dim: #cde5db;
-  --frontier: #2a449f;
-  --frontier-dim: #dbe2f5;
-  --critical: #a3301d;
-  border-radius: 16px;
-  background: var(--surface);
-  /* Its edge only: a blurred drop shadow here would reach up into the hero and change its last rows. */
-  box-shadow: inset 0 0 0 1px var(--dx-edge);
-  overflow: clip;
-}
-
-/* The file's head: which side is which. */
-.dx-head {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  border-bottom: 1px solid var(--dx-edge);
-  background: var(--card);
-}
-.dx-head-side {
-  display: flex;
+  grid-template-columns: minmax(0, 11fr) minmax(0, 10fr);
+  gap: clamp(48px, 7vw, 120px);
   align-items: center;
-  gap: 10px;
-  margin: 0;
-  min-height: 52px;
-  padding: 12px 20px 12px 0;
-  font: 500 13px / 1.35 var(--font-mono);
-  color: var(--text-2);
 }
-.dx-head-side.is-old {
-  border-right: 1px solid var(--dx-edge);
-}
-.dx-head-mk {
-  flex: none;
-  width: calc(var(--dx-gutter) + var(--dx-sign));
-  padding-right: 4px;
-  text-align: right;
-  font-size: 15px;
-}
-.dx-head-side.is-old .dx-head-mk {
-  color: var(--dx-del-ink);
-}
-.dx-head-side.is-new .dx-head-mk {
-  color: var(--done);
-}
-.dx-head-side.is-new {
-  color: var(--text);
-}
-
-/* A hunk: its header is the chapter's heading. */
-.dx-hunk {
-  scroll-margin-top: 80px;
-}
-.dx-hh {
+.lp-ch-words {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-items: flex-start;
+  gap: clamp(24px, 2.4vw, 34px);
+  min-width: 0;
+  /* The title scales with its column, so its longest word always fits. */
+  container-type: inline-size;
+}
+.lp-ch.is-flip .lp-ch-words {
+  order: 2;
+}
+.lp-ch-title {
   margin: 0;
-  padding: 26px 24px 24px calc(var(--dx-gutter) + var(--dx-sign));
-  background: var(--dx-hunk);
-  border-block: 1px solid var(--dx-hunk-line);
-}
-.dx-range {
-  font: 500 13px / 1 var(--font-mono);
-  color: var(--dx-hunk-ink);
-  letter-spacing: 0;
-}
-.dx-title {
-  font: 650 clamp(30px, 3.6vw, 46px) / 1.04 var(--font-sans);
-  letter-spacing: -0.035em;
-  color: var(--text);
+  font-size: clamp(40px, 15.4cqi, 112px);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: -0.062em;
   text-wrap: balance;
+  /* Tight tracking eats the last glyph's overhang. */
+  padding-right: 0.04em;
 }
-
-/* Two columns, the old and the new, a gutter between them. */
-.dx-rows {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+.lp-ch.is-wide .lp-ch-inner {
+  container-type: inline-size;
+  align-items: start;
 }
-.dx-side {
+.lp-ch.is-wide .lp-ch-title {
+  grid-column: 1 / -1;
+  max-width: 13em;
+  font-size: clamp(40px, 8.6cqi, 136px);
+}
+.lp-ch-body {
   display: flex;
   flex-direction: column;
-  min-width: 0;
-}
-.dx-side.is-old {
-  border-right: 1px solid var(--dx-edge);
-}
-.dx-fill {
-  flex: 1;
-  min-height: 24px;
-  background: repeating-linear-gradient(135deg, rgba(163, 48, 29, 0.12) 0 1px, transparent 1px 9px);
-}
-
-/* A line. */
-.dx-ln {
-  display: grid;
-  grid-template-columns: var(--dx-gutter) var(--dx-sign) minmax(0, 1fr);
-}
-.dx-no {
-  padding: 12px 12px 0 0;
-  text-align: right;
-  font: 12px / 1.6 var(--font-mono);
-  color: #5f6169;
-  font-variant-numeric: tabular-nums;
-  user-select: none;
-}
-.dx-mk {
-  padding-top: 10px;
-  text-align: center;
-  font: 500 15px / 1.6 var(--font-mono);
-  user-select: none;
-}
-.dx-tx {
-  min-width: 0;
-  padding: 10px 24px 10px 4px;
-  font: 17px / 1.55 var(--font-sans);
-  letter-spacing: -0.011em;
-  color: var(--text);
-}
-.dx-tx p {
-  margin: 0;
-}
-.dx-ln.is-block .dx-tx {
-  padding-block: 12px 16px;
-}
-.dx-ln.is-del {
-  background: var(--dx-del);
-}
-.dx-ln.is-del .dx-no {
-  background: var(--dx-del-gutter);
-}
-.dx-ln.is-del .dx-mk {
-  color: var(--dx-del-ink);
-}
-.dx-ln.is-del .dx-tx {
-  color: var(--text-2);
-}
-.dx-ln.is-add {
-  background: var(--dx-add);
-}
-.dx-ln.is-add .dx-no {
-  background: var(--dx-add-gutter);
-}
-.dx-ln.is-add .dx-mk {
-  color: var(--done);
-}
-.dx-w {
-  padding: 1px 3px;
-  margin: 0 -1px;
-  border-radius: 4px;
-  color: var(--text);
-  background: var(--dx-add-word);
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
-}
-.dx-ln.is-del .dx-w {
-  background: var(--dx-del-word);
-}
-.dx-tx code {
-  padding: 1px 5px;
-  border-radius: 5px;
-  font: 0.86em var(--font-mono);
-  background: var(--fill-2);
-}
-
-/* A fold: what the change leaves as it is. */
-.dx-fold {
-  display: grid;
-  grid-template-columns: calc(var(--dx-gutter) + var(--dx-sign)) minmax(0, 1fr);
-  align-items: center;
-  min-height: 44px;
-  background: #eef0f8;
-  border-block: 1px solid var(--line-strong);
-  color: var(--text-2);
-}
-.dx-fold-icon {
-  display: grid;
-  place-items: center;
-  align-self: stretch;
-  color: var(--dx-hunk-ink);
-  background: var(--dx-hunk);
-}
-.dx-fold p {
-  margin: 0;
-  padding: 10px 24px 10px 16px;
-  font-size: 14.5px;
-}
-.dx-fold-tag {
-  margin-right: 8px;
-  font: 12px var(--font-mono);
-  color: var(--dx-hunk-ink);
-}
-
-/* A command in a line: copied with one click, its words never split at a hyphen. */
-.dx .lp-copy {
-  width: 100%;
-  height: auto;
-  min-height: 46px;
-  padding: 9px 6px 9px 14px;
-  border-radius: 10px;
-  background: #14161c;
-  color: #f2f1ee;
-  box-shadow: none;
-  font-size: 14px;
+  gap: 14px;
+  max-width: 32em;
+  font-size: clamp(17px, 1.6vw, 22px);
   line-height: 1.5;
+  font-weight: 450;
+  letter-spacing: -0.008em;
+  color: var(--ch-fg-2);
+}
+.lp-ch-body p {
+  margin: 0;
+  text-wrap: pretty;
+}
+.lp-ch-body p:first-child {
+  color: var(--ch-fg);
+}
+.lp-ch-body code {
+  /* A flag is one word: never broken between its hyphens. */
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ch-fg) 9%, transparent);
+  font: 0.86em var(--font-mono);
+  color: var(--ch-fg);
+}
+
+/* A chapter's command: a solid chip, the whole of it the copy button. */
+.lp-ch .lp-copy {
+  height: auto;
+  min-height: 0;
+  max-width: 100%;
+  gap: 12px;
+  padding: 10px 8px 10px 16px;
+  border-radius: 14px;
+  background: var(--ch-chip);
+  color: var(--ch-chip-fg);
+  box-shadow: none;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
+  font-size: 14px;
+  transition: transform 160ms var(--lp-ease);
 }
-.dx .lp-copy-command {
-  overflow: visible;
+.lp-ch .lp-copy-command {
   white-space: normal;
+  /* Break between words; inside one (a UUID, a URL) only when it cannot fit. */
   overflow-wrap: break-word;
+  word-break: normal;
 }
-/* A command's word stays whole, and breaks inside only when it is wider than the chip (a UUID, a URL on a phone). */
-.dx .lp-copy-word {
+/* A word of a command is one piece: it breaks inside only when it is wider than the chip. */
+.lp-copy-word {
   display: inline-block;
   max-width: 100%;
   overflow-wrap: anywhere;
 }
-.dx .lp-copy-icon {
-  align-self: flex-start;
+.lp-ch .lp-prompt,
+.lp-ch .lp-copy-note {
+  color: var(--ch-chip-dim);
+}
+/* The icon sits 8 px inside the chip's 14 px corner: 6 px of its own. */
+.lp-ch .lp-copy-icon {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ch-chip-fg) 12%, transparent);
+  color: var(--ch-chip-fg);
 }
-.dx .lp-copy-icon svg {
+.lp-ch .lp-copy-icon svg {
   inset: 8px;
 }
+.lp-ch .lp-copy-icon .is-done {
+  color: currentColor;
+}
 @media (hover: hover) and (pointer: fine) {
-  .dx .lp-copy:hover {
-    background: #1d2029;
-    box-shadow: none;
+  .lp-ch .lp-copy:hover {
+    background: var(--ch-chip);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ch-chip) 22%, transparent);
   }
 }
 
-/* A diagram in a line: a commit graph, a rail with its nodes and branches. */
-.dg {
-  --dg-rail: rgba(22, 23, 27, 0.4);
-  margin: 0;
-  padding: 14px 18px 12px;
-  border-radius: 12px;
-  background: #fffdf8;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  font: 14px / 1.4 var(--font-mono);
-  color: var(--text-2);
+/* Where container units are missing, titles size by the viewport: a little smaller, never 16 px. */
+@supports not (font-size: 1cqi) {
+  .lp-ch-title {
+    font-size: clamp(40px, 6.4vw, 104px);
+  }
+  .lp-ch.is-wide .lp-ch-title {
+    font-size: clamp(40px, 7.6vw, 120px);
+  }
 }
-.dg-cap {
-  margin-bottom: 8px;
-  padding-bottom: 10px;
-  border-bottom: 1px dashed var(--line-strong);
-  font-size: 12px;
-  color: var(--text-3);
+
+/* The story's index (#628): a band under the hero, its chapters as the hero's ghost buttons and its way in as
+   the hero's lime one. */
+.lp-index {
+  border-top: 1px solid var(--line);
+  background: var(--bg);
 }
-.dg-rail {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.dg-n {
-  position: relative;
+.lp-index-inner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
-  min-height: 38px;
-  padding: 6px 0 6px 34px;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: 20px var(--lp-pad);
 }
-/* The rail through every row; it starts at the first node and ends at the last. */
-.dg-n::before {
-  content: "";
-  position: absolute;
-  left: 9px;
-  top: 0;
-  bottom: 0;
-  border-left: 1.5px solid var(--dg-rail);
-}
-.dg-n:first-child::before {
-  top: 50%;
-}
-.dg-n:last-child::before {
-  bottom: 50%;
-}
-.dg-dot {
-  position: absolute;
-  left: 3px;
-  top: 50%;
-  width: 14px;
-  height: 14px;
-  margin-top: -7px;
-  border-radius: 50%;
-  background: #fffdf8;
-  box-shadow: inset 0 0 0 2px var(--text-2);
-}
-.dg-dot.is-lime {
-  background: var(--done);
-  box-shadow: 0 0 0 3px #fffdf8;
-}
-.dg-dot.is-paper {
-  background: var(--text);
-  box-shadow: 0 0 0 3px #fffdf8;
-}
-.dg-dot.is-sky {
-  box-shadow: inset 0 0 0 2px var(--frontier);
-}
-.dg-dot.is-red {
-  box-shadow: inset 0 0 0 2px var(--critical);
-}
-.dg-dot.is-hollow {
-  box-shadow: inset 0 0 0 2px var(--text-3);
-}
-/* A sandbox forked from a golden: one ship of the mark, its lead in lime. */
-.dg-dot:is(.is-ship, .is-ship-lime) {
-  border-radius: 0;
-  background: var(--text);
-  box-shadow: none;
-  clip-path: polygon(50% 4%, 100% 92%, 0 92%);
-}
-.dg-dot.is-ship-lime {
-  background: var(--done);
-}
-/* A branch: out of the rail (a fork) or into it (a merge). */
-.dg-n:is(.is-out, .is-in) {
-  padding-left: 66px;
-}
-.dg-n:is(.is-out, .is-in) .dg-dot {
-  left: 37px;
-}
-.dg-n:is(.is-out, .is-in)::after {
-  content: "";
-  position: absolute;
-  left: 9px;
-  width: 30px;
-  height: 50%;
-  border-left: 1.5px solid var(--dg-rail);
-}
-.dg-n.is-out::after {
-  top: 0;
-  border-bottom: 1.5px solid var(--dg-rail);
-  border-bottom-left-radius: 12px;
-}
-.dg-n.is-in::after {
-  top: 50%;
-  border-top: 1.5px solid var(--dg-rail);
-  border-top-left-radius: 12px;
-}
-.dg-n.is-out:last-child::before,
-.dg-n.is-in:first-child::before {
-  display: none;
-}
-.dg-n.is-cut::after {
-  border-style: dashed;
-  border-color: rgba(163, 48, 29, 0.6);
-}
-.dg-n.is-edge {
-  min-height: 30px;
-}
-.dg-edge {
-  font-size: 12px;
-  color: var(--dx-hunk-ink);
-}
-.dg-name {
-  font-weight: 600;
-  color: var(--text);
-}
-.dg-note {
-  flex-basis: 100%;
-  font-size: 12px;
-  color: var(--text-2);
-}
-.dg-tag {
-  white-space: nowrap;
-  padding: 1px 7px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  background: var(--fill-2);
-}
-.dg-tag.is-live {
-  color: var(--done);
-  background: var(--done-dim);
-}
-.dg-tag.is-ready {
-  color: var(--dx-hunk-ink);
-  background: var(--frontier-dim);
-}
-.dg-tag.is-no {
-  color: var(--dx-del-ink);
-  background: var(--dx-del-gutter);
-}
-
-/* The end of the diff: the step to take. */
-.dx-review {
-  scroll-margin-top: 80px;
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: clamp(28px, 4vw, 56px);
-  align-items: start;
-  padding: clamp(28px, 4vw, 48px);
-  border-top: 1px solid var(--dx-hunk-line);
-  background: var(--surface);
-}
-.dx-review-words {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  min-width: 0;
-}
-.dx-review-title {
-  margin: 0;
-  font: 650 clamp(36px, 4.4vw, 56px) / 1 var(--font-sans);
-  letter-spacing: -0.04em;
-  color: var(--text);
-  text-wrap: balance;
-}
-.dx-review-lead {
-  margin: 16px 0 0;
-  max-width: 46ch;
-  font-size: 17px;
-  color: var(--text-2);
-}
-.dx-review-actions {
+.lp-index-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 28px;
+  gap: 8px;
 }
-.dx-review-cli {
+.lp-index-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 550;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.1);
+  transition: background var(--t-fast) var(--lp-ease);
+}
+@media (hover: hover) and (pointer: fine) {
+  .lp-index-links a:hover {
+    background: rgba(255, 255, 255, 0.09);
+  }
+}
+.lp-index-links a:focus-visible {
+  outline: 2px solid var(--done);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------- diagrams */
+
+.lp-ch-figure {
   min-width: 0;
 }
-.dx-review-sub {
-  margin: 4px 0 12px;
-  font: 500 13px var(--font-mono);
-  color: var(--text-2);
+.lp-fig {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  font-family: var(--font-sans);
 }
-.dx-steps {
-  margin: 0;
+.lp-fig :is(rect, path, circle) {
+  stroke: var(--ch-line);
+  stroke-width: 3.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.lp-fig-card {
+  fill: var(--ch-paper);
+}
+.lp-fig-card.is-lime {
+  fill: var(--ch-lime);
+}
+.lp-fig-card.is-sky {
+  fill: var(--ch-sky);
+}
+.lp-fig-card.is-orange {
+  fill: var(--ch-orange);
+}
+.lp-fig-card.is-night {
+  fill: var(--ch-card);
+}
+.lp-fig-ink {
+  fill: var(--ch-ink);
+}
+.lp-fig-ghost {
+  fill: none;
+  stroke-dasharray: 2 12;
+}
+.lp-fig-wire {
+  fill: none;
+  stroke-dasharray: 1 9;
+}
+.lp-fig-wire.is-thick {
+  stroke-dasharray: none;
+}
+.lp-fig-wire.is-cut {
+  stroke-dasharray: 10 10;
+}
+.lp-fig-line,
+.lp-fig-prong {
+  fill: none;
+}
+.lp-fig-plug {
+  fill: var(--ch-ink);
+}
+.lp-fig-dot {
+  fill: var(--ch-ink);
+}
+.lp-fig .lp-fig-prompt {
+  fill: none;
+  stroke: var(--ch-lime);
+}
+.lp-fig .lp-fig-shackle {
+  fill: none;
+  stroke-width: 7;
+}
+.lp-fig-node {
+  fill: var(--ch-ink);
+}
+.lp-fig-node.is-hollow {
+  fill: var(--ch-bg);
+}
+.lp-fig .lp-fig-ship {
+  stroke: var(--ch-ink);
+  stroke-width: 3;
+}
+.lp-fig-ship.is-lime {
+  fill: var(--ch-lime);
+}
+.lp-fig-ship.is-sky {
+  fill: var(--ch-sky);
+}
+.lp-fig-ship.is-orange {
+  fill: var(--ch-orange);
+}
+.lp-fig-ship.is-amber {
+  fill: var(--ch-amber);
+}
+.lp-fig-ship.is-paper {
+  fill: var(--ch-paper);
+}
+.lp-fig-ship.is-ink {
+  fill: var(--ch-ink);
+}
+.lp-fig-check circle {
+  fill: var(--ch-lime);
+  stroke: none;
+}
+.lp-fig .lp-fig-check path {
+  fill: none;
+  stroke: var(--ch-ink);
+  stroke-width: 3;
+}
+.lp-fig-pill {
+  fill: var(--ch-paper);
+}
+.lp-fig .lp-fig-pill {
+  stroke: none;
+}
+.lp-fig-pill.is-key {
+  fill: var(--ch-lime);
+}
+.lp-fig-stop {
+  fill: var(--critical);
+}
+.lp-fig .lp-fig-stop-x {
+  fill: none;
+  stroke: var(--ch-ink);
+  stroke-width: 4;
+}
+.lp-fig text {
+  stroke: none;
+  fill: var(--ch-ink);
+}
+.lp-fig-t {
+  font-size: 28px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+.lp-fig-t.is-big {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+}
+.lp-fig-s {
+  font-size: 23px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.lp-fig-s.is-mono {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+.lp-fig-xs {
+  font-size: 20px;
+  font-weight: 650;
+}
+.lp-fig text.is-on-ink {
+  fill: var(--ch-paper);
+}
+.lp-fig text.is-on-ink.lp-fig-s {
+  fill: var(--text-2);
+}
+.lp-fig text.is-running {
+  fill: var(--ch-lime);
+}
+.lp-fig text.is-ready {
+  fill: var(--text);
+}
+/* On the night surface the wires and outlines are the hero's text; text on light shapes stays ink. */
+.lp-ch .lp-fig :is(.lp-fig-card.is-night, .lp-fig-ink) {
+  stroke: color-mix(in srgb, var(--text) 90%, transparent);
+}
+
+/* ------------------------------------------------------------------ try */
+
+.lp-try-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 28px;
+}
+.lp-try-primary {
+  display: inline-flex;
+  align-items: center;
+  height: 64px;
+  padding: 0 30px;
+  border-radius: 18px;
+  /* The hero's lime button, at the story's size. */
+  background: var(--done);
+  color: var(--bg);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: 0 14px 44px -14px rgba(182, 241, 90, 0.6);
+  transition:
+    transform 160ms var(--lp-ease),
+    background 160ms var(--lp-ease);
+}
+.lp-try-primary:active {
+  transform: translateY(1px);
+}
+@media (hover: hover) and (pointer: fine) {
+  .lp-try-primary:hover {
+    background: #c3f773;
+  }
+}
+.lp-try-link {
+  font-size: 17px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+.lp-try-sub {
+  margin: 12px 0 0;
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+.lp-try-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  margin: -12px 0 0;
   padding: 0;
   list-style: none;
-  border-radius: 12px;
-  overflow: clip;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
-.dx-steps li + li {
-  border-top: 1px solid var(--dx-edge);
+.lp-try-steps .lp-copy {
+  width: 100%;
 }
-.dx-steps .dx-ln {
-  --dx-gutter: 40px;
-  --dx-sign: 20px;
+.lp-try-terminal {
+  position: relative;
 }
-.dx-steps .dx-ln.is-block .dx-tx {
-  padding: 8px 8px 8px 2px;
-}
-.dx-steps .lp-copy {
-  font-size: 13px;
-}
-.dx .lp-copy-note {
-  margin-top: 2px;
-  font-size: 12.5px;
-  color: var(--text-3);
-}
-.dx-review-terminal {
-  grid-column: 1 / -1;
-  min-width: 0;
+.lp-try-terminal .lp-terminal {
+  box-shadow:
+    0 0 0 1px var(--line-2),
+    0 30px 80px -30px rgba(0, 0, 0, 0.9);
 }
 
 /* --------------------------------------------------------------- footer */
@@ -1302,8 +1261,7 @@ html:has(> body .lp) {
 
 .lp-footer {
   padding: 32px var(--lp-pad) 40px;
-  border-top: 1px solid var(--line-strong);
-  background: var(--bg);
+  border-top: 1px solid var(--line);
 }
 .lp-footer-inner {
   max-width: var(--lp-max);
@@ -1332,271 +1290,34 @@ html:has(> body .lp) {
   }
 }
 
-/* On a phone the diff is unified: one column, the old line above the new ones. */
 @media (max-width: 860px) {
-  .dx {
-    --dx-gutter: 36px;
-    --dx-sign: 18px;
-    padding-inline: 12px;
-  }
-  .dx-head,
-  .dx-rows,
-  .dx-review {
+  .lp-ch-inner {
     grid-template-columns: minmax(0, 1fr);
   }
-  .dx-head-side.is-old,
-  .dx-side.is-old {
-    border-right: 0;
+  .lp-ch.is-flip .lp-ch-words {
+    order: 0;
   }
-  .dx-head-side {
-    min-height: 40px;
-    padding-block: 8px;
+  /* On a phone a diagram takes the whole width, and its words grow, so they read at arm's length. */
+  .lp-ch-figure {
+    margin-inline: calc(8px - var(--lp-pad));
   }
-  .dx-head-side.is-old {
-    padding-bottom: 0;
+  .lp-fig-s {
+    font-size: 24px;
   }
-  .dx-fill {
-    display: none;
+  .lp-fig-xs {
+    font-size: 21px;
   }
-  .dx-hh {
-    padding: 20px 16px 18px calc(var(--dx-gutter) + var(--dx-sign));
-  }
-  .dx-title {
-    font-size: 28px;
-  }
-  .dx-no {
-    padding-right: 8px;
-    font-size: 11px;
-  }
-  .dx-tx {
-    padding-right: 14px;
-    font-size: 16px;
-  }
-  .dx-ln.is-block .dx-tx {
-    padding-right: 10px;
-  }
-  .dx .lp-copy {
+  /* 12 px: a sandbox's UUID fits on one line of the chip. */
+  .lp-ch .lp-copy {
     font-size: 12px;
-  }
-  .dg {
-    padding-inline: 12px;
-    font-size: 12px;
-  }
-  .dg-n:is(.is-out, .is-in) {
-    padding-left: 58px;
-  }
-  .dg-n:is(.is-out, .is-in) .dg-dot {
-    left: 33px;
-  }
-  .dg-n:is(.is-out, .is-in)::after {
-    width: 26px;
-  }
-  .dx-fold p {
-    padding-inline: 8px 14px;
-    font-size: 14px;
-  }
-  .dx-review {
-    padding: 24px 16px;
-  }
-  .dx-review-actions,
-  .dx-review-actions > * {
-    width: 100%;
-  }
-  .dx-steps .dx-ln {
-    --dx-gutter: 28px;
-    --dx-sign: 16px;
   }
   .lp-terminal-body {
+    height: 440px;
     font-size: 12px;
   }
-  /* A diagram row holds on two lines: the name, then its chips, aligned. */
-  .dg-n .dg-name {
-    flex-basis: 100%;
+  .lp-try-terminal .lp-terminal {
+    box-shadow:
+      0 0 0 3px var(--ch-ink),
+      6px 6px 0 var(--ch-ink);
   }
-  .dg-tag {
-    font-size: 12px;
-  }
-}
-
-/* The chapter index: the nav's words, and the way in, in reach. */
-.dx-index {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px 24px;
-  margin-bottom: 20px;
-}
-.dx-index ul {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.dx-index li a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 16px;
-  border-radius: 999px;
-  font: 500 14px var(--font-mono);
-  color: #a9c2ff;
-  box-shadow: inset 0 0 0 1px rgba(126, 166, 255, 0.3);
-}
-.dx-index li a:focus-visible,
-.dx-hunk a:focus-visible {
-  outline: 2px solid #a9c2ff;
-  outline-offset: 2px;
-}
-@media (hover: hover) and (pointer: fine) {
-  .dx-index li a:hover {
-    background: rgba(126, 166, 255, 0.14);
-  }
-}
-
-/* Hunk header: the chapter's name, then its range. */
-.dx-range {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.dx-label {
-  padding: 4px 10px;
-  border-radius: 6px;
-  font: 600 13px / 1.2 var(--font-mono);
-  color: #fff;
-  background: var(--dx-hunk-ink);
-}
-.dx-review-title .dx-label {
-  display: block;
-  width: fit-content;
-  margin-bottom: 14px;
-}
-.dx-review-name {
-  display: block;
-}
-
-/* Today's line, set large so it holds its side of the change. */
-.dx-before {
-  font-size: clamp(20px, 1.9vw, 25px);
-  line-height: 1.3;
-  letter-spacing: -0.02em;
-  color: var(--dx-del-ink);
-}
-.dx-ln.is-del .dx-tx {
-  padding-block: 16px 18px;
-}
-.dx-ln.is-del .dx-tx .dx-before {
-  color: #6f2214;
-}
-.dx-ln.is-add .dx-tx {
-  padding-block: 12px;
-}
-
-/* The proof of a hunk: the figure, enlarged, beside its command, across both sides. */
-.dx-proof {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  gap: 20px 28px;
-  align-items: start;
-}
-.dx-proof-figure,
-.dx-proof-cmd {
-  min-width: 0;
-}
-.dx-proof .dg {
-  padding: 18px 22px 16px;
-  font-size: 14.5px;
-}
-.dx-hunk > .dx-ln {
-  border-top: 1px solid var(--dx-edge);
-}
-@media (max-width: 860px) {
-  .dx-proof {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .dx-before {
-    font-size: 20px;
-  }
-  .dx-index li a {
-    padding: 0 14px;
-  }
-  .dx-index .lp-button {
-    width: 100%;
-  }
-  .dx-range {
-    flex-wrap: wrap;
-  }
-  .dx-tx code,
-  .dx-tx {
-    overflow-wrap: anywhere;
-  }
-  .dx-proof .dg {
-    font-size: 13px;
-  }
-  .dx .lp-copy {
-    font-size: 13px;
-  }
-}
-.dx-ln.is-del .dx-no {
-  color: #6f2214;
-}
-
-/* The approval: the added hue, the strongest control, AA with white ink. */
-.lp .dx-approve {
-  background: #0f7a68;
-  color: #fff;
-  box-shadow: 0 0 0 1px #0f7a68;
-}
-.dx-review .dx-approve {
-  box-shadow: 0 8px 24px -10px rgba(15, 122, 104, 0.8);
-}
-.dx-review .lp-button.is-ghost {
-  color: var(--text);
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px rgba(22, 23, 27, 0.4);
-}
-@media (hover: hover) and (pointer: fine) {
-  .lp .dx-approve:hover {
-    background: #0b6b5c;
-    color: #fff;
-  }
-}
-.dx-review .dx-steps {
-  box-shadow: none;
-}
-@media (max-width: 860px) {
-  .dx-review {
-    padding: 24px 12px;
-  }
-}
-
-/* The terminal is a night panel inside the paper: the hero's ink again. */
-.dx-review .lp-terminal {
-  --surface: #0c0d10;
-  --card: #14151a;
-  --text: #f2f1ee;
-  --text-2: #b6b6bd;
-  --text-3: #8e8e97;
-  --line-strong: rgba(255, 255, 255, 0.11);
-  --fill-2: rgba(255, 255, 255, 0.08);
-  --done: #b6f15a;
-  --done-dim: rgba(182, 241, 90, 0.13);
-  --frontier: #7ea6ff;
-  --critical: #ff6b5b;
-}
-.dx .lp-copy .lp-copy-note {
-  color: #a9a9b1;
-}
-
-/* The terminal's two layers share one cell: the ghost sizes it, the live one is seen. */
-.lp-terminal-ghost,
-.lp-terminal-live {
-  grid-area: 1 / 1;
-  min-width: 0;
-}
-.lp-terminal-ghost {
-  visibility: hidden;
 }
