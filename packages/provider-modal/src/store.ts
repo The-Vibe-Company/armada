@@ -162,13 +162,14 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async imageReferenced(imageId) {
       await authorize();
+      // Authorization limits what this store may delete; references protect the
+      // immutable physical ID across all bindings/tenant scopes, without exposing them.
       const result = await sql.query(
-        `select 1 from public.modal_images i where i.scope=$1 and i.record->>'imageId'=$2 and exists (
-        select 1 from public.modal_machines m where m.org_id=$3 and m.record->>'phase'<>'deleted' and (
-          (m.scope=$1 and (m.record->>'imageId'=$2 or m.record->>'recoveryImageId'=$2)) or
-          (m.record->'sourceImage'->>'scopeKey'=$1 and m.record->'sourceImage'->>'imageId'=$2)
+        `select 1 where exists(select 1 from public.modal_images i where i.record->>'imageId'=$1 and (i.record->>'deleted') is distinct from 'true')
+        or exists(select 1 from public.modal_machines m where m.record->>'phase' is distinct from 'deleted' and (
+          m.record->>'imageId'=$1 or m.record->>'recoveryImageId'=$1 or m.record->'sourceImage'->>'imageId'=$1 or (m.record->'retainedRecoveryIds') ? $1
         )) limit 1`,
-        [key, imageId, scope.orgId],
+        [imageId],
       );
       return result.rows.length > 0;
     },
@@ -178,7 +179,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000 || (input.cursor && !/^\d+$/.test(input.cursor)))
         throw refusal("invalid_request", "Invalid event pagination.");
       const result = await sql.query<{ cursor: string; event: AgentEvent }>(
-        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and cursor>$3::bigint and ($4::text is null or event->>'conversationId'=$4) order by cursor limit $5`,
+        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and cursor>$3::bigint and ($4::text is null or event->>'conversationId'=$4) order by public.modal_events.cursor limit $5`,
         [key, input.sandboxId, input.cursor ?? "0", input.conversationId ?? null, limit + 1],
       );
       const page = result.rows.slice(0, limit);

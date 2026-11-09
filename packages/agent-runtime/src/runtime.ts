@@ -345,13 +345,26 @@ export class Runner {
   private async drainOutbox() {
     if (!this.ingest) return;
     for (;;) {
-      const events = this.journal.events(this.journal.ack, 100);
-      if (!events.length) return;
-      const result: unknown = await this.ingest.append({
+      const pending = this.journal.events(this.journal.ack, 100);
+      if (!pending.length) return;
+      const batch = {
         sandboxId: this.grant.sandboxId,
         generation: this.grant.generation,
-        events,
-      });
+        events: [] as typeof pending,
+      };
+      // Modal ingest caps the entire JSON body at 1 MiB, not 100 events.
+      // Count UTF-8 bytes (including envelope, sequence wrappers and commas);
+      // never truncate or skip a journal entry to make a batch fit.
+      let bytes = Buffer.byteLength(JSON.stringify(batch));
+      for (const item of pending) {
+        const size = Buffer.byteLength(JSON.stringify(item)) + (batch.events.length ? 1 : 0);
+        if (bytes + size > 1048576) break;
+        batch.events.push(item);
+        bytes += size;
+      }
+      if (!batch.events.length) throw Error("ingest_event_too_large");
+      const { events } = batch;
+      const result: unknown = await this.ingest.append(batch);
       if (
         !result ||
         typeof result !== "object" ||

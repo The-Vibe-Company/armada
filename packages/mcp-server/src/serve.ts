@@ -3,6 +3,7 @@ import {
   createGoldenAdoption,
   createSqlVaultStore,
   GoldenBuildJobs,
+  GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
 } from "@armada/core/server";
@@ -112,7 +113,13 @@ export async function startServer(
     },
     provider: async (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
   });
+  const goldenRetirements = new GoldenSnapshotRetirements({
+    sql,
+    encryptionKey: config.encryptionKey,
+    provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
+  });
   const control: ControlOptions = {
+    goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
@@ -176,7 +183,7 @@ export async function startServer(
     workerDone: Promise.resolve(),
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
-  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError);
+  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError, goldenRetirements);
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
       ? startInvitationWorker(control.invitations)
