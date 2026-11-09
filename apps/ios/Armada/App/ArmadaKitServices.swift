@@ -217,6 +217,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             return .unavailable("This Armada server doesn't offer this yet.")
         case .unavailable, .http(429): return .offline
         case .conflict: return .staleRevision
+        case .invalidRequest: return .rejected("Armada refused this request.")
         case .invalidResponse: return .rejected("Armada returned a response this app version doesn't understand.")
         case .secureStorage: return .rejected("This device's secure storage is unavailable.")
         case .invalidOrigin, .http: return .rejected("The request could not be completed.")
@@ -240,26 +241,28 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    /// ArmadaKit persists the command as uncertain BEFORE sending, so a lost response stays
-    /// retryable under its key. A command still `pending` with no receipt was never sent (Kit's own
-    /// capability read failed); retrying it as itself is safe, so that reads as a connection problem.
-    /// A definitive refusal is asked to be forgotten; ArmadaKit currently keeps a refused retry, and
-    /// the presentation then shows that dead end instead of offering a retry that cannot succeed.
+    /// The current durable journal, not an HTTP status, decides whether a request
+    /// is safely discardable. Generic409 can follow effects; a refused retry does
+    /// not resolve earlier ambiguity. Never advertise a new-key retry in that case.
     private func submitFailure(_ error: any Error, id: UUID) async -> ServiceFailure {
         if let armada = error as? ArmadaError {
             switch armada {
             case .signedOut: return .signedOut
             case .forbidden, .http(404): return .noAccess
-            case .conflict:
-                try? await client.discardOrchestratorOperation(id)
-                return .staleRevision
-            case .http(400):
-                try? await client.discardOrchestratorOperation(id)
-                return .rejected("Armada refused this request.")
+            case .conflict, .invalidRequest, .http(400):
+                guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else {
+                    return .rejected("This request is no longer saved on this device.")
+                }
+                guard saved.canDiscard else { return .uncertain }
+                do { try await client.discardOrchestratorOperation(id) }
+                catch { return .uncertain }
+                return armada == .conflict ? .staleRevision : .rejected("Armada refused this request.")
             default: break
             }
         }
-        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .signedOut }
+        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else {
+            return .rejected("This request is no longer saved on this device.")
+        }
         if saved.state == .pending, saved.receipt == nil { return .offline }
         return .uncertain
     }
@@ -326,6 +329,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .operation(let operation): body = .operation(Self.operation(operation))
         case .wait(let lease, let status): body = .wait(try Self.lease(lease), status: status)
         case .child(let sandboxID, let operationID): body = .child(sandboxID: sandboxID, operationID: operationID)
+        case .unknown(let kind, _): body = .unknown(kind: kind)
         }
         return OrchestratorEvent(id: value.id, at: try date(value.at), revision: value.revision, body: body)
     }
@@ -355,6 +359,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             body = .steer(text: text, mode: mode)
         case .other(let type, _):
             body = .other(type: type)
+        case .unknown(let kind, _):
+            body = .other(type: kind)
         }
         // AgentEvent.at is milliseconds since the epoch.
         return AgentEvent(
