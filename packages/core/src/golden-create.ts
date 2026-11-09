@@ -144,11 +144,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
-        if (reservationId)
-          await sql.query("select public.finalize_golden_backend_slot($1::uuid, $2::uuid)", [
-            reservationId,
-            inserted.id,
-          ]);
+        if (reservationId) await sqlGoldenBackendSlots(sql).finalize(reservationId, inserted.id);
         return inserted.id;
       };
       if (!options.sql.transaction) throw new GoldenError("conflict", "Atomic golden persistence is unavailable.");
@@ -159,29 +155,67 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
   return new GoldenCreateService(deps);
 }
 
+const BACKEND_CONFLICT_MESSAGE =
+  "Golden capacity or binding is unavailable or busy. Use an existing golden you can access, retry after any active build finishes, or ask an administrator to check the binding.";
+
+/** Match only errors owned by the slot protocol. Bun puts SQLSTATE in errno; pg/PGlite use code.
+ * Do not classify arbitrary P0001 raises, unique violations, provider errors, or SQL outages. */
+async function backendSlotQuery<T>(sql: Sql, query: string, params: unknown[]): Promise<{ rows: T[] }> {
+  try {
+    return await sql.query<T>(query, params);
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const e = error as {
+        code?: string;
+        errno?: string;
+        message?: string;
+        constraint?: string;
+        table?: string;
+        schema?: string;
+      };
+      const state = e.code === "ERR_POSTGRES_SERVER_ERROR" ? e.errno : e.code;
+      const knownRaise =
+        state === "P0001" &&
+        (e.message === "golden backend capacity reached" || e.message === "golden backend build already in progress");
+      const knownConstraint =
+        state === "23505" &&
+        e.schema === "public" &&
+        e.table === "golden_backend_slots" &&
+        (e.constraint === "golden_backend_one_binding" || e.constraint === "boat_backend_one_slot");
+      if (knownRaise || knownConstraint) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
+    }
+    throw error;
+  }
+}
+
 /** Service-role wrapper around the database reservation functions. */
 export function sqlGoldenBackendSlots(sql: Sql): GoldenBackendSlot {
   return {
     async reserve(input) {
-      const result = await sql.query<{ reserve_golden_backend_slot: string }>(
+      const result = await backendSlotQuery<{ reserve_golden_backend_slot: string }>(
+        sql,
         "select public.reserve_golden_backend_slot($1, $2, $3, $4::uuid, $5::uuid)",
         [input.provider, input.backendId, input.capacity, input.orgId, input.ownerId],
       );
       const id = result.rows[0]?.reserve_golden_backend_slot;
-      if (!id) throw new GoldenError("conflict", "This backend has reached its golden capacity.");
+      if (!id) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
       return id;
     },
     async reserveExisting(input) {
-      const result = await sql.query<{ reserve_existing_golden_backend_slot: string }>(
+      const result = await backendSlotQuery<{ reserve_existing_golden_backend_slot: string }>(
+        sql,
         "select public.reserve_existing_golden_backend_slot($1, $2, $3, $4::uuid)",
         [input.provider, input.backendId, input.capacity, input.goldenId],
       );
       const id = result.rows[0]?.reserve_existing_golden_backend_slot;
-      if (!id) throw new GoldenError("conflict", "This backend has reached its golden capacity.");
+      if (!id) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
       return id;
     },
     async finalize(reservationId, goldenId) {
-      await sql.query("select public.finalize_golden_backend_slot($1::uuid, $2::uuid)", [reservationId, goldenId]);
+      await backendSlotQuery(sql, "select public.finalize_golden_backend_slot($1::uuid, $2::uuid)", [
+        reservationId,
+        goldenId,
+      ]);
     },
     async release(reservationId) {
       await sql.query("select public.release_golden_backend_slot($1::uuid)", [reservationId]);
@@ -204,6 +238,5 @@ export async function assertGoldenBackendBinding(
      where provider = $1 and backend_id = $2 and golden_id = $3::uuid`,
     [golden.provider, identity, golden.id],
   );
-  if (result.rows.length !== 1 || result.rows[0]?.busy)
-    throw new GoldenError("conflict", "Golden backend binding is unavailable or busy. Contact an administrator.");
+  if (result.rows.length !== 1 || result.rows[0]?.busy) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
 }
