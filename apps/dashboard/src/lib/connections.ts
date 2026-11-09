@@ -47,6 +47,13 @@ export interface McpConnection {
   resourceCount?: number;
   promptCount?: number;
   lastError?: string;
+  /**
+   * The curated service this connection was created from (`mcp/catalog`), or absent for a custom server. Several
+   * connections may share one service: the connection `id` is the only identity, never the service or the name.
+   */
+  catalogId?: string;
+  /** Whether a launch that names no connections includes this one. Metadata only: it never touches authorization. */
+  defaultForLaunch: boolean;
 }
 
 /**
@@ -92,6 +99,51 @@ export function completeUpdate(
 }
 
 export type ConnectionTarget = { org: string; id: string };
+
+/** `POST mcp/create` from the catalog: the server resolves the service's canonical URL and authentication. */
+export type CreateFromCatalogRequest = { org: string; scope: ConnectionScope; name: string; serviceId: string };
+
+/**
+ * `POST mcp/metadata`: renames a connection or changes whether launches include it by default. Unlike `update`
+ * and `set-enabled`, it keeps the stored authorization, the pending sign-in and running sandboxes' access.
+ */
+export type ConnectionMetadataRequest = ConnectionTarget & { name?: string; defaultForLaunch?: boolean };
+
+/**
+ * One curated service of `POST mcp/catalog`, as the server reports it for this deployment. `available` means
+ * Armada can sign in to it now; anything else is setup the deployment still needs, and the dashboard offers no
+ * Connect.
+ */
+export interface McpCatalogService {
+  id: string;
+  label: string;
+  url: string;
+  docsUrl?: string;
+  availability: "available" | "setup_required";
+  setupMessage?: string;
+}
+
+const SERVICE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** A catalog entry from the control API, or null when it does not match the contract. */
+export function parseCatalogService(value: unknown): McpCatalogService | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== "string" || !SERVICE_ID.test(value.id)) return null;
+  const label = text(value.label, 80);
+  const url = safeAuthorizationUrl(value.url);
+  if (!label || !url) return null;
+  const docsUrl = safeAuthorizationUrl(value.docsUrl);
+  const setupMessage = text(value.setupMessage, 300);
+  return {
+    id: value.id,
+    label,
+    url,
+    ...(docsUrl ? { docsUrl } : {}),
+    // Only an explicit `available` offers Connect: an unknown or missing availability is never shown as usable.
+    availability: value.availability === "available" ? "available" : "setup_required",
+    ...(setupMessage ? { setupMessage } : {}),
+  };
+}
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -145,8 +197,10 @@ export function parseConnection(value: unknown): McpConnection | null {
     transport: row.transport,
     authType: row.authType,
     status: row.status,
+    defaultForLaunch: row.defaultForLaunch === true,
   };
   const optional = {
+    catalogId: typeof row.catalogId === "string" && SERVICE_ID.test(row.catalogId) ? row.catalogId : undefined,
     url: text(row.url),
     command: text(row.command, 500),
     args: args.length ? args : undefined,
@@ -183,6 +237,21 @@ export function statusLabel(connection: Pick<McpConnection, "status" | "transpor
   return STATUS_INFO[connection.status].label;
 }
 
+/**
+ * The one action that moves a connection toward usable, by its state: sign in for the first time, sign in again
+ * after the grant lapsed, or try again after the server could not be reached. Null when nothing needs doing.
+ */
+export function connectAction(
+  connection: Pick<McpConnection, "status" | "transport" | "authType">,
+): "Connect" | "Reconnect" | "Retry" | "Configure" | null {
+  if (connection.status === "disabled") return null;
+  if (connection.transport === "stdio") return connection.status === "connected" ? null : "Configure";
+  if (connection.status === "needs_reconnect") return "Reconnect";
+  if (connection.status === "unavailable") return "Retry";
+  if (connection.status === "not_connected") return "Connect";
+  return null;
+}
+
 export function isLaunchable(connection: McpConnection): boolean {
   return connection.status === "connected";
 }
@@ -200,6 +269,32 @@ export function launchBlocker(connection: McpConnection, visibility: SandboxVisi
     return "Personal: uses your own account, so it needs a private sandbox.";
   }
   return null;
+}
+
+/**
+ * The connections a new launch starts with: those marked include-by-default that it can actually use at this
+ * visibility. A personal default never enters an org-visible sandbox, and one that is not connected is left for
+ * the person to fix rather than silently sent.
+ */
+export function launchDefaults(available: readonly McpConnection[], visibility: SandboxVisibility): string[] {
+  return available
+    .filter((connection) => connection.defaultForLaunch && launchBlocker(connection, visibility) === null)
+    .map((connection) => connection.id);
+}
+
+/**
+ * Defaults this launch would get but cannot use yet: enabled, allowed at this visibility, and not connected. The
+ * server refuses a launch that omits connections while such a default exists, so the dialog names them instead of
+ * dropping them silently, and launches without them only once the person chooses to.
+ */
+export function unreadyDefaults(available: readonly McpConnection[], visibility: SandboxVisibility): McpConnection[] {
+  return available.filter(
+    (connection) =>
+      connection.defaultForLaunch &&
+      connection.status !== "disabled" &&
+      !isLaunchable(connection) &&
+      !(connection.scope === "personal" && visibility === "org"),
+  );
 }
 
 /**
@@ -280,6 +375,16 @@ export function safeAuthorizationUrl(raw: unknown): string | null {
     return null;
   } catch {
     return null;
+  }
+}
+
+/** A suggested name for a new connection to a service, distinct from the names already in use. */
+export function suggestedName(label: string, taken: readonly string[]): string {
+  const used = new Set(taken.map((name) => name.trim().toLowerCase()));
+  if (!used.has(label.toLowerCase())) return label;
+  for (let index = 2; ; index++) {
+    const candidate = `${label} ${index}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
   }
 }
 

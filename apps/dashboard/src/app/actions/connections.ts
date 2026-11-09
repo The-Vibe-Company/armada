@@ -6,6 +6,8 @@ import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action"
 import {
   CONNECTION_AUTH_TYPES,
   type ConnectionAuthType,
+  type ConnectionMetadataRequest,
+  type ConnectionScope,
   type ConnectionTarget,
   checkBearer,
   checkHeaders,
@@ -141,30 +143,128 @@ async function afterSave(control: Control, connection: McpConnection, org: strin
   return connectOrRedirect(control, { org, id: connection.id }, prefix);
 }
 
+/** Who a new connection is for, from the form; an org connection needs an admin. */
+function scopeFrom(data: FormData, admin: boolean): Checked<ConnectionScope> {
+  const scope = formString(data, "scope");
+  if (scope !== "personal" && scope !== "org") return { ok: false, error: "Choose who the connection is for." };
+  if (scope === "org" && !admin) {
+    return { ok: false, error: "Only an org admin adds org connections. Add it as personal instead." };
+  }
+  return { ok: true, value: scope };
+}
+
+/**
+ * After a create: marks it include-by-default when asked (a metadata-only change), then connects it. A failure
+ * after the create names the connection that now exists and the step that failed, so the person finishes it on
+ * that connection's row instead of adding another.
+ */
+async function finishAdd(control: Control, created: McpConnection, org: string, data: FormData) {
+  if (formString(data, "default_for_launch") === "on") {
+    try {
+      await control.metadata({ org, id: created.id, defaultForLaunch: true });
+    } catch (error) {
+      if (!(error instanceof ControlError)) throw error;
+      return fail(
+        `${created.name} was added, but not included by default: ${error.message} Use its Default switch, then Connect.`,
+      );
+    }
+  }
+  try {
+    return await afterSave(control, created, org, "Added. ");
+  } catch (error) {
+    if (error instanceof ControlError)
+      return fail(`${created.name} was added, but connecting failed: ${error.message}`);
+    throw error;
+  }
+}
+
+/** A catalog add's outcome; `created` once the connection exists, so the form is not submitted a second time. */
+export type AddServiceResult = ActionResult & { created?: true };
+
 /** Adds a remote (URL) or stdio connection to the selected org, personal or shared, then connects it. */
 export async function addConnection(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const context = await scoped(data);
   if (isResult(context)) return context;
   const { control, org, admin } = context;
 
-  const scope = formString(data, "scope");
-  if (scope !== "personal" && scope !== "org") return fail("Choose who the connection is for.");
-  if (scope === "org" && !admin) return fail("Only an org admin adds org connections. Add it as personal instead.");
+  const scope = scopeFrom(data, admin);
+  if (!scope.ok) return fail(scope.error);
   const name = checkName(formString(data, "name"));
   if (!name.ok) return fail(name.error);
   const definition = definitionFrom(data);
   if (!definition.ok) return fail(definition.error);
 
   return guarded(async () => {
-    const created = await control.create({ org, scope, name: name.value, ...definition.value });
+    const created = await control.create({ org, scope: scope.value, name: name.value, ...definition.value });
     refresh();
-    try {
-      return await afterSave(control, created, org, "Added. ");
-    } catch (error) {
-      if (error instanceof ControlError)
-        return fail(`${created.name} was added, but connecting failed: ${error.message}`);
-      throw error;
+    return finishAdd(control, created, org, data);
+  });
+}
+
+/**
+ * Adds a connection to a catalog service, then sends the browser to its sign-in. Only the service id is sent: the
+ * server owns the URL and the authentication. The catalog is read again here, so a service the deployment cannot
+ * sign in to yet is refused even from a forged form.
+ */
+export async function addServiceConnection(
+  _previous: AddServiceResult | null,
+  data: FormData,
+): Promise<AddServiceResult> {
+  const context = await scoped(data);
+  if (isResult(context)) return context;
+  const { control, org, admin } = context;
+
+  const scope = scopeFrom(data, admin);
+  if (!scope.ok) return fail(scope.error);
+  const name = checkName(formString(data, "name"));
+  if (!name.ok) return fail(name.error);
+  const serviceId = formString(data, "service");
+
+  return guarded(async () => {
+    const service = (await control.catalog(org)).find((item) => item.id === serviceId);
+    if (!service) return fail("That service is not offered by this Armada server.");
+    if (service.availability !== "available") {
+      return fail(
+        `${service.label} needs setup on this Armada server first.${service.setupMessage ? ` ${service.setupMessage}` : ""}`,
+      );
     }
+    const created = await control.createFromCatalog({ org, scope: scope.value, name: name.value, serviceId });
+    refresh();
+    return { ...(await finishAdd(control, created, org, data)), created: true };
+  });
+}
+
+/**
+ * Renames a connection or changes whether launches include it by default (`POST mcp/metadata`). Only the fields
+ * the form carries are sent. Its sign-in, its stored authorization and running sandboxes are left as they are.
+ */
+export async function updateConnectionMetadata(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (isResult(context)) return context;
+  const chosen = target(data, context.org);
+  if (!chosen) return fail("That request is not valid.");
+  const request: ConnectionMetadataRequest = { ...chosen };
+  if (data.has("name")) {
+    const name = checkName(formString(data, "name"));
+    if (!name.ok) return fail(name.error);
+    request.name = name.value;
+  }
+  if (data.has("default_for_launch")) {
+    const value = formString(data, "default_for_launch");
+    if (value !== "true" && value !== "false") return fail("That request is not valid.");
+    request.defaultForLaunch = value === "true";
+  }
+  if (request.name === undefined && request.defaultForLaunch === undefined) return fail("Nothing to change.");
+
+  return guarded(async () => {
+    const connection = await context.control.metadata(request);
+    refresh();
+    if (request.name !== undefined) return done(`Renamed to ${connection.name}.`);
+    return done(
+      connection.defaultForLaunch
+        ? `${connection.name} is included in new launches by default.`
+        : `${connection.name} is no longer included by default.`,
+    );
   });
 }
 
@@ -174,23 +274,23 @@ function target(data: FormData, org: string): ConnectionTarget | null {
 }
 
 /**
- * Edits a connection. The registry's save is a full replace: the complete definition is sent, with the scope of
- * the stored connection read server-side (never from the form), and every saved authentication is cleared. A
- * remote connection is then connected again; a stdio one is configured for launch again.
+ * Edits a custom connection's server. The registry's save is a full replace: the complete definition is sent, with
+ * the scope and name of the stored connection read server-side (never from the form), and every saved
+ * authentication is cleared. A remote connection is then connected again; a stdio one is configured for launch.
  */
 export async function editConnection(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const context = await scoped(data);
   if (isResult(context)) return context;
   const chosen = target(data, context.org);
   if (!chosen) return fail("That request is not valid.");
-  const name = checkName(formString(data, "name"));
-  if (!name.ok) return fail(name.error);
   const definition = definitionFrom(data);
   if (!definition.ok) return fail(definition.error);
 
   return guarded(async () => {
     const current = await context.control.status(chosen);
-    const request = completeUpdate(current, name.value, definition.value);
+    if (current.catalogId) return fail("A catalog connection's server is set by Armada. Rename it instead.");
+    // The stored name is restated: renaming is metadata-only and never goes through this full replace.
+    const request = completeUpdate(current, current.name, definition.value);
     if (!request.ok) return fail(request.error);
     const updated = await context.control.update({ org: context.org, ...request.value });
     refresh();
