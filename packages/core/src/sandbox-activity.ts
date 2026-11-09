@@ -11,6 +11,15 @@ export async function sandboxActivity<T>(
 ): Promise<T> {
   const token = options.initialLeaseId ?? crypto.randomUUID();
   const generation = sandbox.lifecycleGeneration;
+  // Admission and completion each advance the counter (initial launch already admitted).
+  // Refuse exhaustion before provider work or a lossy CAS parameter can be produced.
+  if (
+    generation !== undefined &&
+    (!Number.isSafeInteger(generation) ||
+      generation < 1 ||
+      generation > Number.MAX_SAFE_INTEGER - (options.initialLeaseId ? 1 : 2))
+  )
+    throw new Error("Sandbox lifecycle generation cannot be advanced safely.");
   const expected =
     generation === undefined ? {} : { expectedGeneration: generation + (options.initialLeaseId ? 0 : 1) };
   if (!options.initialLeaseId)
