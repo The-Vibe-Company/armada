@@ -140,6 +140,31 @@ describe("golden and snapshots", () => {
     expect(boat.requests[1]?.body).toEqual({ from: "web-golden", ttlSeconds: 3600 });
   });
 
+  test.each([
+    ["small", "small"],
+    ["medium", "default"],
+    ["large", "large"],
+    ["xlarge", "xlarge"],
+  ] as const)("fork size %s sends native Boat type %s without changing the source", async (size, type) => {
+    const boat = fakeBoat({ status: 202, body: { ok: true, type: "sandbox.created", sandbox: sandbox() } });
+    await boat.provider.fork({ from: "web-golden", size });
+    expect(boat.requests).toHaveLength(1);
+    expect(boat.requests[0]).toMatchObject({
+      method: "POST",
+      path: "/api/v1/sandboxes",
+      body: { from: "web-golden", type },
+    });
+  });
+
+  test("invalid size is refused before a Boat allocation request", async () => {
+    const boat = fakeBoat();
+    await expect(boat.provider.fork({ from: "g", size: "default" as never })).rejects.toMatchObject({
+      code: "invalid_request",
+      retryable: false,
+    });
+    expect(boat.requests).toHaveLength(0);
+  });
+
   test("fork can refuse the account environment and still pass Armada's own env", async () => {
     const boat = fakeBoat({ status: 202, body: { ok: true, type: "sandbox.created", sandbox: sandbox() } });
     await boat.provider.fork({

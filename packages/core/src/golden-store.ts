@@ -2,6 +2,7 @@ import type { Visibility } from "./contract.ts";
 import type { GoldenOperation } from "./golden.ts";
 import { assertGoldenMutation, type GoldenActor, type GoldenRecord, type GoldenStore } from "./golden.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
+import { parseMachineSizePolicy } from "./machine-size.ts";
 import { isSandboxProvider, type ModalBinding } from "./sandbox-provider.ts";
 
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
@@ -26,15 +27,16 @@ export interface GoldenRow {
   modal_environment: string | null;
   modal_app_id: string | null;
   config: unknown;
+  size_policy?: unknown;
   created_at: string | Date;
 }
 
 /** The columns {@link mapGoldenRow} reads, as a PostgREST `select=`. */
 export const GOLDEN_SELECT =
-  "id,org_id,name,visibility,owner_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config,created_at";
+  "id,org_id,name,visibility,owner_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config,size_policy,created_at";
 
 const COLUMNS = `id, org_id, name, visibility::text as visibility, owner_id, provider::text as provider,
-  provider_sandbox_id, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config, created_at`;
+  provider_sandbox_id, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config, size_policy, created_at`;
 
 /**
  * Goldens through SQL. The connection's role is the caller: row level security hides
@@ -93,7 +95,12 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
     async setConfig(id: string, config: GoldenConfig): Promise<void> {
       await write(
         sql,
-        `update public.goldens set config = $2::text::jsonb where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
+        `update public.goldens set config = $2::text::jsonb,
+           size_policy = case when size_policy is null then null else
+             jsonb_set(size_policy, '{repositories}', coalesce((
+               select jsonb_object_agg(p.key,p.value) from jsonb_each(size_policy->'repositories') p
+               where exists(select 1 from jsonb_array_elements(($2::text::jsonb)->'repos') r where r->>'dir'=p.key)
+             ), '{}'::jsonb)) end where id = $1 and (provider = 'boat' or provider_sandbox_id is null) returning id`,
         [id, JSON.stringify(config)],
       );
     },
@@ -179,6 +186,13 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
     providerSnapshotId: row.provider_snapshot_id,
     modal: modalBinding(provider, row),
     config: parseGoldenConfig(config),
+    sizePolicy:
+      row.size_policy == null
+        ? null
+        : parseMachineSizePolicy(
+            row.size_policy,
+            parseGoldenConfig(config).repos.map((r) => r.dir),
+          ),
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
   };
 }

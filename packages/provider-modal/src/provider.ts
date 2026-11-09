@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CreateGoldenRequest, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
-import { resolveModelChoice } from "@armada/core";
+import { machineCapacity, parseMachineSize, resolveModelChoice } from "@armada/core";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -210,7 +210,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
+      const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
       sb = await client.sandboxes.create(app, image, {
+        ...(capacity
+          ? {
+              cpu: capacity.vcpus / 2,
+              cpuLimit: capacity.vcpus / 2,
+              memoryMiB: capacity.memoryMiB,
+              memoryLimitMiB: capacity.memoryMiB,
+            }
+          : {}),
         name: row.physicalName,
         tags: ownershipTags(row),
         timeoutMs: row.ttlSeconds * 1000,
@@ -274,6 +283,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     return sandboxInfo(row);
   }
   async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
+    let size: Machine["size"];
+    if ("size" in request && request.size !== undefined) {
+      try {
+        size = parseMachineSize(request.size);
+      } catch {
+        throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
+      }
+    }
     await bound();
     const ttl = request.ttlSeconds ?? 3600;
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 86400)
@@ -306,6 +323,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       phase: "reserved",
       golden,
       ttlSeconds: ttl,
+      ...(size === undefined ? {} : { size }),
       physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
       ...(imageId ? { imageId } : {}),
       ...(sourceImage ? { sourceImage } : {}),
@@ -314,6 +332,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     try {
       if (
         row.golden !== golden ||
+        row.size !== size ||
         row.imageId !== imageId ||
         row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
         row.sourceImage?.name !== sourceImage?.name
@@ -495,6 +514,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return launch(r, true);
     },
     async fork(r) {
+      if (r.size !== undefined) {
+        try {
+          parseMachineSize(r.size);
+        } catch {
+          throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
+        }
+      }
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
       return source.store.lease(snapshot.sourceId, async () => launch(r, false));

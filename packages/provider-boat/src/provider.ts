@@ -25,7 +25,7 @@ import type {
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";
-import { ProviderError } from "@armada/core";
+import { MACHINE_SIZE_CATALOG, ProviderError, parseMachineSize } from "@armada/core";
 import {
   BoatApi,
   Configuration,
@@ -256,9 +256,18 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     },
 
     async fork(request: ForkRequest): Promise<SandboxInfo> {
+      let type: CreateSandboxRequest["type"];
+      if (request.size !== undefined) {
+        try {
+          type = MACHINE_SIZE_CATALOG[parseMachineSize(request.size)].boatType;
+        } catch {
+          throw invalidRequest("Size must be small, medium, large or xlarge.");
+        }
+      }
       return start(
         {
           from: request.from,
+          ...(type === undefined ? {} : { type }),
           ttlSeconds: ttl(request.ttlSeconds, defaultTtl),
           ...(request.name ? { name: request.name } : {}),
           ...(request.labels ? { labels: request.labels } : {}),
