@@ -399,3 +399,23 @@ test("the server's bare error codes read as sentences, and a bare conflict as st
   expect(unavailable.retrySameKey).toBe(true);
   expect(unavailable.message).not.toBe("unavailable");
 });
+
+test("a bare conflict on create is an unknown outcome: the same request may be sent again, never a second create", async () => {
+  const error = await client(() => Response.json({ error: { code: "conflict", message: "conflict" } }, { status: 409 }))
+    .create(
+      {
+        version: 1,
+        orgId: ORG,
+        name: "R",
+        goldenId: "g",
+        provider: "boat",
+        harness: "claude",
+        model: "m",
+        modelAccountId: "a",
+      },
+      "key-1",
+    )
+    .catch((caught: unknown) => caught as OrchestratorApiError);
+  expect(error.failure).toBe("uncertain");
+  expect(error.retrySameKey).toBe(true);
+});

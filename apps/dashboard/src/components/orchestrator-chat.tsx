@@ -91,6 +91,8 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
   const id = initial.orchestrator.id;
   const router = useRouter();
   const [detail, setDetail] = useState(initial);
+  /** The detail as last read, for a command deciding after its own re-read. */
+  const latest = useRef(initial);
   const [feed, setFeed] = useState<OrchestratorFeedEvent[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -147,6 +149,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
       };
       failures.current = 0;
       setConnection({ state: "ok" });
+      latest.current = next;
       setDetail(next);
       if (page.cursor) cursor.current = page.cursor;
       if (page.events.length > 0) setFeed((shown) => mergeFeed(shown, page.events));
@@ -222,6 +225,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
     await read();
     // And the loop goes on (or starts again, after a stop such as an expired session the person has since renewed).
     void tick();
+    return latest.current;
   }, [router, read, tick]);
 
   return (
@@ -329,7 +333,7 @@ function Notices({
   return <div className="shrink-0 space-y-2 border-b px-4 py-3 sm:px-6">{items}</div>;
 }
 
-function useCommand(detail: OrchestratorDetail, onDone: () => Promise<void>) {
+function useCommand(detail: OrchestratorDetail, onDone: () => Promise<OrchestratorDetail>) {
   const [result, setResult] = useState<OrchestratorResult | null>(null);
   const [pending, setPending] = useState<Command | null>(null);
   const [, startTransition] = useTransition();
@@ -364,7 +368,18 @@ function useCommand(detail: OrchestratorDetail, onDone: () => Promise<void>) {
       then?.(outcome);
       // Read again whatever the answer, before taking the next command: a stale page shows what changed before the
       // person decides again, and an unknown outcome shows whether it was applied.
-      await onDone().catch(() => undefined);
+      const reread = await onDone().catch(() => null);
+      // A refused command (conflict) may still have taken effect when that kind of operation is pending or unsettled:
+      // its key is kept, so sending it again returns that receipt instead of acting twice.
+      if (
+        !outcome.ok &&
+        outcome.failure === "stale" &&
+        reread?.operations.some(
+          (operation) =>
+            operation.kind === command && (operation.state === "pending" || operation.state === "uncertain"),
+        )
+      )
+        unsettled.current = attempt;
       setPending(null);
     });
   }
@@ -386,7 +401,7 @@ function Lifecycle({
   detail: OrchestratorDetail;
   can: ReturnType<typeof orchestratorControls>["can"];
   pending: ReturnType<typeof orchestratorControls>["pending"];
-  onDone: () => Promise<void>;
+  onDone: () => Promise<OrchestratorDetail>;
 }) {
   const command = useCommand(detail, onDone);
   const busy = command.pending !== null;
@@ -448,7 +463,7 @@ function Composer({
   running: boolean;
   can: ReturnType<typeof orchestratorControls>["can"];
   note: string | null;
-  onDone: () => Promise<void>;
+  onDone: () => Promise<OrchestratorDetail>;
 }) {
   const fieldId = useId();
   const [draft, setDraft] = useState("");
@@ -492,6 +507,7 @@ function Composer({
       <Textarea
         id={`${fieldId}-message`}
         rows={2}
+        maxLength={100_000}
         value={draft}
         onChange={(event) => {
           setDraft(event.target.value);

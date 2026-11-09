@@ -143,7 +143,20 @@ export function createOrchestratorApi(options: OrchestratorApiOptions) {
     },
     /** 202 with the create receipt, which names the new orchestrator's id. */
     async create(request: OrchestratorCreate, key: string): Promise<OrchestratorOperation> {
-      return receipt(await call("POST", ORCHESTRATORS_PATH, request, requireKey(key)));
+      try {
+        return receipt(await call("POST", ORCHESTRATORS_PATH, request, requireKey(key)));
+      } catch (error) {
+        // Create has no revision to be stale against: a bare conflict may follow a launch whose outcome could not be
+        // recorded. It is treated as unknown, so the same request (same key) is sent again, never a second create.
+        if (error instanceof OrchestratorApiError && error.failure === "stale")
+          throw new OrchestratorApiError(
+            "Armada could not confirm whether it was created. Trying again cannot create it twice.",
+            "uncertain",
+            error.status,
+            error.code,
+          );
+        throw error;
+      }
     },
     /** `message` and `steer` carry text; `stop` and `resume` only the fence. */
     async command(
@@ -161,7 +174,6 @@ export function createOrchestratorApi(options: OrchestratorApiOptions) {
   };
 }
 
-/** The server's `{error: {code, message}}` (already sanitized), classified for the page. */
 /** Words for the codes the server sends without a sentence. */
 const CODE_WORDS: Record<string, string> = {
   not_found: "That orchestrator does not exist, or it is not yours.",
@@ -189,6 +201,7 @@ export function parseCapabilities(value: unknown): OrchestratorCapabilities {
   };
 }
 
+/** The server's `{error: {code, message}}` (already sanitized), classified for the page. */
 export function failureOf(status: number, payload: unknown): OrchestratorApiError {
   const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
   const code = typeof error?.code === "string" ? error.code : undefined;

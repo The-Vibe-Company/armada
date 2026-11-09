@@ -102,6 +102,9 @@ function outcome(receipt: OrchestratorOperation, done: string): OrchestratorResu
   };
 }
 
+/** The runtime's own bound on a message or steer (#662 candidate). */
+const MAX_TEXT = 100_000;
+
 const COMMANDS: readonly Command[] = ["message", "steer", "stop", "resume"];
 
 const DONE: Record<Command, string> = {
@@ -127,6 +130,7 @@ export async function orchestratorCommand(
   if (!isOrchestratorId(id) || !command || !Number.isSafeInteger(revision) || revision < 0 || !isIdempotencyKey(key))
     return invalid("That request is not valid. Reload and try again.");
   if ((command === "message" || command === "steer") && !text) return invalid("Write the message to send.");
+  if (text.length > MAX_TEXT) return invalid("A message is at most 100,000 characters.");
   const api = viewerOrchestrators(await requireViewer());
   if (!api) return invalid("The Armada server is not configured for this dashboard.");
   // The organization in scope, read on the server: the server checks the viewer's membership of it again.

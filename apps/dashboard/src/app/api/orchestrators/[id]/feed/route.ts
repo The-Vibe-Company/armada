@@ -40,7 +40,17 @@ export async function GET(request: Request, context: Context) {
     }
     return NextResponse.json({ detail, events, cursor, hasMore }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
-    const { failure, message } = readFailure(error);
+    const read = readFailure(error);
+    // An `unavailable` answer is retried, unless the server now says orchestrators are off: then polling stops on that.
+    if (read.failure === "uncertain") {
+      const capabilities = await api.capabilities().catch(() => null);
+      if (capabilities && !capabilities.enabled)
+        return NextResponse.json(
+          { error: capabilities.message, failure: "unavailable" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+    }
+    const { failure, message } = read;
     const status = failure === "session" ? 401 : failure === "rejected" ? 404 : 502;
     return NextResponse.json({ error: message, failure }, { status, headers: { "cache-control": "no-store" } });
   }

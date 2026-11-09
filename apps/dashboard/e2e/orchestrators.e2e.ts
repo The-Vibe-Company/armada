@@ -266,3 +266,30 @@ test("a receipt whose effect was not confirmed says the orchestrator is held, ke
     text: "Merge #12.",
   });
 });
+
+test("a create refused with a bare conflict keeps the form locked on the same request", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/orchestrators");
+  await testControl("fail-next", { status: 409, code: "conflict", message: "conflict" });
+  await page.getByRole("button", { name: "New orchestrator" }).click();
+  const dialog = page.getByRole("dialog", { name: "New orchestrator" });
+  await dialog.getByLabel("Name").fill("Weekend");
+  await dialog.getByLabel("Golden").selectOption({ label: "shared-golden · Boat" });
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("cannot create it twice");
+  await expect(dialog.getByLabel("Name")).toBeDisabled();
+  await dialog.getByRole("button", { name: "Try again" }).click();
+  await page.waitForURL(/\/orchestrators\/00000000-0000-4000-8000-000000000182$/);
+  const creates = (await calls()).filter((call) => call.route === "create");
+  expect(creates.map((call) => call.key)).toEqual([creates[0]?.key ?? "", creates[0]?.key ?? ""]);
+});
+
+test("an open chat stops reading and says why once orchestrators are turned off", async ({ page }) => {
+  await signIn(page, "alice@example.com", DETAIL);
+  await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
+  await testControl("feature-off");
+  // At rest the page reads every 10 seconds.
+  await expect(page.getByText("until each provider passes its native conformance checks")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText("Reconnecting…")).toHaveCount(0);
+});
