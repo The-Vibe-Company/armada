@@ -72,7 +72,8 @@ export function LaunchDialog({
   const [held, setHeld] = useState(false);
   const id = useId();
   return (
-    <Dialog>
+    // The form unmounts on close; the repository it reported must go with it, so reopening starts from the default.
+    <Dialog onOpenChange={(open) => !open && setRepository(initialRepository)}>
       <DialogTrigger asChild>
         <Button size="sm" aria-label={`Launch from ${golden} on ${PROVIDER_LABELS[provider]}`}>
           <RocketIcon /> Launch
@@ -112,7 +113,6 @@ export function LaunchDialog({
             key={JSON.stringify([orgId, provider, golden])}
             idPrefix={id}
             repositories={repositories}
-            value={repository}
             initial={initialRepository}
             onChange={setRepository}
           />
@@ -143,17 +143,18 @@ export function LaunchDialog({
   );
 }
 
-/** The selected configured checkout. Native reset restores the launch default without stale controlled state. */
+/**
+ * The selected configured checkout. Uncontrolled, so the native reset after a launch attempt restores the default
+ * option; the reported selection follows it to the same default.
+ */
 function RepositoryField({
   idPrefix,
   repositories,
-  value,
   initial,
   onChange,
 }: {
   idPrefix: string;
   repositories: readonly string[];
-  value: string;
   initial: string;
   onChange: (dir: string) => void;
 }) {
@@ -170,7 +171,7 @@ function RepositoryField({
       <NativeSelect
         id={`${idPrefix}-repo`}
         name="repo"
-        value={value}
+        defaultValue={initial}
         onChange={(event) => onChange(event.target.value)}
         disabled={repositories.length === 0}
         aria-describedby={`${idPrefix}-repo-hint`}
