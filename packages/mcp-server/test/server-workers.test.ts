@@ -29,6 +29,8 @@ async function rows() {
 test("server lifecycle drains multiple rows while a golden build is pending; stop tracks both lanes", async () => {
   const { db, sql, ids } = await rows();
   const build = deferred<boolean>();
+  const retirement = deferred<boolean>();
+  let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
   let reconciled = 0;
@@ -54,9 +56,17 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
         return result;
       },
     },
+    () => {},
+    {
+      runOne: async (signal) => {
+        retirementSignal = signal;
+        return retirement.promise;
+      },
+    },
   );
   try {
     await progress.promise;
+    expect(retirementSignal).toBeDefined();
     expect(buildRunning).toBe(true);
     const records = await db.query<{ status: string }>("select status from sandboxes where id=any($1::uuid[])", [ids]);
     expect(records.rows.map((row) => row.status)).toEqual(["stopped", "stopped"]);
@@ -68,6 +78,10 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
     await Promise.resolve();
     expect(done).toBe(false);
     build.resolve(true);
+    await workers.goldenWorker.done;
+    expect(retirementSignal?.aborted).toBe(true);
+    expect(done).toBe(false);
+    retirement.resolve(false);
     await workers.done;
     expect(done).toBe(true);
     const count = reconciled;
@@ -76,6 +90,7 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
   } finally {
     workers.stop();
     build.resolve(false);
+    retirement.resolve(false);
     await workers.done;
     await db.close();
   }
@@ -139,6 +154,7 @@ test("retention maintenance runs independently and shutdown tracks an in-flight 
     { runOne: async () => false, reconcileOne: async () => {} },
     { reconcileOne: async () => false, drain: async () => {} },
     () => {},
+    undefined,
     async () => {
       entered.resolve();
       await release.promise;

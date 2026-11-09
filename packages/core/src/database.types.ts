@@ -245,6 +245,8 @@ export type Database = {
           created_at: string;
           updated_at: string;
           provider: Database["public"]["Enums"]["sandbox_provider"];
+          expected_snapshot_id: string | null;
+          revision_known: boolean;
         };
         Insert: {
           id: string;
@@ -268,6 +270,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
+          expected_snapshot_id?: string | null;
+          revision_known?: boolean;
         };
         Update: {
           id?: string;
@@ -291,6 +295,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
+          expected_snapshot_id?: string | null;
+          revision_known?: boolean;
         };
         Relationships: [
           {
@@ -323,6 +329,10 @@ export type Database = {
           owner_id: string | null;
           created_at: string;
           receipt: Json | null;
+          expected_snapshot_id: string | null;
+          expected_sandbox_id: string | null;
+          revision_known: boolean;
+          operation_kind: string;
         };
         Insert: {
           id?: string;
@@ -330,6 +340,10 @@ export type Database = {
           owner_id?: string | null;
           created_at?: string;
           receipt?: Json | null;
+          expected_snapshot_id?: string | null;
+          expected_sandbox_id?: string | null;
+          revision_known?: boolean;
+          operation_kind?: string;
         };
         Update: {
           id?: string;
@@ -337,6 +351,10 @@ export type Database = {
           owner_id?: string | null;
           created_at?: string;
           receipt?: Json | null;
+          expected_snapshot_id?: string | null;
+          expected_sandbox_id?: string | null;
+          revision_known?: boolean;
+          operation_kind?: string;
         };
         Relationships: [
           {
@@ -349,6 +367,171 @@ export type Database = {
           {
             foreignKeyName: "golden_operation_fences_owner_id_fkey";
             columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      golden_snapshot_publications: {
+        Row: {
+          id: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          proven: boolean;
+          snapshot: string;
+          source_id: string | null;
+          artifact_id: string | null;
+          authority: Json | null;
+          target: Json;
+          manager_id: string;
+          job_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          proven?: boolean;
+          snapshot: string;
+          source_id?: string | null;
+          artifact_id?: string | null;
+          authority?: Json | null;
+          target: Json;
+          manager_id: string;
+          job_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          golden_id?: string;
+          provider?: string;
+          backend_id?: string;
+          proven?: boolean;
+          snapshot?: string;
+          source_id?: string | null;
+          artifact_id?: string | null;
+          authority?: Json | null;
+          target?: Json;
+          manager_id?: string;
+          job_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_snapshot_publications_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_publications_job_id_fkey";
+            columns: ["job_id"];
+            isOneToOne: false;
+            referencedRelation: "golden_build_jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_publications_manager_id_fkey";
+            columns: ["manager_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      golden_snapshot_retirements: {
+        Row: {
+          id: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          old_snapshot: string;
+          new_snapshot: string;
+          publication_id: string;
+          replacement_id: string;
+          state: string;
+          sealed: boolean;
+          delete_started: boolean;
+          claim_id: string | null;
+          claim_until: string | null;
+          attempts: number;
+          review_receipt: string | null;
+          reviewed_by: string | null;
+          reason: string | null;
+          next_attempt_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          old_snapshot: string;
+          new_snapshot: string;
+          publication_id: string;
+          replacement_id: string;
+          state?: string;
+          sealed?: boolean;
+          delete_started?: boolean;
+          claim_id?: string | null;
+          claim_until?: string | null;
+          attempts?: number;
+          review_receipt?: string | null;
+          reviewed_by?: string | null;
+          reason?: string | null;
+          next_attempt_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          golden_id?: string;
+          provider?: string;
+          backend_id?: string;
+          old_snapshot?: string;
+          new_snapshot?: string;
+          publication_id?: string;
+          replacement_id?: string;
+          state?: string;
+          sealed?: boolean;
+          delete_started?: boolean;
+          claim_id?: string | null;
+          claim_until?: string | null;
+          attempts?: number;
+          review_receipt?: string | null;
+          reviewed_by?: string | null;
+          reason?: string | null;
+          next_attempt_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_snapshot_retirements_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_publication_id_fkey";
+            columns: ["publication_id"];
+            isOneToOne: false;
+            referencedRelation: "golden_snapshot_publications";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_replacement_id_fkey";
+            columns: ["replacement_id"];
+            isOneToOne: false;
+            referencedRelation: "golden_snapshot_publications";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_reviewed_by_fkey";
+            columns: ["reviewed_by"];
             isOneToOne: false;
             referencedRelation: "users";
             referencedColumns: ["id"];
@@ -1762,6 +1945,8 @@ export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoptio
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type GoldenBuildJob = Database["public"]["Tables"]["golden_build_jobs"]["Row"];
 export type GoldenOperationFence = Database["public"]["Tables"]["golden_operation_fences"]["Row"];
+export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
+export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpActorEpoch = Database["public"]["Tables"]["mcp_actor_epochs"]["Row"];
 export type McpBinding = Database["public"]["Tables"]["mcp_bindings"]["Row"];

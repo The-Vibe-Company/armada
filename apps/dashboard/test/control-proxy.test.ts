@@ -263,3 +263,54 @@ test("organization provider setup crosses the public-origin proxy over real HTTP
     await upstream.stop(true);
   }
 });
+
+test("retirement proxy exposes only the two authenticated closed paths and forwards scope without rewriting it", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  let calls = 0;
+  const body = JSON.stringify({ org: "selected-org", id: "golden-id", limit: 2 });
+  for (const action of ["dry-run", "reconcile"]) {
+    const path = ["golden", "retirement", action];
+    expect(
+      (
+        await forwardControl(
+          new Request("https://dashboard.test/api/v1/" + path.join("/"), { method: "POST", body }),
+          path,
+          async () => {
+            throw Error("Anonymous request escaped");
+          },
+        )
+      ).status,
+    ).toBe(401);
+    const response = await forwardControl(
+      new Request("https://dashboard.test/api/v1/" + path.join("/"), {
+        method: "POST",
+        headers: { authorization: "Bearer masked" },
+        body,
+      }),
+      path,
+      async (input, init) => {
+        const request = new Request(input, init);
+        calls++;
+        expect(request.url).toBe("https://armada.test/api/v1/" + path.join("/"));
+        expect(request.headers.get("authorization")).toBe("Bearer masked");
+        expect(await request.text()).toBe(body);
+        return Response.json({ results: [{ outcome: "protected", reason: "referenced" }] }, { status: 200 });
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ results: [{ outcome: "protected", reason: "referenced" }] });
+  }
+  for (const action of ["delete", "dry-run/extra", "reconcile-all"])
+    expect(
+      (
+        await forwardControl(
+          new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
+          ["golden", "retirement", action],
+          async () => {
+            throw Error("Unknown path escaped");
+          },
+        )
+      ).status,
+    ).toBe(404);
+  expect(calls).toBe(2);
+});

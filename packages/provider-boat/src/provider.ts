@@ -110,6 +110,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
 
 function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
   const info: SnapshotInfo = { name: snapshot.name, status: snapshot.status };
+  if (snapshot.snapshotId) info.artifactId = snapshot.snapshotId;
   if (snapshot.error) info.error = snapshot.error;
   if (snapshot.sourceSandboxId) info.sourceSandboxId = snapshot.sourceSandboxId;
   if (snapshot.createdAt) info.createdAt = snapshot.createdAt;

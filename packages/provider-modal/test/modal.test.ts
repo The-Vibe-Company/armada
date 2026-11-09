@@ -890,6 +890,107 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
   });
+  test("recovery references do not depend on a saved label surviving retirement", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const saved = await f.store.image(name);
+    const child = await f.provider.fork({ from: name });
+    await f.provider.stop({ sandboxId: child.id });
+    const recovery = (await f.store.get(child.id)).recoveryImageId;
+    expect(recovery).toBeDefined();
+    await f.provider.deleteSnapshot(name);
+    expect(f.log).not.toContain("delete-image");
+    // Recovery references are durable independently of an already-retired saved-handle row.
+    await f.store.purgeImage(name);
+    expect(await f.store.imageReferenced(saved.imageId!)).toBe(true);
+    expect(await f.store.imageReferenced(recovery!)).toBe(true);
+    await f.provider.exec({ sandboxId: child.id, command: "resume retained recovery" });
+    expect((await f.provider.get(child.id)).state).toBe("ready");
+  });
+  test("retiring one saved handle preserves another live handle sharing its artifact", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const old = crypto.randomUUID(),
+      current = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name: old });
+    const image = await f.store.image(old);
+    await f.store.saveImage({ ...image, info: { ...image.info, name: current } });
+    await f.provider.deleteSnapshot(old);
+    expect(f.log).not.toContain("delete-image");
+    expect((await f.provider.getSnapshot(current)).artifactId).toBe(image.imageId);
+    await f.provider.deleteSnapshot(current);
+    expect(f.log).toContain("delete-image");
+  });
+  test("snapshot provenance projection never substitutes cached info for missing canonical image or authority", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const original = await f.store.image(name);
+    expect(original.imageId).toBeDefined();
+    expect(original.managementAuthority).toBeDefined();
+    await db.query("update modal_images set record=record-'imageId'-'managementAuthority' where name=$1", [name]);
+    const info = await f.provider.getSnapshot(name);
+    expect(info.artifactId).toBeUndefined();
+    expect(info.managementAuthority).toBeUndefined();
+    expect(info.sourceSandboxId).toBe(builder.id);
+  });
+  test.each(["current", "retained"])(
+    "saved-handle collection protects shared physical recovery references across tenant scopes (%s)",
+    async (mode) => {
+      const otherOrg = crypto.randomUUID();
+      await db.query("insert into orgs(id,name) values($1,$2)", [otherOrg, "shared-ref-" + otherOrg]);
+      const otherUser = "00000000-0000-0000-0000-000000000004";
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [otherOrg, otherUser]);
+      const other = fixture({ ...scope, orgId: otherOrg, userId: otherUser });
+      const seed = await other.provider.createGolden({});
+      const seedName = crypto.randomUUID();
+      await other.provider.snapshot({ sandboxId: seed.id, name: seedName });
+      const child = await other.provider.fork({ from: seedName });
+      await other.provider.stop({ sandboxId: child.id });
+      const recovery = (await other.store.get(child.id)).recoveryImageId!;
+      if (mode === "retained") {
+        await other.provider.exec({ sandboxId: child.id, command: "second recovery generation" });
+        await other.provider.stop({ sandboxId: child.id });
+        await other.provider.exec({ sandboxId: child.id, command: "third recovery generation" });
+        const row = await other.store.get(child.id);
+        expect(row.retainedRecoveryIds).toContain(recovery);
+        expect(row.imageId).not.toBe(recovery);
+        expect(row.recoveryImageId).not.toBe(recovery);
+        expect(row.sourceImage?.imageId).not.toBe(recovery);
+      }
+      const f = fixture(),
+        builder = await f.provider.createGolden({});
+      const source = await f.store.get(builder.id),
+        physical = await f.client.sandboxes.fromId(source.physicalId!);
+      // SDK snapshots may share immutable physical content without a logical source-image link.
+      physical.snapshotFilesystem = async () => ({ imageId: recovery }) as Image;
+      const name = crypto.randomUUID();
+      await f.provider.snapshot({ sandboxId: builder.id, name });
+      const baseline = other.log.length;
+      await f.provider.deleteSnapshot(name);
+      expect(f.log).not.toContain("delete-image");
+      if (mode === "retained") expect((await other.store.get(child.id)).retainedRecoveryIds).toContain(recovery);
+      else expect((await other.store.get(child.id)).recoveryImageId).toBe(recovery);
+      expect((await other.store.get(child.id)).phase).toBe(mode === "retained" ? "active" : "stopped");
+      expect(other.log.length).toBe(baseline);
+    },
+  );
+  test("an unverifiable snapshot backend is not reported as an absent saved handle", async () => {
+    const f = fixture(),
+      builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    f.client.apps.fromName = async () => {
+      throw Object.assign(Error("private SDK diagnostic"), { name: "NotFoundError" });
+    };
+    await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "provider_not_configured" });
+    await expect(f.provider.deleteSnapshot(name)).rejects.toMatchObject({ code: "provider_not_configured" });
+    expect((await f.store.image(name)).info.status).toBe("ready");
+    expect(f.log).not.toContain("delete-image");
+  });
   test("concurrent lifecycle lease cannot write through the active holder", async () => {
     const f = fixture();
     const row = await f.provider.createGolden({});
