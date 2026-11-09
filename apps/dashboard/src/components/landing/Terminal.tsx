@@ -86,10 +86,8 @@ export function Terminal({ commands, title }: { commands: TerminalCommand[]; tit
   return (
     <div className="lp-terminal" ref={ref}>
       <div className="lp-terminal-bar">
-        <span className="lp-terminal-dots" aria-hidden>
-          <i />
-          <i />
-          <i />
+        <span className="lp-terminal-sign" aria-hidden>
+          $
         </span>
         <span className="lp-terminal-title">{title}</span>
       </div>
