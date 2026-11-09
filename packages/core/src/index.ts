@@ -97,6 +97,7 @@ export {
   type GoldenRecord,
   type GoldenStore,
   goldenForLaunch,
+  goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
   snapshotGolden,
@@ -124,6 +125,7 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
+export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
   type GitHubLaunchInfo,
@@ -137,6 +139,7 @@ export {
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
+export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export {
   MCP_STDIO_EXECUTABLES,
@@ -153,6 +156,7 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
+export * from "./orchestrator.ts";
 export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
 export {
   type AgentEvent,

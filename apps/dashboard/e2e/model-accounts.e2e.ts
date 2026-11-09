@@ -213,6 +213,49 @@ test("the launch select names the org on an org account, so equal names still sa
   await expect(select.locator('optgroup[label="Acme"] option')).toHaveText(["Anthropic API key (Acme)"]);
 });
 
+test("a sized launch keeps the chosen account: the size and the account are both sent, on the sized route only", async ({
+  page,
+}) => {
+  await mock("/__test/reset", { sizePolicies: true });
+  const work = account(51, "Work", { is_default: true });
+  const home = account(52, "Home");
+  await mock("/__test/accounts", { seed: [work, home] });
+  await signIn(page, "alice@example.com", "/goldens");
+  const open = async () => {
+    await page
+      .getByRole("button", { name: /^Launch from shared-golden/ })
+      .first()
+      .click();
+    return page.getByRole("dialog");
+  };
+
+  let dialog = await open();
+  const accountSelect = dialog.getByLabel("Account");
+  const size = dialog.getByLabel("Machine size");
+  await expect(accountSelect.locator("option:checked")).toHaveText("Work (Claude subscription, default)");
+  await expect(size.locator("option").first()).toHaveText("Default · Medium (golden)");
+  // Changing one never resets the other.
+  await accountSelect.selectOption({ label: "Home (Claude subscription)" });
+  await size.selectOption("large");
+  await expect(accountSelect).toHaveValue(String(home.id));
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+
+  // The golden's stored default alone also needs the sized route; the preselected account still goes with it.
+  await page.goto("/goldens");
+  dialog = await open();
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+
+  const state = await mock("/__test/state");
+  expect(state.launchRoutes).toEqual(["sandbox/launch-sized-v1", "sandbox/launch-sized-v1"]);
+  expect(state.launches).toEqual([
+    expect.objectContaining({ credentialId: home.id, size: "large", sizePolicyVersion: 1 }),
+    expect.objectContaining({ credentialId: work.id, sizePolicyVersion: 1 }),
+  ]);
+  expect((state.launches as Row[])[1]).not.toHaveProperty("size");
+});
+
 test("a server older than named accounts is said plainly, and launches send no account", async ({ page }) => {
   await mock("/__test/accounts", { legacy: true });
   await signIn(page, "alice@example.com", "/credentials");

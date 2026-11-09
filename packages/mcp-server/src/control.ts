@@ -14,6 +14,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
+import { goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -78,6 +79,7 @@ import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject 
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
+import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
@@ -98,8 +100,10 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  invitations?: Invitations;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
+  goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
   connections?: LaunchStores["connections"];
   /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
@@ -199,7 +203,17 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       if (!response.ok) throw new VaultError("unavailable", "The account session could not be signed out.");
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
-    const result = await dispatch(route, caller, body, options);
+    const invitationAction = route.startsWith("org/invitations/") ? route.slice("org/invitations/".length) : null;
+    let result: unknown;
+    if (invitationAction) {
+      if (!options.invitations) throw new VaultError("unavailable", "Invitations unavailable.");
+      result =
+        invitationAction === "preview"
+          ? await options.invitations.preview(caller, body.token)
+          : invitationAction === "accept"
+            ? await options.invitations.accept(caller, body.token)
+            : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
+    } else result = await dispatch(route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
     return Response.json(result, {
       status:
@@ -249,6 +263,18 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof InvitationError)
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message: error.message,
+            reason: error.reason,
+            ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+          },
+        },
+        { status: STATUS[error.code], headers: { "cache-control": "no-store" } },
+      );
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
@@ -653,6 +679,37 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "golden/size-policy": {
+      if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
+      const data = options.data(caller);
+      const name = required(body, "golden");
+      const actor = await launchActor(data, caller, name, optional(body, "org"));
+      const golden = await goldenForSettings(
+        data.goldens,
+        actor,
+        name,
+        optional(body, "provider") as "boat" | "modal" | undefined,
+      );
+      if (body.policy !== undefined) {
+        const policy = parseMachineSizePolicy(
+          body.policy,
+          golden.config.repos.map((r) => r.dir),
+        );
+        if (!data.goldens.setSizePolicy) throw new VaultError("unavailable", "Policy writes are unavailable.");
+        await data.goldens.setSizePolicy(golden, actor, policy);
+        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
+      }
+      return {
+        goldenId: golden.id,
+        provider: golden.provider,
+        repositories: golden.config.repos,
+        policy: golden.sizePolicy ?? null,
+      };
+    }
+    case "sandbox/launch-sized-v1":
+      if (body.sizePolicyVersion !== 1)
+        throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
+      return launchRoute(options, caller, body);
     case "sandbox/launch":
       return launchRoute(options, caller, body);
     case "launch/resolve":
@@ -664,6 +721,21 @@ async function dispatch(
         required(body, "id"),
         body,
       );
+    case "golden/retirement/dry-run":
+    case "golden/retirement/reconcile": {
+      if (!options.goldenRetirements) throw new VaultError("unavailable", "Snapshot retirement is not configured.");
+      const id = required(body, "id");
+      if (!UUID.test(id)) throw new VaultError("invalid", "id must be a golden UUID.");
+      const selected = await selectedCaller(options, caller, optional(body, "org"));
+      return options.goldenRetirements.forCaller(
+        caller.userId,
+        selected.orgs.map((o) => o.orgId),
+        id,
+        body.limit === undefined ? 20 : Number(body.limit),
+        route.endsWith("reconcile"),
+        body.receipts === undefined ? [] : (body.receipts as string[]),
+      );
+    }
     case "golden/remove": {
       const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
       const data = options.data?.(scopedCaller);
@@ -980,6 +1052,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     actor,
     {
       golden: name,
+      ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
@@ -1204,6 +1277,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
   return {
+    invitations: invitationsFromEnv(sql, env),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,

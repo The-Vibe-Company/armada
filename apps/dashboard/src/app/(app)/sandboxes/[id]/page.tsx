@@ -7,6 +7,7 @@ import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
+import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ import { isActiveStatus } from "@/lib/events";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { lifecycleView, readLifecycle } from "@/lib/lifecycle";
+import { describeEvidence } from "@/lib/machine-size";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -60,6 +62,7 @@ export default async function SandboxPage({ params }: Props) {
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
+  const machineSize = describeEvidence(sandbox.provider, sandbox);
 
   const facts: [string, string][] = [
     ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
@@ -77,6 +80,7 @@ export default async function SandboxPage({ params }: Props) {
         ]
       : []),
     ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
+    ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
     ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
@@ -94,9 +98,10 @@ export default async function SandboxPage({ params }: Props) {
   ];
 
   return (
-    <>
+    <div data-fit-viewport className="space-y-3 md:space-y-6">
       <div className="space-y-3">
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
+        {/* On a phone the navigation above already leads back to the sandboxes; the conversation needs the room. */}
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
           <Link href="/sandboxes">
             <LinkPendingIcon>
               <ArrowLeftIcon />
@@ -123,8 +128,8 @@ export default async function SandboxPage({ params }: Props) {
         </Alert>
       )}
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="min-w-0">
+      <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div data-fit="column" className="min-w-0">
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
@@ -136,7 +141,7 @@ export default async function SandboxPage({ params }: Props) {
             configured={configured}
           />
         </div>
-        <div className="space-y-6">
+        <SandboxDetailsPanel>
           <Card className="gap-4">
             <CardHeader>
               <CardTitle className="text-base">Details</CardTitle>
@@ -164,9 +169,9 @@ export default async function SandboxPage({ params }: Props) {
               <AppliedConnections applied={applied} />
             </CardContent>
           </Card>
-        </div>
+        </SandboxDetailsPanel>
       </div>
-    </>
+    </div>
   );
 }
 

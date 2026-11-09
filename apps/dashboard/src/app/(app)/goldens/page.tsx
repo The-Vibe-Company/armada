@@ -20,6 +20,7 @@ import { GoldenForm } from "@/components/golden-form";
 import { type LaunchConnections, LaunchDialog } from "@/components/launch-dialog";
 import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
 import { RemoveGolden } from "@/components/remove-golden";
+import { SizeDefaults } from "@/components/size-defaults";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +50,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
+import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
@@ -208,9 +210,10 @@ export default async function GoldensPage({ searchParams }: Props) {
           <AlertTitle>Provider status unavailable</AlertTitle>
           <AlertDescription>
             <p>{setup.message}</p>
-            <Link className="underline underline-offset-4" href="/goldens" prefetch={false}>
+            {/* A document request, not a client navigation: the router would reuse its cached render (staleTimes). */}
+            <a className="underline underline-offset-4" href="/goldens">
               Check again
-            </Link>
+            </a>
           </AlertDescription>
         </Alert>
       )}
@@ -515,6 +518,8 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
   const titleId = `golden-${golden.id}`;
   const label = PROVIDER_LABELS[golden.provider];
   const canStart = context.connected?.includes(golden.provider) ?? false;
+  const directories = goldenRepositoryDirs(golden.config);
+  const sizing = goldenSizing(golden, directories);
   return (
     <li
       data-golden={golden.name}
@@ -563,10 +568,11 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
               provider={golden.provider}
               orgId={golden.org_id}
               catalog={MODEL_CATALOG}
-              repositories={goldenRepositoryDirs(golden.config)}
+              repositories={directories}
               goldenVisibility={golden.visibility}
               connections={context.connections}
               accounts={context.accounts}
+              {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}
             />
           ) : (
             <span className="text-xs text-muted-foreground" data-launch-paused>
@@ -628,6 +634,21 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
           </p>
         )}
       </div>
+      {sizing.kind !== "unsupported" && context.serverReady && membership && (
+        <div className="border-t px-4 py-3">
+          <SizeDefaults
+            goldenId={golden.id}
+            orgId={golden.org_id}
+            provider={golden.provider}
+            directories={directories}
+            sizing={sizing}
+            blocker={
+              sizePolicyBlocker(golden, { id: context.viewerId, isAdmin }) ??
+              (state.duplicateName ? "Rename one of the same-name goldens to change its size defaults." : null)
+            }
+          />
+        </div>
+      )}
       <div className="flex flex-col gap-2 border-t px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0 flex-1">
           {!context.serverReady || (!canStart && !context.rebuildsTracked.has(golden.id)) ? (

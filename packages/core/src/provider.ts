@@ -1,4 +1,6 @@
 import type { Harness } from "./contract.ts";
+import type { MachineSize } from "./machine-size.ts";
+import type { ProviderTarget } from "./sandbox-provider.ts";
 
 /**
  * The contract between Armada and a placement: the machines agents run on.
@@ -17,6 +19,8 @@ export interface Provider {
   readonly maxGoldens?: number;
   /** Stable non-secret backend account identity, when supported. */
   backendIdentity?(): Promise<{ id: string }>;
+  /** Immutable credential selection, never the secret or mutable profile label. */
+  managementIdentity?(): Promise<{ scope: "org" | "user"; ownerId: string }>;
   /** Private authenticated runtime configuration; must complete before a model turn starts. */
   configureMcp?(request: {
     sandboxId: string;
@@ -36,6 +40,22 @@ export interface Provider {
    * Callers inject credentials later, per sandbox, through `fork`'s `env`.
    */
   createGolden(request: CreateGoldenRequest): Promise<SandboxInfo>;
+  /** Read-only durable reservation discovery after an interrupted golden create. Never creates,
+   * replays commands, releases capacity or treats absence as proof. The provider must verify the
+   * exact request key, owner, immutable target and recorded management authority. */
+  findGoldenBuilder?(request: {
+    requestKey: string;
+    ownerId: string;
+    target: ProviderTarget;
+  }): Promise<{ sandboxId: string; disposition: "disposable" | "retained" } | null>;
+  /** Recovery-only disposal, rechecking exact reservation/provenance/retention under the
+   * provider lifecycle lease. Never invokes create, build commands or snapshot cleanup. */
+  disposeGoldenBuilder?(request: {
+    requestKey: string;
+    ownerId: string;
+    target: ProviderTarget;
+    sandboxId: string;
+  }): Promise<DeleteReceipt>;
   /** Authorized credential-free golden restoration, never a normal agent fork. Source is derived
    * exclusively from the bound snapshot; optional prior ID must match that image's own source. */
   restoreGoldenMaster?(request: { snapshotId: string; sandboxId?: string }): Promise<SandboxInfo>;
@@ -125,6 +145,10 @@ export interface SandboxInfo {
 }
 
 export interface SnapshotInfo {
+  /** Immutable underlying artifact fingerprint; never a saved-handle delete argument. */
+  artifactId?: string;
+  /** Provider-persisted source credential authority, when available (required for Modal retirement). */
+  managementAuthority?: { scope: "org" | "user"; ownerId: string };
   /** Authoritative provider reference, not necessarily the requested label or underlying disk artifact ID. */
   name: string;
   status: "saving" | "ready" | "failed";
@@ -155,6 +179,7 @@ export interface SnapshotRequest {
 }
 
 export interface ForkRequest {
+  size?: MachineSize;
   /** The snapshot to start from. */
   from: string;
   name?: string;

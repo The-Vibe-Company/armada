@@ -17,7 +17,9 @@ import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
+import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { launchSandbox } from "@/lib/launch";
+import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
@@ -121,6 +123,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     harness: formString(data, "harness"),
     prompt: formString(data, "prompt"),
     repo: formString(data, "repo"),
+    size: formString(data, "size"),
     ...modelFields(data),
   });
   if (!parsed.ok) return fail(parsed.error);
@@ -172,11 +175,18 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
         ...selection.value,
         ...(repository.repo === undefined ? {} : { repo: repository.repo }),
         ...(account.id === undefined ? {} : { credentialId: account.id }),
+        // Stored defaults are a promise only the versioned sized route keeps; without any, legacy is the same launch.
+        ...(matches.some((golden) => policyHasDefaults(golden.size_policy)) ? { sizePolicy: true } : {}),
       },
     ));
   } catch (error) {
-    if (error instanceof ControlError) return fail(error.message);
-    throw error;
+    if (!(error instanceof ControlError)) throw error;
+    // A provider refusing an explicit size (plan, disk) is never retried with another: say what can be changed.
+    if (parsed.args.size && error.code && PROVIDER_REFUSALS.has(error.code))
+      return fail(
+        `${error.message} If ${PROVIDER_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
+      );
+    return fail(error.message);
   }
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${id}`);

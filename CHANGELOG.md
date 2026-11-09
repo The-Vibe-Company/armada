@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.12.0](https://github.com/The-Vibe-Company/armada/compare/v2.11.0...v2.12.0) (2026-11-09)
+
+
+### Features
+
+* **auth:** add private orchestrator authority foundation ([#673](https://github.com/The-Vibe-Company/armada/issues/673)) ([d748be6](https://github.com/The-Vibe-Company/armada/commit/d748be683c7fb478bc738cda8954332fe72dd97b))
+* **cli:** manage organization invitations ([#669](https://github.com/The-Vibe-Company/armada/issues/669)) ([c1501ea](https://github.com/The-Vibe-Company/armada/commit/c1501ea6c60ccd575610b111637b28d787b6f383))
+* **dashboard:** identify sandbox providers with compact logos ([#657](https://github.com/The-Vibe-Company/armada/issues/657)) ([6db315f](https://github.com/The-Vibe-Company/armada/commit/6db315f652dc4ccfc8c53aa12e975e6ac1bf5075))
+* **dashboard:** show relative sandbox creation times in the viewer timezone ([#644](https://github.com/The-Vibe-Company/armada/issues/644)) ([78884de](https://github.com/The-Vibe-Company/armada/commit/78884de87066851b75e09cbda134606c0a8bc6d7))
+* **golden:** retire superseded saved snapshots safely ([#670](https://github.com/The-Vibe-Company/armada/issues/670)) ([5cec116](https://github.com/The-Vibe-Company/armada/commit/5cec1167ebea8e38592fa938fe509cf5c03988a4))
+* **orchestrators:** define durable coordinator contract and design ([#650](https://github.com/The-Vibe-Company/armada/issues/650)) ([d152e87](https://github.com/The-Vibe-Company/armada/commit/d152e87accb36b99086c5779f73dfee36a9dea0d))
+* **org:** add explicit email invitations and durable delivery ([#649](https://github.com/The-Vibe-Company/armada/issues/649)) ([8010a72](https://github.com/The-Vibe-Company/armada/commit/8010a72bd9227b577b4babbcd4b1a00a99243676))
+* **sizing:** add provider machine size policies and launch evidence ([#658](https://github.com/The-Vibe-Company/armada/issues/658)) ([ec3b89d](https://github.com/The-Vibe-Company/armada/commit/ec3b89db5a7cb819b2181c26a84a17e1e99e67c3))
+
+
+### Bug Fixes
+
+* **dashboard:** distinguish provider API outages from unsupported setup ([#660](https://github.com/The-Vibe-Company/armada/issues/660)) ([c9bf8a5](https://github.com/The-Vibe-Company/armada/commit/c9bf8a5a7add7d7a02ee829e901c90d7e70c2aae))
+* **dashboard:** fit the sandbox conversation and its composer to the viewport ([#636](https://github.com/The-Vibe-Company/armada/issues/636)) ([648b8cf](https://github.com/The-Vibe-Company/armada/commit/648b8cfbbd0df1d527cacdb9e3098af934d2d650))
+* **modal:** bound native event ingest batches by UTF-8 bytes ([#651](https://github.com/The-Vibe-Company/armada/issues/651)) ([19adc40](https://github.com/The-Vibe-Company/armada/commit/19adc40be502b1b145aa8f4e7c83c924cde90ea0))
+* **modal:** finalize owned conformance apps after cleanup ([#671](https://github.com/The-Vibe-Company/armada/issues/671)) ([90b0deb](https://github.com/The-Vibe-Company/armada/commit/90b0debde2ea3e454fd655e5a02a418d65283a23))
+* **modal:** preserve numeric durable event cursor order ([#675](https://github.com/The-Vibe-Company/armada/issues/675)) ([1fd430a](https://github.com/The-Vibe-Company/armada/commit/1fd430a500dcaccf95d9d27f0984918f0dab831e))
+
+## [2.11.0](https://github.com/The-Vibe-Company/armada/compare/v2.10.0...v2.11.0) (2026-11-09)
+
+
+### Features
+
+* **cli:** install manager skills from public GitHub ([#639](https://github.com/The-Vibe-Company/armada/issues/639)) ([9f47264](https://github.com/The-Vibe-Company/armada/commit/9f47264e4c3a9a098906162815a2f1b4949030ba))
+* **dashboard:** connect catalog services as named, default-able connections ([#614](https://github.com/The-Vibe-Company/armada/issues/614)) ([58e8a9f](https://github.com/The-Vibe-Company/armada/commit/58e8a9f67ff0917aa6761a16907082a3fa0a7751))
+* **dashboard:** turn sandbox logs into a readable conversation ([#616](https://github.com/The-Vibe-Company/armada/issues/616)) ([8abdb4b](https://github.com/The-Vibe-Company/armada/commit/8abdb4b5e9966879710c16b83514bc3dff506aa6))
+* **landing:** generate a stronger landing through the full AEOM workflow ([#623](https://github.com/The-Vibe-Company/armada/issues/623)) ([2cb279a](https://github.com/The-Vibe-Company/armada/commit/2cb279a04d1925735942785e381c3e1d2e45a9c3))
+* **mcp:** add service catalog and per-instance launch defaults ([#609](https://github.com/The-Vibe-Company/armada/issues/609)) ([c00cb3b](https://github.com/The-Vibe-Company/armada/commit/c00cb3be2f1d919792ea6e92e699aa10dc9d69be))
+* **mcp:** configure registered Slack OAuth catalog clients ([#619](https://github.com/The-Vibe-Company/armada/issues/619)) ([c085631](https://github.com/The-Vibe-Company/armada/commit/c085631fd18759138fc86115069bf7b9028b8909))
+* **settings:** centralize sandbox provider connections and adapt launch controls ([#615](https://github.com/The-Vibe-Company/armada/issues/615)) ([a76def0](https://github.com/The-Vibe-Company/armada/commit/a76def096c7736352502125b24a9dfcfb62eb721))
+* **skills:** add portable Armada manager skill ([#638](https://github.com/The-Vibe-Company/armada/issues/638)) ([a5612ab](https://github.com/The-Vibe-Company/armada/commit/a5612ab5e0654c9e80cafa6a9efe032f69c7f36c))
+
+
+### Bug Fixes
+
+* **api:** forward authenticated public control routes ([#625](https://github.com/The-Vibe-Company/armada/issues/625)) ([36ebf2e](https://github.com/The-Vibe-Company/armada/commit/36ebf2ed5044d881f86985f707ec1e45e643acb1))
+* **dashboard:** show the stopped status in the conversation as soon as the page has it ([#630](https://github.com/The-Vibe-Company/armada/issues/630)) ([56cfafc](https://github.com/The-Vibe-Company/armada/commit/56cfafcd89a183bee1425436100c48349a029cfb))
+* **events:** correlate native assistant messages and snapshots ([#608](https://github.com/The-Vibe-Company/armada/issues/608)) ([9018c95](https://github.com/The-Vibe-Company/armada/commit/9018c952228116d2d38e4c2309f1539c0b03f05d))
+* **goldens:** report capacity from authoritative backend bindings ([#607](https://github.com/The-Vibe-Company/armada/issues/607)) ([2ab56d0](https://github.com/The-Vibe-Company/armada/commit/2ab56d0f44ffdcb901c0e62a2cf48ca9ff6f85fb))
+* **landing:** continue the hero below it, on its night surface and one accent ([#634](https://github.com/The-Vibe-Company/armada/issues/634)) ([9d90d69](https://github.com/The-Vibe-Company/armada/commit/9d90d694c9c25287fd84e9564615af4486ae0ce4))
+* **mcp:** serve client metadata behind TLS termination ([#626](https://github.com/The-Vibe-Company/armada/issues/626)) ([405d15a](https://github.com/The-Vibe-Company/armada/commit/405d15a95269b20cc222d042861608503149e4dc))
+* **modal:** recover fenced interrupted golden builders ([#637](https://github.com/The-Vibe-Company/armada/issues/637)) ([d79cfed](https://github.com/The-Vibe-Company/armada/commit/d79cfed8d2acd9337a41633d58884795a59853a7))
+
 ## [2.10.0](https://github.com/The-Vibe-Company/armada/compare/v2.9.1...v2.10.0) (2026-11-09)
 
 

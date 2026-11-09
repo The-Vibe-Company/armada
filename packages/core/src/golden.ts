@@ -12,6 +12,7 @@ import {
   initCommand,
   parseGoldenName,
 } from "./golden-config.ts";
+import type { MachineSizePolicy } from "./machine-size.ts";
 import {
   isNonMutatingProviderRefusal,
   type Provider,
@@ -29,6 +30,7 @@ export interface GoldenActor {
 
 /** A golden the caller is allowed to see. `config` is the parsed, secret-free file. */
 export interface GoldenRecord {
+  sizePolicy?: MachineSizePolicy | null;
   id: string;
   orgId: string;
   name: string;
@@ -52,8 +54,12 @@ export interface GoldenOperation {
 }
 
 export interface GoldenStore {
+  setSizePolicy?(golden: GoldenRecord, actor: GoldenActor, policy: MachineSizePolicy): Promise<void>;
   /** Durable admission; a crashed operation remains fenced for explicit reconciliation. */
-  beginOperation?(id: string): Promise<GoldenOperation>;
+  beginOperation?(
+    id: string,
+    expected: { snapshotId: string | null; sandboxId: string | null; kind?: "launch" | "connect" | "snapshot" },
+  ): Promise<GoldenOperation>;
   reconcileOperations?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
   /** Recheck live mutation authority, including after long provider operations/readback recovery. */
   assertMutation?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
@@ -196,7 +202,11 @@ export async function connectGolden(
   assertGoldenMutation(actor, golden);
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
-  const releaseOperation = await store.beginOperation?.(golden.id);
+  const releaseOperation = await store.beginOperation?.(golden.id, {
+    kind: "connect",
+    snapshotId: golden.providerSnapshotId,
+    sandboxId: golden.providerSandboxId,
+  });
   let uncertain = false;
   let failed = false;
   try {
@@ -366,7 +376,11 @@ export async function snapshotGolden(
   assertGoldenMutation(actor, golden);
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
-  const releaseOperation = await store.beginOperation?.(golden.id);
+  const releaseOperation = await store.beginOperation?.(golden.id, {
+    kind: "snapshot",
+    snapshotId: golden.providerSnapshotId,
+    sandboxId: golden.providerSandboxId,
+  });
   let uncertain = false;
   let failed = false;
   try {
@@ -509,6 +523,16 @@ export async function snapshotGolden(
  * Launch (#462) and the MCP server (#464) call this under the caller's own database role. When the name
  * exists on several providers the caller names one; it is never guessed.
  */
+/** Visible metadata, even before a snapshot exists. No provider access. */
+export async function goldenForSettings(
+  store: GoldenStore,
+  actor: GoldenActor,
+  name: string,
+  provider?: SandboxProviderId,
+): Promise<GoldenRecord> {
+  return oneVisible(store, actor.orgId, parseGoldenName(name), provider);
+}
+
 export async function goldenForLaunch(
   store: GoldenStore,
   actor: GoldenActor,
