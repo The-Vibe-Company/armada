@@ -559,7 +559,6 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
               orgId={golden.org_id}
               catalog={MODEL_CATALOG}
               repositories={goldenRepositoryDirs(golden.config)}
-              goldenVisibility={golden.visibility}
               connections={context.connections}
             />
           ) : (

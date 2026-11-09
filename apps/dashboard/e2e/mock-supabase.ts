@@ -825,8 +825,8 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
 /**
  * `POST /api/v1/sandbox/launch`, as the Armada API serves it: the golden must be visible in the org, `repo` must be
- * exactly one of its `config.repos[].dir`, and a personal connection needs a private sandbox. The sandbox row
- * records what was launched, including `repository_dir`.
+ * exactly one of its `config.repos[].dir`, and every named connection is the caller's to use in the org, personal or
+ * org, and connected (#681: the legacy visibility plays no part). The sandbox row records what was launched.
  */
 function launchRoute(body: Row, userId: string | null): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
@@ -846,9 +846,7 @@ function launchRoute(body: Row, userId: string | null): Response {
   for (const cid of ids) {
     const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
     if (!connection) return controlFail(404, "not_found", "A connection is not available.");
-    if (connection.scope === "personal" && body.visibility !== "private") {
-      return controlFail(400, "invalid", "A personal connection needs a private sandbox.");
-    }
+    if (connection.status !== "connected") return controlFail(400, "invalid", "A connection is not connected.");
   }
   const row = sandbox(
     crypto.randomUUID(),
@@ -861,7 +859,7 @@ function launchRoute(body: Row, userId: string | null): Response {
   );
   row.model = body.model;
   row.reasoning_effort = body.reasoningEffort;
-  row.visibility = body.visibility;
+  if (body.visibility !== undefined) row.visibility = body.visibility;
   row.connections = ids;
   row.repository_dir = body.repo ?? null;
   state.sandboxes.unshift(row);

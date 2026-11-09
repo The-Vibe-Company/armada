@@ -476,8 +476,8 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
       harness: "codex",
       model: "gpt-6-luna",
       reasoningEffort: "high",
-      visibility: "org",
-      connections: [],
+      // #681: Alice's personal default goes into a sandbox of the shared golden too.
+      connections: ["00000000-0000-4000-8000-000000000061"],
       repo: "api",
     },
   ]);

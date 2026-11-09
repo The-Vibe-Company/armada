@@ -8,6 +8,8 @@
  * header values) only ever travel in request bodies: no DTO carries them back.
  */
 
+import { mcpLaunchSelection } from "@armada/core";
+
 export const CONNECTION_SCOPES = ["personal", "org"] as const;
 export const CONNECTION_TRANSPORTS = ["http", "sse", "stdio"] as const;
 /**
@@ -22,13 +24,11 @@ export const CONNECTION_STATUSES = [
   "unavailable",
   "disabled",
 ] as const;
-export const SANDBOX_VISIBILITIES = ["private", "org"] as const;
 
 export type ConnectionScope = (typeof CONNECTION_SCOPES)[number];
 export type ConnectionTransport = (typeof CONNECTION_TRANSPORTS)[number];
 export type ConnectionAuthType = (typeof CONNECTION_AUTH_TYPES)[number];
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
-export type SandboxVisibility = (typeof SANDBOX_VISIBILITIES)[number];
 
 /** The public connection DTO. `url` is already redacted for display by the server; `lastError` is sanitized. */
 export interface McpConnection {
@@ -256,69 +256,50 @@ export function isLaunchable(connection: McpConnection): boolean {
   return connection.status === "connected";
 }
 
-/** Why a connection cannot be picked for a launch of the given visibility, or null when it can. */
-export function launchBlocker(connection: McpConnection, visibility: SandboxVisibility): string | null {
-  if (!isLaunchable(connection)) {
-    return connection.status === "disabled"
-      ? "Disabled. Enable it on the Connections page first."
-      : connection.transport === "stdio"
-        ? `${statusLabel(connection)}. Configure it on the Connections page first.`
-        : `${statusLabel(connection)}. Connect it on the Connections page first.`;
-  }
-  if (connection.scope === "personal" && visibility === "org") {
-    return "Personal: uses your own account, so it needs a private sandbox.";
-  }
-  return null;
+/** Why a connection cannot be picked for a launch, or null when it can. Personal and org connections alike (#681). */
+export function launchBlocker(connection: McpConnection): string | null {
+  if (isLaunchable(connection)) return null;
+  return connection.status === "disabled"
+    ? "Disabled. Enable it on the Connections page first."
+    : connection.transport === "stdio"
+      ? `${statusLabel(connection)}. Configure it on the Connections page first.`
+      : `${statusLabel(connection)}. Connect it on the Connections page first.`;
 }
 
 /**
- * The connections a new launch starts with: those marked include-by-default that it can actually use at this
- * visibility. A personal default never enters an org-visible sandbox, and one that is not connected is left for
- * the person to fix rather than silently sent.
+ * The connections a new launch starts with, by the #681 selection: every enabled include-by-default connection the
+ * person can use in this org, personal or org, whatever the golden. A default that is not connected stays in the
+ * selection (see `unreadyDefaults`): it is never dropped silently.
  */
-export function launchDefaults(available: readonly McpConnection[], visibility: SandboxVisibility): string[] {
-  return available
-    .filter((connection) => connection.defaultForLaunch && launchBlocker(connection, visibility) === null)
-    .map((connection) => connection.id);
+export function launchDefaults(available: readonly McpConnection[]): string[] {
+  return mcpLaunchSelection(available).ids;
 }
 
 /**
- * Defaults this launch would get but cannot use yet: enabled, allowed at this visibility, and not connected. The
- * server refuses a launch that omits connections while such a default exists, so the dialog names them instead of
- * dropping them silently, and launches without them only once the person chooses to.
+ * Defaults this launch would get but cannot use yet (#681 `blockedIds`). They hold the launch until they are
+ * reconnected or the person deliberately launches with a selection that leaves them out.
  */
-export function unreadyDefaults(available: readonly McpConnection[], visibility: SandboxVisibility): McpConnection[] {
-  return available.filter(
-    (connection) =>
-      connection.defaultForLaunch &&
-      connection.status !== "disabled" &&
-      !isLaunchable(connection) &&
-      !(connection.scope === "personal" && visibility === "org"),
-  );
+export function unreadyDefaults(available: readonly McpConnection[]): McpConnection[] {
+  const { blockedIds } = mcpLaunchSelection(available);
+  return available.filter((connection) => blockedIds.includes(connection.id));
 }
 
 /**
- * The launch's visibility and connections, checked against what the control API listed for the selected org.
- * The server enforces the same rules; this check explains them before a launch is attempted.
+ * The launch's explicit connections, checked against what the control API listed for the selected org: each must
+ * be listed and connected. The server enforces the same rules and the grant ownership; this explains them first.
  */
 export function launchSelection(input: {
-  visibility: string;
-  connections: string[];
-  goldenVisibility: SandboxVisibility;
+  connections: readonly string[];
   available: readonly McpConnection[];
-}): Parsed<{ visibility: SandboxVisibility; connections: string[] }> {
-  if (!oneOf(SANDBOX_VISIBILITIES, input.visibility)) return { ok: false, error: "Choose who can see the sandbox." };
-  if (input.visibility === "org" && input.goldenVisibility === "private") {
-    return { ok: false, error: "A sandbox from a private golden stays private." };
-  }
-  const ids = [...new Set(input.connections)];
-  for (const id of ids) {
-    const connection = input.available.find((item) => item.id === id);
+}): Parsed<{ connections: string[] }> {
+  const { ids, blockedIds } = mcpLaunchSelection(input.available, input.connections);
+  const blocked = blockedIds[0];
+  if (blocked !== undefined) {
+    const connection = input.available.find((item) => item.id === blocked);
     if (!connection) return { ok: false, error: "A selected connection is no longer available. Reload and try again." };
-    const blocker = launchBlocker(connection, input.visibility);
-    if (blocker) return { ok: false, error: `${connection.name}: ${blocker}` };
+    return { ok: false, error: `${connection.name}: ${launchBlocker(connection)}` };
   }
-  return { ok: true, value: { visibility: input.visibility, connections: ids } };
+  return { ok: true, value: { connections: ids } };
 }
 
 /** An absolute http(s) URL without credentials in it; a secret belongs in the write-only fields. */

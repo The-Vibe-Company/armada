@@ -6,7 +6,7 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
 
 /**
  * Launches a sandbox through `POST /api/v1/sandbox/launch` as the signed-in viewer. The body carries what the
- * person chose: golden, org, agent, model and effort, visibility and connections, the optional repository
+ * person chose: golden, org, agent, model and effort, connections, the optional repository
  * context (`repo`, a golden `repos[].dir`) and the optional first prompt. Answers the new sandbox's id.
  */
 export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs): Promise<{ id: string }> {
@@ -20,7 +20,6 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
       harness: args.harness,
       model: args.model,
       reasoningEffort: args.reasoning_effort,
-      visibility: args.visibility,
       connections: args.connections,
       ...(args.repo === undefined ? {} : { repo: args.repo }),
       ...(args.prompt === undefined ? {} : { prompt: args.prompt }),

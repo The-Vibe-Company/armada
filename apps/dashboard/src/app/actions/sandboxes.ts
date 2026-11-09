@@ -145,12 +145,8 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     }
     available = listed.connections;
   }
-  const selection = launchSelection({
-    visibility: formString(data, "visibility"),
-    connections: requested,
-    goldenVisibility: matches.some((golden) => golden.visibility === "org") ? "org" : "private",
-    available,
-  });
+  // Who may open the sandbox is its owner and the org's admins (#680); the launch no longer chooses a visibility.
+  const selection = launchSelection({ connections: requested, available });
   if (!selection.ok) return fail(selection.error);
   const repository = repositoryChoice(
     formString(data, "repo"),
