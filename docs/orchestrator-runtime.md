@@ -140,3 +140,10 @@ actual named sandbox-binding columns before fork, rejects missing/wrong resolver
 bindings, and checks the persisted sandbox binding. `resolveBackend` receives the
 existing `RuntimeIdentity` for later turns so production composition must resolve
 the stored account/version, never silently choose a new account/default.
+
+The trusted backend must supply `consent` using the exact #673 installEpoch input
+(scopes/goldenIds/credentialIds) from actual owner-approved #603 selections.
+Runtime does not force that list to the parent's single account/harness, nor
+infer permission for all owner accounts. Each child still passes fresh #661
+scope/owner/org/golden/account/harness authorization. Production consent/default
+resolution remains uncomposed until the actual account producer is integrated.

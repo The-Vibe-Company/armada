@@ -25,6 +25,9 @@ export interface OrchestratorRuntimeBackend {
   projectDir: string;
   /** Trusted server broker URL, never accepted from owner request or prompt text. */
   mcpUrl: string;
+  /** Actual owner-approved #673 consent, resolved with #603 accounts independently
+   * of the parent harness. Never inferred from all owner accounts or a guest payload. */
+  consent: Parameters<OrchestratorRuntimeFoundation["authority"]["installEpoch"]>[2];
   assertNativeProof(): Promise<void>;
   /** Reuses launchSandbox with private insertion/managed-parent binding in one SQL transaction.
    * Must pass the durable operation ID as provider fork idempotency/correlation key. */
@@ -231,11 +234,7 @@ export class OrchestratorRuntime {
 
   private async configureAuthority(backend: OrchestratorRuntimeBackend, identity: RuntimeIdentity): Promise<void> {
     await backend.revalidate(identity);
-    await this.options.authority.installEpoch(identity.id, await this.transport(backend, identity), {
-      scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
-      goldenIds: [identity.configuration.goldenId],
-      credentialIds: [identity.configuration.modelAccountId],
-    });
+    await this.options.authority.installEpoch(identity.id, await this.transport(backend, identity), backend.consent);
   }
 
   private async execute(
