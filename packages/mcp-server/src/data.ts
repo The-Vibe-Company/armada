@@ -141,7 +141,7 @@ export function createSqlData(sql: Sql): DataSource {
         if (!result.rows.length) throw new GoldenError("forbidden", "You cannot change this golden's size policy.");
       },
       reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
-      beginOperation: (id) => beginGoldenOperation(sql, id),
+      beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
