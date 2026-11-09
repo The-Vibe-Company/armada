@@ -25,6 +25,8 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  credentialId?: string | null;
+  credentialVersion?: number | null;
   id: string;
   golden: string;
   visibility: SandboxView["visibility"];
@@ -138,6 +140,8 @@ function report(
     machineSize: sandbox.machineSize ?? null,
     model: sandbox.model,
     reasoningEffort: sandbox.reasoningEffort,
+    credentialId: sandbox.credentialId ?? null,
+    credentialVersion: sandbox.credentialVersion ?? null,
     status,
     statusReason: status === "failed" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,

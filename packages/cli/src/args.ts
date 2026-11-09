@@ -3,6 +3,9 @@ import { GoldenError } from "@armada/core";
 const BOOLEAN = new Set(["--private", "--json", "--all", "--follow", "--no-browser", "--no-connections"]);
 const VALUE = new Set([
   "--since",
+  "--id",
+  "--expected-version",
+  "--credential-id",
   "--idempotency-key",
   "--connections",
   "--visibility",
