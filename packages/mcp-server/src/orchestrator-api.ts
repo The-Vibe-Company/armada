@@ -1,5 +1,6 @@
 import { MACHINE_SIZES, ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
 import type { Caller } from "./caller.ts";
+import { type OrchestratorPair, orchestratorCapabilities } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 
@@ -10,8 +11,9 @@ export async function callOrchestrator(
   action: string,
   args: Record<string, unknown>,
   key?: string,
+  requestedPairs?: readonly OrchestratorPair[],
 ): Promise<unknown> {
-  if (action === "capabilities") return { version: 1, enabled: false, reason: "native_conformance_required" };
+  if (action === "capabilities") return orchestratorCapabilities(requestedPairs);
   if (!service) throw new OrchestratorRuntimeError("unavailable");
   if (typeof args.orgId !== "string") throw new OrchestratorRuntimeError("invalid_request");
   if (
@@ -131,6 +133,7 @@ export async function orchestratorHttp(
   request: Request,
   caller: Caller,
   service?: OrchestratorRuntime,
+  requestedPairs?: readonly OrchestratorPair[],
 ): Promise<Response> {
   const url = new URL(request.url);
   const parts = url.pathname.slice("/api/v1/orchestrators".length).split("/").filter(Boolean);
@@ -171,6 +174,7 @@ export async function orchestratorHttp(
       action,
       args,
       request.headers.get("idempotency-key") ?? undefined,
+      requestedPairs,
     );
     return Response.json(result, { status: read ? 200 : 202, headers: { "cache-control": "no-store" } });
   } catch (error) {

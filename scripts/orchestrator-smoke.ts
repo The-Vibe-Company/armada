@@ -14,12 +14,13 @@ let cursor: string | null = null;
 let step = "validate";
 const operations: { step: string; id: string; key: string }[] = [];
 class SmokeFailure extends Error {}
-const fail = (code: string): never => {
+function fail(code: string): never {
   throw new SmokeFailure(code);
-};
+}
 
 async function main() {
-  const [address, org, golden, harness, model, account, repo, ...extra] = Bun.argv.slice(2);
+  const [address = "", org = "", golden = "", harness = "", model = "", account = "", repo, ...extra] =
+    Bun.argv.slice(2);
   if (
     !address ||
     !org ||

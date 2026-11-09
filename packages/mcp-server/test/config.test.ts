@@ -18,6 +18,19 @@ describe("config", () => {
     expect(configFromEnv({ ...ENV, PORT: "3000" }).port).toBe(3000);
   });
 
+  test("orchestrator deployment intent defaults off and refuses unknown pairs without echoing input", () => {
+    expect(configFromEnv(ENV).orchestratorPairs).toEqual([]);
+    for (const pairs of ["true", "boat:claud", "boat:claude,", "secret-invalid-pair"]) {
+      try {
+        configFromEnv({ ...ENV, ARMADA_ORCHESTRATOR_PAIRS: pairs });
+        throw new Error("Unexpected acceptance");
+      } catch (error) {
+        expect(String(error)).toContain("ARMADA_ORCHESTRATOR_PAIRS must list");
+        expect(String(error)).not.toContain(pairs);
+      }
+    }
+  });
+
   test("dashboard OAuth origin is independently configured and only permits loopback HTTP in development", () => {
     expect(configFromEnv(ENV).dashboardUrl).toBe("https://armada.thevibecompany.co");
     expect(configFromEnv({ ...ENV, ARMADA_DASHBOARD_URL: "https://dashboard.example.com:8443/" }).dashboardUrl).toBe(

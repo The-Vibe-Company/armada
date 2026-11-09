@@ -1,7 +1,9 @@
 import { resourceUrl } from "@armada/auth";
+import { type OrchestratorPair, orchestratorPairsFromEnv } from "./orchestrator-activation.ts";
 
 export interface ServerConfig {
   port: number;
+  orchestratorPairs: readonly OrchestratorPair[];
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
@@ -76,6 +78,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
 
   return {
     port,
+    orchestratorPairs: orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS),
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),

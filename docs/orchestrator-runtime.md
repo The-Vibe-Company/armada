@@ -2,17 +2,93 @@
 
 ## Release and deployment boundary
 
-This PR delivers the backend/runtime integration candidate. **Production capabilities
-remain disabled** (`orchestrator_capabilities` / authenticated HTTP capabilities
-return `enabled: false`). `serve` accepts a trusted service factory, but does not
-construct or enable an unverified provider/harness by default. Ordinary workers
-and their existing authorization remain unchanged.
+Issue #717 remains **blocked**: no production provider/harness pair is enabled.
+`serve` still requires a trusted service factory for the real runtime/lifecycle/
+child bundle. This change adds deployment-intent diagnostics, not a native driver
+or production composition. Ordinary sandboxes and their authorization are unchanged.
 
-The acceptance decision for this PR explicitly treats live native conformance as
-an activation/deployment prerequisite, not a merge gate. SQL/fake-provider/Runner
-regressions prove the contracts below, not that a live provider/harness is enabled.
-No production operations, manual deployments or migration applications are needed
-for development verification.
+### Server setting and capability diagnostics
+
+`ARMADA_ORCHESTRATOR_PAIRS` is an explicit, default-empty comma-separated list of
+`provider:harness` pairs. For the intended initial Boat rollout:
+
+```sh
+ARMADA_ORCHESTRATOR_PAIRS=boat:claude,boat:codex
+```
+
+**This does not enable either pair today.** Both remain `enabled: false` with
+`boat_native_checkpoint_restore_unavailable`. Requested Modal pairs report
+`modal_activation_not_supported`; unrequested pairs report `server_setting_off`.
+Unknown entries fail server configuration without echoing their value. With no
+setting, the existing `{version:1,enabled:false,reason:"native_conformance_required"}`
+response and unavailable mutations are unchanged. With a nonempty setting, HTTP
+and MCP capabilities additionally report all four pairs, their `requested` intent,
+`enabled: false`, and individual reasons. No request parameter can override this.
+
+Rollback of this partial diagnostic change is to unset the setting and restart:
+no identities, history, credentials or native state are deleted. This is **not** a
+claim that removing a future admission flag alone revokes running private grants;
+a future live activation must define epoch revocation/drain during rollback.
+
+### Concrete Boat native blocker and required owner decision
+
+The locked `@boatdev/sdk@1.13.0` has VM `resume`, `stop`/read-only stop receipts,
+`conversations`, and text-bearing `prompt` operations. `Conversation` includes
+`running`, `lastHarness` and `lastModel`, but no native session identity or
+checkpoint acknowledgement. `StopOperation` proves VM archival, not a native
+session checkpoint, event watermark/ACK, or no-text session restoration. There is
+no native checkpoint/restore or no-text session handshake operation in `BoatApi`.
+
+`createBoatOrchestratorProvider` provides pinned private SSH boot identification,
+epoch broker compare-install/scrub and interrupt delivery. It does not provide
+native process observation, checkpoint receipts or restore verification. Interrupt
+acceptance and a non-running conversation are not native quiescence/checkpoint
+proof. Ordinary Boat turns run via Boat's `api.prompt`, not Armada's Runner.
+
+The existing Armada Runner can checkpoint **its own** journal/processes. It cannot
+observe Boat-owned turns: its empty journal would falsely imply quiescence and
+contains no Boat session mapping. Its Codex driver supports a private no-text
+handshake for Runner-owned sessions, but its Claude driver has no `resumeSession`.
+Installing a second Runner beside Boat's native process does not bridge these
+contracts and is not an acceptable capability declaration.
+
+The owner must choose either (1) authorize a separate implementation of an
+**Armada-owned harness runtime on Boat**, including private runtime transport,
+native process/session ownership, credentials lifecycle, durable journal ACKs and
+both Claude/Codex restore drivers, or (2) obtain upstream Boat native observation,
+checkpoint and no-text restore ports with session/generation/operation correlation.
+Then implement the actual production bundle and review each pair's live evidence.
+A boolean override, replayed transcript, generic VM resume or synthetic prompt
+cannot clear this blocker. No new agent CLI, VM or production call was used here.
+
+SQL/native generation binding is already implemented in the merged authority:
+`installEpoch` checks SQL `lifecycle_generation`, persists separate
+`orchestrator_native_generation`/`native_generation`, and ACK/admission compare the
+native identity independently. The old blanket mismatch warning is stale; this
+is not proof of Boat-native continuation. Delegated wait mutations remain outside
+the actual four `worker:*` scopes: see the lifecycle document for the precise
+unsupported boundary.
+
+### Operator smoke (after real activation, not proof of native conformance)
+
+The coordinator owns `scripts/orchestrator-smoke.ts`. After future real activation,
+the operator supplies `ARMADA_TOKEN` in the host environment and runs:
+
+```sh
+ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
+  bun scripts/orchestrator-smoke.ts https://approved-origin.example \
+  ORG GOLDEN claude MODEL ACCOUNT [REPO]
+```
+
+Replace `claude` with `codex` for that pair. `ARMADA_BIN` optionally selects the
+installed CLI; the script sets `ARMADA_URL` to the explicit origin. It exercises
+create → send → cursor events until settled → stop → resume → stop and prints a
+pass/fail receipt. Current disabled capabilities must fail; do not bypass the
+guard. After failure, **do not blindly rerun**: retain receipt/idempotency keys,
+inspect the recorded operations, and reconcile because compute may still be
+running. The script does not auto-delete resources or prove native conformance.
+No production smoke was run here. Local tests and this operator smoke cannot
+replace the native conformance matrix below.
 
 ## Shared owner policy and durable state
 
@@ -120,9 +196,10 @@ ARMADA_TEST_POSTGRES_URL=<disposable-test-db> \
 The dependency-only composition fixture requires the actual #663 producer
 modules. The native-credential admission fixture now passes against merged #604
 and is included in normal verification; neither is native conformance.
-The private Codex no-text handshake tests verify exact thread/model identity
-without `thread/start` or `turn/start`. Claude has no verified equivalent and
-must remain disabled until its real driver supplies one.
+The private Runner-owned Codex no-text handshake tests verify exact thread/model
+identity without `thread/start` or `turn/start`. They do not cover Boat-owned
+sessions. Claude has no verified equivalent and must remain disabled until its
+real driver supplies one.
 
 ## Live checks required before any activation
 

@@ -1,6 +1,9 @@
 # Orchestrator lifecycle (#663)
 
-Status: integration candidate, **not enabled**. Ordinary workers retain their
+Status: integration candidate, **not enabled**. Issue #717 remains blocked on the
+Boat-native driver described in [orchestrator-runtime.md](orchestrator-runtime.md).
+`ARMADA_ORCHESTRATOR_PAIRS` records server deployment intent and exposes per-pair
+unavailability diagnostics only; no requested pair becomes enabled. Ordinary workers retain their
 existing launch, model, TTL and retention behavior. This code does not allocate a
 production provider, issue live grants, enable a backend, or deploy a migration.
 A synthetic test is not provider-native conformance.
@@ -13,8 +16,10 @@ candidate's authority, operation and migration208 bytes match committed #673
 `79472bf3f68f83ab53692a6655c484c9f9431a23`. The current delivery base is origin/main `e5fc554fd778e021f6c84984e8cee8ac4837ec09`, which contains #673, named-account #612 and sizing #658.
 `generation` in this consumer means SQL `lifecycle_generation`, **not** the
 provider's native `physicalGeneration`. Stop receipts bind both independently.
-The producer's outstanding native/SQL generation binding mismatch must be fixed
-before enablement; never cast one to the other.
+The merged authority now binds SQL and native generations separately (migration216
+and `OrchestratorAuthority.installEpoch`/ACK/admission). The former mismatch warning
+is resolved; never cast one identity to the other. Boat-native observation and
+checkpoint/restore are separate unresolved requirements.
 
 `LifecycleRuntimeStore` extends the actual #662 store. An outer SQL transaction
 includes the producer's event/cursor acknowledgement and activity receipt; a
@@ -146,7 +151,8 @@ or snapshot-retirement contracts.
 main's fifth maintenance argument is also preserved; optional managed lifecycle
 lanes are the **sixth** argument. `startServer`'s
 trusted orchestrator factory receives the same SQL/provider registry and supplies
-`runtime`, `lifecycleWorker`, and `childWorker`. No environment flag enables it.
+`runtime`, `lifecycleWorker`, and `childWorker`. The default-empty `ARMADA_ORCHESTRATOR_PAIRS` setting diagnoses requested pairs,
+but no environment flag can manufacture the missing native backend.
 
 Child selection now consumes actual `LaunchRequest["size"]` and core
 `parseMachineSize`; the override is included in the idempotency digest and
@@ -289,7 +295,8 @@ main's credential/model-auth context and single managed-lane factory, while the
 full663 bundle adds authenticated owner lifecycle and scoped epoch routes plus
 both lifecycle/child lanes. The sixth worker argument accepts a single lane or
 an array; fourth snapshot retirement and fifth maintenance remain unchanged.
-No environment toggle or default native backend is added.
+No default native backend is added. The later #717 deployment-intent setting
+reports native blockers without enabling any backend.
 
 Same-session independent review repaired blocked-parent deadline/removal cleanup
 and runtime failure-reason projection; red/green migrated-schema regressions cover
@@ -300,3 +307,25 @@ live provider behavior. Delegated wait mutation remains explicitly unsupported
 until the actual authority producer supplies its reviewed admission port; owner
 wait/settings HTTP endpoints remain supported. These are feature activation
 prerequisites, not a claim that the feature is currently enabled.
+
+## #717 activation decision and rollback
+
+No actual production authority/runtime/lifecycle/child bundle is constructed by
+`serve` without the existing trusted factory. This is intentional while the Boat
+native driver is missing, not a passing activation claim. The HTTP and MCP
+capability diagnostics share the explicit server pair setting; with it unset,
+the legacy off response and all ordinary sandbox behavior remain unchanged.
+Unset `ARMADA_ORCHESTRATOR_PAIRS` and restart to roll back these diagnostics;
+identities and durable history are retained. A future live-runtime rollback also
+needs coordinated admission shutdown, epoch revocation and worker drain.
+
+Delegated waits remain precisely unsupported: the actual authority has `admit`
+for `worker:launch`, `worker:read`, `worker:message`, `worker:stop`, but no
+`admitWait` or `work:wait` scope. The private gateway rejects known wait mutations
+with `admit_wait_not_supported` and does not list them as MCP tools. Owner-only
+wait APIs are not an authority substitute. Supporting delegated waits needs an
+explicit reviewed consent/scope decision, a new migration if required, atomic
+SQL/native-generation-bound reservation, and independently verified evidence
+before reauthorization/persistence. No applied migration or scope was changed.
+The minimal create/chat/stop/resume lane cannot honestly enable until native
+continuity is implemented even if delegated waits remain intentionally absent.

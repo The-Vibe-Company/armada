@@ -166,6 +166,7 @@ export async function startServer(
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ConfiguredControlOptions = {
+    orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
     modelAuth,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
@@ -224,6 +225,7 @@ export async function startServer(
   });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
+    orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     modelAuth,
     publicUrl: config.publicUrl,
