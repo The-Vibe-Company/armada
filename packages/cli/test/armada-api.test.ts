@@ -109,6 +109,40 @@ test("API calls leave the explicit signal as the only client-side deadline", asy
   expect(options).toMatchObject({ signal: controller.signal, timeout: false });
 });
 
+// API transport owns redaction; server payloads must not become terminal output.
+for (const path of [
+  "sandbox/detail",
+  "sandbox/status",
+  "sandbox/send",
+  "sandbox/exec",
+  "sandbox/stop",
+  "logs/read",
+  "mcp/sandbox-connections",
+]) {
+  for (const status of [403, 404, 500]) {
+    test(`${path} ${status} never relays raw interior failures`, async () => {
+      const client = await createArmadaApiClient({
+        ...io({ ARMADA_TOKEN: token }),
+        fetch: (async () =>
+          Response.json({ error: { message: `upstream ${token}` } }, { status })) as unknown as typeof fetch,
+      });
+      try {
+        await client.request(`/api/v1/${path}`);
+        throw new Error("expected rejection");
+      } catch (error) {
+        expect(String(error)).not.toContain(token);
+        expect(String(error)).not.toContain("upstream");
+        expect(String(error)).toContain(
+          status === 403
+            ? "owner or an org admin"
+            : status === 404
+              ? "not accessible"
+              : "Check access and sandbox status",
+        );
+      }
+    });
+  }
+}
 test("a long-lived client uses the rotated refresh token on later requests and preserves retry keys", async () => {
   const session = memorySessionStore({
     accessToken: "access-0",

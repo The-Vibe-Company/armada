@@ -3,6 +3,7 @@ import { flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { authorizeConnection, type ConnectionStatus, validateConnectionStatus } from "./connection-authorization.ts";
 import { control } from "./control.ts";
+import { sandboxListText } from "./sandbox-list.ts";
 
 /** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
@@ -208,11 +209,13 @@ export async function operation(
     seconds === undefined ? undefined : AbortSignal.timeout((seconds + 15) * 1_000),
   );
 
-  if (command === "list" && !flag(args, "--page-info")) {
+  if (command === "list") {
     const page = result as { sandboxes?: unknown };
     if (!Array.isArray(page?.sandboxes))
       throw new GoldenError("invalid_config", "Armada returned an invalid sandbox page.");
-    auth.out(`${JSON.stringify({ sandboxes: page.sandboxes }, null, 2)}\n`);
+    if (flag(args, "--json") || flag(args, "--page-info"))
+      auth.out(`${JSON.stringify(flag(args, "--page-info") ? result : { sandboxes: page.sandboxes }, null, 2)}\n`);
+    else auth.out(sandboxListText(page.sandboxes, auth.now()));
   } else auth.out(`${JSON.stringify(result, null, 2)}\n`);
   return 0;
 }
