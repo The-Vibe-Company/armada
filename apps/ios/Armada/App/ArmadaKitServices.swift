@@ -330,9 +330,18 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .operation(let operation): body = .operation(Self.operation(operation))
         case .wait(let lease, let status): body = .wait(try Self.lease(lease), status: status)
         case .child(let sandboxID, let operationID): body = .child(sandboxID: sandboxID, operationID: operationID)
-        case .unknown(let kind, _): body = .unknown(kind: kind)
+        case .unknown(let kind, let payload): body = .unknown(kind: technicalEvent(kind: kind, payload: payload))
         }
         return OrchestratorEvent(id: value.id, at: try date(value.at), revision: value.revision, body: body)
+    }
+
+    /// The existing presentation keeps technical entries as text. Retain the
+    /// complete JSON there; .unknown/.other are never projected as chat messages.
+    private static func technicalEvent(kind: String, payload: ArmadaKit.JSONValue) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = (try? encoder.encode(payload)).flatMap { String(data: $0, encoding: .utf8) }
+        return "\(kind)\n\(encoded ?? String(reflecting: payload))"
     }
 
     private static func agentEvent(_ value: ArmadaKit.AgentEvent) -> AgentEvent {
@@ -360,8 +369,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             body = .steer(text: text, mode: mode)
         case .other(let type, _):
             body = .other(type: type)
-        case .unknown(let kind, _):
-            body = .other(type: kind)
+        case .unknown(let kind, let payload):
+            body = .other(type: technicalEvent(kind: kind, payload: payload))
         }
         // AgentEvent.at is milliseconds since the epoch.
         return AgentEvent(
