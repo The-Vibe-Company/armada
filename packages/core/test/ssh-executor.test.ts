@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Script } from "node:vm";
 import { shellQuote, sshPrivateAuthState, sshStdinCheckout } from "../src/server.ts";
 
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
@@ -242,6 +243,11 @@ test.each(["boat", "modal"] as const)(
     };
     const selected = { ...provider, id };
     expect(await sshPrivateAuthState(selected, "native", deps)).toBe(secret);
+    // The generated remote program is a wire artifact: validate its executable
+    // JavaScript, not only the mocked SSH process's receipt of stdin.
+    const program = calls[1]?.stdin?.split("node <<'ARMADA_PRIVATE_AUTH'\n")[1]?.split("\nARMADA_PRIVATE_AUTH")[0];
+    expect(program).toBeDefined();
+    expect(() => new Script(program!)).not.toThrow();
     expect(calls[1]?.stdio).toEqual(["pipe", "pipe", "pipe"]);
     expect(calls[1]?.stdin).toContain(
       id === "boat" ? "/home/user/.codex/auth.json" : "/home/user/.armada-runtime/codex/auth.json",

@@ -120,8 +120,8 @@ finally {
     try {
       const file=home+'/.ssh/authorized_keys', stat=fs.lstatSync(file);
       if(stat.isSymbolicLink() || !stat.isFile()) continue;
-      const lines=fs.readFileSync(file,'utf8').split('\n');
-      fs.writeFileSync(file,lines.filter(line=>line.trim()!==pub.trim()).join('\n'),{mode:0o600});
+      const lines=fs.readFileSync(file,'utf8').split('\\n');
+      fs.writeFileSync(file,lines.filter(line=>line.trim()!==pub.trim()).join('\\n'),{mode:0o600});
     } catch {}
   }
 }
