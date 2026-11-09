@@ -208,6 +208,13 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(await transport.requests.last?.url?.path == "/api/v1/orchestrators/capabilities")
     #expect(await transport.requests.count == 3)
     #expect(await client.pendingOperations.first?.state == .pending)
+    // The actual capability refusal happened before mutation dispatch, so this
+    // local command is provably unadmitted and can be cancelled without signout.
+    #expect(await client.pendingOperations.first?.canDiscard == true)
+    try await client.discardOrchestratorOperation(command.id)
+    let next = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    #expect(next.id != command.id)
+    #expect(await transport.requests.count == 3)
 }
 
 @Test func eventCursorAndNativeMessageIdentitySurviveTransport() async throws {
@@ -247,7 +254,7 @@ private actor RefreshTransport: ArmadaTransport {
     let bad = OrchestratorCreate(orgId: "org-a", name: "", goldenId: "golden-a", provider: .boat,
         harness: .codex, model: "model-a", modelAccountId: "account-a")
     let command = try await client.prepareOrchestratorCreate(bad)
-    await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
+    #expect(await client.pendingOperations.first?.canDiscard == true)
     await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.submitOrchestratorOperation(command.id) }
     #expect(await client.pendingOperations.first?.state == .failed)
     #expect(await client.pendingOperations.first?.canDiscard == true)

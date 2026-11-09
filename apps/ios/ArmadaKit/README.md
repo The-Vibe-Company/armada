@@ -88,7 +88,8 @@ It never calls interior routes and does not infer authority from display IDs.
 
 ## Rejection and forward-compatibility consumer contract
 
-`PendingOrchestratorOperation.canDiscard` reflects durable terminal knowledge;
+`PendingOrchestratorOperation.canDiscard` reflects durable terminal knowledge
+or a local command with zero dispatches (including capability refusal);
 `rejectedBeforeAdmission` is true only for a saved local rejection without a
 server operation receipt. The UI must consult these properties, not infer them
 from an HTTP status. Only the actual owner API's structured HTTP400

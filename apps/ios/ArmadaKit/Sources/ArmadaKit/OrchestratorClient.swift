@@ -11,7 +11,9 @@ public struct PendingOrchestratorOperation: Codable, Sendable, Identifiable {
     public let state: OrchestratorOperationState
     public let receipt: OrchestratorOperation?
     /// UI must consult durable command state, not infer admission from an HTTP status.
-    public var canDiscard: Bool { state == .succeeded || state == .failed }
+    public var canDiscard: Bool {
+        state == .succeeded || state == .failed || (state == .pending && receipt == nil && dispatchCount == 0)
+    }
     public var rejectedBeforeAdmission: Bool { state == .failed && receipt == nil }
     let route: String
     let body: Data
@@ -115,11 +117,11 @@ extension ArmadaClient {
             throw error
         }
     }
-    /// Only a known terminal receipt or actual pre-effect HTTP400 may be discarded.
-    /// Unknown/pending/uncertain effects cannot be abandoned and reallocated here.
+    /// A never-dispatched local command, terminal receipt or proven initial
+    /// validation rejection may be discarded. Server-pending/uncertain effects cannot.
     public func discardOrchestratorOperation(_ operationID: UUID) throws {
         guard let operation = pendingOperations.first(where: { $0.id == operationID }),
-              operation.state == .succeeded || operation.state == .failed else { throw ArmadaError.conflict }
+              operation.canDiscard else { throw ArmadaError.conflict }
         try saveOperations(pendingOperations.filter { $0.id != operationID })
     }
     private func enqueue(_ operation: PendingOrchestratorOperation) throws -> PendingOrchestratorOperation {
