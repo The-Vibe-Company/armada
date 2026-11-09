@@ -79,6 +79,60 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       writeFileSync(path, JSON.stringify(prior));
     }
 
+    if (m.message.content === "message-semantics") {
+      for (const id of ["answer-a", "answer-b"]) {
+        const stream = (event: unknown) =>
+          send({
+            type: "stream_event",
+            uuid: crypto.randomUUID(),
+            session_id: "fixture-session",
+            parent_tool_use_id: null,
+            event,
+          });
+        stream({ type: "message_start", message: { id, type: "message", role: "assistant", content: [] } });
+        send({
+          type: "stream_event",
+          uuid: crypto.randomUUID(),
+          session_id: "fixture-session",
+          parent_tool_use_id: "subagent-tool",
+          event: {
+            type: "message_start",
+            message: { id: "subagent-message", type: "message", role: "assistant", content: [] },
+          },
+        });
+        stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } });
+        stream({ type: "message_stop" });
+        for (const content of [
+          [{ type: "text", text: "Hello" }],
+          [{ type: "text", text: " world" }],
+          [{ type: "tool_use", id: `tool-${id}`, name: "Read", input: {} }],
+        ])
+          send({
+            type: "assistant",
+            uuid: crypto.randomUUID(),
+            session_id: "fixture-session",
+            parent_tool_use_id: null,
+            message: {
+              id,
+              type: "message",
+              role: "assistant",
+              model: "claude-opus-5-5",
+              content,
+              stop_reason: "end_turn",
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          });
+      }
+      send({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "fixture-session",
+        user_message_uuids: [m.uuid],
+      });
+      return;
+    }
     if (!initial) {
       initial = m.uuid;
       send({

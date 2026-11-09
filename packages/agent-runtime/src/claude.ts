@@ -24,6 +24,10 @@ export class ClaudeDriver implements Driver {
     let latest = crypto.randomUUID();
     let steered = false;
     let terminalError: HarnessErrorCode | undefined;
+    // Subagent streams can interleave with the top-level stream.
+    const messages = new Map<string | null, string>();
+    const completedText = new Map<string, string>();
+    const completedFrames = new Set<string>();
     const inputs: SDKUserMessage[] = [];
     const push = (text: string) => {
       latest = crypto.randomUUID();
@@ -118,6 +122,10 @@ export class ClaudeDriver implements Driver {
           if ("session_id" in event) c.session(event.session_id);
           if (event.type === "stream_event") {
             const e = event.event;
+            const parent = event.parent_tool_use_id ?? null;
+            if (e.type === "message_start") messages.set(parent, e.message.id);
+            const messageId = messages.get(parent);
+            if (e.type === "message_stop") messages.delete(parent);
             if (e.type === "content_block_start" && e.content_block.type === "tool_use")
               c.emit({
                 kind: "message",
@@ -126,7 +134,13 @@ export class ClaudeDriver implements Driver {
                 tools: [{ id: e.content_block.id, name: e.content_block.name, input: e.content_block.input }],
               });
             if (e.type === "content_block_delta" && e.delta.type === "text_delta")
-              c.emit({ kind: "message", text: e.delta.text, partial: true, tools: [] });
+              c.emit({
+                kind: "message",
+                text: e.delta.text,
+                partial: true,
+                tools: [],
+                ...(messageId ? { messageId, textMode: "delta" as const } : {}),
+              });
           } else if (event.type === "assistant") {
             if (event.error)
               terminalError =
@@ -138,9 +152,22 @@ export class ClaudeDriver implements Driver {
             const tools = event.message.content.flatMap((block) =>
               block.type === "tool_use" ? [{ id: block.id, name: block.name, input: block.input }] : [],
             );
+            // The pinned CLI emits one assistant frame per completed content block,
+            // not a full message snapshot. Tool/thinking blocks must not erase text.
+            const key = JSON.stringify([event.parent_tool_use_id, event.message.id]);
+            if (!completedFrames.has(event.uuid)) {
+              completedFrames.add(event.uuid);
+              completedText.set(
+                key,
+                (completedText.get(key) ?? "") +
+                  event.message.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join(""),
+              );
+            }
             c.emit({
               kind: "message",
-              text: event.message.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join(""),
+              messageId: event.message.id,
+              textMode: "snapshot",
+              text: completedText.get(key) ?? "",
               partial: false,
               model: event.message.model,
               tools,
