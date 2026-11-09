@@ -29,7 +29,20 @@ async function gatewayFor(id: string) {
   const supabase = await createClient();
   const sandbox = await getSandbox(supabase, id);
   if (!sandbox) return { error: fail("That sandbox does not exist, or it is not yours to see.") };
-  return { gateway, sandbox };
+  return { gateway, sandbox, owner: sandbox.owner_id === viewer.id };
+}
+
+/**
+ * A refused send, steer or interrupt in words. An unbound legacy Modal sandbox (`credential_binding_required`) is
+ * recovered on this page, not with the CLI command the server's own message names.
+ */
+function drivingFailure(error: GatewayError, owner: boolean): ActionResult {
+  if (error.code !== "credential_binding_required") return fail(error.message);
+  return fail(
+    owner
+      ? "This sandbox needs an account before it can resume. Choose one above."
+      : "This sandbox needs an account before it can resume. Only its owner can choose it.",
+  );
 }
 
 export async function stopSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -63,7 +76,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   try {
     await target.gateway.send(id, prompt, override.args, conversation.id);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof GatewayError) return drivingFailure(error, target.owner);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
@@ -85,7 +98,7 @@ export async function steerSandbox(_previous: ActionResult | null, data: FormDat
   try {
     receipt = await target.gateway.steer(id, text, conversation.id);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof GatewayError) return drivingFailure(error, target.owner);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
@@ -105,7 +118,7 @@ export async function interruptSandbox(_previous: ActionResult | null, data: For
   try {
     await target.gateway.interrupt(id, conversation.id);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof GatewayError) return drivingFailure(error, target.owner);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);

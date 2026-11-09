@@ -5,6 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { LinkPendingIcon } from "@/components/link-pending";
+import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
@@ -12,7 +13,9 @@ import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
+import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { listGoldenHistory } from "@/lib/data/goldens";
 import { getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
@@ -68,6 +71,12 @@ export default async function SandboxPage({ params }: Props) {
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
+  const recovery = needsAccountChoice(sandbox);
+  const owner = sandbox.owner_id === viewer.id;
+  const choices =
+    recovery && owner && bindableStatus(sandbox.status) !== "failed"
+      ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+      : undefined;
   const machineSize = describeEvidence(sandbox.provider, sandbox);
 
   const facts: [string, string][] = [
@@ -127,7 +136,16 @@ export default async function SandboxPage({ params }: Props) {
       )}
 
       <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div data-fit="column" className="min-w-0">
+        <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          {recovery && (
+            <SandboxAccountChoice
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              owner={owner}
+              {...(choices ? { choices } : {})}
+              harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+            />
+          )}
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
