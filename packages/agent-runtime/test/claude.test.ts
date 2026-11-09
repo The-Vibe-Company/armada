@@ -30,6 +30,16 @@ nativeTest("Claude SDK consumes native steering and finishes a merged two-input 
     });
     expect(await turn.done).toBe("finished");
     await steering;
+    expect(events.filter((e) => e.kind === "message" && e.text.includes("private-account-allowance"))).toEqual([]);
+    // Structured native /usage is independent of assistant text conversion.
+    expect(events.find((e) => e.kind === "other" && e.type === "usage_report")).toMatchObject({
+      data: {
+        rate_limits: {
+          limits: [{ percent: 25, resets_at: "2026-11-10T00:00:00Z" }],
+          extra_usage: { used_credits: 125, monthly_limit: 2000, currency: "EUR" },
+        },
+      },
+    });
     expect(events.filter((e) => e.kind === "message" && !e.partial && e.text === "steered")).toHaveLength(1);
     expect(
       events.filter(
@@ -213,3 +223,59 @@ nativeTest("Claude MCP setup refuses symlinked or non-private configured homes b
     await rm(root, { recursive: true, force: true });
   }
 });
+
+nativeTest("Claude native /usage fallback does not become public assistant text or partials", async () => {
+  const driver = new ClaudeDriver({
+    executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  const events: DriverEvent[] = [];
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "claude", text: "/usage" },
+      signal: AbortSignal.timeout(3000),
+      session: () => {},
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+    expect(await turn.done).toBe("finished");
+    expect(events.filter((event) => event.kind === "message")).toEqual([]);
+    expect(events.some((event) => event.kind === "other" && event.type === "system")).toBe(true);
+  } finally {
+    await driver.close();
+  }
+});
+
+nativeTest(
+  "a native result acknowledgement ends private usage suppression before subsequent steered work",
+  async () => {
+    const driver = new ClaudeDriver({
+      executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    let turn: Turn | undefined, steering: Promise<void> | undefined;
+    const events: DriverEvent[] = [];
+    try {
+      turn = driver.start({
+        request: { sandboxId: "s", harness: "claude", text: "/usage" },
+        signal: AbortSignal.timeout(3000),
+        session: () => {
+          if (turn && !steering) steering = turn.steer("after-usage");
+        },
+        emit: (event) => {
+          events.push(event);
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      await steering;
+      expect(events.filter((event) => event.kind === "message").map((event) => event.text)).toEqual([
+        "work-after-usage",
+      ]);
+    } finally {
+      await driver.close();
+    }
+  },
+);

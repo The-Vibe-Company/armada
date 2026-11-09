@@ -91,6 +91,7 @@ describe("database", () => {
         "orchestrators",
         "organization_invitations",
         "orgs",
+        "resource_observations",
         "sandboxes",
         "service_tokens",
       ]);
