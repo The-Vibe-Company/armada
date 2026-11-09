@@ -145,3 +145,55 @@ test("quota cancellation wins a late native response without publishing its cach
   provider.events = async () => ({ events: [], hasMore: false });
   expect(await read()).toMatchObject({ status: "fresh", windows: [{ usedPercent: 25 }] });
 });
+
+test("concurrent refreshes share one source read and cannot overwrite a newer cache cursor", async () => {
+  const sql = { query: async () => ({ rows: [{ version: 1, sandbox_id: "sandbox" }] }) } as unknown as Sql;
+  const provider = fakeBoat().provider;
+  let release!: () => void,
+    started!: () => void,
+    reads = 0;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  provider.events = async () => {
+    reads++;
+    started();
+    await gate;
+    return {
+      cursor: "current",
+      hasMore: false,
+      events: [
+        {
+          id: "quota",
+          kind: "other",
+          type: "account/rateLimits/updated",
+          at: 1000,
+          data: { rateLimits: { primary: { usedPercent: 31, resetsAt: null } } },
+        },
+      ],
+    };
+  };
+  const api = createModelUsageApi(
+    sql,
+    () => new Date(1000),
+    () => new AbortController().signal,
+  );
+  const caller = { userId: "owner", orgs: [], via: "supabase" as const };
+  const read = (id = "account") =>
+    api.read(caller, id, "sandbox", async () => ({ provider, providerSandboxId: "native" }));
+  const first = read("ACCOUNT");
+  await ready;
+  const second = read();
+  // Scheduling barrier, not a clock delay: immediate authorization chains can drain.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const simultaneousReads = reads;
+  release();
+  const values = await Promise.all([first, second]);
+  expect(simultaneousReads).toBe(1);
+  expect(values).toHaveLength(2);
+  for (const value of values)
+    expect(value).toMatchObject({ accountId: "account", status: "fresh", windows: [{ usedPercent: 31 }] });
+});

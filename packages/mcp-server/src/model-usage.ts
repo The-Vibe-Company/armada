@@ -185,8 +185,10 @@ export function createModelUsageApi(
   readSignal: () => AbortSignal = () => AbortSignal.timeout(5000),
 ): ModelUsageApi {
   const cache = new Map<string, { cursor?: string | undefined; checked: number; value: ModelUsage }>();
+  const inFlight = new Map<string, Promise<ModelUsage>>();
   return {
-    async read(caller, id, sandboxId, resolve) {
+    async read(caller, requestedId, sandboxId, resolve) {
+      const id = requestedId.toLowerCase();
       const budget = readSignal();
       const queryAuthorization = () =>
         sql.query<{ version: number; sandbox_id: string | null }>(
@@ -235,61 +237,82 @@ export function createModelUsageApi(
             : result.status,
       });
       if (prior && time >= prior.checked && time - prior.checked < 15_000) return fresh(value);
-      let cursor = prior?.cursor;
-      let nextValue = value;
-      try {
-        const { provider, providerSandboxId } = await withinBudget(budget, () => resolve(boundSandbox));
-        for (let pageNumber = 0; pageNumber < 5; pageNumber++) {
-          const page = await withinBudget(budget, () =>
-            provider.events({
-              sandboxId: providerSandboxId,
-              limit: 100,
-              signal: budget,
-              ...(cursor ? { cursor } : {}),
-            }),
-          );
-          if (page.events.length > 100) throw Error("usage_read_page_exceeded");
-          for (const event of page.events) {
-            const usage = reading(event);
-            if (
-              usage &&
-              Number.isFinite(event.at) &&
-              event.at <= now().getTime() &&
-              (!nextValue.observedAt || event.at >= Date.parse(nextValue.observedAt))
-            )
-              nextValue = {
-                accountId: id,
-                version,
-                status: usage.unavailable ? "unavailable" : "fresh",
-                observedAt: new Date(event.at).toISOString(),
-                windows: usage.windows,
-                ...(usage.extraUsage ? { extraUsage: usage.extraUsage } : {}),
-              };
-          }
-          const next = page.cursor;
-          if (!page.hasMore || !next || next === cursor) {
-            cursor = next ?? cursor;
-            break;
-          }
-          cursor = next;
-        }
-        const current = await authorize();
-        if (current.rows[0]?.version !== version || current.rows[0]?.sandbox_id !== boundSandbox)
-          throw new VaultError("not_found", "Pinned account authorization changed during usage read.");
-        if (cache.size >= 1000 && !cache.has(key)) {
-          const oldest = cache.keys().next().value;
-          if (oldest) cache.delete(oldest);
-        }
-        cache.set(key, { cursor, checked: time, value: nextValue });
-        return fresh(nextValue);
-      } catch (error) {
-        if (error instanceof VaultError) throw error;
-        // Errors/timeouts do not bypass current ownership, even for last-known data.
+      const pending = inFlight.get(key);
+      if (pending) {
+        let shared: ModelUsage | undefined;
+        try {
+          shared = await withinBudget(budget, () => pending);
+        } catch {}
         const current = await withinBudget(AbortSignal.timeout(1000), queryAuthorization);
         if (current.rows[0]?.version !== version || current.rows[0]?.sandbox_id !== boundSandbox)
-          throw new VaultError("not_found", "Pinned account authorization changed during usage read.");
-        return { ...nextValue, status: "error" };
+          throw new VaultError("not_found", "Pinned account authorization changed during shared usage read.");
+        return shared ? fresh(shared) : { ...value, status: "error" };
       }
+      if (inFlight.size >= 1000) return { ...value, status: "error" };
+      const run = async (): Promise<ModelUsage> => {
+        let cursor = prior?.cursor;
+        let nextValue = value;
+        try {
+          const { provider, providerSandboxId } = await withinBudget(budget, () => resolve(boundSandbox));
+          for (let pageNumber = 0; pageNumber < 5; pageNumber++) {
+            const page = await withinBudget(budget, () =>
+              provider.events({
+                sandboxId: providerSandboxId,
+                limit: 100,
+                signal: budget,
+                ...(cursor ? { cursor } : {}),
+              }),
+            );
+            if (page.events.length > 100) throw Error("usage_read_page_exceeded");
+            for (const event of page.events) {
+              const usage = reading(event);
+              if (
+                usage &&
+                Number.isFinite(event.at) &&
+                event.at <= now().getTime() &&
+                (!nextValue.observedAt || event.at >= Date.parse(nextValue.observedAt))
+              )
+                nextValue = {
+                  accountId: id,
+                  version,
+                  status: usage.unavailable ? "unavailable" : "fresh",
+                  observedAt: new Date(event.at).toISOString(),
+                  windows: usage.windows,
+                  ...(usage.extraUsage ? { extraUsage: usage.extraUsage } : {}),
+                };
+            }
+            const next = page.cursor;
+            if (!page.hasMore || !next || next === cursor) {
+              cursor = next ?? cursor;
+              break;
+            }
+            cursor = next;
+          }
+          const current = await authorize();
+          if (current.rows[0]?.version !== version || current.rows[0]?.sandbox_id !== boundSandbox)
+            throw new VaultError("not_found", "Pinned account authorization changed during usage read.");
+          if (cache.size >= 1000 && !cache.has(key)) {
+            const oldest = cache.keys().next().value;
+            if (oldest) cache.delete(oldest);
+          }
+          cache.set(key, { cursor, checked: time, value: nextValue });
+          return fresh(nextValue);
+        } catch (error) {
+          if (error instanceof VaultError) throw error;
+          // Errors/timeouts do not bypass current ownership, even for last-known data.
+          const current = await withinBudget(AbortSignal.timeout(1000), queryAuthorization);
+          if (current.rows[0]?.version !== version || current.rows[0]?.sandbox_id !== boundSandbox)
+            throw new VaultError("not_found", "Pinned account authorization changed during usage read.");
+          return { ...nextValue, status: "error" };
+        }
+      };
+      const flight = Promise.resolve()
+        .then(run)
+        .finally(() => {
+          if (inFlight.get(key) === flight) inFlight.delete(key);
+        });
+      inFlight.set(key, flight);
+      return flight;
     },
   };
 }
