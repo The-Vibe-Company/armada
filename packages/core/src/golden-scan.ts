@@ -36,11 +36,43 @@ const SCAN_ROOTS = "/home/user /root /tmp";
  * and object shas are ever inspected for *presence* of a match (`grep -l`/`-q`); the matched text
  * itself is never printed, logged, or returned.
  */
-export async function scanGoldenSandbox(provider: Provider, sandboxId: string): Promise<void> {
+export async function scanGoldenSandbox(
+  provider: Provider,
+  sandboxId: string,
+  context?: { buildId: string },
+): Promise<void> {
   const script = [
     "set -u",
     `pattern='${GITHUB_TOKEN_PATTERN}'`,
     `roots='${SCAN_ROOTS}'`,
+    // Classify paths in memory; only fixed labels and counts leave this process.
+    "scan_location() {",
+    '  case "$1" in',
+    "    */.git/config) location=git_config ;;",
+    "    */.git/objects/*) location=git_storage ;;",
+    "    */.git/*) location=git_metadata ;;",
+    "    */.git-credentials|*/.config/git/credentials|*/.netrc|*/.config/gh/hosts.yml|*/.npmrc) location=credential_file ;;",
+    "    */.npm/*|*/.cache/*|*/.bun/install/cache/*) location=package_cache ;;",
+    "    */.env|*/.env.*|*/environ|*/environment) location=environment_file ;;",
+    "    /home/user/*) location=user_home ;;",
+    "    /root/*) location=root_home ;;",
+    "    /tmp/*) location=temporary ;;",
+    "    *) location=other ;;",
+    "  esac",
+    "}",
+    "scan_counts() {",
+    "  local surface=$1 path location count",
+    "  local -A counts=()",
+    "  while IFS= read -r -d '' path; do",
+    '    scan_location "$path"',
+    "    counts[$location]=$(( ${counts[$location]:-0} + 1 ))",
+    "  done",
+    "  for location in git_config git_storage git_metadata credential_file package_cache environment_file user_home root_home temporary other; do",
+    "    count=${counts[$location]:-0}",
+    '    if [ "$count" -gt 0 ]; then printf "ARMADA_SCAN_MATCH %s %s %s\n" "$surface" "$location" "$count"; fi',
+    "  done",
+    "  return 0",
+    "}",
     // The working tree and dotfiles (shell history, credential caches, .git/config and its other
     // plain-text metadata: a credential helper or a remote URL can carry a token) across every
     // root. -a forces grep to search binary files too, so a token baked into a compiled artifact
@@ -56,12 +88,16 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     '  [ -d "$root" ] || continue',
     '  [ -r "$root" ] && [ -x "$root" ] || continue',
     // Paths can themselves leak a token; test NUL-separated names without ever printing one.
-    '  find "$root" -print0 2>/dev/null | grep -zEa "$pattern" >/dev/null 2>/dev/null',
-    "  path_status=$?",
+    '  find "$root" -print0 2>/dev/null | grep -zEa "$pattern" 2>/dev/null | scan_counts path_name',
+    '  path_statuses=("${PIPESTATUS[@]}")',
+    "  path_status=${path_statuses[1]}",
+    '  if [ "${path_statuses[0]}" -ne 0 ] || [ "${path_statuses[2]}" -ne 0 ]; then exit 95; fi',
     '  if [ "$path_status" -eq 0 ]; then exit 97; fi',
     '  if [ "$path_status" -gt 1 ]; then exit 95; fi',
-    '  grep -rlaE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev "$pattern" "$root" >/dev/null 2>/dev/null',
-    "  status=$?",
+    '  grep -rlaZE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev "$pattern" "$root" 2>/dev/null | scan_counts file_content',
+    '  content_statuses=("${PIPESTATUS[@]}")',
+    "  status=${content_statuses[0]}",
+    '  if [ "${content_statuses[1]}" -ne 0 ]; then exit 95; fi',
     '  if [ "$status" -eq 0 ]; then exit 97; fi',
     '  if [ "$status" -gt 1 ]; then exit 95; fi',
     "done",
@@ -87,10 +123,10 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // database): a scan that cannot inspect every object cannot say the builder is clean.
     '      *) rm -f "$objects_file"; exit 95 ;;',
     "    esac",
-    '    git -C "$repo" cat-file -p "$sha" | grep -aEq "$pattern"',
+    '    git -C "$repo" cat-file -p "$sha" 2>/dev/null | grep -aE "$pattern" >/dev/null 2>/dev/null',
     '    statuses=("${PIPESTATUS[@]}")',
     '    if [ "${statuses[0]}" -ne 0 ]; then rm -f "$objects_file"; exit 95; fi',
-    '    if [ "${statuses[1]}" -eq 0 ]; then rm -f "$objects_file"; exit 97; fi',
+    '    if [ "${statuses[1]}" -eq 0 ]; then printf "ARMADA_SCAN_MATCH git_object git_storage 1\n"; rm -f "$objects_file"; exit 97; fi',
     '    if [ "${statuses[1]}" -gt 1 ]; then rm -f "$objects_file"; exit 95; fi',
     '  done <"$objects_file"',
     '  rm -f "$objects_file"',
@@ -108,6 +144,7 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
   if (result.detached) throw new GoldenError("setup_failed", "The secret scan started in the background.");
   if (result.timedOut) throw new GoldenError("setup_failed", "The secret scan timed out.");
   if (result.exitCode === 97) {
+    reportScanMatches(result.stdout, context?.buildId);
     throw new GoldenError(
       "setup_failed",
       "The golden builder still has token-shaped material on disk; the golden was not saved.",
@@ -120,4 +157,33 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** Provider output is untrusted. Never log it, a path, or an unmatched diagnostic line. */
+function reportScanMatches(stdout: string, buildId?: string): void {
+  const correlation = buildId && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(buildId) ? { buildId } : {};
+  let reported = false;
+  for (const line of stdout.slice(0, 8192).split("\n").slice(0, 64)) {
+    const match =
+      /^ARMADA_SCAN_MATCH (file_content|path_name|git_object) (git_config|git_storage|git_metadata|credential_file|package_cache|environment_file|user_home|root_home|temporary|other) ([1-9][0-9]{0,8})$/.exec(
+        line,
+      );
+    if (!match) continue;
+    const surface = match[1];
+    console.error(
+      JSON.stringify({
+        event: "golden_scan_rejected",
+        ...correlation,
+        surface,
+        locationClass: match[2],
+        count: Number(match[3]),
+        countUnit:
+          surface === "git_object" ? "matching_objects" : surface === "path_name" ? "matching_paths" : "matching_files",
+        scope: "first_rejected_scan_step",
+      }),
+    );
+    reported = true;
+  }
+  if (!reported)
+    console.error(JSON.stringify({ event: "golden_scan_rejected", ...correlation, diagnostics: "unavailable" }));
 }

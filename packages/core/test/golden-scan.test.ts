@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecRequest, ExecResult, Provider } from "../src/server.ts";
-import { scanGoldenSandbox } from "../src/server.ts";
+import { goldenScript, scanGoldenSandbox, withGoldenDirs } from "../src/server.ts";
 
 function provider(result: Partial<ExecResult>, calls: ExecRequest[]): Provider {
   return {
@@ -303,3 +303,99 @@ test("real shell: a corrupted git object fails closed instead of being silently 
     rmSync(base, { recursive: true, force: true });
   }
 }, 30_000);
+
+function cleanCredentials(base: string, roots: { home: string; root: string; tmp: string }): number {
+  const script = goldenScript(withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 1 }]));
+  const cleanup = script.split("armada_phase=credential_cleanup\n")[1]?.split("armada_phase=inline_scan")[0];
+  if (!cleanup) throw new Error("Missing credential cleanup phase.");
+  const bin = join(base, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o700 });
+  return (
+    spawnSync("bash", ["-eu", "-c", cleanup.replaceAll("/home/user", roots.home).replaceAll("/root", roots.root)], {
+      env: { PATH: bin + ":" + process.env.PATH },
+      encoding: "utf8",
+    }).status ?? -1
+  );
+}
+
+test("disposable cleanup removes exact credential files; short fixtures survive and unmanaged binary injection still rejects", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  const token = "ghs_" + "K".repeat(36);
+  try {
+    for (const home of [roots.home, roots.root]) {
+      mkdirSync(join(home, ".config", "gh"), { recursive: true });
+      mkdirSync(join(home, ".config", "git"), { recursive: true });
+      for (const file of [".git-credentials", ".config/git/credentials", ".netrc", ".config/gh/hosts.yml"])
+        writeFileSync(join(home, file), token);
+    }
+    const fixture = join(roots.home, "safe-fixture.ts");
+    writeFileSync(fixture, 'const token = "ghs_test_secret";\n');
+    writeFileSync(join(roots.home, ".npmrc"), "registry=https://registry.npmjs.org\n");
+    expect(runAgainst(script, roots).status).toBe(97);
+    expect(cleanCredentials(base, roots)).toBe(0);
+    for (const home of [roots.home, roots.root])
+      for (const file of [".git-credentials", ".config/git/credentials", ".netrc", ".config/gh/hosts.yml"])
+        expect(existsSync(join(home, file))).toBe(false);
+    expect(readFileSync(fixture, "utf8")).toContain("ghs_test_secret");
+    expect(existsSync(join(roots.home, ".npmrc"))).toBe(true);
+    expect(runAgainst(script, roots).status).toBe(0);
+    mkdirSync(join(roots.home, ".cache"));
+    writeFileSync(join(roots.home, ".cache", "unmanaged.bin"), Buffer.from("\0" + token + "\0"));
+    expect(runAgainst(script, roots).status).toBe(97);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("credential cleanup fails closed on an unexpected directory instead of recursively deleting it", () => {
+  const { base, roots } = sandbox();
+  try {
+    mkdirSync(join(roots.home, ".git-credentials"));
+    expect(cleanCredentials(base, roots)).not.toBe(0);
+    expect(existsSync(join(roots.home, ".git-credentials"))).toBe(true);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("real scan rejection logs only bounded location metadata, never values, names or arbitrary provider output", async () => {
+  const { base, roots } = sandbox();
+  const token = "ghu_" + "L".repeat(36);
+  const marker = "private-filename-not-for-logs";
+  const buildId = crypto.randomUUID();
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    mkdirSync(join(roots.home, ".npm"));
+    writeFileSync(join(roots.home, ".npm", marker), token);
+    const executor = {
+      exec: async (request: ExecRequest) => {
+        const result = spawnSync("bash", ["-c", withIsolatedRoots(request.command, roots)], { encoding: "utf8" });
+        // Simulate an untrusted provider adding unsafe extra diagnostics. Only the fixed protocol is accepted.
+        return {
+          detached: false,
+          exitCode: result.status,
+          stdout: result.stdout + "\n" + token + "\nARMADA_SCAN_MATCH file_content " + marker + " 1\n",
+          stderr: token,
+        };
+      },
+    } as unknown as Provider;
+    await expect(scanGoldenSandbox(executor, "bx_1", { buildId })).rejects.toMatchObject({ code: "setup_failed" });
+    expect(log).toHaveBeenCalledTimes(1);
+    const output = String(log.mock.calls[0]?.[0]);
+    expect(JSON.parse(output)).toEqual({
+      event: "golden_scan_rejected",
+      buildId,
+      surface: "file_content",
+      locationClass: "package_cache",
+      count: 1,
+      countUnit: "matching_files",
+      scope: "first_rejected_scan_step",
+    });
+    for (const forbidden of [token, marker, roots.home]) expect(output).not.toContain(forbidden);
+  } finally {
+    log.mockRestore();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
