@@ -32,8 +32,7 @@ reimplemented. Incomplete #604 private-state delivery is **not** advertised as
 supported. Child harness/account selection is independent of the parent.
 
 Dependencies are validated only in isolated checkouts under `.git`; their files
-are not copied into this focused delivery branch. Final integrated types must be
-regenerated after the producer schemas land.
+are not copied into this focused delivery branch. Integrated types are regenerated against the merged producer schemas.
 
 ## Decisions and invariants
 
@@ -76,20 +75,19 @@ regenerated after the producer schemas land.
 
 ## Remaining producer ports / activation blockers
 
-#662 must provide the actual correlated checkpoint/stop result and read-only
-receipt lookup, admitted prompt-ID observation, verified no-text rollover/native
-continuation, and trusted removed-owner backend resolution. The published #662 candidate
-`ccadf4c76f97097cbfd2a541b99b4b67db2ada9f` now declares correlated
-`checkpointAndStop` and read-only `readStopReceipt` ports, but its managed adapter
-still omits the separate native `physicalGeneration` when projecting observations
-and receipts. A declared port alone is not native proof. Owner HTTP settings/wait
-routes are implemented below; owner MCP dispatcher callbacks remain #662-owned. Actual epoch/private-generation correction and named
-account/sizing producer integration remain prerequisites. New optional SDK
-private transport methods must not be mistaken for Boat support or hot reload.
+Main #704 now supplies the correlated checkpoint/stop and read-only receipt
+ports, prompt observation and trusted retained-machine backend selection. Its
+managed adapter projects native `physicalGeneration` separately from the SQL
+counter. These source contracts remove the prior integration blockers; declared
+ports alone are not operator-native proof. Owner HTTP settings/wait routes are
+implemented below. Delegated wait admission remains the explicit producer port
+boundary described later, without an owner-impersonation fallback.
 
-Apply reviewed account202, foundation208, lifecycle209 and runtime210 before
-starting server code that uses them; regenerate final combined database types
-and deploy with the feature off. Only the root integrator owns that sequence.
+The reviewed account202/model-auth203/foundation208/runtime215/native-binding216
+migrations precede this branch's lifecycle217 migration. Production applies
+migrations via CI in version order on merge; do not apply or edit already-main
+files here. Combined database types are regenerated. Keep native composition off
+until the operator conformance matrix is independently reviewed.
 Rollback disables/revokes admissions and retains identities, receipts and native
 state; it does not drop tables or bulk-delete user resources.
 
@@ -140,8 +138,7 @@ Current disabled/missing adapters must fail; no passing run is claimed here.
 The rebased delivery branch inherits reviewed producers from actual `origin/main`
 `e5fc554fd778e021f6c84984e8cee8ac4837ec09`; no producer ownership is copied as a
 feature change. Exact #673 head also has its own detached committed checkout under
-`.git/663-dependencies/committed-673-ready`. Runtime #662 remains an isolated source
-contract, not main integration. Private combinations merge only its actual deltas
+`.git/663-dependencies/committed-673-ready`. Runtime #662 is now on main through #704. Private combinations merge only its actual deltas
 onto current main; wholesale old shared files must not erase sizing, invitations
 or snapshot-retirement contracts.
 
@@ -160,11 +157,8 @@ quota, default concurrency or provider historical-event repair.
 ## Explicit dependency and delegated-wait boundary
 
 File presence is not a production migration/application claim. On current
-`origin/main` the exact inventory is: **202 present, 203 absent, 208 present**;
-**209 belongs to this branch**, and **210 exists only in the actual #662
-runtime candidate/isolated dependency combination**, not main. Current sizing
-migration 206 does not stand in for missing 203. The root integrator must provide
-and review the actual 203 dependency and its compatibility with 202/208/209/210;
+`origin/main` the exact inventory is: **202, 203 and 208 present**;
+**217 belongs to this branch**, and **runtime215/native-binding216 are on main**. The root integrator must review migration deployment ordering;
 this consumer neither recreates it nor assumes schemas compose additively.
 
 Delegated wait mutation remains unsupported by the committed authority producer.
@@ -282,18 +276,27 @@ membership, other-owner/admin access and epoch-to-owner promotion deny. Replies
 and reads use `Cache-Control: no-store`. Owner MCP dispatcher additions remain
 #662-owned; these HTTP endpoints and the epoch gateway are separate principals.
 
-## Delivery takeover validation
+## Current main integration and deployment boundary
 
-PR #705 targets main. Main `e5fc554fd778e021f6c84984e8cee8ac4837ec09`
-was already an ancestor at takeover; the normal merge required no commit.
-The focused branch intentionally does not vendor #662 runtime files or its 210
-migration. Until those land, standalone typecheck and runtime-importing tests
-fail on the missing modules; this is not an enabled or merge-ready delivery.
+Main `a7af4a73ea2fda586778fe8994b991a6671f5ddf` (#704) is merged normally.
+Its runtime and native-binding migrations215/216 precede this branch's
+`20261110121700_orchestrator_lifecycle.sql`. The lifecycle migration was never
+applied under its original209 filename; its SQL is unchanged. Combined database
+types are regenerated. Never edit an applied main migration.
 
-Same-session independent review identified and repaired two own-code defects:
-blocked owner-operation failures now remain eligible for hard-deadline and
-removed-owner cleanup (never inferred idle), and owner detail retains the runtime's
-specific blocked reason instead of replacing it with stale lifecycle observation
-text. Real-schema regressions reproduced both failures before repair and passed
-in an isolated combination with the published #662 source. That combination is
-supplemental contract evidence, not final-main CI or provider-native conformance.
+The prior missing-runtime-module blocker is cleared. Server composition preserves
+main's credential/model-auth context and single managed-lane factory, while the
+full663 bundle adds authenticated owner lifecycle and scoped epoch routes plus
+both lifecycle/child lanes. The sixth worker argument accepts a single lane or
+an array; fourth snapshot retirement and fifth maintenance remain unchanged.
+No environment toggle or default native backend is added.
+
+Same-session independent review repaired blocked-parent deadline/removal cleanup
+and runtime failure-reason projection; red/green migrated-schema regressions cover
+both. Provider-native enablement still requires operator-reviewed private epoch
+ACK/scrub, physical-generation binding, checkpoint/no-text continuation and the
+nonproduction conformance matrix. Synthetic tests and green CI are not proof of
+live provider behavior. Delegated wait mutation remains explicitly unsupported
+until the actual authority producer supplies its reviewed admission port; owner
+wait/settings HTTP endpoints remain supported. These are feature activation
+prerequisites, not a claim that the feature is currently enabled.
