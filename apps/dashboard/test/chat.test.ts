@@ -35,7 +35,8 @@ describe("chat projection", () => {
     const chat = projectChat(pages);
     expect(view(chat.items)).toEqual(["user:Fix the test", "assistant:All green."]);
     expect(chat.running).toBe(false);
-    expect(projectChat([...pages]).items.map((item) => item.key)).toEqual(chat.items.map((item) => item.key));
+    // The streaming message keeps its key when the final text lands, so the view updates it in place.
+    expect(chat.items.map((item) => item.key)).toEqual(projectChat(stream).items.map((item) => item.key));
   });
 
   test("Claude's completed frames of one message (text, then a tool) keep the text and add the tool", () => {

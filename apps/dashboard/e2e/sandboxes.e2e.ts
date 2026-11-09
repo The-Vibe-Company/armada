@@ -41,7 +41,9 @@ test("the logs of a running sandbox refresh without reloading the page", async (
     method: "POST",
     body: JSON.stringify({ sandbox: IDS.running, text: "All tests pass now." }),
   });
-  await expect(page.getByText("All tests pass now.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("log", { name: "Messages" }).getByText("All tests pass now.")).toBeVisible({
+    timeout: 10_000,
+  });
 });
 
 test("a usage limit is explained in plain words", async ({ page }) => {

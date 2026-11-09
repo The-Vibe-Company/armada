@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
+import { chosenConversation, INCOMPLETE_MODEL, modelChange, STEER_KEEPS_MODEL } from "@/lib/composer";
 import { launchSelection, type McpConnection } from "@/lib/connections";
 import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
@@ -50,9 +51,10 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   const prompt = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
   if (!prompt) return fail("Write the message to send.");
+  if (modelChange(modelFields(data)) === "incomplete") return fail(INCOMPLETE_MODEL);
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  const conversation = chosenConversation(data, target.sandbox.conversation_ids);
+  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
   if (!conversation.ok) return fail(conversation.error);
   const override = sendOverride(target.sandbox.harness, modelFields(data), target.sandbox.model);
   if (!override.ok) return fail(override.error);
@@ -72,13 +74,10 @@ export async function steerSandbox(_previous: ActionResult | null, data: FormDat
   const text = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
   if (!text) return fail("Write the message to send.");
-  const fields = modelFields(data);
-  if (fields.model || fields.otherModel.trim() || fields.reasoningEffort) {
-    return fail("A model or effort change needs a new turn. Send it instead.");
-  }
+  if (modelChange(modelFields(data)) !== "none") return fail(STEER_KEEPS_MODEL);
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  const conversation = chosenConversation(data, target.sandbox.conversation_ids);
+  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
   if (!conversation.ok) return fail(conversation.error);
   let receipt: unknown;
   try {
@@ -99,7 +98,7 @@ export async function interruptSandbox(_previous: ActionResult | null, data: For
   if (!isUuid(id)) return fail("That request is not valid.");
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  const conversation = chosenConversation(data, target.sandbox.conversation_ids);
+  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
   if (!conversation.ok) return fail(conversation.error);
   try {
     await target.gateway.interrupt(id, conversation.id);
@@ -109,18 +108,6 @@ export async function interruptSandbox(_previous: ActionResult | null, data: For
   }
   revalidatePath(`/sandboxes/${id}`);
   return done("Interrupt requested.");
-}
-
-/** The conversation field: empty lets the server choose (a sandbox with none yet), otherwise one of this sandbox's. */
-function chosenConversation(
-  data: FormData,
-  recorded: readonly string[],
-): { ok: true; id: string | undefined } | { ok: false; error: string } {
-  const id = formString(data, "conversation").trim();
-  if (!id) return { ok: true, id: undefined };
-  return recorded.includes(id)
-    ? { ok: true, id }
-    : { ok: false, error: "That conversation is not part of this sandbox." };
 }
 
 export async function launchFromGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {

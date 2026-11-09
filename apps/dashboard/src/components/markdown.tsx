@@ -1,10 +1,10 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode, useMemo } from "react";
 import { type Block, type Inline, parseMarkdown } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
 
 /** Agent text as Markdown, rendered from a parsed tree: React escapes every string, no HTML is interpreted. */
-export function Markdown({ text, className }: { text: string; className?: string }) {
-  const blocks = parseMarkdown(text);
+export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
   return (
     <div className={cn("space-y-3 text-sm leading-relaxed break-words", className)}>
       {blocks.map((block, index) => (
@@ -13,7 +13,7 @@ export function Markdown({ text, className }: { text: string; className?: string
       ))}
     </div>
   );
-}
+});
 
 function BlockView({ block }: { block: Block }) {
   switch (block.kind) {

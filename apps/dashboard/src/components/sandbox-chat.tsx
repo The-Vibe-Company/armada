@@ -22,6 +22,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -46,6 +47,7 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
+import { INCOMPLETE_MODEL, modelChange } from "@/lib/composer";
 import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import { cn } from "@/lib/utils";
@@ -106,7 +108,11 @@ export function SandboxChat(props: Props) {
       setStatus(next);
       router.refresh();
     }
-    setPoll({ error: typeof body.error === "string" ? body.error : null, configured: body.configured !== false });
+    const error = typeof body.error === "string" ? body.error : null;
+    const configured = body.configured !== false;
+    setPoll((current) =>
+      current.error === error && current.configured === configured ? current : { error, configured },
+    );
     setLoaded(true);
     const page = parseEventPage(body);
     if (page.cursor) cursor.current = page.cursor;
@@ -139,9 +145,10 @@ export function SandboxChat(props: Props) {
     };
   }, [tick]);
 
-  const conversations = conversationsOf(events, props.conversations);
+  const conversations = useMemo(() => conversationsOf(events, props.conversations), [events, props.conversations]);
   const selected = chosen && conversations.includes(chosen) ? chosen : (conversations.at(-1) ?? null);
-  const chat = projectChat(eventsOf(events, conversations.length > 1 ? selected : null));
+  const shownConversation = conversations.length > 1 ? selected : null;
+  const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
@@ -307,16 +314,27 @@ function Transcript({
 
   const groups = groupTools(items);
   const streaming = last?.kind === "assistant" && last.streaming;
+  // The log itself stays quiet (expanding a tool must not read its output aloud); finished messages are announced here.
+  const announcement =
+    last?.kind === "assistant" && !last.streaming
+      ? `Agent: ${last.text.slice(0, 200)}`
+      : last?.kind === "outcome"
+        ? last.status === "failed"
+          ? "The turn failed."
+          : "The turn was interrupted."
+        : "";
 
   return (
     <div className="relative">
+      <p role="status" className="sr-only">
+        {announcement}
+      </p>
       <div
         ref={scroller}
         onScroll={onScroll}
         role="log"
         aria-label="Messages"
-        aria-live="polite"
-        aria-relevant="additions"
+        aria-live="off"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the history scrolls on its own; the keyboard must reach it.
         tabIndex={0}
         className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
@@ -591,10 +609,17 @@ function Composer({
   /** The highlighted button, which Ctrl/Cmd+Enter presses: steering while a turn runs, unless the model changes. */
   const primary: Intent = running && !override ? "steer" : "send";
 
+  function change(data: FormData) {
+    const field = (name: string) => String(data.get(name) ?? "");
+    return modelChange({
+      model: field("model"),
+      otherModel: field("other_model"),
+      reasoningEffort: field("reasoning_effort"),
+    });
+  }
+
   function readOverride() {
-    if (!form.current) return;
-    const data = new FormData(form.current);
-    setOverride(["model", "other_model", "reasoning_effort"].some((name) => String(data.get(name) ?? "").trim()));
+    if (form.current) setOverride(change(new FormData(form.current)) !== "none");
   }
 
   function run(intent: Intent) {
@@ -602,6 +627,11 @@ function Composer({
     const data = new FormData(form.current);
     if (intent !== "interrupt" && !draft.trim()) {
       setResult({ ok: false, error: "Write the message to send." });
+      return;
+    }
+    if (intent === "send" && change(data) === "incomplete") {
+      setShowModel(true);
+      setResult({ ok: false, error: INCOMPLETE_MODEL });
       return;
     }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
@@ -651,6 +681,7 @@ function Composer({
   return (
     <form
       ref={form}
+      noValidate
       onSubmit={onSubmit}
       onChange={readOverride}
       className="space-y-3 border-t bg-muted/30 px-4 py-3 sm:px-6"

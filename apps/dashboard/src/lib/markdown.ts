@@ -18,11 +18,9 @@ export type Block =
   | { kind: "rule" };
 
 const FENCE = /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/;
-const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
 const NUMBERED = /^\s{0,3}(\d{1,9})[.)]\s+(.*)$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
-const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 
 export function parseMarkdown(source: string): Block[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
@@ -47,15 +45,14 @@ export function parseMarkdown(source: string): Block[] {
       blocks.push({ kind: "code", language: fence[2] ?? "", text: body.join("\n") });
       continue;
     }
-    if (RULE.test(line)) {
+    if (isRule(line)) {
       blocks.push({ kind: "rule" });
       index += 1;
       continue;
     }
-    const heading = HEADING.exec(line);
-    if (heading) {
-      const level = Math.min((heading[1] ?? "#").length, 3) as 1 | 2 | 3;
-      blocks.push({ kind: "heading", level, children: parseInline(heading[2] ?? "") });
+    const title = heading(line);
+    if (title) {
+      blocks.push({ kind: "heading", level: title.level, children: parseInline(title.text) });
       index += 1;
       continue;
     }
@@ -93,14 +90,35 @@ export function parseMarkdown(source: string): Block[] {
     const body: string[] = [];
     while (index < lines.length) {
       const current = lines[index] ?? "";
-      if (!current.trim() || FENCE.test(current) || HEADING.test(current) || QUOTE.test(current)) break;
-      if (body.length > 0 && (BULLET.test(current) || NUMBERED.test(current) || RULE.test(current))) break;
+      if (!current.trim() || FENCE.test(current) || heading(current) !== null || QUOTE.test(current)) break;
+      if (body.length > 0 && (BULLET.test(current) || NUMBERED.test(current) || isRule(current))) break;
       body.push(current);
       index += 1;
     }
     blocks.push({ kind: "paragraph", children: parseInline(body.join("\n")) });
   }
   return blocks;
+}
+
+// Headings and rules are read by hand: the equivalent regexes backtrack badly on long runs of spaces.
+
+function heading(line: string): { level: 1 | 2 | 3; text: string } | null {
+  const body = line.replace(/^ {0,3}/, "");
+  let hashes = 0;
+  while (hashes < body.length && body[hashes] === "#") hashes += 1;
+  if (hashes < 1 || hashes > 6 || !/^[ \t]/.test(body.slice(hashes))) return null;
+  let text = body.slice(hashes).trim();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "#") end -= 1;
+  if (end === 0 || /[ \t]/.test(text[end - 1] ?? "")) text = text.slice(0, end).trimEnd();
+  return { level: Math.min(hashes, 3) as 1 | 2 | 3, text };
+}
+
+function isRule(line: string): boolean {
+  const marks = line.replace(/[ \t]/g, "");
+  if (/^ {4}/.test(line) || marks.length < 3) return false;
+  const mark = marks[0];
+  return (mark === "-" || mark === "*" || mark === "_") && [...marks].every((char) => char === mark);
 }
 
 /** A link target kept only when it is a web or mail address; anything else (javascript:, data:, relative) is text. */
@@ -114,7 +132,7 @@ export function safeHref(target: string): string | null {
   }
 }
 
-export function parseInline(source: string): Inline[] {
+export function parseInline(source: string, autolink = true): Inline[] {
   const out: Inline[] = [];
   let text = "";
   const flush = () => {
@@ -144,7 +162,7 @@ export function parseInline(source: string): Inline[] {
       const end = source.indexOf(marker, index + 2);
       if (end > index + 2) {
         flush();
-        out.push({ kind: "strong", children: parseInline(source.slice(index + 2, end)) });
+        out.push({ kind: "strong", children: parseInline(source.slice(index + 2, end), autolink) });
         index = end + 2;
         continue;
       }
@@ -155,7 +173,7 @@ export function parseInline(source: string): Inline[] {
       const wordInside = char === "_" && before !== undefined && /\w/.test(before);
       if (end > index + 1 && !wordInside && source[end - 1] !== " ") {
         flush();
-        out.push({ kind: "em", children: parseInline(source.slice(index + 1, end)) });
+        out.push({ kind: "em", children: parseInline(source.slice(index + 1, end), autolink) });
         index = end + 1;
         continue;
       }
@@ -165,13 +183,14 @@ export function parseInline(source: string): Inline[] {
       if (link) {
         const href = safeHref(link[2] ?? "");
         flush();
-        if (href) out.push({ kind: "link", href, children: parseInline(link[1] ?? "") });
-        else out.push(...parseInline(link[1] ?? ""));
+        // A label never holds a link of its own: `<a>` cannot nest.
+        if (href) out.push({ kind: "link", href, children: parseInline(link[1] ?? "", false) });
+        else out.push(...parseInline(link[1] ?? "", false));
         index += link[0].length;
         continue;
       }
     }
-    if (char === "h" && /^https?:\/\//.test(source.slice(index, index + 8))) {
+    if (autolink && char === "h" && /^https?:\/\//.test(source.slice(index, index + 8))) {
       const raw = /^https?:\/\/[^\s<>()]+/.exec(source.slice(index))?.[0] ?? "";
       const trimmed = raw.replace(/[.,;:!?'"]+$/, "");
       const href = safeHref(trimmed);

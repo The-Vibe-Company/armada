@@ -25,4 +25,23 @@ describe("markdown", () => {
       { kind: "list", ordered: false, start: 1, items: [[{ kind: "code", text: "a" }], [{ kind: "text", text: "b" }]] },
     ]);
   });
+
+  test("hostile spacing in headings and rules is read in linear time", () => {
+    // Backtracking regexes took seconds here (cubic in the spaces); the test's default timeout catches a regression.
+    const spaces = " ".repeat(6000);
+    expect(parseMarkdown(`# a${spaces}#x`)).toEqual([
+      { kind: "heading", level: 1, children: [{ kind: "text", text: `a${spaces}#x` }] },
+    ]);
+    expect(parseMarkdown(`---${spaces}x`)).toHaveLength(1);
+    expect(parseMarkdown("## Plan ##")).toEqual([
+      { kind: "heading", level: 2, children: [{ kind: "text", text: "Plan" }] },
+    ]);
+    expect(parseMarkdown("- - -")).toEqual([{ kind: "rule" }]);
+  });
+
+  test("a URL used as a link label is not a second link", () => {
+    expect(parseInline("[https://a.example](https://b.example)")).toEqual([
+      { kind: "link", href: "https://b.example/", children: [{ kind: "text", text: "https://a.example" }] },
+    ]);
+  });
 });
