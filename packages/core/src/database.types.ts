@@ -373,6 +373,7 @@ export type Database = {
           modal_environment: string | null;
           modal_app_id: string | null;
           removed_at: string | null;
+          size_policy: Json | null;
         };
         Insert: {
           id?: string;
@@ -391,6 +392,7 @@ export type Database = {
           modal_environment?: string | null;
           modal_app_id?: string | null;
           removed_at?: string | null;
+          size_policy?: Json | null;
         };
         Update: {
           id?: string;
@@ -409,6 +411,7 @@ export type Database = {
           modal_environment?: string | null;
           modal_app_id?: string | null;
           removed_at?: string | null;
+          size_policy?: Json | null;
         };
         Relationships: [
           {
@@ -1216,6 +1219,62 @@ export type Database = {
           },
         ];
       };
+      organization_invitations: {
+        Row: {
+          id: string;
+          org_id: string;
+          email: string;
+          role: Database["public"]["Enums"]["member_role"];
+          hash: string;
+          expires_at: string;
+          status: string;
+          delivery: string;
+          token_enc: string | null;
+          attempts: number;
+          lease_until: string | null;
+          updated_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          email: string;
+          role: Database["public"]["Enums"]["member_role"];
+          hash: string;
+          expires_at: string;
+          status?: string;
+          delivery: string;
+          token_enc?: string | null;
+          attempts?: number;
+          lease_until?: string | null;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          email?: string;
+          role?: Database["public"]["Enums"]["member_role"];
+          hash?: string;
+          expires_at?: string;
+          status?: string;
+          delivery?: string;
+          token_enc?: string | null;
+          attempts?: number;
+          lease_until?: string | null;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "organization_invitations_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       orgs: {
         Row: {
           id: string;
@@ -1272,6 +1331,7 @@ export type Database = {
           activity_until: string | null;
           reconcile_lease: string | null;
           reconcile_lease_until: string | null;
+          machine_size: Json | null;
         };
         Insert: {
           id?: string;
@@ -1307,6 +1367,7 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          machine_size?: Json | null;
         };
         Update: {
           id?: string;
@@ -1342,6 +1403,7 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          machine_size?: Json | null;
         };
         Relationships: [
           {
@@ -1470,6 +1532,7 @@ export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_sco
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
+export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

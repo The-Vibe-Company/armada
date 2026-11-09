@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import type { Sql } from "@armada/core";
+import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, GoldenBuildJobs } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
@@ -48,6 +49,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
+  const resourceRequests: Record<string, unknown>[] = [];
   let failSnapshot = false;
   let failCreate = false;
   let failBoot = false;
@@ -82,6 +84,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
         params: { name: string; env: object; secrets: unknown[]; tags: Record<string, string> },
       ) => {
         creates++;
+        resourceRequests.push({ ...params });
         expect(params.env).toEqual({});
         expect(params.secrets).toEqual([]);
         const id = `sb_${crypto.randomUUID()}`;
@@ -229,6 +232,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
     client,
     log,
     bootstraps,
+    resourceRequests,
     get provisioned() {
       return provisioned;
     },
@@ -496,6 +500,37 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
 });
 
+// Authoring gate: SDK-bound resource requests, no-allocation rejection and restoration
+// are provider-owned behavior; pure policy tests cannot detect dropped SDK options.
+test.each([
+  ["small", 1, 4096],
+  ["medium", 2, 8192],
+  ["large", 4, 16384],
+  ["xlarge", 8, 32768],
+] as const)("Modal %s pins physical-core and MiB requests and limits across resume", async (size, cpu, memoryMiB) => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const row = await f.provider.fork({ from: name, size });
+  const resources = { cpu, cpuLimit: cpu, memoryMiB, memoryLimitMiB: memoryMiB };
+  expect(f.resourceRequests[1]).toMatchObject(resources);
+  expect(f.resourceRequests[0]).not.toHaveProperty("cpu");
+  expect(f.resourceRequests[0]).not.toHaveProperty("memoryMiB");
+  await f.provider.stop({ sandboxId: row.id });
+  await f.provider.exec({ sandboxId: row.id, command: "true" });
+  expect(f.resourceRequests[2]).toMatchObject(resources);
+  expect((await f.store.get(row.id)).size).toBe(size);
+});
+
+test("invalid Modal size is refused without a physical create", async () => {
+  const f = fixture();
+  await expect(f.provider.fork({ from: "not-looked-up", size: "default" as never })).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  expect(f.creates).toBe(0);
+});
+
 async function runningFork(f: ReturnType<typeof fixture>) {
   const builder = await f.provider.createGolden({});
   const name = crypto.randomUUID();
@@ -730,6 +765,91 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "resume deliberately" });
     expect((await f.store.get(row.id)).generation).toBe(2);
   });
+  test("durable event pages cross cursor digit widths in numeric order after compute stops", async () => {
+    // Real migrations + PostgreSQL execution own this regression: the old ORDER BY
+    // resolves the text output name, not the bigint used by the resume predicate.
+    const f = fixture();
+    const row = await runningFork(f);
+    const maximum = await db.query<{ cursor: string }>(
+      "select coalesce(max(cursor),0)::text as cursor from public.modal_events",
+    );
+    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + 130).length - 30;
+    await db.query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
+    const events: AgentEvent[] = Array.from({ length: 130 }, (_, i) => ({
+      id: `ordered-${i}`,
+      // Deliberately not time/UUID ordered: the durable cursor is authoritative.
+      at: 130 - i,
+      promptId: "ordered-prompt",
+      conversationId: i > 1 && i < 129 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
+      ...(i === 0 || i === 1 || i === 129
+        ? {
+            kind: "prompt" as const,
+            text: "task",
+            status: i === 0 ? ("queued" as const) : i === 1 ? ("running" as const) : ("finished" as const),
+          }
+        : { kind: "message" as const, text: `delta-${i}`, partial: i !== 128, tools: [] }),
+    }));
+    expect(
+      await appendModalEvents(
+        db,
+        scope,
+        row.id,
+        "1",
+        events.map((event, i) => ({
+          sequence: i + 1,
+          event,
+        })),
+      ),
+    ).toBe(130);
+    f.onRpc(async (_row, op) =>
+      op === "checkpoint" ? { watermark: 130, acknowledgedSequence: 130, generation: "1" } : undefined,
+    );
+    await f.provider.stop({ sandboxId: row.id });
+    const before = await f.store.get(row.id);
+    const calls = [...f.log];
+    const creates = f.creates;
+
+    async function read(conversationId?: string, resume?: string) {
+      const collected: AgentEvent[] = [];
+      let cursor = resume;
+      for (let pages = 0; pages < 20; pages++) {
+        const page = await f.provider.events({
+          sandboxId: row.id,
+          limit: 17,
+          ...(cursor ? { cursor } : {}),
+          ...(conversationId ? { conversationId } : {}),
+        });
+        if (page.events.length) {
+          expect(BigInt(page.cursor ?? "0")).toBeGreaterThan(BigInt(cursor ?? "0"));
+          expect(typeof page.cursor).toBe("string");
+        }
+        collected.push(...page.events);
+        cursor = page.cursor;
+        if (!page.hasMore) return { collected, cursor };
+      }
+      throw new Error("Pagination failed to terminate");
+    }
+    const all = await read();
+    expect(all.collected).toEqual(events);
+    expect(all.cursor).toBe(String(start + 129));
+    expect(await read(undefined, String(start + 16))).toEqual({
+      collected: events.slice(17),
+      cursor: all.cursor,
+    });
+    expect((await read("ordered-conversation")).collected).toEqual(
+      events.filter((event) => event.conversationId === "ordered-conversation"),
+    );
+    expect(await read(undefined, all.cursor)).toEqual({ collected: [], cursor: all.cursor });
+    expect(await f.provider.getPrompt({ sandboxId: row.id, promptId: "ordered-prompt" })).toEqual({
+      promptId: "ordered-prompt",
+      conversationId: "ordered-conversation",
+      status: "finished",
+      done: true,
+    });
+    expect(f.log).toEqual(calls);
+    expect(f.creates).toBe(creates);
+    expect(await f.store.get(row.id)).toEqual(before);
+  });
   test("a prompt observation delayed across stop never enters activation", async () => {
     const f = fixture();
     const row = await runningFork(f);
@@ -838,6 +958,113 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       (await f.provider.events({ sandboxId: row.id, conversationId: "a", cursor: first.cursor ?? "0" })).events,
     ).toEqual(events.slice(2));
     expect((await f.provider.events({ sandboxId: row.id, conversationId: "b" })).events).toEqual(events.slice(1, 2));
+  });
+  test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
+    const f = fixture();
+    const row = await f.provider.createGolden({});
+    const grant = {
+      token: "fixture-ingest-private-grant",
+      sandboxId: row.id,
+      generation: "1",
+      expiresAt: Date.now() + 60000,
+    };
+    const handler = createModalIngestHandler({ sql: db, verifyGrant: async () => ({ scope, claims: grant }) });
+    const journal = new Journal(":memory:", (s) => s);
+    const driver: Driver = {
+      start() {
+        throw Error("unused");
+      },
+      async close() {},
+    };
+    const requests: number[] = [];
+    const runner = new Runner(
+      journal,
+      grant,
+      { claude: driver, codex: driver },
+      {
+        async append(batch) {
+          const body = JSON.stringify(batch);
+          requests.push(Buffer.byteLength(body));
+          const response = await handler(new Request("https://example/ingest", { method: "POST", body }));
+          if (!response.ok) throw Error(`ingest_http_${response.status}`);
+          return (await response.json()) as { acknowledgedSequence: number };
+        },
+      },
+    );
+    const events: AgentEvent[] = ["claude", "codex"].flatMap((harness) => [
+      {
+        id: `${harness}-running`,
+        at: 1,
+        kind: "prompt",
+        promptId: harness,
+        conversationId: harness,
+        text: "Inspect output",
+        status: "running",
+      },
+      ...Array.from(
+        { length: 5 },
+        (_, i): AgentEvent => ({
+          id: `${harness}-${i}`,
+          at: i + 2,
+          kind: "message",
+          promptId: harness,
+          conversationId: harness,
+          messageId: `${harness}-native`,
+          textMode: "delta",
+          text: "😀".repeat(40000),
+          partial: true,
+          tools: [
+            {
+              id: `${harness}-tool-${i}`,
+              name: "shell",
+              input: { command: "echo ok" },
+              result: { output: "ok", isError: false },
+            },
+          ],
+        }),
+      ),
+      {
+        id: `${harness}-completed`,
+        at: 8,
+        kind: "prompt",
+        promptId: harness,
+        conversationId: harness,
+        text: "Inspect output",
+        status: "finished",
+      },
+    ]);
+    try {
+      for (const event of events) journal.append(event);
+      await runner.flushOutbox();
+      expect(journal.ack).toBe(events.length);
+      expect(requests.length).toBeGreaterThan(1);
+      expect(requests.every((bytes) => bytes <= 1048576)).toBe(true);
+      await runner.flushOutbox();
+      const requestCount = requests.length;
+      f.onRpc(async (_row, op) =>
+        op === "checkpoint"
+          ? { watermark: events.length, acknowledgedSequence: events.length, generation: "1" }
+          : undefined,
+      );
+      await f.provider.stop({ sandboxId: row.id });
+      const replay: AgentEvent[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await f.provider.events({ sandboxId: row.id, limit: 3, ...(cursor ? { cursor } : {}) });
+        replay.push(...page.events);
+        expect(page.cursor).not.toBe(cursor);
+        cursor = page.cursor;
+        if (!page.hasMore) break;
+      }
+      expect(replay).toEqual(events);
+      const tail = await f.provider.events({ sandboxId: row.id, ...(cursor ? { cursor } : {}) });
+      expect(tail.events).toEqual([]);
+      expect(tail.cursor).toBe(cursor);
+      expect(tail.hasMore).toBe(false);
+      expect(requests).toHaveLength(requestCount);
+    } finally {
+      journal.close();
+    }
   });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();
