@@ -238,6 +238,13 @@ test("a sized launch keeps the chosen account: the size and the account are both
   await accountSelect.selectOption({ label: "Home (Claude subscription)" });
   await size.selectOption("large");
   await expect(accountSelect).toHaveValue(String(home.id));
+  // Switching the agent re-mounts its own fields only: every field is still there exactly once.
+  await dialog.getByLabel("Agent").selectOption({ label: "Codex" });
+  await dialog.getByLabel("Agent").selectOption({ label: "Claude Code" });
+  for (const label of ["Account", "Model", "Working directory", "Machine size"])
+    await expect(dialog.getByText(label, { exact: true })).toHaveCount(1);
+  await accountSelect.selectOption({ label: "Home (Claude subscription)" });
+  await expect(size).toHaveValue("large");
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
 

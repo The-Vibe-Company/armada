@@ -114,15 +114,21 @@ export function LaunchDialog({
               ))}
             </NativeSelect>
           </div>
-          <AccountField key={JSON.stringify([orgId, harness])} idPrefix={id} harness={harness} accounts={accounts} />
+          <AccountField
+            key={JSON.stringify(["account", orgId, harness])}
+            idPrefix={id}
+            harness={harness}
+            accounts={accounts}
+          />
           <ModelFields
             key={JSON.stringify([orgId, provider, golden, harness])}
             idPrefix={id}
             harness={harness}
             catalog={catalog}
           />
+          {/* Each keyed field has its own key: equal sibling keys make React duplicate fields when the agent changes. */}
           <RepositoryField
-            key={JSON.stringify([orgId, provider, golden])}
+            key={JSON.stringify(["repository", orgId, provider, golden])}
             idPrefix={id}
             repositories={repositories}
             initial={initialRepository}
@@ -130,7 +136,7 @@ export function LaunchDialog({
           />
           {sizing && (
             <MachineSizeField
-              key={JSON.stringify([orgId, provider, golden])}
+              key={JSON.stringify(["size", orgId, provider, golden])}
               idPrefix={id}
               provider={provider}
               policy={sizing.policy}
