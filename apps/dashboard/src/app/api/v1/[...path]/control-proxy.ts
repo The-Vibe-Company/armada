@@ -78,6 +78,54 @@ const PRIVATE_POST_PATHS = new Set([
   "logs/read",
 ]);
 
+type ControlVerb = "GET" | "POST";
+const ORCHESTRATOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Only the actual owner API shapes. No delegated/private callback or arbitrary tail. */
+function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean {
+  if (path[0] !== "orchestrators") return false;
+  if (path.length === 1) return true;
+  if (method === "GET" && path.length === 2 && path[1] === "capabilities") return true;
+  if (!path[1] || !ORCHESTRATOR_ID.test(path[1])) return false;
+  return method === "GET"
+    ? path.length === 2 || (path.length === 3 && path[2] === "events")
+    : path.length === 3 && ["message", "steer", "stop", "resume"].includes(path[2] ?? "");
+}
+
+function fail(status: number, error: string): Response {
+  return NextResponse.json({ error }, { status, headers: { "cache-control": "no-store" } });
+}
+
+/** Bound raw streamed bytes before decoding/forwarding, including absent/chunked length. */
+async function boundedBody(request: Request): Promise<ArrayBuffer | null> {
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) throw Error("too_large");
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > MAX_BODY_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw Error("too_large");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return length ? bytes.buffer : null;
+}
+
 /** Server-side, same-origin forwarding to the configured Armada control API. */
 export async function forwardControl(
   request: Request,
@@ -85,33 +133,49 @@ export async function forwardControl(
   fetchImpl: typeof fetch = fetch,
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
-  if (!upstream) return NextResponse.json({ error: "Armada API is not configured." }, { status: 503 });
+  if (!upstream) return fail(503, "Armada API is not configured.");
+  if (request.method !== "GET" && request.method !== "POST") return fail(404, "Not found.");
+  const method: ControlVerb = request.method;
   const relative = path.join("/");
-  const isPublic = PUBLIC_POST_PATHS.has(relative);
-  if (!isPublic && !PRIVATE_POST_PATHS.has(relative))
-    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  const orchestrator = orchestratorPath(method, path);
+  const isPublic = method === "POST" && PUBLIC_POST_PATHS.has(relative);
+  if (!orchestrator && !(method === "POST" && (isPublic || PRIVATE_POST_PATHS.has(relative))))
+    return fail(404, "Not found.");
   const authorization = request.headers.get("authorization");
-  if (!isPublic && !authorization) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
-  const body = await request.text();
-  if (body.length > MAX_BODY_BYTES) return NextResponse.json({ error: "Request too large." }, { status: 413 });
+  if (!isPublic && !authorization) return fail(401, "Unauthorized.");
+  let body: ArrayBuffer | null = null;
+  try {
+    if (method === "POST") body = await boundedBody(request);
+  } catch (error) {
+    return error instanceof Error && error.message === "too_large"
+      ? fail(413, "Request too large.")
+      : fail(400, "Invalid request body.");
+  }
+  const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
+  if (orchestrator) target.search = new URL(request.url).search;
+  const idempotencyKey = orchestrator && method === "POST" ? request.headers.get("idempotency-key") : null;
   let response: Response;
   try {
-    response = await fetchImpl(new URL(`${CONTROL_PREFIX}${relative}`, upstream), {
-      method: "POST",
+    response = await fetchImpl(target, {
+      method,
       headers: {
         ...(authorization ? { authorization } : {}),
-        "content-type": request.headers.get("content-type") ?? "application/json",
+        ...(idempotencyKey !== null ? { "idempotency-key": idempotencyKey } : {}),
+        ...(method === "POST" ? { "content-type": request.headers.get("content-type") ?? "application/json" } : {}),
         accept: "application/json",
       },
       ...(body ? { body } : {}),
       redirect: "error",
       cache: "no-store",
-      signal: AbortSignal.timeout(
-        ["golden/create", "golden/update", "golden/build/status"].includes(relative) ? 15_000 : 660_000,
-      ),
+      signal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(
+          ["golden/create", "golden/update", "golden/build/status"].includes(relative) ? 15_000 : 660_000,
+        ),
+      ]),
     });
   } catch {
-    return NextResponse.json({ error: "Armada API is unavailable." }, { status: 502 });
+    return fail(502, "Armada API is unavailable.");
   }
   const headers = new Headers();
   const contentType = response.headers.get("content-type");
