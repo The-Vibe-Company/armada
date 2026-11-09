@@ -159,6 +159,7 @@ export async function startServer(
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ConfiguredControlOptions = {
+    publicUrl: config.publicUrl,
     modelAuth,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
     modelUsage: createModelUsageApi(sql),

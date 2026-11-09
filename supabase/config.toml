@@ -15,3 +15,8 @@ enabled = true
 [auth.email.template.magic_link]
 subject = "Your Armada sign-in code and link"
 content_path = "./supabase/templates/magic-link.html"
+
+# New email users need the same code-only treatment.
+[auth.email.template.confirmation]
+subject = "Your Armada sign-in code and link"
+content_path = "./supabase/templates/magic-link.html"

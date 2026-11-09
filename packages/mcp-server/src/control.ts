@@ -108,6 +108,8 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
+  publicUrl?: string;
   orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   credentialBindingRecovery?: CredentialBindingRecovery;
@@ -442,7 +444,8 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
       supabaseUrl: options.supabase.supabaseUrl,
       anonKey: options.supabase.anonKey,
       email,
-      redirectTo: callback.toString(),
+      // API email clients consume the numeric code, not a browser callback.
+      redirectTo: new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
       challenge,
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
@@ -1358,6 +1361,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     createHistoricalSandboxProviderResolver(providers),
   );
   return {
+    ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry },

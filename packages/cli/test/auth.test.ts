@@ -196,6 +196,21 @@ describe("auth commands", () => {
     expect(await auth.session.read()).toEqual(session());
   });
 
+  test("email code refusal explains link consumption without exposing provider details", async () => {
+    const auth = io();
+    auth.readCode = async () => "123456";
+    auth.fetch = async (input) =>
+      String(input).endsWith("/email/start")
+        ? Response.json({})
+        : Response.json({ error: { message: "private provider details" } }, { status: 401 });
+    const result = await capture(["login", "--email", "ada@example.com"], auth);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain("already used");
+    expect(result.err).toContain("Opening the email link uses up the code");
+    expect(result.err).not.toContain("private provider details");
+    expect(await auth.session.read()).toBeNull();
+  });
+
   test("saved API sessions refresh at the Armada origin and remain 0600 on disk", async () => {
     const directory = await mkdtemp(join(tmpdir(), "armada-login-"));
     try {

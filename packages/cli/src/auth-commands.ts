@@ -61,7 +61,7 @@ function promptCode(signal: AbortSignal): Promise<string> {
       reject(new Error("Stopped reading the code."));
     };
     signal.addEventListener("abort", stop, { once: true });
-    lines.question("Code from the email (or click its link): ", (answer) => {
+    lines.question("Code from the email (do not open its link first): ", (answer) => {
       signal.removeEventListener("abort", stop);
       lines.close();
       resolve(answer);
@@ -111,7 +111,10 @@ export async function loginCommand(
         typeof value.refreshToken !== "string" ||
         typeof value.expiresAt !== "string"
       )
-        throw new AuthError("Email code was refused.", "unauthorized");
+        throw new AuthError(
+          "Could not verify this code. It may be incorrect, expired, or already used. Opening the email link uses up the code. Request a new code and enter it without opening the link.",
+          "unauthorized",
+        );
       await io.session.write({
         armadaUrl: origin,
         accessToken: value.accessToken,

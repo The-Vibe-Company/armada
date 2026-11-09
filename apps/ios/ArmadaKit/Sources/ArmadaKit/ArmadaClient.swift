@@ -205,7 +205,9 @@ public actor ArmadaClient {
         try Task.checkCancellation()
         switch response.statusCode {
         case 200..<300: break
-        case 401: throw ArmadaError.signedOut
+        case 401:
+            if route == "auth/email/verify" { throw ArmadaError.emailCodeRefused }
+            throw ArmadaError.signedOut
         case 403: throw ArmadaError.forbidden
         case 400:
             if route == "orchestrators" || route.hasPrefix("orchestrators/") {

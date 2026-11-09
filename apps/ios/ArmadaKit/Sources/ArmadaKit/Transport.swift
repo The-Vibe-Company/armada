@@ -2,9 +2,11 @@ import Foundation
 
 public enum ArmadaError: Error, Sendable, Equatable, LocalizedError {
     case signedOut, forbidden, conflict, unavailable, invalidResponse, secureStorage, invalidOrigin, invalidRequest
+    case emailCodeRefused
     case http(Int)
     public var errorDescription: String? {
         switch self {
+        case .emailCodeRefused: "Could not verify this code. It may be incorrect, expired, or already used. Opening the email link uses up the code. Request a new code and enter it here without opening the link."
         case .signedOut: "Sign in to Armada again."
         case .forbidden: "You do not have access to this resource."
         case .conflict: "Armada could not confirm this operation. Refresh its status before retrying."

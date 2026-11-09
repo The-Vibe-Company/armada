@@ -583,3 +583,14 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     #expect(requests.filter { $0.httpMethod == "POST" && $0.url?.path.contains("/stop") == true }.count == 1)
     #expect(requests.suffix(7).allSatisfy { $0.httpMethod == "GET" && $0.url?.path == "/api/v1/orchestrators/parent-a" })
 }
+
+@Test func emailCodeRefusalExplainsSingleUseWithoutExposingProviderBody() async throws {
+    let client = try ArmadaClient(transport: ScriptedTransport([
+        .init(status: 401, body: "private provider details")
+    ]), storage: MemoryStorage())
+    await #expect(throws: ArmadaError.emailCodeRefused) {
+        try await client.verifyEmail(email: "person@example.test", code: "123456")
+    }
+    #expect(ArmadaError.emailCodeRefused.localizedDescription.contains("already used"))
+    await #expect(throws: ArmadaError.signedOut) { _ = try await client.organizations() }
+}
