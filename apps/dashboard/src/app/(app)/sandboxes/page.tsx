@@ -3,6 +3,7 @@ import { RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { CreatedAt } from "@/components/created-at";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -176,7 +177,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                     {displayUser(directory, sandbox.owner_id, viewer.id)}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground lg:table-cell">
-                    <time dateTime={sandbox.created_at}>{formatDate(sandbox.created_at)}</time>
+                    <CreatedAt iso={sandbox.created_at} now={now.getTime()} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -227,8 +228,4 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatDate(iso: string): string {
-  return `${new Date(iso).toLocaleString("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC`;
 }
