@@ -9,12 +9,12 @@ import { isSelectedOrganization, SELECTED_ORG_COOKIE } from "@/lib/data/selected
 import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import {
-  acceptFailure,
   deliveryOutcome,
   INVITATION_COOKIE,
   isInvitationToken,
   isInviteRole,
   normalizeInviteEmail,
+  refusalMessage,
 } from "@/lib/invitations";
 
 const NOT_CONFIGURED = "The Armada server is not configured for this dashboard.";
@@ -106,7 +106,7 @@ export async function acceptInvitation(_previous: ActionResult | null, _data: Fo
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     // The cookie stays (it expires on its own): changing it here would re-render the page and lose this answer.
-    return fail(acceptFailure(error.status, error.message).message);
+    return fail(refusalMessage(error.reason, error.status, error.retryAfterSeconds));
   }
   jar.delete(INVITATION_COOKIE);
   if (isUuid(orgId)) {

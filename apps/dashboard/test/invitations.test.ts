@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import type { NextRequest } from "next/server";
 import { createInvitationControl } from "../src/lib/control.ts";
 import {
-  acceptFailure,
   deliveryLabel,
   deliveryOutcome,
   expiryLabel,
   INVITATION_COOKIE,
   normalizeInviteEmail,
   parseInvitation,
+  parsePreview,
   pendingInvitations,
-  recipientState,
+  refusalMessage,
 } from "../src/lib/invitations.ts";
 import { safeNextPath } from "../src/lib/routes.ts";
 import { proxy } from "../src/proxy.ts";
@@ -79,17 +79,22 @@ describe("invitation presentation", () => {
     expect(expiryLabel("2026-11-09T11:00:00Z", now)).toBe("Expired");
   });
 
-  test("a refused acceptance says what to do next", () => {
-    expect(acceptFailure(403, "x").kind).toBe("wrong_account");
-    expect(acceptFailure(404, "x").message).toContain("resend");
-    expect(acceptFailure(409, "You are already a member of Acme.").message).toBe("You are already a member of Acme.");
-    expect(acceptFailure(undefined, "secret detail").message).not.toContain("secret");
+  test("the preview names the org only in the states the server may name it in", () => {
+    const context = { orgId: ORG, orgName: "Acme", role: "admin", expiresAt: "2026-11-12T12:00:00Z" };
+    expect(parsePreview({ state: "ready", context })).toEqual({ state: "ready", context });
+    // A wrong-address preview never carries the org, even if a server sent it.
+    expect(parsePreview({ state: "wrong_email", context })).toEqual({ state: "wrong_email", context: null });
+    expect(parsePreview({ state: "ready", context: null })).toBeNull();
+    expect(parsePreview({ state: "joined", context })).toBeNull();
   });
 
-  test("the page offers to join only with the link's cookie and a session", () => {
-    expect(recipientState(false, "carol@example.com").kind).toBe("missing");
-    expect(recipientState(true, null).kind).toBe("sign_in");
-    expect(recipientState(true, "carol@example.com")).toEqual({ kind: "ready", signedInAs: "carol@example.com" });
+  test("a refusal says what to do next, from the server's reason before its status", () => {
+    expect(refusalMessage("wrong_email", 403)).toContain("Sign in with the address it was sent to");
+    expect(refusalMessage("unverified_email", 403)).toContain("not verified");
+    expect(refusalMessage("expired", 404)).toContain("resend");
+    expect(refusalMessage("rate_limited", 409, 90)).toBe("Too many attempts. Try again in 2 min.");
+    expect(refusalMessage(undefined, 401)).toContain("Sign in again");
+    expect(refusalMessage(undefined, 503)).toContain("Try again shortly");
   });
 });
 
@@ -140,6 +145,7 @@ describe("invitation control client", () => {
         const route = String(url).split("/api/v1/")[1];
         if (route === "org/invitations/list") return Response.json({ invitations: [dto()] });
         if (route === "org/invitations/accept") return Response.json({ orgId: ORG, accepted: true });
+        if (route === "org/invitations/preview") return Response.json({ state: "not_found", context: null });
         return Response.json({ invitation: dto() });
       }) as typeof fetch,
     });
@@ -147,16 +153,33 @@ describe("invitation control client", () => {
     await control.list(ORG);
     await control.resend({ org: ORG, id: "i" });
     await control.revoke({ org: ORG, id: "i" });
+    expect(await control.preview(TOKEN)).toEqual({ state: "not_found", context: null });
     expect(await control.accept(TOKEN)).toEqual({ orgId: ORG });
     expect(calls.map((call) => call.url.replace("https://armada.example/api/v1/", ""))).toEqual([
       "org/invitations/create",
       "org/invitations/list",
       "org/invitations/resend",
       "org/invitations/revoke",
+      "org/invitations/preview",
       "org/invitations/accept",
     ]);
     expect(calls.every((call) => call.auth === "Bearer user-jwt" && !call.url.includes(TOKEN))).toBe(true);
-    expect(calls[4]?.body).toEqual({ token: TOKEN });
+    expect(calls.slice(4).map((call) => call.body)).toEqual([{ token: TOKEN }, { token: TOKEN }]);
+  });
+
+  test("a refusal carries the server's reason and retry delay", async () => {
+    const control = createInvitationControl({
+      serverUrl: "https://armada.example",
+      token: "user-jwt",
+      fetch: (async () =>
+        Response.json(
+          { error: { code: "conflict", message: "Slow down.", reason: "rate_limited", retryAfterSeconds: 30 } },
+          { status: 409 },
+        )) as unknown as typeof fetch,
+    });
+    const error = await control.accept(TOKEN).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ status: 409, reason: "rate_limited", retryAfterSeconds: 30, message: "Slow down." });
+    expect(String((error as Error).message)).not.toContain(TOKEN);
   });
 
   test("an answer that is not an invitation, or an unconfirmed accept, is an error, never a success", async () => {

@@ -1,10 +1,11 @@
 /**
  * Organization invitations (#641), as the dashboard shows them: the admin who invites, resends and revokes, and the
- * person who accepts. The Armada server owns the invitation (#640, control API v1): five authenticated POSTs under
- * `/api/v1/org/invitations/`. The dashboard never writes an invitation or a membership itself.
+ * person who previews and accepts. The Armada server owns the invitation (#640, control API v1): authenticated POSTs
+ * under `/api/v1/org/invitations/`. The dashboard never writes an invitation or a membership itself.
  *
- * The answers are parsed here, field by field, into what the pages show. The wire types themselves come from
- * `@armada/core` once #640 is merged; this file does not redeclare them.
+ * The answers are parsed here, field by field, into what the pages show. BINDING POINT: until #640's
+ * `packages/core/src/invitations.ts` is merged, the shapes below mirror its v1 contract for parsing only; once it is,
+ * they become `import type` from `@armada/core` and only the runtime parsers stay.
  */
 
 export type InviteRole = "member" | "admin";
@@ -141,38 +142,88 @@ export function expiryLabel(expiresAt: string, now: Date): string {
   return days === 1 ? "Expires tomorrow" : `Expires in ${days} days`;
 }
 
-/**
- * Why an acceptance failed, from the server's status, for the recipient: what to do next. The server's own message
- * is shown for a conflict (already a member, used, too many tries), where it is the most precise.
- */
-export type AcceptFailure = {
-  kind: "invalid" | "session" | "wrong_account" | "gone" | "conflict" | "unavailable";
-  message: string;
-};
+/** What the server's recipient preview says about this invitation for the signed-in person (#640). */
+export type RecipientPreviewState =
+  | "ready"
+  | "not_found"
+  | "expired"
+  | "revoked"
+  | "used"
+  | "wrong_email"
+  | "unverified_email"
+  | "already_member";
+const WITH_CONTEXT = ["ready", "expired", "revoked", "used", "already_member"] as const;
+const WITHOUT_CONTEXT = ["not_found", "wrong_email", "unverified_email"] as const;
 
-export function acceptFailure(status: number | undefined, serverMessage: string | undefined): AcceptFailure {
-  switch (status) {
-    case 400:
-      return { kind: "invalid", message: "This invitation link is incomplete. Open the link from the email again." };
-    case 401:
-      return { kind: "session", message: "Your session ended. Sign in again, then accept." };
-    case 403:
-      return {
-        kind: "wrong_account",
-        message:
-          "This invitation is for another email address, or your address is not verified. Sign in with the invited address.",
-      };
-    case 404:
-      return {
-        kind: "gone",
-        message:
-          "This invitation is no longer valid: it expired, was revoked, was already used or was replaced by a newer email. Ask an admin to resend it.",
-      };
-    case 409:
-      return { kind: "conflict", message: serverMessage?.trim() || "This invitation cannot be accepted right now." };
-    default:
-      return { kind: "unavailable", message: "Armada could not accept the invitation right now. Try again shortly." };
+/** The org, role and expiry, shown only once the server matched the signed-in, verified address. */
+export type ConsentContext = { orgId: string; orgName: string; role: InviteRole; expiresAt: string };
+
+export type RecipientPreview =
+  | { state: (typeof WITH_CONTEXT)[number]; context: ConsentContext }
+  | { state: (typeof WITHOUT_CONTEXT)[number]; context: null };
+
+function parseContext(value: unknown): ConsentContext | null {
+  if (!isRecord(value)) return null;
+  const { orgId, orgName, role, expiresAt } = value;
+  if (typeof orgId !== "string" || typeof orgName !== "string" || !isInviteRole(role)) return null;
+  if (typeof expiresAt !== "string" || Number.isNaN(Date.parse(expiresAt))) return null;
+  return { orgId, orgName, role, expiresAt };
+}
+
+/** The preview answer, or null when it is not one. Context is dropped whenever the state must not carry it. */
+export function parsePreview(value: unknown): RecipientPreview | null {
+  if (!isRecord(value)) return null;
+  const state = value.state;
+  if (WITHOUT_CONTEXT.includes(state as (typeof WITHOUT_CONTEXT)[number]))
+    return { state: state as (typeof WITHOUT_CONTEXT)[number], context: null };
+  if (WITH_CONTEXT.includes(state as (typeof WITH_CONTEXT)[number])) {
+    const context = parseContext(value.context);
+    return context ? { state: state as (typeof WITH_CONTEXT)[number], context } : null;
   }
+  return null;
+}
+
+/** What the acceptance page shows. Opening it never joins: the button of `preview` / `ready` is the only way. */
+export type RecipientState =
+  | { kind: "missing" }
+  | { kind: "sign_in" }
+  | { kind: "unavailable"; message: string }
+  | { kind: "preview"; preview: RecipientPreview; signedInAs: string };
+
+/**
+ * Why an acceptance (or a preview) was refused, from the server's `error.reason`, in words that say what to do next.
+ * Without a reason (a session or server failure), the status decides.
+ */
+export function refusalMessage(
+  reason: string | undefined,
+  status: number | undefined,
+  retryAfterSeconds?: number,
+): string {
+  switch (reason) {
+    case "not_found":
+    case "invalid":
+      return "This invitation link is not valid. Open the latest invitation email, or ask an admin to resend it.";
+    case "expired":
+      return "This invitation has expired. Ask an admin of the organization to resend it.";
+    case "revoked":
+      return "This invitation was revoked by an admin of the organization.";
+    case "used":
+      return "This invitation was already accepted.";
+    case "already_member":
+      return "You are already a member of this organization.";
+    case "wrong_email":
+      return "This invitation is for another email address. Sign in with the address it was sent to.";
+    case "unverified_email":
+      return "Your email address is not verified yet. Sign in again with the emailed link or code, then accept.";
+    case "personal_login_required":
+      return "Accept with your own signed-in account, not a service token.";
+    case "rate_limited":
+      return retryAfterSeconds && retryAfterSeconds > 0
+        ? `Too many attempts. Try again in ${Math.ceil(retryAfterSeconds / 60)} min.`
+        : "Too many attempts. Try again in a few minutes.";
+  }
+  if (status === 401) return "Your session ended. Sign in again, then accept.";
+  return "Armada could not answer for this invitation right now. Try again shortly.";
 }
 
 /**
@@ -199,12 +250,3 @@ export const invitationCookieOptions = (secure: boolean) => ({
   path: "/",
   maxAge: INVITATION_COOKIE_MAX_AGE,
 });
-
-/** What the acceptance page shows before the explicit accept. Opening it never joins. */
-export type RecipientState = { kind: "missing" } | { kind: "sign_in" } | { kind: "ready"; signedInAs: string };
-
-export function recipientState(hasToken: boolean, viewerEmail: string | null): RecipientState {
-  if (!hasToken) return { kind: "missing" };
-  if (viewerEmail === null) return { kind: "sign_in" };
-  return { kind: "ready", signedInAs: viewerEmail };
-}

@@ -82,6 +82,8 @@ type State = {
   nextDelivery: "not_configured" | "pending" | "sent" | "failed";
   /** Every `org/invitations/*` call: its route, the body as sent and whether it carried a session. */
   invitationCalls: { route: string; body: Row; authorized: boolean }[];
+  /** Accounts whose email address is not verified yet. */
+  unverifiedEmails: string[];
 };
 
 function seed(): State {
@@ -161,6 +163,7 @@ function seed(): State {
     invitations: [],
     nextDelivery: "sent",
     invitationCalls: [],
+    unverifiedEmails: [],
     connections: [
       mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
         url: "https://docs.acme.test/mcp",
@@ -835,13 +838,43 @@ function invitations(route: string, body: Row, request: Request): Response {
   state.invitationCalls.push({ route, body, authorized: Boolean(userId) });
   if (!userId) return controlFail(401, "unauthorized", "Sign in.");
   const fresh = () => `mock-invitation-${++sequence}-0123456789abcdef`;
-  if (route === "accept") {
+  if (route === "preview" || route === "accept") {
     const row = state.invitations.find((item) => item.token === body.token);
-    if (!row || row.status !== "pending" || Date.parse(String(row.expiresAt)) <= Date.now())
-      return controlFail(404, "not_found", "Invitation not found.");
-    if (users.get(userId)?.email !== row.email)
-      return controlFail(403, "forbidden", "This invitation is for another email address.");
-    if (isMember(row.orgId, userId)) return controlFail(409, "conflict", "You are already a member of this org.");
+    const email = users.get(userId)?.email;
+    // The server's order: the address must match before anything about the org is said.
+    const reason = !row
+      ? "not_found"
+      : row.email !== email
+        ? "wrong_email"
+        : state.unverifiedEmails.includes(String(email))
+          ? "unverified_email"
+          : row.status === "revoked"
+            ? "revoked"
+            : row.status === "accepted"
+              ? "used"
+              : Date.parse(String(row.expiresAt)) <= Date.now()
+                ? "expired"
+                : isMember(row.orgId, userId)
+                  ? "already_member"
+                  : null;
+    if (route === "preview") {
+      const named = row && reason !== "not_found" && reason !== "wrong_email" && reason !== "unverified_email";
+      const org = named ? state.orgs.find((item) => item.id === row.orgId) : null;
+      return json({
+        state: reason ?? "ready",
+        context: org ? { orgId: org.id, orgName: org.name, role: row?.role, expiresAt: row?.expiresAt } : null,
+      });
+    }
+    if (reason || !row) {
+      const status =
+        reason === "wrong_email" || reason === "unverified_email"
+          ? 403
+          : reason === "used" || reason === "already_member"
+            ? 409
+            : 404;
+      const code = status === 403 ? "forbidden" : status === 409 ? "conflict" : "not_found";
+      return json({ error: { code, message: "The invitation cannot be accepted.", reason } }, status);
+    }
     row.status = "accepted";
     state.members.push({ org_id: row.orgId, user_id: userId, role: row.role, created_at: new Date().toISOString() });
     return json({ orgId: row.orgId, accepted: true });
@@ -855,9 +888,22 @@ function invitations(route: string, body: Row, request: Request): Response {
     if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email) || (body.role !== "member" && body.role !== "admin"))
       return controlFail(400, "invalid", "An invitation needs an email and a role.");
     const member = [...users.values()].find((user) => user.email === email);
-    if (member && isMember(org.id, member.id)) return controlFail(409, "conflict", `${email} is already a member.`);
+    if (member && isMember(org.id, member.id))
+      return json(
+        { error: { code: "conflict", message: `${email} is already a member.`, reason: "already_member" } },
+        409,
+      );
     if (state.invitations.some((row) => row.orgId === org.id && row.email === email && row.status === "pending"))
-      return controlFail(409, "conflict", `${email} already has a pending invitation. Resend it instead.`);
+      return json(
+        {
+          error: {
+            code: "conflict",
+            message: `${email} already has a pending invitation. Resend it instead.`,
+            reason: "pending_exists",
+          },
+        },
+        409,
+      );
     const row: Row = {
       id: id(++sequence),
       orgId: org.id,
@@ -872,7 +918,7 @@ function invitations(route: string, body: Row, request: Request): Response {
     return json({ invitation: invitationDto(row) });
   }
   const row = state.invitations.find((item) => item.id === body.id && item.orgId === org.id);
-  if (!row || row.status !== "pending") return controlFail(404, "not_found", "Invitation not found.");
+  if (row?.status !== "pending") return controlFail(404, "not_found", "Invitation not found.");
   if (route === "resend") {
     row.token = fresh();
     row.delivery = state.nextDelivery;
@@ -1662,6 +1708,16 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/fail-sandbox-connections") {
     failSandboxConnections = true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/unverified-email") {
+    state.unverifiedEmails.push(String(body.email));
+    return json({ ok: true });
+  }
+  /** Marks an invitation as the server would after a revoke or an acceptance elsewhere. */
+  if (url.pathname === "/__test/invitation-status") {
+    const row = state.invitations.find((item) => item.token === body.token);
+    if (row) row.status = body.status;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/invitation-delivery") {

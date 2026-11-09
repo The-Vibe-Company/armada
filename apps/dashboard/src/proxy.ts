@@ -23,8 +23,8 @@ function landing(request: NextRequest, carry?: NextResponse): NextResponse {
 }
 
 /**
- * The emailed invitation link carries its token in the query. It moves into an HTTP-only cookie scoped to the
- * acceptance page and the visitor lands on the same page without the query, so the token never reaches a login
+ * The emailed invitation link carries its token in the query. It moves into a short-lived HTTP-only cookie (path `/`,
+ * see `invitationCookieOptions`) and the visitor lands on the same page without the query, so the token never reaches a login
  * `next`, a Referer, the history, analytics or the rendered page. A malformed token is dropped. Nothing is accepted.
  */
 function stashInvitation(request: NextRequest): NextResponse {

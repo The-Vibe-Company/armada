@@ -76,59 +76,97 @@ test("a server without email is reported as such, and invalid or duplicate invit
   await expect(alert(page)).toContainText("already a member");
 });
 
-test("the recipient signs in from the link and joins only by accepting", async ({ page }) => {
-  await mock("seed-invitation", { email: "carol@example.com", token: TOKEN });
+test("the recipient signs in from the link, sees the org and joins only by accepting", async ({ page }) => {
+  await mock("seed-invitation", { email: "carol@example.com", token: TOKEN, role: "admin" });
   await page.goto(`/invitations/accept?token=${TOKEN}`);
   // The token leaves the address bar at once; the page itself never shows it.
   await expect(page).toHaveURL(/\/invitations\/accept$/);
   await expect(page.getByRole("heading", { name: "You are invited to an organization on Armada" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(TOKEN);
 
-  await page.getByRole("link", { name: "Sign in to accept" }).click();
+  await page.getByRole("link", { name: "Sign in to continue" }).click();
   await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
+  await expect(page.getByText("Use the address your invitation was sent to.")).toBeVisible();
   await page.getByLabel("Email").fill("carol@example.com");
   await page.getByRole("button", { name: "Email me a sign-in link" }).click();
   await page.getByLabel("Code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL("**/invitations/accept");
 
-  await expect(page.getByRole("heading", { name: "Accept your invitation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
+  await expect(page.getByText("You are invited as an admin.")).toBeVisible();
   await page.reload();
-  // Opening and reloading the page never accepts.
-  expect((await mockState()).invitationCalls).toEqual([]);
+  // Opening and reloading the page only previews.
+  expect((await mockState()).invitationCalls.map((call) => call.route)).toEqual(["preview", "preview"]);
+  expect((await mockState()).members.some((member) => member.user_id === CAROL)).toBe(false);
 
-  await page.getByRole("button", { name: "Accept and join" }).click();
+  await page.getByRole("button", { name: "Accept and join Acme" }).click();
   await page.waitForURL(/\/orgs\/[0-9a-f-]+\?joined=1$/);
-  await expect(page.getByText("You joined Acme as a member.")).toBeVisible();
+  await expect(page.getByText("You joined Acme as an admin.")).toBeVisible();
   await expect(page.locator('[data-member="carol@example.com"]')).toBeVisible();
-  const calls = (await mockState()).invitationCalls;
-  expect(calls.map((call) => call.route)).toEqual(["accept"]);
-  expect(calls[0]?.body).toEqual({ token: TOKEN });
+  // The org page an admin lands on lists invitations; the recipient flow itself made these calls only.
+  const calls = (await mockState()).invitationCalls.filter((call) => call.route !== "list");
+  expect(calls.map((call) => call.route)).toEqual(["preview", "preview", "accept"]);
+  expect(calls.every((call) => JSON.stringify(call.body) === JSON.stringify({ token: TOKEN }))).toBe(true);
 
   // The link is spent: this browser forgot it.
   await page.goto("/invitations/accept");
   await expect(page.getByRole("heading", { name: "Open your invitation link" })).toBeVisible();
 });
 
-test("another account is told to switch, and comes back to the invitation", async ({ page }) => {
+test("another account sees no org, is told to switch, and comes back to the invitation", async ({ page }) => {
   await mock("seed-invitation", { email: "carol@example.com", token: TOKEN });
   await signIn(page, "bob@example.com");
   await page.goto(`/invitations/accept?token=${TOKEN}`);
-  await expect(page.getByText("You are signed in as bob@example.com")).toBeVisible();
-  await page.getByRole("button", { name: "Accept and join" }).click();
-  await expect(alert(page)).toContainText("This invitation is for another email address");
+  await expect(page.getByRole("heading", { name: "Signed in with another account" })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("Acme");
+  await expect(page.getByRole("button", { name: /Accept/ })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Use another account" }).click();
   await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
 });
 
-test("an expired, revoked or replaced link says to ask for a new one", async ({ page }) => {
-  await mock("seed-invitation", { email: "carol@example.com", token: TOKEN, expiresInMs: -1000 });
+test("expired, revoked, used, unverified and already-member links each say what to do", async ({ page }) => {
+  const visit = async (token: string) => page.goto(`/invitations/accept?token=${token}`);
+  await signIn(page, "carol@example.com", "/orgs");
+
+  await mock("seed-invitation", { email: "carol@example.com", token: `${TOKEN}1`, expiresInMs: -1000 });
+  await visit(`${TOKEN}1`);
+  await expect(page.getByRole("heading", { name: "Your invitation to Acme has expired" })).toBeVisible();
+
+  await mock("seed-invitation", { email: "carol@example.com", token: `${TOKEN}2` });
+  await mock("invitation-status", { token: `${TOKEN}2`, status: "revoked" });
+  await visit(`${TOKEN}2`);
+  await expect(page.getByRole("heading", { name: "Your invitation to Acme was revoked" })).toBeVisible();
+
+  await mock("seed-invitation", { email: "carol@example.com", token: `${TOKEN}3` });
+  await mock("invitation-status", { token: `${TOKEN}3`, status: "accepted" });
+  await visit(`${TOKEN}3`);
+  await expect(page.getByRole("heading", { name: "This invitation was already accepted" })).toBeVisible();
+
+  await visit("unknown-token-0123456789");
+  await expect(page.getByRole("heading", { name: "This invitation link is not valid" })).toBeVisible();
+
+  await mock("seed-invitation", { email: "bob@example.com", token: `${TOKEN}4` });
+  await page.context().clearCookies();
+  await signIn(page, "bob@example.com");
+  await visit(`${TOKEN}4`);
+  await expect(page.getByRole("heading", { name: "You are already in Acme" })).toBeVisible();
+
+  await mock("unverified-email", { email: "bob@example.com" });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Verify your email first" })).toBeVisible();
+  expect((await mockState()).invitationCalls.some((call) => call.route === "accept")).toBe(false);
+});
+
+test("a refusal at accept time is explained and nothing is joined", async ({ page }) => {
+  await mock("seed-invitation", { email: "carol@example.com", token: TOKEN });
   await signIn(page, "carol@example.com", "/orgs");
   await page.goto(`/invitations/accept?token=${TOKEN}`);
-  await page.getByRole("button", { name: "Accept and join" }).click();
-  await expect(alert(page)).toContainText("no longer valid");
-  await expect(alert(page)).toContainText("Ask an admin to resend it.");
+  // Revoked between the preview and the click.
+  await mock("invitation-status", { token: TOKEN, status: "revoked" });
+  await page.getByRole("button", { name: "Accept and join Acme" }).click();
+  await expect(alert(page)).toContainText("This invitation was revoked by an admin of the organization.");
   expect((await mockState()).members.some((member) => member.user_id === CAROL)).toBe(false);
 });
 
