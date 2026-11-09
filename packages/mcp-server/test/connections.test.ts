@@ -640,7 +640,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
       (await call(p.admin, "set-enabled", { org: p.org, id: shared.id, enabled: false })).body.connection.status,
     ).toBe("disabled");
     expect(
-      (await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections[0]?.status,
+      (await call(p.admin, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections[0]?.status,
     ).toBe("disabled");
     expect(
       (await call(p.admin, "set-enabled", { org: p.org, id: shared.id, enabled: true })).body.connection.status,
