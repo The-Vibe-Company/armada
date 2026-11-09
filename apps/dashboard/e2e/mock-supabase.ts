@@ -1465,7 +1465,11 @@ function accounts(route: string, body: Row, request: Request): Response {
   }
   if (route === "creds/accounts/default") {
     const harness = MODEL_KINDS[String(target.kind)];
-    for (const row of state.credentials.filter((item) => mine(item) && MODEL_KINDS[String(item.kind)] === harness))
+    // As #603: every same-harness row of the owner, tombstones included, so a removed default stops blocking.
+    for (const row of state.credentials.filter(
+      (item) =>
+        item.scope === scope && item.owner_id === owner && model(item) && MODEL_KINDS[String(item.kind)] === harness,
+    ))
       row.is_default = row === target;
     return json({ account: accountDto(target) });
   }
