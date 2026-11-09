@@ -67,3 +67,16 @@ The App ID and a private key are **not** needed: nothing uses installation token
 The two services must hold the same client id and secret and the same `ARMADA_ENCRYPTION_KEY`. Apply the migrations `supabase/migrations/20261108180000_github_connections.sql`, `20261108190000_revoke_default_grants.sql`, `20261108200000_token_hash_column_grants.sql` and `20261108210000_github_installations.sql` to the Supabase project. `20261108190000` removes Supabase's default table grants, without which a user JWT can read `refresh_token_enc`. `20261108210000` adds the `installations` column and the `installation_list` argument of `save_github_connection`; without it Connect cannot store which accounts have the App. If either variable is missing, Settings says GitHub is not configured and launches report GitHub as `unavailable`.
 
 Nothing secret is printed or logged. Tokens are masked in command output (`gh[pousr]_...`), kept out of goldens, and the refresh token only ever exists as ciphertext. When GitHub refuses the callback or the token request, the dashboard logs only the OAuth `error` and `error_description` (for example `redirect_uri_mismatch`), so a misconfigured App can be diagnosed without a code, a state or a token in the log.
+
+## Reconnect cache deployment (#585)
+
+Apply `20261110110100_github_reconnect_cache.sql` after the existing migrations,
+then deploy the server update that publishes profiles on the refresh transaction.
+Drain older server replicas before treating the concurrency fence as fully active:
+they publish profiles outside that transaction. No dashboard or CLI rollout is
+required. The RPC signature and encrypted-only column grants are unchanged.
+
+Reconnect now takes the refresh advisory lock and clears both cached access-token
+columns in the same transaction that replaces the identity and refresh token.
+A refresh already holding the lock finishes before reconnect saves the new grant;
+subsequent launches resolve that new grant, never the previous account's cache.

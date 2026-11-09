@@ -167,7 +167,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       if (!sql.transaction) return work(refreshStore(sql), await readGitHubConnection(sql, userId));
       return sql.transaction(async (transaction) => {
         await transaction.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
-        return work(refreshStore(transaction), await readGitHubConnection(transaction, userId));
+        return work(refreshStore(transaction, true), await readGitHubConnection(transaction, userId));
       });
     },
 
@@ -279,7 +279,7 @@ async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGit
   };
 }
 
-function refreshStore(sql: Sql): GitHubConnectionStore {
+function refreshStore(sql: Sql, transactional = false): GitHubConnectionStore {
   return {
     getGitHubConnection: (userId) => readGitHubConnection(sql, userId),
     withGitHubConnectionRefresh: async () => {
@@ -313,11 +313,21 @@ function refreshStore(sql: Sql): GitHubConnectionStore {
       return result.rows.length > 0;
     },
     async updateGitHubProfile(userId, profile) {
-      await sql.query(
-        `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
-         where user_id = $1`,
-        [userId, profile.id, profile.login, profile.name],
-      );
+      // Profile sync is best-effort, but an SQL error must not roll back a
+      // refresh token GitHub has already consumed. Keep the advisory lock held.
+      if (transactional) await sql.query("savepoint github_profile");
+      try {
+        await sql.query(
+          `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
+           where user_id = $1`,
+          [userId, profile.id, profile.login, profile.name],
+        );
+      } catch (error) {
+        if (transactional) await sql.query("rollback to savepoint github_profile");
+        throw error;
+      } finally {
+        if (transactional) await sql.query("release savepoint github_profile");
+      }
     },
   };
 }
