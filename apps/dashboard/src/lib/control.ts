@@ -328,6 +328,7 @@ async function readMcpJson(response: Response): Promise<Record<string, unknown> 
 function failure(status: number, payload: Record<string, unknown> | null, feature: string): ControlError {
   const error = payload && isRecord(payload.error) ? payload.error : null;
   const message = typeof error?.message === "string" ? error.message.slice(0, 300) : null;
+  const code = typeof error?.code === "string" ? error.code : undefined;
   const detail = {
     reason: typeof error?.reason === "string" ? error.reason : undefined,
     retryAfterSeconds:
@@ -335,11 +336,11 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
         ? error.retryAfterSeconds
         : undefined,
   };
-  const make = (text: string) => new ControlError(text, status, undefined, detail);
-  if (status === 401) return make("The Armada server refused this session. Sign in again.");
+  const make = (text: string, withCode = true) => new ControlError(text, status, withCode ? code : undefined, detail);
+  if (status === 401) return make("The Armada server refused this session. Sign in again.", false);
   if (status === 403) return make(message ?? "You are not allowed to do that.");
   if ((status === 404 || status === 405) && (!message || message === "Unknown route.") && !detail.reason) {
-    return make(`This Armada server does not offer ${feature} yet.`);
+    return make(`This Armada server does not offer ${feature} yet.`, false);
   }
   if (status >= 500) return make(message ?? "The Armada server could not complete the request.");
   return make(message ?? `The Armada server answered ${status}.`);

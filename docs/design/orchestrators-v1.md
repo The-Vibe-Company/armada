@@ -18,7 +18,7 @@ ordinary launcher services; Armada does not gain an automatic merge queue.
 | `provider-modal/src/provider.ts`, `store.ts`, `snapshot.ts`; `agent-runtime/src/state.ts`, `journal.ts`, `claude.ts`, `codex.ts` | Logical sandbox restore, physical generation, checkpoint watermark and durable event ACK, native harness state. Uncertain checkpoint preserves source. Do not build duplicate native history storage or treat physical exit as verified checkpoint. |
 | `mcp-server/src/caller.ts`; `auth/src/verify.ts`, `service-tokens.ts` | Per-request authentication/current memberships and hashed revocable tokens exist, but caller is user/org authority, not child-scoped delegation. Add a separate principal branch; never mint a normal broad service token for an agent. |
 | `mcp-server/src/control.ts`, `tools.ts`, `tool-api.ts`, `turns.ts` | Shared control/MCP operations, sandbox visibility, prompt status/wait. Extend shared service, not independent mobile/dashboard policy. |
-| `mcp-server/src/launch-credentials.ts`; `core/src/credentials.ts` | Harness credential selection user-over-org exists; **named model-account selection does not exist in LaunchRequest**. Add authorized account reference resolution before exposing create. MCP connections are not model accounts. |
+| `mcp-server/src/launch-credentials.ts`; `core/src/credentials.ts` | Harness credential selection user-over-org exists; **#612 supplies named credentialId/credentialVersion selection** (pending main integration). Consume its resolveCredentials adapter; do not duplicate account schema. #604 native private-state pipeline is incomplete; do not claim support. MCP connections are not model accounts. |
 | `cli/src/skill-install.ts` (#633 / merged PR #639, `9f47264e4c3a9a098906162815a2f1b4949030ba`) | `armada skill install --project DIR --yes --revision SHA` installs armada-manager, ship-pr-dev, review-code-dev, capture-learning-tools for both harnesses from public GitHub, refuses overwrite/symlinks. Reuse this exact installer. |
 | `mcp-server/src/mcp-integration.ts`, `mcp-lifecycle.ts`, `mcp-native.ts`; `core/src/connections.ts` | Existing MCP preparation/grant lifecycle remains for external integrations; orchestrator authority is a separate restricted Armada connection, never an external OAuth refresh token copy. |
 
@@ -113,18 +113,16 @@ resource ownership, allowlist and limits on **each** request. Unknown methods de
 Owner-only APIs reject delegated principals except bounded own wait registration
 and renewal. They cannot read another parent's chat or events.
 
-Use random opaque 15-minute access tokens, hash at rest, revocable family, no
-refresh token in guest. Server rotates through private runtime MCP configuration
-(`Provider.configureMcp`); no self-mint/renew endpoint. **This existing port proves
-file/config delivery, not live client reload** (`mcp-server/src/mcp-native.ts`).
-Initial implementation rotates only at a quiescent turn boundary and requires
-verified native-client reconnect/config acknowledgement before the next turn.
-A running turn exceeding token expiry loses delegated tool admission (explicit
-expired-grant response), not native history or its activity protection. It may
-finish or yield; no automatic interrupt/restart masquerading as live rotation.
-A later private runtime broker can provide transparent rotation, but is not an
-assumed existing mechanism. Revalidate membership/consent before rotation; failed
-delivery or reconnect blocks new tool/turn admission.
+Use a random opaque bounded epoch grant (at most 24 hours), hashed at rest,
+with a revocable family revision and physical-generation binding. Every tool
+request rechecks membership, scope, parent state and child/resource ownership.
+There is no public renewal/mint route and no copied browser refresh token.
+Private transport delivery and initial session ACK precede admission; configureMcp
+alone does not prove live reload. Long native turns do not depend on 15-minute
+configuration rotation. Runtime must drain and scrub before the epoch deadline,
+then establish a new acknowledged session at a proven native continuity boundary.
+No unbounded token or assumed hot reload is permitted. These ports remain off
+until operator-run native conformance proves this behavior on each backend.
 Bind to current physical generation and revoke previous token before restored
 compute admits work. Stop/revoke/org removal revokes family, cancels queued
 launches, disallows new messages; in-flight provider operations reconcile under
@@ -141,13 +139,12 @@ grant before rotation. Audit principal/action/target/receipt only, not secret te
 ## Inactivity, limits and recovery
 
 Defaults exported in core: idle 2h, configurable 15m–24h inclusive; 3 active
-children and 10 child starts per rolling 24h. Owner can lower limits, never exceed
-server/org caps (initial caps equal defaults). Count pending/uncertain starts;
-reserve atomically with idempotency receipt before provider I/O; release only on
-confirmed non-allocation or final stop. Parent starts/resumes: cap 10 per rolling
-24h per owner, one active machine per orchestrator, 3 active orchestrators per
-owner. No automatic monetary estimate is promised; hard start/concurrency limits
-and provider TTL are the first cost fence. Resume counts as a start.
+children as an optional owner-configurable concurrency choice. There is no
+synthetic daily-start quota, provider allocation cap, reserve or Boat quota
+pacing. Actual provider refusal is reported truthfully. Count pending/uncertain
+starts when an owner selects a concurrency limit; reserve atomically with an
+idempotency receipt before provider I/O and release only on confirmed
+non-allocation or final stop. Provider TTL is separate from concurrency.
 
 Actual activity is admitted owner message/steer, queued/running prompt, tool
 execution, unfinished review/task, active child, or validated CI/external wait.
@@ -244,7 +241,7 @@ ships one focused PR, no production actions, no merges; parent dependency #647.
    stale generation cannot publish, separate-target key reuse is independent while
    same-target changed payload conflicts, checkpoint loss blocks, native ID survives,
    skill conflict fails before prompt, removal during preparation revokes grant;
-   expiry during a long native turn denies tools safely, quiescent reconnect uses
+   bounded epoch remains usable throughout a long native turn, quiescent reconnect uses
    new token while preserving native ID (no assumed live config reload).
    Require opt-in nonproduction Boat/Modal harness continuity conformance before
    marking each backend enabled; do not infer it from mock success.

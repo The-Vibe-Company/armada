@@ -245,6 +245,8 @@ export type Database = {
           created_at: string;
           updated_at: string;
           provider: Database["public"]["Enums"]["sandbox_provider"];
+          expected_snapshot_id: string | null;
+          revision_known: boolean;
         };
         Insert: {
           id: string;
@@ -268,6 +270,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
+          expected_snapshot_id?: string | null;
+          revision_known?: boolean;
         };
         Update: {
           id?: string;
@@ -291,6 +295,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
+          expected_snapshot_id?: string | null;
+          revision_known?: boolean;
         };
         Relationships: [
           {
@@ -323,6 +329,10 @@ export type Database = {
           owner_id: string | null;
           created_at: string;
           receipt: Json | null;
+          expected_snapshot_id: string | null;
+          expected_sandbox_id: string | null;
+          revision_known: boolean;
+          operation_kind: string;
         };
         Insert: {
           id?: string;
@@ -330,6 +340,10 @@ export type Database = {
           owner_id?: string | null;
           created_at?: string;
           receipt?: Json | null;
+          expected_snapshot_id?: string | null;
+          expected_sandbox_id?: string | null;
+          revision_known?: boolean;
+          operation_kind?: string;
         };
         Update: {
           id?: string;
@@ -337,6 +351,10 @@ export type Database = {
           owner_id?: string | null;
           created_at?: string;
           receipt?: Json | null;
+          expected_snapshot_id?: string | null;
+          expected_sandbox_id?: string | null;
+          revision_known?: boolean;
+          operation_kind?: string;
         };
         Relationships: [
           {
@@ -349,6 +367,171 @@ export type Database = {
           {
             foreignKeyName: "golden_operation_fences_owner_id_fkey";
             columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      golden_snapshot_publications: {
+        Row: {
+          id: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          proven: boolean;
+          snapshot: string;
+          source_id: string | null;
+          artifact_id: string | null;
+          authority: Json | null;
+          target: Json;
+          manager_id: string;
+          job_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          proven?: boolean;
+          snapshot: string;
+          source_id?: string | null;
+          artifact_id?: string | null;
+          authority?: Json | null;
+          target: Json;
+          manager_id: string;
+          job_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          golden_id?: string;
+          provider?: string;
+          backend_id?: string;
+          proven?: boolean;
+          snapshot?: string;
+          source_id?: string | null;
+          artifact_id?: string | null;
+          authority?: Json | null;
+          target?: Json;
+          manager_id?: string;
+          job_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_snapshot_publications_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_publications_job_id_fkey";
+            columns: ["job_id"];
+            isOneToOne: false;
+            referencedRelation: "golden_build_jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_publications_manager_id_fkey";
+            columns: ["manager_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      golden_snapshot_retirements: {
+        Row: {
+          id: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          old_snapshot: string;
+          new_snapshot: string;
+          publication_id: string;
+          replacement_id: string;
+          state: string;
+          sealed: boolean;
+          delete_started: boolean;
+          claim_id: string | null;
+          claim_until: string | null;
+          attempts: number;
+          review_receipt: string | null;
+          reviewed_by: string | null;
+          reason: string | null;
+          next_attempt_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          golden_id: string;
+          provider: string;
+          backend_id: string;
+          old_snapshot: string;
+          new_snapshot: string;
+          publication_id: string;
+          replacement_id: string;
+          state?: string;
+          sealed?: boolean;
+          delete_started?: boolean;
+          claim_id?: string | null;
+          claim_until?: string | null;
+          attempts?: number;
+          review_receipt?: string | null;
+          reviewed_by?: string | null;
+          reason?: string | null;
+          next_attempt_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          golden_id?: string;
+          provider?: string;
+          backend_id?: string;
+          old_snapshot?: string;
+          new_snapshot?: string;
+          publication_id?: string;
+          replacement_id?: string;
+          state?: string;
+          sealed?: boolean;
+          delete_started?: boolean;
+          claim_id?: string | null;
+          claim_until?: string | null;
+          attempts?: number;
+          review_receipt?: string | null;
+          reviewed_by?: string | null;
+          reason?: string | null;
+          next_attempt_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_snapshot_retirements_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_publication_id_fkey";
+            columns: ["publication_id"];
+            isOneToOne: false;
+            referencedRelation: "golden_snapshot_publications";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_replacement_id_fkey";
+            columns: ["replacement_id"];
+            isOneToOne: false;
+            referencedRelation: "golden_snapshot_publications";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_reviewed_by_fkey";
+            columns: ["reviewed_by"];
             isOneToOne: false;
             referencedRelation: "users";
             referencedColumns: ["id"];
@@ -373,6 +556,7 @@ export type Database = {
           modal_environment: string | null;
           modal_app_id: string | null;
           removed_at: string | null;
+          size_policy: Json | null;
         };
         Insert: {
           id?: string;
@@ -391,6 +575,7 @@ export type Database = {
           modal_environment?: string | null;
           modal_app_id?: string | null;
           removed_at?: string | null;
+          size_policy?: Json | null;
         };
         Update: {
           id?: string;
@@ -409,6 +594,7 @@ export type Database = {
           modal_environment?: string | null;
           modal_app_id?: string | null;
           removed_at?: string | null;
+          size_policy?: Json | null;
         };
         Relationships: [
           {
@@ -1216,6 +1402,201 @@ export type Database = {
           },
         ];
       };
+      orchestrator_children: {
+        Row: {
+          sandbox_id: string;
+          orchestrator_id: string;
+          org_id: string;
+          owner_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          orchestrator_id: string;
+          org_id: string;
+          owner_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          orchestrator_id?: string;
+          org_id?: string;
+          owner_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_children_orchestrator_id_org_id_owner_id_fkey";
+            columns: ["orchestrator_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+          {
+            foreignKeyName: "orchestrator_children_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_delegations: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          hash: string;
+          epoch: number;
+          physical_generation: number;
+          scopes: string[];
+          golden_ids: string[];
+          account_ids: string[];
+          created_at: string;
+          expires_at: string;
+          acknowledged_at: string | null;
+          revoked_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          hash: string;
+          epoch: number;
+          physical_generation: number;
+          scopes: string[];
+          golden_ids: string[];
+          account_ids: string[];
+          created_at?: string;
+          expires_at: string;
+          acknowledged_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          hash?: string;
+          epoch?: number;
+          physical_generation?: number;
+          scopes?: string[];
+          golden_ids?: string[];
+          account_ids?: string[];
+          created_at?: string;
+          expires_at?: string;
+          acknowledged_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_delegations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_operations: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          actor_id: string;
+          action: string;
+          idempotency_key: string;
+          request_digest: string;
+          revision: number;
+          state: string;
+          error_code: string | null;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          actor_id: string;
+          action: string;
+          idempotency_key: string;
+          request_digest: string;
+          revision: number;
+          state?: string;
+          error_code?: string | null;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          actor_id?: string;
+          action?: string;
+          idempotency_key?: string;
+          request_digest?: string;
+          revision?: number;
+          state?: string;
+          error_code?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_operations_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_operations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrators: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id: string | null;
+          state: string;
+          revision: number;
+          authority_epoch: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id?: string | null;
+          state?: string;
+          revision?: number;
+          authority_epoch?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          sandbox_id?: string | null;
+          state?: string;
+          revision?: number;
+          authority_epoch?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrators_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrators_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrators_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       organization_invitations: {
         Row: {
           id: string;
@@ -1328,6 +1709,7 @@ export type Database = {
           activity_until: string | null;
           reconcile_lease: string | null;
           reconcile_lease_until: string | null;
+          machine_size: Json | null;
         };
         Insert: {
           id?: string;
@@ -1363,6 +1745,7 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          machine_size?: Json | null;
         };
         Update: {
           id?: string;
@@ -1398,6 +1781,7 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          machine_size?: Json | null;
         };
         Relationships: [
           {
@@ -1505,6 +1889,8 @@ export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoptio
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type GoldenBuildJob = Database["public"]["Tables"]["golden_build_jobs"]["Row"];
 export type GoldenOperationFence = Database["public"]["Tables"]["golden_operation_fences"]["Row"];
+export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
+export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpActorEpoch = Database["public"]["Tables"]["mcp_actor_epochs"]["Row"];
 export type McpBinding = Database["public"]["Tables"]["mcp_bindings"]["Row"];
@@ -1526,6 +1912,10 @@ export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_sco
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
+export type OrchestratorChildRow = Database["public"]["Tables"]["orchestrator_children"]["Row"];
+export type OrchestratorDelegationRow = Database["public"]["Tables"]["orchestrator_delegations"]["Row"];
+export type OrchestratorOperationRow = Database["public"]["Tables"]["orchestrator_operations"]["Row"];
+export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
