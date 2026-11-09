@@ -14,7 +14,7 @@
     },
     "apps/dashboard": {
       "name": "@armada/dashboard",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "@supabase/ssr": "0.12.7",
@@ -42,7 +42,7 @@
     },
     "packages/agent-runtime": {
       "name": "@armada/agent-runtime",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "0.3.319",
         "@anthropic-ai/claude-code": "2.1.319",
@@ -52,11 +52,11 @@
     },
     "packages/auth": {
       "name": "@armada/auth",
-      "version": "2.10.0",
+      "version": "2.11.0",
     },
     "packages/cli": {
       "name": "@armada/cli",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "bin": {
         "armada": "./src/main.ts",
       },
@@ -70,11 +70,11 @@
     },
     "packages/core": {
       "name": "@armada/core",
-      "version": "2.10.0",
+      "version": "2.11.0",
     },
     "packages/mcp-gateway": {
       "name": "@armada/mcp-gateway",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.32.2",
         "zod": "4.6.7",
@@ -82,7 +82,7 @@
     },
     "packages/mcp-server": {
       "name": "@armada/mcp-server",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "dependencies": {
         "@armada/agent-runtime": "workspace:*",
         "@armada/auth": "workspace:*",
@@ -97,7 +97,7 @@
     },
     "packages/provider-boat": {
       "name": "@armada/provider-boat",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "@boatdev/sdk": "^1.13.0",
@@ -105,7 +105,7 @@
     },
     "packages/provider-modal": {
       "name": "@armada/provider-modal",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "modal": "0.11.1",
