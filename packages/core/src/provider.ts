@@ -25,6 +25,8 @@ export interface Provider {
     sandboxId: string;
     configuration: GitHubRuntimeConfiguration | null;
   }): Promise<{ acknowledged: boolean }>;
+  /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
+  observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
   prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   readonly id: string;
   readonly harnesses: readonly Harness[];

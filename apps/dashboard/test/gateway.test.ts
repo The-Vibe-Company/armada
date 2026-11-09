@@ -78,6 +78,25 @@ describe("gateway", () => {
     expect((error as GatewayError).message).toContain("hit its plan or billing limit");
   });
 
+  test("a tool error keeps the server's typed code next to its words", async () => {
+    const { gateway } = server((call) =>
+      rpc(call.body.id, {
+        isError: true,
+        content: [
+          { type: "text", text: "This legacy Modal sandbox has no account binding." },
+          { type: "text", text: "error code: credential_binding_required" },
+        ],
+      }),
+    );
+    const error = await sandboxGateway(gateway)
+      .send("sandbox-1", "go")
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "credential_binding_required",
+      message: "This legacy Modal sandbox has no account binding.",
+    });
+  });
+
   test("a refused session and an unreachable server are told apart", async () => {
     const refused = createGateway({
       url: "https://mcp.example/mcp",

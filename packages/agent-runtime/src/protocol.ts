@@ -73,6 +73,7 @@ export interface IngestClient {
 export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
   | { op: "health" }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
+  | { op: "resourceObservation" }
   | ConfigureMcpRequest
   | { op: "prompt"; input: RuntimePromptRequest }
   | { op: "getPrompt"; promptId: string }

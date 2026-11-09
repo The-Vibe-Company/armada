@@ -49,6 +49,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
+  const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   let failSnapshot = false;
   let failCreate = false;
@@ -81,9 +82,10 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
       create: async (
         _app: unknown,
         _image: unknown,
-        params: { name: string; env: object; secrets: unknown[]; tags: Record<string, string> },
+        params: { name: string; env: object; secrets: unknown[]; tags: Record<string, string>; runtime?: string },
       ) => {
         creates++;
+        requestedRuntimes.push(params.runtime);
         resourceRequests.push({ ...params });
         expect(params.env).toEqual({});
         expect(params.secrets).toEqual([]);
@@ -232,6 +234,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
     client,
     log,
     bootstraps,
+    requestedRuntimes,
     resourceRequests,
     get provisioned() {
       return provisioned;
@@ -1290,6 +1293,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { resolveManagementCredentials: _resolveSource, ...operatorWithSource } = configuration;
     const wrongSource = await createComposedModalProvider({ ...operatorWithSource, sourceScope: scope });
     await expect(wrongSource.provider.get(launched.id)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(wrongSource.provider.observeResources?.(launched.id)).rejects.toMatchObject({ code: "forbidden" });
     await expect(wrongSource.provider.delete({ sandboxId: launched.id })).rejects.toMatchObject({ code: "forbidden" });
     expect((await privateStore.get(launched.id)).phase).toBe("active");
     wrongSource.close();
@@ -2239,3 +2243,50 @@ for (const hardExit of [false, true])
       expect(f.log).toContain("terminate");
     }
   });
+
+test("only newly managed VM incarnations expose resource observations", async () => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const fork = await f.provider.fork({ from: name });
+  expect(f.requestedRuntimes).toEqual([undefined, "vm"]);
+  const row = await f.store.get(fork.id);
+  if (!row.physicalId) throw Error("missing physical ID");
+  expect(row.runtimeEvidence).toEqual({ version: 1, runtime: "vm", physicalId: row.physicalId, generation: 1 });
+  const reading = {
+    version: 1,
+    bootId: "00000000-0000-0000-0000-000000000001",
+    uptimeMs: 1000,
+    captureDurationMs: 10,
+    cpuLogicalCpus: 2,
+    cpuTotalTicks: 100,
+    cpuBusyTicks: 10,
+    cpuStealTicks: 0,
+    memoryTotalBytes: 4096,
+    memoryAvailableBytes: 2048,
+    cpuPressureSomeUsec: 0,
+    oomKills: 0,
+  };
+  f.onRpc(async (_row, op) => (op === "resourceObservation" ? reading : undefined));
+  expect(await f.provider.observeResources?.(fork.id)).toMatchObject({
+    physicalId: row.physicalId,
+    generation: "1",
+    runtimeProvenance: "modal-explicit-vm-v1",
+    reading,
+  });
+  const calls = f.log.filter((x) => x === "resourceObservation").length;
+  expect(await f.provider.observeResources?.(builder.id)).toBeNull();
+  await f.store.lease(fork.id, async (stored, save) => {
+    delete stored.runtimePolicy;
+    await save(stored);
+  });
+  expect(await f.provider.observeResources?.(fork.id)).toBeNull();
+  await f.store.lease(fork.id, async (stored, save) => {
+    stored.runtimePolicy = "explicit-vm-v1";
+    stored.generation++;
+    await save(stored);
+  });
+  expect(await f.provider.observeResources?.(fork.id)).toBeNull();
+  expect(f.log.filter((x) => x === "resourceObservation")).toHaveLength(calls);
+});

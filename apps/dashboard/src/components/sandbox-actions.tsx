@@ -24,7 +24,7 @@ export function SandboxActions({ sandboxId, status }: { sandboxId: string; statu
   return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} /> : null;
 }
 
-function StopButton({ sandboxId }: { sandboxId: string }) {
+export function StopButton({ sandboxId }: { sandboxId: string }) {
   const [state, action, pending] = useActionState(stopSandbox, null);
   return (
     <AlertDialog>

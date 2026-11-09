@@ -213,6 +213,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await save(row);
       const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
       sb = await client.sandboxes.create(app, image, {
+        ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
         ...(capacity
           ? {
               cpu: capacity.vcpus / 2,
@@ -234,6 +235,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       sb = await physical(row);
     }
     row.physicalId = sb.sandboxId;
+    if (row.runtimePolicy === "explicit-vm-v1")
+      row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
     row.phase = "booting";
     await save(row);
     if (distribution.captureProcessBaseline && !row.processBaseline) {
@@ -318,6 +321,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         createdAt: new Date(),
       },
       generation: 1,
+      ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
       launchUserId: options.scope.userId,
       managementAuthority: { ...managementAuthority },
       modelDefaults: { claude: resolveModelChoice("claude", {}), codex: resolveModelChoice("codex", {}) },
@@ -525,6 +529,40 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
       return source.store.lease(snapshot.sourceId, async () => launch(r, false));
+    },
+    async observeResources(id) {
+      await bound();
+      return store.lease(id, async (row) => {
+        assertMachineSource(row);
+        const evidence = row.runtimeEvidence;
+        if (
+          row.golden ||
+          row.phase !== "active" ||
+          !row.physicalId ||
+          row.runtimePolicy !== "explicit-vm-v1" ||
+          evidence?.version !== 1 ||
+          evidence.runtime !== "vm" ||
+          evidence.generation !== row.generation ||
+          evidence.physicalId !== row.physicalId
+        )
+          return null;
+        const reading = await runner.call<import("@armada/core").VmResourceReading | null>(
+          row,
+          "resourceObservation",
+          {},
+        );
+        if (!reading) return null;
+        return {
+          version: 1 as const,
+          providerSandboxId: id,
+          physicalId: row.physicalId,
+          generation: String(row.generation),
+          scope: "dedicated-vm" as const,
+          runtimeProvenance: "modal-explicit-vm-v1" as const,
+          reading,
+          limitations: ["sampled-memory-not-peak", "hypervisor-throttling-unavailable"] as const,
+        };
+      });
     },
     async get(id) {
       await bound();
