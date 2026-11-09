@@ -192,6 +192,8 @@ test("current owner/admin interior gates apply to resource SQL regardless legacy
   const f = await fixture(),
     privateId = await f.sandbox({ visibility: "private" });
   const other = createResourceStore(sql, { userId: f.other, orgs: [{ orgId: f.org, role: "admin" }], via: "service" });
+  await db.query("update sandboxes set access_owner_id=$2 where id=$1", [privateId, f.other]);
+  expect((await f.store.history(privateId, now)).target.id).toBe(privateId);
   expect((await other.history(privateId, now)).target.id).toBe(privateId);
   const adminClaim = await other.claim(privateId, now);
   expect(adminClaim).not.toBeNull();

@@ -17,7 +17,7 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     const client = await server.client(token);
     const launched = await call(client, SIZED_LAUNCH_TOOL_V1, {
       size_policy_version: 1,
-      golden: "mine",
+      golden: "shared",
       org: server.people.org,
       harness: "claude",
       repo: "web",
@@ -117,7 +117,7 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     await expect(server.db.query("update sandboxes set resource_project=null where id=$1", [id])).rejects.toThrow(
       "immutable",
     );
-    await server.db.query("update goldens set config=$1::jsonb where name='mine'", [
+    await server.db.query("update goldens set config=$1::jsonb where name='shared'", [
       JSON.stringify({ repos: [{ url: "https://github.com/acme/other.git", branch: "main", dir: "web" }], init: [] }),
     ]);
     expect(((await (await http()).json()) as ResourceAdviceResponse).advice.scope.project).toEqual(
