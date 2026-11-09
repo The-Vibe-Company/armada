@@ -1,6 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import producer from "../test/fixtures/model-usage-v3.json" with { type: "json" };
-import { MOCK, reset, signIn } from "./helpers";
+import { MOCK, openLaunch as openLaunchDialog, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
@@ -50,8 +50,7 @@ async function addAccount(page: Page, name: string, token: string, makeDefault: 
 
 async function openLaunch(page: Page) {
   await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-  return page.getByRole("dialog");
+  return openLaunchDialog(page, "shared-golden");
 }
 
 test("two accounts of one service: the deliberate default is preselected, and the chosen one is sent by id", async ({
@@ -94,7 +93,7 @@ test("two accounts of one service: the deliberate default is preselected, and th
 
   // Codex has no account here: the dialog says so and nothing is sent for it.
   dialog = await openLaunch(page);
-  await dialog.getByLabel("Agent").selectOption("codex");
+  await dialog.getByRole("radio", { name: "Codex" }).check();
   await expect(dialog.locator('[data-account-field="none"]')).toContainText("No Codex account.");
 });
 
@@ -231,13 +230,7 @@ test("a sized launch keeps the chosen account: the size and the account are both
   const home = account(52, "Home");
   await mock("/__test/accounts", { seed: [work, home] });
   await signIn(page, "alice@example.com", "/goldens");
-  const open = async () => {
-    await page
-      .getByRole("button", { name: /^Launch from shared-golden/ })
-      .first()
-      .click();
-    return page.getByRole("dialog");
-  };
+  const open = () => openLaunchDialog(page, "shared-golden");
 
   let dialog = await open();
   const accountSelect = dialog.getByLabel("Account");
@@ -249,9 +242,9 @@ test("a sized launch keeps the chosen account: the size and the account are both
   await size.selectOption("large");
   await expect(accountSelect).toHaveValue(String(home.id));
   // Switching the agent re-mounts its own fields only: every field is still there exactly once.
-  await dialog.getByLabel("Agent").selectOption({ label: "Codex" });
-  await dialog.getByLabel("Agent").selectOption({ label: "Claude Code" });
-  for (const label of ["Account", "Model", "Working directory", "Machine size"])
+  await dialog.getByRole("radio", { name: "Codex" }).check();
+  await dialog.getByRole("radio", { name: "Claude Code" }).check();
+  for (const label of ["Account", "Model", "Project", "Machine size"])
     await expect(dialog.getByText(label, { exact: true })).toHaveCount(1);
   await accountSelect.selectOption({ label: "Home (Claude subscription)" });
   await expect(size).toHaveValue("large");
@@ -281,17 +274,13 @@ test("a refused launch keeps the chosen account: the retry bills who the person 
   const home = account(54, "Home");
   await mock("/__test/accounts", { seed: [work, home] });
   await signIn(page, "alice@example.com", "/goldens");
-  await page
-    .getByRole("button", { name: /^Launch from shared-golden/ })
-    .first()
-    .click();
-  const dialog = page.getByRole("dialog");
+  const dialog = await openLaunchDialog(page, "shared-golden");
   const accountSelect = dialog.getByLabel("Account");
   await accountSelect.selectOption({ label: "Home (Claude subscription)" });
   await dialog.getByLabel("Machine size").selectOption("xlarge");
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("Requested size cannot be allocated.");
-  // The form resets after the refusal; the billing choice is still the one the person made.
+  // The form keeps its fields after the refusal; the billing choice is still the one the person made.
   await expect(accountSelect).toHaveValue(String(home.id));
   await expect(accountSelect.locator("option:checked")).toHaveText("Home (Claude subscription)");
 
