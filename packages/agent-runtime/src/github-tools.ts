@@ -68,10 +68,10 @@ export async function installGitHubTools(input: {
     flag: "wx",
   });
   await rename(temporary, client);
-  const privileged = "/usr/bin/sudo -n --preserve-env /usr/bin/python3 -I";
+  const privileged = "/usr/bin/python3 -I";
   const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
   if (ghOriginal) {
-    const wrapper = `#!/bin/sh\nexec ${privileged} ${q(client)} gh ${q(input.socket)} ${q(ghOriginal)} "$@"\n`;
+    const wrapper = `#!/bin/sh\nexec ${privileged} ${q(client)} elevate gh ${q(input.socket)} ${q(ghOriginal)} "$@"\n`;
     const info = await lstat(input.ghWrapper).catch(() => undefined);
     if (info?.isSymbolicLink() || (info && !info.isFile())) throw Error("github_tools_denied");
     await writeFile(input.ghWrapper, wrapper, { mode: 0o755 });
@@ -85,21 +85,21 @@ export async function installGitHubTools(input: {
   if (gitInfo?.isSymbolicLink() || (gitInfo && !gitInfo.isFile())) throw Error("github_tools_denied");
   await writeFile(
     input.gitWrapper,
-    `#!/bin/sh\nexec ${privileged} ${q(client)} git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
+    `#!/bin/sh\nexec ${privileged} ${q(client)} elevate git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
     { mode: 0o755 },
   );
   await chmod(input.gitWrapper, 0o755);
   if (input.git !== input.gitWrapper) {
     await writeFile(
       input.git,
-      `#!/bin/sh\nexec ${privileged} ${q(client)} git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
+      `#!/bin/sh\nexec ${privileged} ${q(client)} elevate git-run ${q(input.socket)} ${q(gitOriginal)} "$@"\n`,
       { mode: 0o755 },
     );
     await chmod(input.git, 0o755);
   }
   for (const home of input.homes) {
     const env = { PATH: process.env.PATH!, HOME: home, GIT_CONFIG_NOSYSTEM: "1" };
-    const helper = `!${privileged} ${q(client)} git ${q(input.socket)}`;
+    const helper = `!${privileged} ${q(client)} elevate git ${q(input.socket)}`;
     for (const args of [
       ["--replace-all", "credential.https://github.com.helper", ""],
       ["--add", "credential.https://github.com.helper", helper],
@@ -140,6 +140,11 @@ export async function installGitHubTools(input: {
 }
 
 export const GITHUB_CLIENT = `import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal
+# sudo-rs supports named preservation, not preserving the entire environment.
+# Only variable NAMES cross argv; values remain in the inherited private environment.
+if len(sys.argv)>1 and sys.argv[1]=='elevate':
+    names=','.join(key for key in os.environ if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',key) and not key.startswith('SUDO_'))
+    os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'/usr/bin/python3','-I',os.path.abspath(__file__)]+sys.argv[2:])
 local_secrets=set(value.encode() for key,value in os.environ.items() if key in ("GH_TOKEN","GITHUB_TOKEN") and value)
 class Connection(http.client.HTTPConnection):
     def __init__(self,name,path=None):
