@@ -13,6 +13,7 @@ import { createCredentialBindingRecovery } from "./credential-binding-recovery.t
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
+import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -39,12 +40,20 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const catalogAuthentication = catalogAuthenticationFromEnv(
+    env,
+    config.encryptionKey,
+    config.dashboardUrl,
+    config.development,
+  );
+  await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl);
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
+    catalogAuthentication,
     sql,
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
@@ -105,7 +114,7 @@ export async function startServer(
   });
   const control: ConfiguredControlOptions = {
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
-    mcp: { registry: mcp.registry },
+    mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,

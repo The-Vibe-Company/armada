@@ -55,6 +55,9 @@ export interface McpBrokerPort {
   }): Promise<{ status: McpConnectionDto["status"] }>;
 }
 export interface McpRegistry {
+  catalog(): Promise<
+    Array<(typeof MCP_CATALOG)[number] & { availability: "available" | "setup_required"; setupMessage?: string }>
+  >;
   list(userId: string, orgId: string): Promise<McpConnectionDto[]>;
   get(userId: string, orgId: string, id: string): Promise<McpConnectionDto>;
   save(userId: string, orgId: string, input: McpConnectionInput, id?: string): Promise<McpConnectionDto>;
@@ -101,7 +104,14 @@ function dto(r: Row): McpConnectionDto {
     status: r.disabled ? "disabled" : r.status,
   };
 }
-export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined): McpRegistry {
+export function createSqlMcpRegistry(
+  sql: Sql,
+  encryptionKey: string | undefined,
+  options: {
+    /** Trusted server-only resolver; never populated from request input. */
+    catalogAuthentication?: (serviceId: McpCatalogId) => Promise<string | undefined>;
+  } = {},
+): McpRegistry {
   async function member(user: string, org: string, admin = false) {
     const result = await sql.query<{ role: string }>(
       "select role from public.members where user_id=$1::uuid and org_id=$2::uuid",
@@ -122,6 +132,16 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
     return row;
   }
   return {
+    async catalog() {
+      const slack = await options.catalogAuthentication?.("slack");
+      return MCP_CATALOG.map((service) => ({
+        ...service,
+        availability: service.id !== "slack" || slack ? "available" : "setup_required",
+        ...(service.id === "slack" && !slack
+          ? { setupMessage: "Registered confidential OAuth client required; not configured on this deployment." }
+          : {}),
+      }));
+    },
     async list(user, org) {
       await member(user, org);
       const r = await sql.query<Row>(
@@ -142,7 +162,8 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
       if (input.serviceId !== undefined) {
         const service = MCP_CATALOG.find((s) => s.id === input.serviceId);
         if (!service) throw new VaultError("invalid", "Unknown MCP service.");
-        if (service.id === "slack")
+        const registration = service.id === "slack" ? await options.catalogAuthentication?.("slack") : undefined;
+        if (service.id === "slack" && !registration)
           throw new VaultError(
             "unavailable",
             "Slack requires a registered confidential OAuth client; deployment setup required.",
@@ -151,6 +172,7 @@ export function createSqlMcpRegistry(sql: Sql, encryptionKey: string | undefined
           name: input.name,
           scope: input.scope,
           serviceId: service.id,
+          ...(registration ? { authentication: registration } : {}),
           transport: "http",
           url: service.url,
           authType: "oauth",
