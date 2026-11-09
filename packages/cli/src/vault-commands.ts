@@ -221,7 +221,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       return 0;
     }
     default:
-      throw usage("Run armada creds set, list or rm.");
+      throw usage("Run armada creds set, list, rename, default, remove or rm.");
   }
 }
 

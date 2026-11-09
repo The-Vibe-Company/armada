@@ -102,7 +102,8 @@ Usage:
                 [--visibility private|org] [--connections <id,...>] [--org <org>]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
-                                           and effort apply to every later turn too. --repo owner/repo selects a recorded
+                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
+                                           otherwise use your personal or organization default. --repo owner/repo selects a recorded
                                            golden repository as the native agent's real initial cwd (also when idle);
                                            omit it to keep legacy launch behavior. Defaults:
                                            ${modelDefaults()}
@@ -141,7 +142,10 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
-  armada creds list [--org <name>]         Kinds and dates, never values
+                                           Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
+  armada creds rename <id> <name> [--org <name>]
+  armada creds default|remove <id> [--org <name>]
   armada creds rm <kind> [--org <name>]
                                            kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal
 
@@ -763,6 +767,8 @@ function launchText(result: LaunchResult): string {
       : []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
+  if (sandbox.credentialId)
+    lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
   lines.push(githubLine(result));
@@ -794,6 +800,8 @@ function jsonLaunch(result: LaunchResult) {
     harness: sandbox.harness,
     model: sandbox.model,
     reasoningEffort: sandbox.reasoningEffort,
+    credentialId: sandbox.credentialId ?? null,
+    credentialVersion: sandbox.credentialVersion ?? null,
     status: sandbox.status,
     conversationIds: sandbox.conversationIds,
     promptId: result.promptId ?? null,
