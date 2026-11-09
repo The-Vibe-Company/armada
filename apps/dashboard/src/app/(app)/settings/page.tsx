@@ -236,14 +236,11 @@ function SandboxProviders({
                 <AlertTitle>Provider status unavailable</AlertTitle>
                 <AlertDescription>
                   <p>{setup.message}</p>
-                  <Link
-                    className="inline-flex items-center gap-1 underline underline-offset-4"
-                    href="/settings"
-                    prefetch={false}
-                  >
+                  {/* A document request, not a client navigation: the router would reuse its cached render (staleTimes). */}
+                  <a className="inline-flex items-center gap-1 underline underline-offset-4" href="/settings">
                     <RotateCwIcon className="size-3" aria-hidden />
                     Check again
-                  </Link>
+                  </a>
                 </AlertDescription>
               </Alert>
             )}

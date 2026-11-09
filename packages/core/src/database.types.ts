@@ -1219,6 +1219,257 @@ export type Database = {
           },
         ];
       };
+      orchestrator_children: {
+        Row: {
+          sandbox_id: string;
+          orchestrator_id: string;
+          org_id: string;
+          owner_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          orchestrator_id: string;
+          org_id: string;
+          owner_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          orchestrator_id?: string;
+          org_id?: string;
+          owner_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_children_orchestrator_id_org_id_owner_id_fkey";
+            columns: ["orchestrator_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+          {
+            foreignKeyName: "orchestrator_children_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_delegations: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          hash: string;
+          epoch: number;
+          physical_generation: number;
+          scopes: string[];
+          golden_ids: string[];
+          account_ids: string[];
+          created_at: string;
+          expires_at: string;
+          acknowledged_at: string | null;
+          revoked_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          hash: string;
+          epoch: number;
+          physical_generation: number;
+          scopes: string[];
+          golden_ids: string[];
+          account_ids: string[];
+          created_at?: string;
+          expires_at: string;
+          acknowledged_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          hash?: string;
+          epoch?: number;
+          physical_generation?: number;
+          scopes?: string[];
+          golden_ids?: string[];
+          account_ids?: string[];
+          created_at?: string;
+          expires_at?: string;
+          acknowledged_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_delegations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrator_operations: {
+        Row: {
+          id: string;
+          orchestrator_id: string;
+          actor_id: string;
+          action: string;
+          idempotency_key: string;
+          request_digest: string;
+          revision: number;
+          state: string;
+          error_code: string | null;
+        };
+        Insert: {
+          id?: string;
+          orchestrator_id: string;
+          actor_id: string;
+          action: string;
+          idempotency_key: string;
+          request_digest: string;
+          revision: number;
+          state?: string;
+          error_code?: string | null;
+        };
+        Update: {
+          id?: string;
+          orchestrator_id?: string;
+          actor_id?: string;
+          action?: string;
+          idempotency_key?: string;
+          request_digest?: string;
+          revision?: number;
+          state?: string;
+          error_code?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrator_operations_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrator_operations_orchestrator_id_fkey";
+            columns: ["orchestrator_id"];
+            isOneToOne: false;
+            referencedRelation: "orchestrators";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      orchestrators: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id: string | null;
+          state: string;
+          revision: number;
+          authority_epoch: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id?: string | null;
+          state?: string;
+          revision?: number;
+          authority_epoch?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          sandbox_id?: string | null;
+          state?: string;
+          revision?: number;
+          authority_epoch?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "orchestrators_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrators_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "orchestrators_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      organization_invitations: {
+        Row: {
+          id: string;
+          org_id: string;
+          email: string;
+          role: Database["public"]["Enums"]["member_role"];
+          hash: string;
+          expires_at: string;
+          status: string;
+          delivery: string;
+          token_enc: string | null;
+          attempts: number;
+          lease_until: string | null;
+          updated_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          email: string;
+          role: Database["public"]["Enums"]["member_role"];
+          hash: string;
+          expires_at: string;
+          status?: string;
+          delivery: string;
+          token_enc?: string | null;
+          attempts?: number;
+          lease_until?: string | null;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          email?: string;
+          role?: Database["public"]["Enums"]["member_role"];
+          hash?: string;
+          expires_at?: string;
+          status?: string;
+          delivery?: string;
+          token_enc?: string | null;
+          attempts?: number;
+          lease_until?: string | null;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "organization_invitations_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       orgs: {
         Row: {
           id: string;
@@ -1476,6 +1727,11 @@ export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_sco
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
+export type OrchestratorChildRow = Database["public"]["Tables"]["orchestrator_children"]["Row"];
+export type OrchestratorDelegationRow = Database["public"]["Tables"]["orchestrator_delegations"]["Row"];
+export type OrchestratorOperationRow = Database["public"]["Tables"]["orchestrator_operations"]["Row"];
+export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
+export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

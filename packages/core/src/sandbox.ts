@@ -222,6 +222,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
       const result = await sql.query<SandboxRow>(
         `select ${COLUMNS} from public.sandboxes
          where created_at < $1::timestamptz and status <> 'deleted'
+         and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id)
          order by created_at asc`,
         [cutoff],
       );

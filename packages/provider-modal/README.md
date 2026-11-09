@@ -487,18 +487,52 @@ checkpoint/stop/same-ID restore, both conversation resumes, snapshot deletion,
 events after delete and cleanup. Checkpoint-uncertain sources are preserved.
 
 Executable `bun packages/provider-modal/test/conformance-live.ts` accepts one private
-stdin JSON object: scope, appName, artifact `{base,apt,dist}`, ingestUrl, listenPort,
-models, harness, optional trusted managementAuthority, and either
-operatorProfile:true or an explicit token pair.
-operatorProfile intentionally constructs a public ModalClient locally; no manual
-credential-file read or fake token is required. Supply HTTPS ingress first (for
-example root's cloudflared setup). It uses disposable PGlite and prints only check
-names or safe logical/physical IDs/phases for preserved resources. Retain those IDs
-for cleanup after a failed fixture; production uses persistent SQL/signingKey.
-Never save private input in argv/history/repository/Image layers. Runtime510 owns
-the final MCP-argv/auth-cache checkpoint fix; rebuild its updated artifact before
-final credential-bearing MCP conformance. Provider source does not edit runtime,
-dashboard, connection registry/gateway, or Git/index state.
+stdin JSON object: scope, receiptDirectory, artifact `{base,apt,dist}`, ingestUrl,
+listenPort, models, harness and an explicit tokenId/tokenSecret pair. No profile,
+appName or managementAuthority is accepted: this tool never borrows a shared or
+registered production App. The scope's AppID is replaced with a newly created
+per-run AppID; workspace and environment remain explicit operator inputs.
+
+Install the public Python Modal CLI (`pip install modal==1.6.3`) in PATH first.
+The JS SDK 0.11.1 has no App.stop method. Only this opt-in tool uses the public
+`modal app list --env ENV --json` and `modal app stop APP_ID --env ENV --yes`
+commands. Tokens are passed in a private, minimal child environment, never argv;
+CLI stderr is discarded and output is parsed/whitelisted. No profile/config file
+is loaded (`MODAL_CONFIG_PATH=/dev/null`). Missing CLI/auth, malformed inventory,
+nonzero exit or missing readback leaves cleanup incomplete. Public command shape:
+[Modal app CLI](https://modal.com/docs/cli/latest/app); JSON columns were checked
+against the public modal 1.6.3 wheel's `modal/cli/app.py`.
+
+`receiptDirectory` must not exist. Keep this private local directory outside the
+repository: its append-only numbered receipts record a UUID/run name and explicit
+environment **before** creation, then the immutable returned AppID, creation
+readback and final resource/image inventory. The private `registry/` PGlite database is
+retained alongside the journal, including in-flight reservations on crashes. Never retry ambiguous creation or
+infer ownership from a prefix, age, caller AppID or an empty inventory. Pending
+creation requires operator investigation, not adoption or automatic stopping.
+Do not edit receipts to authorize cleanup. Only this process's confirmed newly
+created fixture is eligible for automatic finalization.
+
+After exact provider resource/image cleanup, the tool requires successful
+conformance, no preserved sources, fresh registry-confirmed deleted resources,
+zero image records, and exact App readback with zero Tasks. It then stops only
+that owned App and requires stopped/Tasks0 readback. A successful stop exit alone
+is not terminal proof. Finally paths retain receipts and report incomplete on
+any uncertainty, failed cleanup, stop failure or delayed readback; recovery
+sources/snapshots must not be deleted merely to force a green result. The journal
+is retained even when setup fails. No automatic retry or historical App reuse.
+
+A deployed namespace is not active compute: Live/deployed with Tasks0 does not
+mean a sandbox is still running, but it still needs explicit test-run retirement.
+The historical shared `armada-provider-conformance` App
+`ap-MQmau5HWSdX2t036SWIP7A` was verified stopped/Tasks0 by the operator after
+receipt-based cleanup. **Do not reuse or revive it.** Production registered Apps
+and unrelated resources are outside this tool's ownership. Future live tests
+must create a new fixture. This change was validated with injected adapters only;
+real operator validation remains a separate authorized action.
+
+Supply HTTPS ingress first. Never save private input in argv/history/repository/
+Image layers. Rebuild the current runtime artifact before live conformance.
 
 ### Privileged recipe OS evidence
 
