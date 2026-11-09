@@ -11,8 +11,10 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { CREDENTIAL_KINDS, SINGLE_VALUE_KINDS } from "@/lib/credentials";
 import { type CredentialRow, listCredentials } from "@/lib/data/credentials";
+import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { isConfigured } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Credentials" };
@@ -27,6 +29,15 @@ export default async function CredentialsPage() {
     listCredentials(supabase),
   ]);
   const personal = credentials.filter((item) => item.scope === "user" && item.owner_id === viewer.id);
+  // An org Boat key is its org's column, which only the server can see (null: the server could not be asked).
+  const orgBoat = new Map(
+    await Promise.all(
+      memberships.map(async ({ org }) => {
+        const setup = await readProviderSetup(org.id);
+        return [org.id, setup.state === "unavailable" ? null : isConfigured(setup.status, "boat")] as const;
+      }),
+    ),
+  );
 
   return (
     <>
@@ -60,6 +71,7 @@ export default async function CredentialsPage() {
           scope="org"
           owner={org.id}
           rows={credentials.filter((item) => item.scope === "org" && item.owner_id === org.id)}
+          orgBoat={orgBoat.get(org.id) ?? null}
           canManage={role === "admin"}
         />
       ))}
@@ -73,6 +85,7 @@ function CredentialSection({
   scope,
   owner,
   rows,
+  orgBoat,
   canManage,
 }: {
   title: string;
@@ -80,6 +93,8 @@ function CredentialSection({
   scope: "user" | "org";
   owner: string;
   rows: CredentialRow[];
+  /** The org section's Boat key, as the server reports it: set, not set, or null when it could not be checked. */
+  orgBoat?: boolean | null;
   canManage: boolean;
 }) {
   const byKind = new Map(rows.map((row) => [row.kind, row]));
@@ -92,22 +107,34 @@ function CredentialSection({
       <CardContent className="space-y-6">
         <ul className="divide-y rounded-lg border">
           {CREDENTIAL_KINDS.map((info) => {
-            const row = byKind.get(info.kind);
+            const orgKey = scope === "org" && info.kind === "boat";
+            const row = orgKey ? undefined : byKind.get(info.kind);
+            const set = orgKey ? orgBoat : Boolean(row);
             return (
               <li key={info.kind} className="flex flex-wrap items-center justify-between gap-3 p-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{info.label}</p>
                   {info.use === "hosting" && <p className="text-xs text-muted-foreground">Hosting</p>}
                 </div>
-                {row ? (
+                {set ? (
                   <div className="flex items-center gap-3">
                     <span className="font-mono text-sm tracking-widest" role="img" aria-label="Value hidden">
                       ••••••••
                     </span>
-                    <Badge variant="outline">Set {new Date(row.created_at).toISOString().slice(0, 10)}</Badge>
+                    <Badge variant="outline">
+                      {row ? `Set ${new Date(row.created_at).toISOString().slice(0, 10)}` : "Set"}
+                    </Badge>
                     {canManage && (
                       <ActionForm action={removeCredential} className="flex flex-col items-end gap-1">
-                        <input type="hidden" name="id" value={row.id} />
+                        {row ? (
+                          <input type="hidden" name="id" value={row.id} />
+                        ) : (
+                          <>
+                            <input type="hidden" name="scope" value="org" />
+                            <input type="hidden" name="owner" value={owner} />
+                            <input type="hidden" name="kind" value="boat" />
+                          </>
+                        )}
                         <SubmitButton variant="ghost" size="sm" aria-label={`Remove ${info.label}`}>
                           Remove
                         </SubmitButton>
@@ -115,7 +142,7 @@ function CredentialSection({
                     )}
                   </div>
                 ) : (
-                  <Badge variant="secondary">Not set</Badge>
+                  <Badge variant="secondary">{set === null ? "Unavailable" : "Not set"}</Badge>
                 )}
               </li>
             );

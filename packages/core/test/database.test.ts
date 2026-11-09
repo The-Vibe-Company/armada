@@ -388,7 +388,7 @@ describe("database", () => {
       const golden = await insertGolden(db, people, { name: "shared", visibility: "org", owner: people.admin });
       const sandbox = await insertSandbox(db, people, golden, people.member);
       await db.query(
-        "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'boat', decode('0b', 'hex'))",
+        "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'anthropic', decode('0b', 'hex'))",
         [people.org],
       );
       await db.query(
@@ -498,7 +498,7 @@ describe("database", () => {
       await expect(
         asUser(db, people.member, () =>
           db.query(
-            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'boat', decode('0a', 'hex'))",
+            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'anthropic', decode('0a', 'hex'))",
             [people.org],
           ),
         ),
@@ -506,7 +506,7 @@ describe("database", () => {
       const credential = await asUser(db, people.admin, async () => {
         const result = await db.query<{ id: string }>(
           `insert into credentials (scope, owner_id, kind, value_enc)
-           values ('org', $1, 'boat', decode('0a', 'hex'))
+           values ('org', $1, 'anthropic', decode('0a', 'hex'))
            returning id`,
           [people.org],
         );
@@ -518,7 +518,7 @@ describe("database", () => {
         await asUser(db, people.member, () =>
           text(db, "select kind::text as value from credentials where id = $1", [credential]),
         ),
-      ).toBe("boat");
+      ).toBe("anthropic");
       await asUser(db, people.member, () =>
         db.query("update credentials set value_enc = decode('ff', 'hex') where id = $1", [credential]),
       );
@@ -743,6 +743,56 @@ describe("database", () => {
         "admin",
       );
     });
+  });
+
+  test("an org Boat key lives only in its org's column, and duplicate rows reconcile without losing the active key", async () => {
+    const db = await openDatabase();
+    try {
+      const reconcile = "20261110110200_org_boat_credential_canonical.sql";
+      const files = readdirSync(migrationsDir)
+        .filter((name) => name.endsWith(".sql"))
+        .sort();
+      await db.exec(await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text());
+      for (const file of files.filter((name) => name < reconcile))
+        await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
+      const [both, rowOnly, user] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+      await db.query("insert into auth.users (id) values ($1)", [user]);
+      await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Both', '\\x0a'), ($2, 'Row', null)", [
+        both,
+        rowOnly,
+      ]);
+      await db.query(
+        `insert into credentials (scope, owner_id, kind, value_enc) values
+          ('org', $1, 'boat', '\\x0b'), ('org', $2, 'boat', '\\x0c'), ('org', $2, 'modal', '\\x0d'),
+          ('user', $3, 'boat', '\\x0e')`,
+        [both, rowOnly, user],
+      );
+
+      for (const file of files.filter((name) => name >= reconcile))
+        await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
+
+      const columns = await db.query<{ name: string; hex: string }>(
+        "select name, encode(boat_api_key_enc, 'hex') as hex from orgs order by name",
+      );
+      expect(columns.rows).toEqual([
+        { name: "Both", hex: "0a" },
+        { name: "Row", hex: "0c" },
+      ]);
+      const rows = await db.query<{ scope: string; kind: string; hex: string }>(
+        "select scope::text, kind::text, encode(value_enc, 'hex') as hex from credentials order by hex",
+      );
+      expect(rows.rows).toEqual([
+        { scope: "org", kind: "modal", hex: "0d" },
+        { scope: "user", kind: "boat", hex: "0e" },
+      ]);
+      await expect(
+        db.query("insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'boat', '\\x0f')", [
+          rowOnly,
+        ]),
+      ).rejects.toThrow(/credentials_org_boat_chk/);
+    } finally {
+      await db.close();
+    }
   });
 });
 

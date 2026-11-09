@@ -471,6 +471,9 @@ async function rest(request: Request, url: URL): Promise<Response> {
       );
       if (dupe)
         return pgError({ status: 409, code: "23505", message: "duplicate key value violates unique constraint" });
+      // `credentials_org_boat_chk` (#586): the org Boat key is the org's column, never a row.
+      if (row.scope === "org" && row.kind === "boat")
+        return pgError({ status: 400, code: "23514", message: "violates check constraint credentials_org_boat_chk" });
       const stored = { id: id(++sequence), created_at: new Date().toISOString(), ...row };
       state.credentials.push(stored);
       created.push(stored);
@@ -1196,9 +1199,9 @@ function orgCredential(cid: string, owner: string, kind: string): Row {
 
 /**
  * `org/provider/status` and `org/provider/connect` (#576), as the Armada API serves them. Readiness is derived from the
- * stored rows only: the org's legacy Boat column or an org-scoped Boat or Modal credential. A personal key never counts.
- * Connect is admin-only, checks the value with the provider (here: a value containing "rejected" is refused) and
- * stores ciphertext, never the value; its answer is the same status.
+ * stored state only: the org's Boat column or an org-scoped Modal credential. A personal key never counts. Connect is
+ * admin-only, checks the value with the provider (here: a value containing "rejected" is refused) and stores
+ * ciphertext, never the value; its answer is the same status.
  */
 function orgProvider(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
@@ -1240,12 +1243,14 @@ function orgProvider(route: string, body: Row, request: Request): Response {
     const existing = state.credentials.find(
       (row) => row.scope === "org" && row.owner_id === org.id && row.kind === provider,
     );
-    if (existing) existing.value_enc = "\\x0304";
+    if (provider === "boat") org.boat_api_key_enc = "\\x0304";
+    else if (existing) existing.value_enc = "\\x0304";
     else state.credentials.push(orgCredential(id(++sequence), String(org.id), provider));
   }
   const configured = (provider: string) =>
-    (provider === "boat" && Boolean(org.boat_api_key_enc)) ||
-    state.credentials.some((row) => row.scope === "org" && row.owner_id === org.id && row.kind === provider);
+    provider === "boat"
+      ? Boolean(org.boat_api_key_enc)
+      : state.credentials.some((row) => row.scope === "org" && row.owner_id === org.id && row.kind === provider);
   const providers = ["boat", "modal"].map((provider) => ({ provider, configured: configured(provider) }));
   const role = isAdmin(org.id, userId) ? "admin" : "member";
   return json(
@@ -1253,6 +1258,20 @@ function orgProvider(route: string, body: Row, request: Request): Response {
     200,
     { "cache-control": "no-store" },
   );
+}
+
+/** `creds/rm` for the org Boat key, as the Armada API serves it: admin-only, it clears the org's column. */
+function removeOrgCredential(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.providerCalls.push({ route: "creds/rm", body, authorized: Boolean(userId) });
+  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
+  const org = state.orgs.find((row) => row.id === body.org);
+  if (!org || !isMember(org.id, userId)) return controlFail(404, "not_found", "You are not a member of that org.");
+  if (body.scope !== "org" || body.kind !== "boat") return controlFail(400, "invalid", "Unsupported in this mock.");
+  if (!isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin can do that.");
+  if (!org.boat_api_key_enc) return controlFail(404, "not_found", "No such credential is stored.");
+  org.boat_api_key_enc = null;
+  return json({ ok: true }, 200, { "cache-control": "no-store" });
 }
 
 function control(url: URL, body: Row): Response {
@@ -1263,7 +1282,7 @@ function control(url: URL, body: Row): Response {
     failSandboxConnections = false;
     if (body.multiOrg) {
       const now = "2026-11-08T10:00:00.000Z";
-      state.orgs.push({ id: id(11), name: "Zenith", created_at: now });
+      state.orgs.push({ id: id(11), name: "Zenith", created_at: now, boat_api_key_enc: "\\x0102" });
       state.members.push({ org_id: id(11), user_id: ALICE, role: "member", created_at: now });
       state.goldens.push({ ...golden(id(23), "zenith-golden", "org", ALICE, "snap-zenith"), org_id: id(11) });
       state.sandboxes.push({ ...sandbox(id(33), "bx_zenith", id(23), ALICE, "codex", "ready", now), org_id: id(11) });
@@ -1274,14 +1293,6 @@ function control(url: URL, body: Row): Response {
           status: "connected",
         }),
       );
-      state.credentials.push({
-        id: id(41),
-        scope: "org",
-        owner_id: id(11),
-        kind: "boat",
-        value_enc: "\\x0102",
-        created_at: now,
-      });
     }
     if (body.modalTwin) {
       // A Modal golden with the same name as the Boat `shared-golden`, recording another repository.
@@ -1296,10 +1307,14 @@ function control(url: URL, body: Row): Response {
       });
     }
     if (body.novaOrg) {
-      // An org with no golden yet, administered by carol, whose Boat key is an org credential.
-      state.orgs.push({ id: id(12), name: "Nova", created_at: "2026-11-08T10:00:00.000Z" });
+      // An org with no golden yet, administered by carol, with its own Boat key.
+      state.orgs.push({
+        id: id(12),
+        name: "Nova",
+        created_at: "2026-11-08T10:00:00.000Z",
+        boat_api_key_enc: "\\x0102",
+      });
       state.members.push({ org_id: id(12), user_id: id(3), role: "admin", created_at: "2026-11-08T10:00:00.000Z" });
-      state.credentials.push(orgCredential(id(42), id(12), "boat"));
     }
     if (body.orionOrg) {
       // An org that never finished its provider setup (#576): carol is its admin, bob a member, nothing configured.
@@ -1419,6 +1434,7 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/state") {
     return json({
+      orgBoatKeys: state.orgs.filter((org) => org.boat_api_key_enc).map((org) => org.id),
       otpEmails: state.otpEmails,
       sent: state.sent,
       toolCalls: state.toolCalls,
@@ -1465,6 +1481,7 @@ const server = Bun.serve({
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect") return orgProvider(route, body, request);
+      if (route === "creds/rm") return removeOrgCredential(body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);
