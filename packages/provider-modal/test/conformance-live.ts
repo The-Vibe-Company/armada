@@ -53,18 +53,21 @@ async function main() {
     process.exit(2);
   }
   const save = await appJournal(input.receiptDirectory);
-  const client = new ModalClient({ tokenId: input.tokenId, tokenSecret: input.tokenSecret });
-  const adapter = cliAppAdapter(
-    input.tokenId,
-    input.tokenSecret,
-    async (name, environment) => (await client.apps.fromName(name, { environment, createIfMissing: true })).appId,
-  );
-  const owned = await createOwnedApp(adapter, input.scope.binding.environment, save);
-  input.scope = { ...input.scope, binding: { ...input.scope.binding, appId: owned.appId as string } };
+  let client: ModalClient | undefined;
+  let owned: Awaited<ReturnType<typeof createOwnedApp>> | undefined;
   let stopServer: (() => Promise<void>) | undefined;
   let closeProvider: (() => void) | undefined;
   let closeDatabase: (() => Promise<void>) | undefined;
   try {
+    const sdk = new ModalClient({ tokenId: input.tokenId, tokenSecret: input.tokenSecret });
+    client = sdk;
+    const adapter = cliAppAdapter(
+      input.tokenId,
+      input.tokenSecret,
+      async (name, environment) => (await sdk.apps.fromName(name, { environment, createIfMissing: true })).appId,
+    );
+    owned = await createOwnedApp(adapter, input.scope.binding.environment, save);
+    input.scope = { ...input.scope, binding: { ...input.scope.binding, appId: owned.appId as string } };
     const db = new PGlite(join(input.receiptDirectory, "registry"));
     closeDatabase = () => db.close();
     await db.waitReady;
@@ -148,7 +151,8 @@ async function main() {
     }
   } finally {
     try {
-      await save({ app: owned, status: owned.finalization });
+      // Preserve any pending creation journal; never adopt, retry or stop its App here.
+      if (owned) await save({ app: owned, status: owned.finalization });
     } finally {
       try {
         try {
@@ -161,7 +165,7 @@ async function main() {
           }
         }
       } finally {
-        client.close();
+        client?.close();
       }
     }
   }
