@@ -68,7 +68,7 @@ The CLI only talks to the Armada API. It keeps your Armada session (or reads `AR
 
 Installing is the first step; an agent also needs a sandbox provider, model credentials, GitHub access and a ready golden. Each step below also has a page in the [dashboard](https://armada.thevibecompany.co), which walks a new organization through the same setup.
 
-**1. Sign in.** The browser opens, or you get a sign-in email. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
+**1. Sign in.** The browser opens (GitHub by default, `--provider google` for Google); `--email <address>` signs you in with a code from an email instead. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
 
 ```sh
 armada login
