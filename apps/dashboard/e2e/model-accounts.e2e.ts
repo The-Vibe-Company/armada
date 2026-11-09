@@ -190,6 +190,8 @@ test("replacing a token keeps the account and names the version seen; a replacem
     await expect(dialog.locator("[data-replace-effect]")).toHaveText(
       "Saving a new OAuth token creates a new version of Work. Sandboxes launched with the current version keep their files and conversations, but new messages to them are refused. Launch a new sandbox to use the new version.",
     );
+    // The effect is part of the dialog's accessible description, so a screen reader announces it on open.
+    await expect(dialog).toHaveAccessibleDescription(/new messages to them are refused/);
     await dialog.getByLabel("OAuth token").fill(token);
     await dialog.getByRole("button", { name: "Save OAuth token" }).click();
     return dialog;

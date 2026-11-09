@@ -505,13 +505,18 @@ function ReplaceDialog({
             {reconnect ? "Reconnect" : "Replace the"}{" "}
             {reconnect ? account.name : `${info.valueLabel} of ${account.name}`}
           </DialogTitle>
-          <DialogDescription>{info.hint}</DialogDescription>
+          {/* Both sentences describe the dialog, so screen readers announce the effect along with the hint. */}
+          <DialogDescription asChild>
+            <div className="space-y-2">
+              <p>{info.hint}</p>
+              <p data-replace-effect>
+                Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the
+                current version keep their files and conversations, but new messages to them are refused. Launch a new
+                sandbox to use the new version.
+              </p>
+            </div>
+          </DialogDescription>
         </DialogHeader>
-        <p className="text-sm text-muted-foreground" data-replace-effect>
-          Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the current
-          version keep their files and conversations, but new messages to them are refused. Launch a new sandbox to use
-          the new version.
-        </p>
         <form key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <input type="hidden" name="kind" value={account.kind} />
