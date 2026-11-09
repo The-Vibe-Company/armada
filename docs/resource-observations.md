@@ -80,7 +80,7 @@ requirements, but unsupported inputs cannot reach a recommendation.
 
 ## Deployment compatibility
 
-Apply additive migration 207 **after 206 and before deploying the server**. It
+Apply additive migration 207 **after 206 and before deploying the server**, with all other migrations required by the current main baseline (including orchestrator authority 208). It
 adds an immutable nullable launch project and service-only bounded observations;
 it never backfills usage or changes existing compute. Regenerated database types
 come from the migrations. Deploy the server with its matching rebuilt runner
@@ -95,3 +95,5 @@ lifecycle leases. Persistence locks the sandbox, requires the current unexpired
 token and matching lifecycle generation, and permits only one point per token.
 An unseen delayed old incarnation cannot overwrite a newer admission. Missing
 raw CPU/memory capacity abstains without returning a user-input error.
+
+Normal advice queries exclude managed orchestrator parents under the same private-authority rule as the main sandbox surface. Repository identities come from the selected launch configuration, not a working-directory assumption; changed configured directories form a distinct comparison scope.

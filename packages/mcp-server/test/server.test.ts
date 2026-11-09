@@ -300,6 +300,7 @@ describe("tools", () => {
         "golden_update",
         "interrupt",
         "launch",
+        "launch_sized_v1",
         "list",
         "logs",
         "resource_advice",

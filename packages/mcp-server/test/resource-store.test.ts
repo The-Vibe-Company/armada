@@ -352,3 +352,17 @@ test("sampling does not admit or persist while a lifecycle operation owns the sa
   await expect(f.store.append(id, f.reading(id), now, token)).rejects.toMatchObject({ code: "conflict" });
   expect((await f.store.history(id, now)).sessions[0]?.observations).toHaveLength(0);
 });
+
+test("normal resource history and admission exclude managed orchestrator parents", async () => {
+  const f = await fixture();
+  const ordinary = await f.sandbox({ visibility: "private" }),
+    parent = await f.sandbox({ visibility: "private" });
+  await db.query("insert into public.orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [
+    f.org,
+    f.owner,
+    parent,
+  ]);
+  await expect(f.store.history(parent, now)).rejects.toMatchObject({ code: "not_found" });
+  await expect(f.store.claim(parent, now)).rejects.toMatchObject({ code: "not_found" });
+  expect((await f.store.history(ordinary, now)).sessions.map((s) => s.sandbox.id)).toEqual([ordinary]);
+});

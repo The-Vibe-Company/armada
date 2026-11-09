@@ -706,6 +706,10 @@ async function dispatch(
         policy: golden.sizePolicy ?? null,
       };
     }
+    case "sandbox/launch-sized-v1":
+      if (body.sizePolicyVersion !== 1)
+        throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
+      return launchRoute(options, caller, body);
     case "sandbox/launch":
       return launchRoute(options, caller, body);
     case "launch/resolve":
