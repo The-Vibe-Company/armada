@@ -1,0 +1,10 @@
+{
+  "name": "See how a task gets its own sandbox",
+  "steps": [
+    { "do": "open", "path": "/" },
+    { "do": "click", "target": { "role": "link", "name": "Method" }, "lands": "/" },
+    { "do": "see", "text": "golden" },
+    { "do": "click", "target": { "role": "link", "name": "Fleet" }, "lands": "/" },
+    { "do": "see", "text": "Codex" }
+  ]
+}

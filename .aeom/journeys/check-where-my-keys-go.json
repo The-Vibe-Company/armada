@@ -1,0 +1,8 @@
+{
+  "name": "Check where my keys go",
+  "steps": [
+    { "do": "open", "path": "/" },
+    { "do": "click", "target": { "role": "link", "name": "Keys" }, "lands": "/" },
+    { "do": "see", "text": "AES-256-GCM" }
+  ]
+}

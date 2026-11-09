@@ -1,0 +1,9 @@
+{
+  "name": "Try Armada in the browser",
+  "steps": [
+    { "do": "open", "path": "/" },
+    { "do": "see", "text": "Launch your first agent." },
+    { "do": "click", "target": { "role": "link", "name": "Sign in to try Armada" }, "lands": "/login" },
+    { "do": "see", "text": "Sign in to Armada" }
+  ]
+}
