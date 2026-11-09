@@ -13,6 +13,7 @@ import { type ConfiguredControlOptions, handleControlRequest } from "./control.t
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
+import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
@@ -61,6 +62,7 @@ export async function startServer(
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
+    github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,
     encryptionKey: config.encryptionKey,
@@ -100,6 +102,8 @@ export async function startServer(
         await mcp.beforeSnapshot(provider, id);
       },
     });
+    provider.configureGitHub = ({ sandboxId, configuration }) =>
+      configureBoatGitHub(provider, sandboxId, configuration);
     provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
     return provider;
   };

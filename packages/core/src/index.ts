@@ -169,6 +169,7 @@ export {
   type ExecRequest,
   type ExecResult,
   type ForkRequest,
+  type GitHubRuntimeConfiguration,
   type HarnessCapabilities,
   type InterruptRequest,
   isFinalPromptStatus,

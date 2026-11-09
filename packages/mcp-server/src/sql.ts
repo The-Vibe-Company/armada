@@ -3,6 +3,7 @@ import type { Sql } from "@armada/core";
 /** The one method of Bun's Postgres client the server uses. */
 export interface SqlDriver {
   unsafe(text: string, params: never[]): PromiseLike<unknown>;
+  autonomous?(text: string, params: never[]): PromiseLike<unknown>;
   begin?<T>(work: (driver: SqlDriver) => Promise<T>): Promise<T>;
 }
 
@@ -36,6 +37,7 @@ export function sqlOver(driver: SqlDriver): Sql {
   const transaction = driver.begin;
   return {
     query,
+    ...(driver.autonomous ? { autonomousQuery: sqlOver({ unsafe: driver.autonomous }).query } : {}),
     ...(transaction
       ? { transaction: <T>(work: (sql: Sql) => Promise<T>) => transaction(async (tx) => work(sqlOver(tx))) }
       : {}),
@@ -45,7 +47,10 @@ export function sqlOver(driver: SqlDriver): Sql {
 /** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
 export function bunSql(url: string): Sql {
   const client = new Bun.SQL(url);
+  // Never starve durable pre-refresh claims behind owner transactions in the main pool.
+  const autonomous = new Bun.SQL(url, { max: 2 });
   return sqlOver({
+    autonomous: (text, params) => autonomous.unsafe(text, params),
     unsafe: (text, params) => client.unsafe(text, params),
     begin: (work) =>
       client.begin((transaction) => work({ unsafe: (text, params) => transaction.unsafe(text, params) })),

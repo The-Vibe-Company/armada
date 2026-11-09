@@ -8,7 +8,11 @@ const root = import.meta.dir;
 const out = join(root, "dist");
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
-const result = await Bun.build({ entrypoints: [join(root, "src/main.ts")], target: "bun", outdir: out });
+const result = await Bun.build({
+  entrypoints: [join(root, "src/main.ts"), join(root, "src/github-boat-main.ts")],
+  target: "bun",
+  outdir: out,
+});
 if (!result.success) throw Error("Runner bundle failed");
 const require = createRequire(join(root, "package.json"));
 const codexRequire = createRequire(require.resolve("@openai/codex/package.json"));

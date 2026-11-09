@@ -8,6 +8,8 @@ import { isSandboxProvider, type ModalBinding } from "./sandbox-provider.ts";
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
 export interface Sql {
   query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  /** Separate autocommit pool: must not wait for a connection held by transaction(). */
+  autonomousQuery?<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
   /** Runs all queries on one transaction/connection. Callback errors are rejected only after
    * rollback acknowledgement; COMMIT/connection errors after a successful callback are ambiguous. */
   transaction?<T>(work: (sql: Sql) => Promise<T>): Promise<T>;

@@ -6,7 +6,7 @@ if (Bun.version !== "1.4.2") throw new Error("Prepare the runtime with pinned Bu
 const root = join(import.meta.dir, "../packages/agent-runtime");
 await mkdir(join(root, "dist"), { recursive: true });
 const result = await Bun.build({
-  entrypoints: [join(root, "src/main.ts")],
+  entrypoints: [join(root, "src/main.ts"), join(root, "src/github-boat-main.ts")],
   target: "bun",
   outdir: join(root, "dist"),
 });

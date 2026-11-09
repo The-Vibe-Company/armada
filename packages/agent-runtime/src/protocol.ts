@@ -1,4 +1,5 @@
 import type { AgentEvent, ExecRequest, PromptRequest, PromptStatus } from "@armada/core";
+import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 export const PROTOCOL_VERSION = 1;
 export const AUTH_HEADER = "x-armada-runner-grant";
 export type McpConnection =
@@ -40,6 +41,7 @@ export interface ExecEnvironment {
   GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+  configureGitHub?: (configuration: GitHubBrokerConfiguration | null) => Promise<void>;
   /** Private process-local callback, never accepted over runner HTTP. */
   refreshNativeSecrets?: () => void;
   exclusiveNativeAuth?: boolean;
@@ -74,6 +76,7 @@ export interface IngestClient {
 }
 export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
   | { op: "health" }
+  | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
   | ConfigureMcpRequest
   | { op: "prompt"; input: RuntimePromptRequest }
