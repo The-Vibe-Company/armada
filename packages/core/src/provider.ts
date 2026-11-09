@@ -10,6 +10,8 @@ import type { ProviderTarget } from "./sandbox-provider.ts";
  * sandbox it acts on; a provider holds no per-sandbox state, so one instance serves any number of callers.
  */
 export interface Provider {
+  /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
+  observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
   prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   readonly id: string;
   readonly harnesses: readonly Harness[];
@@ -293,6 +295,8 @@ export type ExecResult =
   | { detached: true; processId: number };
 
 export interface EventsRequest {
+  /** Server-side read cancellation; no prompt or mutation is implied. */
+  signal?: AbortSignal;
   sandboxId: string;
   /** From the previous page's `cursor`; absent reads from the start. */
   cursor?: string;

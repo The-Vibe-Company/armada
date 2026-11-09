@@ -17,6 +17,7 @@ import {
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
+import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -48,6 +49,7 @@ export interface ServerSandboxStore extends SandboxStore {
  * and a private golden and its sandboxes only for the owner, admins included.
  */
 export interface ScopedData {
+  resourceObservations?: ResourceStore;
   goldens: GoldenStore;
   sandboxes: ServerSandboxStore;
   removeGolden?(id: string): Promise<{ id: string; removedAt: string; artifacts: "retained" }>;
@@ -61,9 +63,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
   g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.created_at`;
-const SANDBOX_COLUMNS = `s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+const SANDBOX_COLUMNS = `s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
+  s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
   g.modal_environment, g.modal_app_id`;
 /** `$1` is the caller's orgs and `$2` the caller. */
@@ -208,12 +210,12 @@ export function createSqlData(sql: Sql): DataSource {
         const result = await sql.query<SandboxViewRow>(
           `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, machine_size)
+             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,coalesce($12::public.visibility,visible.visibility),$2::uuid,$13::text,$14::integer,$15::integer,now()+$15 * interval '1 second',$16::uuid,case when $16::uuid is not null then now()+interval '2 minutes' else null end,$17::text::jsonb from visible
+             $9::text, $10::text, $11::public.sandbox_provider,coalesce($12::public.visibility,visible.visibility),$2::uuid,$13::text,$14::integer,$15::integer,now()+$15 * interval '1 second',$16::uuid,case when $16::uuid is not null then now()+interval '2 minutes' else null end,$17::uuid,$18::integer,$19::text::jsonb,$20::text::jsonb from visible
            where visible.visibility='org' or coalesce($12::public.visibility,visible.visibility)='private'
-           returning id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
+           returning credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
             ...scope,
             input.goldenId,
@@ -230,7 +232,10 @@ export function createSqlData(sql: Sql): DataSource {
             input.requestedTtlSeconds ?? null,
             input.effectiveTtlSeconds ?? 14400,
             input.activityLeaseId ?? null,
+            input.credentialId ?? null,
+            input.credentialVersion ?? null,
             JSON.stringify(input.machineSize ?? null),
+            JSON.stringify(input.resourceProject ?? null),
           ],
         );
         const row = result.rows[0];
@@ -345,6 +350,7 @@ export function createSqlData(sql: Sql): DataSource {
     };
 
     return {
+      resourceObservations: createResourceStore(sql, caller),
       goldens,
       sandboxes,
       async removeGolden(id) {

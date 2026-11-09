@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
+import { POST } from "../src/app/api/v1/[...path]/route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
@@ -52,6 +53,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["account", "status"],
     ["github", "status"],
     ["creds", "list"],
+    ["sandbox", "advice"],
     ["sandbox", "list"],
     ["sandbox", "wait"],
     ["sandbox", "exec"],
@@ -179,6 +181,12 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
     ["creds", "accounts", "auth-state", "callback"],
     ["internal", "runner", "auth-state"],
     ["sandbox", "auth-state"],
+    ["sandbox", "advice", "callback"],
+    ["sandbox", "advice-extra"],
+    ["sandbox", "launch-sized-v2"],
+    ["sandbox", "launch-sized-v1", "callback"],
+    ["golden", "size-policy", "callback"],
+    ["golden", "size-policies"],
   ]) {
     const blocked = await forwardControl(
       new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
@@ -210,7 +218,7 @@ test("rejects missing configuration and authorization", async () => {
   else process.env.ARMADA_MCP_URL = env;
 });
 
-test("organization provider setup crosses the public-origin proxy over real HTTP", async () => {
+test("provider setup and sizing cross the real public-origin POST proxy over HTTP", async () => {
   const received: { path: string; body: string; bearer: string | null }[] = [];
   const upstream = Bun.serve({
     hostname: "127.0.0.1",
@@ -230,7 +238,10 @@ test("organization provider setup crosses the public-origin proxy over real HTTP
   const publicOrigin = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: (request) => forwardControl(request, new URL(request.url).pathname.slice("/api/v1/".length).split("/")),
+    fetch: (request) =>
+      POST(request, {
+        params: Promise.resolve({ path: new URL(request.url).pathname.slice("/api/v1/".length).split("/") }),
+      }),
   });
   process.env.ARMADA_MCP_URL = upstream.url.toString();
   try {
@@ -253,6 +264,33 @@ test("organization provider setup crosses the public-origin proxy over real HTTP
       expect(await response.json()).toEqual({
         error: { code: "invalid", message: "The provider rejected this credential." },
       });
+    }
+    // These bytes must reach control validation unchanged; the launch has no
+    // version. Only the upstream is a fixture; the public POST handler is real.
+    for (const [path, body] of [
+      ["sandbox/launch-sized-v1", '{ "golden": "golden-id", "size": "medium" }'],
+      ["sandbox/launch-sized-v1", '{"sizePolicyVersion":1,"golden":"golden-id","size":"medium"}'],
+      ["golden/size-policy", '{"golden":"golden-id"}'],
+      [
+        "golden/size-policy",
+        '{"golden":"golden-id","policy":{"version":1,"golden":"large","repositories":{"armada":"medium"}}}',
+      ],
+    ]) {
+      const count = received.length;
+      const anonymous = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), { method: "POST", body });
+      expect(anonymous.status).toBe(401);
+      expect(received).toHaveLength(count);
+      const response = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), {
+        method: "POST",
+        headers: { authorization: "Bearer masked", "content-type": "application/json" },
+        body,
+      });
+      expect(received).toHaveLength(count + 1);
+      expect(received.at(-1)).toEqual({ path: `/api/v1/${path}`, body, bearer: "Bearer masked" });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe(
+        '{"error":{"code":"invalid","message":"The provider rejected this credential."}}',
+      );
     }
   } finally {
     process.env.ARMADA_MCP_URL = env;
