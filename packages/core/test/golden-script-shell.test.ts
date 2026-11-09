@@ -217,3 +217,34 @@ test("clone helper only serves github HTTPS and leaves no token config", () => {
   expect(script).not.toContain("git config --global credential.helper");
   expect(script).toContain("unset GIT_CONFIG_COUNT");
 });
+
+test("real shell: pinned Bun replaces an image binary in a non-writable PATH directory", () => {
+  const base = mkdtempSync(join(tmpdir(), "armada-baseline-permissions-"));
+  const home = join(base, "home");
+  const bin = join(base, "bin");
+  const system = join(base, "system");
+  try {
+    mkdirSync(join(home, "web"), { recursive: true });
+    writeFileSync(join(home, "web", "package.json"), JSON.stringify({ packageManager: "bun@9.9.9" }));
+    fakeBin(bin, ["npm", "bunx", "claude", "codex"]);
+    fakeBin(system, ["bun"]);
+    // Model the immutable image's PATH directory, not a writable fake binary directory.
+    expect(spawnSync("chmod", ["555", system]).status).toBe(0);
+    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
+    const block = extract(
+      goldenScript(prepared).replace(/\/home\/user/g, home),
+      'bun_pin=""',
+      "npm install --global @openai/codex",
+    );
+    const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
+      env: { PATH: `${system}:${bin}:/usr/bin:/bin`, HOME: home },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    const fresh = spawnSync(join(system, "bun"), [], { encoding: "utf8" });
+    expect(fresh.stdout).toContain("PINNED");
+  } finally {
+    spawnSync("chmod", ["755", system]);
+    rmSync(base, { recursive: true, force: true });
+  }
+});

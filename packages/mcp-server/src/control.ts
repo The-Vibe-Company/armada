@@ -123,6 +123,7 @@ const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
   conflict: 409,
   setup_failed: 502,
   snapshot_failed: 502,
+  build_failed: 502,
 };
 
 /**

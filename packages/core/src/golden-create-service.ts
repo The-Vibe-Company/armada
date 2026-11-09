@@ -3,7 +3,7 @@ import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
 import { assertGoldenMutation, waitSnapshot } from "./golden.ts";
 import { assignDirs, type GitHubGoldenConfig, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
-import type { Provider } from "./provider.ts";
+import { type Provider, ProviderError } from "./provider.ts";
 
 const MAX_REPOS = 16;
 
@@ -102,10 +102,19 @@ export class GoldenCreateService {
     let artifactSettled = false;
     let builder: Awaited<ReturnType<Provider["createGolden"]>> | undefined;
     let issued: { token: string; revoke(): Promise<void> } | undefined;
+    const buildId = crypto.randomUUID();
+    const startedAt = Date.now();
+    let phase = "builder";
+    const enter = (next: string) => {
+      phase = next;
+      console.info(JSON.stringify({ event: "golden_build_phase", buildId, phase, elapsedMs: Date.now() - startedAt }));
+    };
     try {
+      enter("builder");
       builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
       // A scoped installation token can cover only one installation. Multiple already-authorized
       // repos use the caller's cached user token, which is never revoked or rotated here.
+      enter("checkout_credentials");
       issued =
         this.deps.mint && installations.size === 1
           ? await this.deps.mint(
@@ -113,12 +122,15 @@ export class GoldenCreateService {
               repos.map((r) => r.id),
             )
           : { token: callerToken, revoke: () => Promise.resolve() };
+      enter("checkout_baseline");
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
+      enter("secret_scan");
       await this.deps.scan(provider, builder.id);
+      enter("snapshot");
       requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
@@ -142,6 +154,7 @@ export class GoldenCreateService {
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
+      enter("persist");
       persistAttempted = true;
       {
         const goldenId = await this.deps.persist({
@@ -159,6 +172,17 @@ export class GoldenCreateService {
         persisted = true;
       }
       return { snapshot };
+    } catch (error) {
+      // Never log the thrown object: provider errors can contain bodies, commands or credentials.
+      const code = error instanceof GoldenError || error instanceof ProviderError ? error.code : "unknown";
+      console.error(
+        JSON.stringify({ event: "golden_build_failed", buildId, phase, code, elapsedMs: Date.now() - startedAt }),
+      );
+      if (error instanceof GoldenError) throw error;
+      throw new GoldenError(
+        "build_failed",
+        `Golden build failed during ${phase} (${code}). Check server phase diagnostics and retry; last-good snapshots are not deleted by failure cleanup.`,
+      );
     } finally {
       if (!persisted && requestedSnapshot && builder) {
         // A timed-out request may have created an artifact. Only reclaim a settled artifact
@@ -275,11 +299,14 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     '    pw_pin=$(grep -o \'"@playwright/test"[[:space:]]*:[[:space:]]*"[0-9][^"]*"\' "$pkg" 2>/dev/null | sed -E \'s/.*:[[:space:]]*"([^"]*)"/\\1/\') || true',
     "  fi",
     "done",
-    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; mkdir -p "$HOME/.local/bin" "$HOME/.bun/bin"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.local/bin/bun"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.bun/bin/bun"; resolved_bun=$(command -v bun || true); if [ -n "$resolved_bun" ]; then ln -sf "$HOME/.bun-npm/bin/bun" "$resolved_bun"; fi; export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"; fi',
+    "armada_phase=bun",
+    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; mkdir -p "$HOME/.local/bin" "$HOME/.bun/bin"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.local/bin/bun"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.bun/bin/bun"; resolved_bun=$(command -v bun || true); if [ -n "$resolved_bun" ]; then if [ -w "$(dirname "$resolved_bun")" ]; then ln -sf "$HOME/.bun-npm/bin/bun" "$resolved_bun"; else sudo -n ln -sf "$HOME/.bun-npm/bin/bun" "$resolved_bun"; fi; fi; export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"; fi',
     'command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; export PATH="$HOME/.bun/bin:$PATH"; }',
+    "armada_phase=chromium",
     "if command -v bun >/dev/null 2>&1; then",
     '  if [ -n "$pw_pin" ]; then bunx --bun --package "@playwright/test@$pw_pin" playwright install --with-deps chromium; else bunx playwright install --with-deps chromium; fi',
     "fi",
+    "armada_phase=harness",
     "command -v claude >/dev/null 2>&1 || npm install --global @anthropic-ai/claude-code",
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
   ].join("\n");
@@ -289,6 +316,8 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
   const lines = [
     "set -euo pipefail",
     CLEANUP_TRAP,
+    "armada_phase=checkout",
+    `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s\\n" "$armada_phase" "$armada_status" >&2' ERR`,
     // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
     // protocol for github.com, and no global/system configuration can leak into a clone.
     "export GIT_CONFIG_NOSYSTEM=1",
@@ -305,10 +334,12 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",
     baselineSetup(repos),
+    "armada_phase=init",
     ...setup,
     // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
     // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
     // exec channel after this session closes, and is what actually gates the snapshot.
+    "armada_phase=inline_scan",
     `if grep -rIlE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev '${GITHUB_TOKEN_PATTERN}' ${GOLDEN_ROOT} >/dev/null 2>/dev/null; then exit 97; fi`,
   ];
   return `${lines.filter(Boolean).join("\n")}\n`;

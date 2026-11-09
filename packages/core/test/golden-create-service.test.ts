@@ -60,7 +60,9 @@ test("scan failure never snapshots or persists and cleans up", async () => {
     },
     stop: async () => void log.push("stop"),
   };
-  await expect(s.create(p, actor, { name: "x", visibility: "private", repos: ["a"] })).rejects.toThrow("secret");
+  await expect(s.create(p, actor, { name: "x", visibility: "private", repos: ["a"] })).rejects.toMatchObject({
+    code: "build_failed",
+  });
   expect(log).toEqual(["revoke", "stop"]);
 });
 test("falls back to the caller's own token and never mints when no App is configured", async () => {
@@ -210,9 +212,9 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
     deleteSnapshot: async (name: string) => void log.push(`delete:${name}`),
     stop: async () => void log.push("stop"),
   };
-  await expect(s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] })).rejects.toThrow(
-    "database is down",
-  );
+  await expect(s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] })).rejects.toMatchObject({
+    code: "build_failed",
+  });
   expect(log).toEqual(["delete:golden-bx", "stop"]);
 });
 

@@ -90,3 +90,34 @@ test("shellQuote round-trips a value containing single quotes through a real she
   expect(result.status).toBe(0);
   expect(result.stdout).toBe(value);
 });
+
+test("real SSH remote shell reports only allowlisted phase and exit code, never tool stderr", async () => {
+  const { spawn } = await import("node:child_process");
+  const { goldenScript, withGoldenDirs } = await import("../src/server.ts");
+  // Exercise the production stdin protocol and real bash, without network or installing a golden.
+  const remoteSpawn: typeof spawn = ((file: string, args: string[], options: any) => {
+    if (file !== "ssh") return spawn(file, args, options);
+    const destination = args.indexOf("user@ssh.test");
+    return spawn("bash", ["-c", args.slice(destination + 1).join(" ")], options);
+  }) as typeof spawn;
+  const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
+  const script = goldenScript(prepared);
+  // Fail before clone: unstructured stderr must not escape even for non-GitHub-shaped secrets.
+  const failing = script.replace(
+    "export GIT_CONFIG_NOSYSTEM=1",
+    "printf 'opaque-private-value\\n' >&2; false\nexport GIT_CONFIG_NOSYSTEM=1",
+  );
+  let failure: unknown;
+  try {
+    await sshStdinCheckout(
+      provider,
+      { sandboxId: "bx", token: "opaque-private-value", script: failing },
+      { spawn: remoteSpawn },
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({ code: "build_failed" });
+  expect(String(failure)).toContain("checkout (exit_1)");
+  expect(String(failure)).not.toContain("opaque-private-value");
+});
