@@ -406,7 +406,7 @@ test("CLI retires launch visibility without changing source golden authority", a
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });
     const text = await f.cli(["launch", "first", "--agent", "codex", "--visibility", "private"]);
     expect(text.code).toBe(0);
-    expect(text.out).toContain("only the owner or an org admin");
+    expect(text.out).toContain("enforced by the server");
     expect(text.out).not.toContain("(private)");
     expect(text.out).not.toContain("first (org)");
   } finally {

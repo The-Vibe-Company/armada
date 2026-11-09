@@ -105,7 +105,7 @@ Usage:
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--connections <id,...> | --no-connections] [--org <org>]
-                Omit connections to use owner defaults; --no-connections opts out.
+                Omit connections to request server defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
@@ -724,7 +724,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     if (legacyVisibility !== "private" && legacyVisibility !== "org")
       throw new GoldenError("invalid_config", "Legacy --visibility must be private or org.");
     io.err(
-      "Warning: --visibility is deprecated and ignored. Sandbox interior access requires the owner or an org admin; omitted connections use owner defaults.\n",
+      "Warning: --visibility is deprecated and ignored. The server enforces sandbox access and resolves omitted connection defaults.\n",
     );
   }
   const connections = single(args, "--connections");
@@ -849,7 +849,7 @@ function launchText(result: LaunchResult): string {
   const { sandbox, golden } = result;
   const lines = [
     `Launched ${sandbox.harness} sandbox from golden ${golden.name}.`,
-    "Access: org members see safe metadata; only the owner or an org admin can open or manage the sandbox.",
+    "Access: enforced by the server; metadata hints do not grant interior access.",
     `Sandbox: ${sandbox.id}`,
     `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
