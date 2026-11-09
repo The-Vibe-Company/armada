@@ -4,7 +4,15 @@ import type { MemberRole } from "@armada/core";
 import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ChangeEvent, startTransition, useActionState, useEffect, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  startTransition,
+  useActionState,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { switchOrganization } from "@/app/actions/selected-org";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -14,7 +22,8 @@ import type { Membership } from "@/lib/data/viewer";
 /**
  * The organization every page is scoped to, and the viewer's role in it. Choosing another one switches to it at
  * once (the server checks the membership and picks the destination); while that runs the choice is locked, and a
- * refusal puts the selector back on the organization the page is actually showing.
+ * refusal puts the selector back on the organization the page is actually showing. Stepping through the closed
+ * selector with the keyboard only previews an org; Enter (or leaving the selector) switches to it.
  */
 export function OrgSwitcher({
   memberships,
@@ -41,8 +50,12 @@ export function OrgSwitcher({
 }
 
 // A switch revalidates the layout and redirects, which mounts the shell anew: the selector that had focus is gone,
-// so its replacement takes the focus back (a keyboard user keeps their place).
-let refocusAfterSwitch = false;
+// so its replacement takes the focus back (a keyboard user keeps their place). Only the mount that shows the org
+// switched to takes it, and any mount clears it: a switch that never landed cannot steal focus later.
+let refocusOn: string | null = null;
+
+// Keys that step a closed select through its options in place (Windows and Linux), firing a change at each step.
+const STEP = new Set(["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
 
 function SelectedOrg({
   memberships,
@@ -58,40 +71,61 @@ function SelectedOrg({
   const [result, switchTo, pending] = useActionState(switchOrganization, null);
   const select = useRef<HTMLSelectElement>(null);
   useEffect(() => {
-    if (!refocusAfterSwitch) return;
-    refocusAfterSwitch = false;
-    select.current?.focus();
-  }, []);
+    const focus = refocusOn === selected;
+    refocusOn = null;
+    if (focus) select.current?.focus();
+  }, [selected]);
   // The organization asked for, until its switch settles: shown meanwhile, and no second switch starts.
   const [target, setTarget] = useState<string | null>(null);
+  // An org reached by stepping with the keyboard: shown, switched to only on Enter or when the selector is left.
+  const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Settle on what the server answered (adjusting state during render, not in an effect): a refusal returns a
   // result; a switch redirects and re-renders the shell, so its transition ends with `selected` already updated.
   const [seen, setSeen] = useState({ result, pending, selected });
   if (seen.result !== result || seen.pending !== pending || seen.selected !== selected) {
     setSeen({ result, pending, selected });
-    if (seen.result !== result && result && !result.ok) {
-      setError(result.error);
-      refocusAfterSwitch = false;
-    }
+    if (seen.result !== result && result && !result.ok) setError(result.error);
     if (seen.selected !== selected) setError(null);
     if ((seen.pending && !pending) || seen.result !== result || seen.selected !== selected) setTarget(null);
   }
   const busy = pending || target !== null;
+  // Set while a stepping key is down: its change is the keyboard browsing, not a choice.
+  const stepping = useRef(false);
 
-  function choose(event: ChangeEvent<HTMLSelectElement>) {
-    const org = event.target.value;
+  function commit(org: string, element: HTMLSelectElement) {
+    setDraft(null);
     // Left unset, the controlled select snaps back: a change during a switch is ignored, not queued.
     if (busy || org === selected) return;
     setTarget(org);
     setError(null);
-    refocusAfterSwitch = document.activeElement === event.target;
+    refocusOn = document.activeElement === element ? org : null;
     const data = new FormData();
     data.set("org", org);
     data.set("section", section.split("/")[1] ?? "");
     startTransition(() => switchTo(data));
   }
 
+  function choose(event: ChangeEvent<HTMLSelectElement>) {
+    if (stepping.current && !busy) setDraft(event.target.value === selected ? null : event.target.value);
+    else commit(event.target.value, event.target);
+  }
+
+  function key(event: KeyboardEvent<HTMLSelectElement>) {
+    // Typing a letter also jumps to a matching option in place.
+    if (STEP.has(event.key) || (event.key.length === 1 && event.key !== " ")) {
+      stepping.current = true;
+      // The change a key causes fires before this task ends; a later one (from the open list) is a choice.
+      setTimeout(() => {
+        stepping.current = false;
+      });
+    } else if (event.key === "Enter" && draft) {
+      event.preventDefault();
+      commit(draft, event.currentTarget);
+    } else if (event.key === "Escape" && draft) setDraft(null);
+  }
+
+  const described = [draft && "active-org-hint", error && "active-org-error"].filter(Boolean).join(" ");
   return (
     <div className="space-y-1.5 px-4 pb-3 md:px-3 md:pb-4">
       <div className="flex items-center justify-between gap-2 px-0 md:px-2">
@@ -115,11 +149,15 @@ function SelectedOrg({
         ref={select}
         id="active-org"
         name="org"
-        value={target ?? selected}
+        value={target ?? draft ?? selected}
         onChange={choose}
+        onKeyDown={key}
+        onBlur={(event) => {
+          if (draft) commit(draft, event.currentTarget);
+        }}
         aria-busy={busy}
         aria-disabled={busy}
-        aria-describedby={error ? "active-org-error" : undefined}
+        aria-describedby={described || undefined}
         className="bg-background font-medium aria-disabled:cursor-progress"
       >
         {memberships.map(({ org }) => (
@@ -128,6 +166,11 @@ function SelectedOrg({
           </option>
         ))}
       </NativeSelect>
+      {draft && (
+        <p id="active-org-hint" className="px-0 text-xs text-muted-foreground md:px-2">
+          Press Enter to switch, Escape to stay.
+        </p>
+      )}
       <p role="status" className="sr-only">
         {busy ? "Switching organization…" : ""}
       </p>

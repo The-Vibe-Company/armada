@@ -3,6 +3,7 @@ import { alert, IDS, MOCK, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
+const THIRD = "00000000-0000-4000-8000-000000000098";
 
 test.beforeEach(async () => {
   await fetch(`${MOCK}/__test/reset`, { method: "POST", body: JSON.stringify({ multiOrg: true }) });
@@ -17,9 +18,13 @@ for (const mobile of [false, true]) {
     const select = page.getByLabel("Active organization");
     await expect(select).toHaveValue(ACME);
     if (mobile) {
-      // The arrow key alone commits the next org; focus stays on the selector across the switch.
+      // Stepping with an arrow key previews the next org without leaving the page; Enter switches to it.
       await select.focus();
       await page.keyboard.press("ArrowDown");
+      await expect(select).toHaveValue(ZENITH);
+      await expect(select).toHaveAccessibleDescription(/Press Enter to switch/);
+      await expect(page).toHaveURL(new RegExp(`/sandboxes/${IDS.running}$`));
+      await page.keyboard.press("Enter");
     } else {
       // Hold the switch in flight: the selector shows the chosen org, busy, and a second choice starts nothing.
       const actions: string[] = [];
@@ -34,13 +39,15 @@ for (const mobile of [false, true]) {
         }
         await route.continue();
       });
+      // A third org to choose meanwhile: not the one shown, so only the lock can refuse it.
+      await select.evaluate((element: HTMLSelectElement, org) => element.append(new Option("Third", org)), THIRD);
       await select.selectOption(ZENITH);
       await expect(select).toHaveAttribute("aria-busy", "true");
       // A busy selector is not disabled (it keeps its focus), so a choice can still reach it, as a person's would.
       await select.evaluate((element: HTMLSelectElement, org) => {
         element.value = org;
         element.dispatchEvent(new Event("change", { bubbles: true }));
-      }, ACME);
+      }, THIRD);
       await expect(select).toHaveValue(ZENITH);
       release();
       await expect(select).toHaveAttribute("aria-busy", "false");
