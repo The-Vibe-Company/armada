@@ -9,15 +9,19 @@
 --   * the column is empty: the row's ciphertext becomes the column's value.
 -- Then no org-scoped 'boat' row may exist again, whatever the role writing it.
 
-update public.orgs as o
-set boat_api_key_enc = c.value_enc
-from public.credentials as c
-where c.scope = 'org'
-  and c.kind = 'boat'
-  and c.owner_id = o.id
-  and o.boat_api_key_enc is null;
+-- No session may add an org Boat row between the move and the constraint.
+lock table public.credentials in share row exclusive mode;
 
-delete from public.credentials where scope = 'org' and kind = 'boat';
+with moved as (
+  delete from public.credentials
+  where scope = 'org' and kind = 'boat'
+  returning owner_id, value_enc
+)
+update public.orgs as o
+set boat_api_key_enc = moved.value_enc
+from moved
+where moved.owner_id = o.id
+  and o.boat_api_key_enc is null;
 
 alter table public.credentials
   add constraint credentials_org_boat_chk check (not (scope = 'org' and kind = 'boat'));

@@ -21,7 +21,7 @@ import { createClient } from "@/lib/supabase/server";
 
 /**
  * Stores a key, token or secret as ciphertext, in the viewer's own scope or (admins) the selected org's. It is
- * never read back: setting it again replaces it. The org Boat key is the Armada server's: see `orgBoatKey`.
+ * never read back: setting it again replaces it. The org Boat key is the Armada server's: see `orgBoatControl`.
  */
 export async function saveCredential(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const viewer = await requireViewer();

@@ -69,8 +69,16 @@ test("the org Boat key is the one launches use: shown, removed and saved through
     ["creds/rm", ACME],
     ["org/provider/connect", ACME],
   ]);
-  const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { scope: string; kind: string }[];
-  expect(stored.some((row) => row.scope === "org" && row.kind === "boat")).toBe(false);
+
+  // A status the server cannot give is not shown as either answer, and offers no removal.
+  await fetch(`${MOCK}/__test/provider-status-fail`, {
+    method: "POST",
+    body: JSON.stringify({ fail: { status: 503, message: "Unavailable." } }),
+  });
+  await page.reload();
+  await expect(boat.getByText("Unavailable")).toBeVisible();
+  await expect(boat.getByRole("button", { name: "Remove boat.dev API key" })).toHaveCount(0);
+  await fetch(`${MOCK}/__test/provider-status-fail`, { method: "POST", body: JSON.stringify({ fail: null }) });
 
   await page.context().clearCookies();
   await signIn(page, "bob@example.com", "/credentials");

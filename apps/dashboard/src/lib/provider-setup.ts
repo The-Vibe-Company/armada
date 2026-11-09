@@ -3,8 +3,8 @@ import { checkModalToken, checkSecretValue, type SecretCheck } from "./credentia
 
 /**
  * An organization's sandbox provider onboarding (#576), as the Armada server derives it (`org/provider/status`,
- * `org/provider/connect`). `ready` means the organization itself holds a provider credential (its legacy Boat
- * column, or an org-scoped Boat or Modal credential); a member's personal key never counts. The dashboard keeps no
+ * `org/provider/connect`). `ready` means the organization itself holds a provider credential (its Boat key column,
+ * or an org-scoped Modal credential); a member's personal key never counts. The dashboard keeps no
  * flag, cookie or query of its own: every page reads this from the server again.
  */
 export type ProviderStatus = {
