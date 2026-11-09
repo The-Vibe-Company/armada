@@ -47,12 +47,12 @@ export default async function AcceptInvitationPage() {
 
 const LINK_ACTIONS = { verify: verifyEmailLink, adopt: adoptVerifiedLink, discard: discardVerifiedLink };
 
-/** Signed out: a verified link waiting for "continue as …", a `token_hash` link to check, or the plain sign-in. */
+/** Signed out: a verified link waiting for the typed address, a `token_hash` link to check, or the plain sign-in. */
 async function signedOut(link: string | undefined): Promise<RecipientState> {
   const pending = await pendingLinkSession();
   if (pending) {
     const found = await candidate(pending.accessToken);
-    if (!isFailure(found)) return { kind: "link_confirm", email: found.email, orgName: found.orgName };
+    if (!isFailure(found)) return { kind: "link_confirm" };
   }
   return decodeEmailLink(link) ? { kind: "link_sign_in" } : { kind: "sign_in" };
 }

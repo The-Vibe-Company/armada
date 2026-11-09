@@ -7,6 +7,7 @@ import {
   INVITATION_COOKIE,
   INVITATION_LINK_SESSION_COOKIE,
   isInvitationToken,
+  normalizeInviteEmail,
   type RecipientPreview,
   refusalMessage,
 } from "@/lib/invitations";
@@ -23,6 +24,8 @@ import { createClient } from "@/lib/supabase/server";
 export const LINK_EXPIRED =
   "This sign-in link has expired or was already used. Sign in with your email address instead.";
 export const LINK_INVALID = "This sign-in link could not be verified. Sign in with your email address instead.";
+export const LINK_MISMATCH =
+  "That address does not match this sign-in link, so nothing changed. Sign in with your own email address instead.";
 
 /** GoTrue without cookies: it checks or mints a session for us, and stores nothing in this browser. */
 export function authClient() {
@@ -62,13 +65,21 @@ export async function candidate(accessToken: string): Promise<Candidate | Action
 }
 
 /**
- * Stores a session after the explicit choice. The refresh token is exchanged at GoTrue first: the session stored is
- * the one GoTrue mints for it, and it must belong to the account the access token was checked for, so a mismatched
- * pair cannot sign in as one person and refresh into another.
+ * Stores a session after the person's explicit intent: they typed, unprompted, the full email address they expect to
+ * sign in as, and it must be exactly the verified address GoTrue vouches for. The page never shows or pre-fills the
+ * link's address (nor any org text) before this, so a link for someone else's account (an attacker's own invitation,
+ * a lookalike address) fails here with nothing written: no refresh, no cookie, the current session untouched.
+ *
+ * Only then is the refresh token exchanged at GoTrue: the session stored is the one GoTrue mints for it, and it must
+ * belong to the account the access token was checked for, so a mismatched pair cannot sign in as one person and
+ * refresh into another.
  */
-export async function adopt(accessToken: string, refreshToken: string): Promise<ActionResult> {
+export async function adopt(accessToken: string, refreshToken: string, typedEmail: string): Promise<ActionResult> {
+  const intended = normalizeInviteEmail(typedEmail);
+  if (!intended) return fail("Type your full email address, like you@company.com.");
   const found = await candidate(accessToken);
   if (isFailure(found)) return found;
+  if (found.email.trim().toLowerCase() !== intended) return fail(LINK_MISMATCH);
   const { data, error } = await authClient().auth.refreshSession({ refresh_token: refreshToken });
   if (error || !data.session || data.user?.id !== found.id) return fail(LINK_INVALID);
   const supabase = await createClient();

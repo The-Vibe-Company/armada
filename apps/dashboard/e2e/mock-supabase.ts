@@ -23,6 +23,8 @@ const users = new Map<string, { id: string; email: string }>([
   [ALICE, { id: ALICE, email: "alice@example.com" }],
   [BOB, { id: BOB, email: "bob@example.com" }],
   [id(3), { id: id(3), email: "carol@example.com" }],
+  // An attacker's own account on a lookalike address (a digit 1 for the l), for the email-link tests.
+  [id(4), { id: id(4), email: "carol@examp1e.com" }],
 ]);
 
 type State = {

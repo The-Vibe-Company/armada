@@ -5,7 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { adoptEmailLink, type EmailLinkCheck, inspectEmailLink } from "@/app/actions/invitation-signin";
-import { INVITATION_LOGIN_HREF, InvitationShell } from "@/components/invitations";
+import {
+  INVITATION_LOGIN_HREF,
+  IntendedEmailField,
+  IntendedEmailIntro,
+  InvitationShell,
+  OwnSignIn,
+} from "@/components/invitations";
 import { Button } from "@/components/ui/button";
 import { parseEmailLinkFragment } from "@/lib/invitations";
 
@@ -25,8 +31,7 @@ export const STRIP_EMAIL_LINK_SCRIPT = `(function(){var h=location.hash;if(h&&/(
 type Phase =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "choose"; hash: string; check: Extract<EmailLinkCheck, { ok: true }> }
-  | { kind: "signing_in"; hash: string; check: Extract<EmailLinkCheck, { ok: true }> }
+  | { kind: "choose"; hash: string; check: Extract<EmailLinkCheck, { ok: true }>; error?: string; busy?: boolean }
   | { kind: "error"; message: string };
 
 /**
@@ -70,38 +75,43 @@ export function EmailLinkBridge({ children }: { children: ReactNode }) {
     );
 
   const { check, hash } = phase;
-  const continueAs = async () => {
-    setPhase({ kind: "signing_in", hash, check });
-    const result = await adoptEmailLink(hash).catch(() => null);
+  const signIn = async (form: FormData) => {
+    const typed = String(form.get("email") ?? "");
+    setPhase({ kind: "choose", hash, check, busy: true });
+    const result = await adoptEmailLink(hash, typed).catch(() => null);
     if (!result?.ok) {
-      setPhase({ kind: "error", message: result && !result.ok ? result.error : "Signing in failed. Try again." });
+      // Nothing was stored: the person can retype, sign in their own way, or stay as they are.
+      setPhase({ kind: "choose", hash, check, error: result && !result.ok ? result.error : "Signing in failed." });
       return;
     }
     setPhase({ kind: "idle" });
     router.refresh();
   };
   return (
-    <InvitationShell title={`Continue as ${check.email}?`}>
-      <p>
-        This sign-in link is for <strong className="break-words text-foreground">{check.email}</strong>, invited to{" "}
-        <strong className="text-foreground">{check.orgName}</strong>. Signing in lets you review the invitation; it does
-        not join the organization.
-      </p>
+    <InvitationShell title="Confirm your email address">
+      <IntendedEmailIntro />
       {check.currentEmail && (
         <p role="note">
           This browser is signed in as <strong className="break-words text-foreground">{check.currentEmail}</strong>.
-          Continuing signs it in as {check.email} instead.
+          Signing in with this link replaces that session here.
         </p>
       )}
-      <div className="flex flex-col gap-2">
-        <Button onClick={continueAs} disabled={phase.kind === "signing_in"} className="w-full">
-          {phase.kind === "signing_in" && <Loader2Icon className="animate-spin" />}
-          Continue as {check.email}
+      <form action={signIn} className="flex flex-col gap-3">
+        <IntendedEmailField />
+        {phase.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {phase.error}
+          </p>
+        )}
+        <Button type="submit" disabled={phase.busy} className="w-full">
+          {phase.busy && <Loader2Icon className="animate-spin" />}
+          Sign in with this link
         </Button>
-        <Button variant="outline" onClick={() => setPhase({ kind: "idle" })} className="w-full">
-          {check.currentEmail ? `Stay as ${check.currentEmail}` : "Not now"}
-        </Button>
-      </div>
+      </form>
+      <Button variant="outline" onClick={() => setPhase({ kind: "idle" })} className="w-full">
+        {check.currentEmail ? `Stay as ${check.currentEmail}` : "Not now"}
+      </Button>
+      <OwnSignIn />
     </InvitationShell>
   );
 }

@@ -191,20 +191,18 @@ export function AcceptInvitation({ state, accept, link, now }: AcceptProps) {
       );
     case "link_confirm":
       return (
-        <InvitationShell title={`Continue as ${state.email}?`}>
-          <p>
-            This sign-in link is for <strong className="break-words text-foreground">{state.email}</strong>, invited to{" "}
-            <strong className="text-foreground">{state.orgName}</strong>. Signing in lets you review the invitation; it
-            does not join the organization.
-          </p>
-          <ActionForm action={link.adopt} className="flex flex-col gap-2">
-            <SubmitButton className="w-full">Continue as {state.email}</SubmitButton>
+        <InvitationShell title="Confirm your email address">
+          <IntendedEmailIntro />
+          <ActionForm action={link.adopt} className="flex flex-col gap-3">
+            <IntendedEmailField />
+            <SubmitButton className="w-full">Sign in with this link</SubmitButton>
           </ActionForm>
           <ActionForm action={link.discard} className="flex flex-col gap-2">
             <SubmitButton variant="outline" className="w-full">
               Not now
             </SubmitButton>
           </ActionForm>
+          <OwnSignIn />
         </InvitationShell>
       );
     case "unavailable":
@@ -301,6 +299,47 @@ export function AcceptInvitation({ state, accept, link, now }: AcceptProps) {
         </InvitationShell>
       );
   }
+}
+
+/**
+ * The person's own statement of who they are signing in as: typed, never pre-filled or suggested from the link, its
+ * session or the org (an attacker controls all three). The server compares it with the link's verified account.
+ */
+export function IntendedEmailField() {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="intended-email">Your email address</Label>
+      <Input
+        id="intended-email"
+        name="email"
+        type="email"
+        autoComplete="off"
+        spellCheck={false}
+        required
+        placeholder="you@company.com"
+      />
+    </div>
+  );
+}
+
+export function IntendedEmailIntro() {
+  return (
+    <p>
+      This link from your invitation email can sign you in. Type the email address you use, the one the invitation was
+      sent to. If it is not this link&apos;s address, nothing changes. Signing in does not join the organization.
+    </p>
+  );
+}
+
+/** The ordinary sign-in from this browser, back to the invitation afterwards. */
+export function OwnSignIn() {
+  return (
+    <p className="text-xs">
+      <Link href={INVITATION_LOGIN_HREF} className="underline underline-offset-4">
+        Sign in with your email address instead
+      </Link>
+    </p>
+  );
 }
 
 export function InvitationShell({

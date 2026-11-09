@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
-import { type ActionResult, done, fail } from "@/lib/action";
+import { type ActionResult, done, fail, formString } from "@/lib/action";
 import {
   adopt,
   authClient,
@@ -24,11 +24,14 @@ import {
 
 /** The explicit steps of signing in with the invitation email's own link; see `@/lib/data/invitation-signin`. */
 
-export type EmailLinkCheck =
-  | { ok: true; email: string; orgName: string; currentEmail: string | null }
-  | { ok: false; error: string };
+/**
+ * What the page may know before the person states their intent: that the link is genuine and for this invitation, and
+ * which account (theirs, from their own session) is signed in now. Never the link's address or org: the person must
+ * type the address they expect, so a link-controlled lookalike cannot be confirmed with one click.
+ */
+export type EmailLinkCheck = { ok: true; currentEmail: string | null } | { ok: false; error: string };
 
-/** Who the fragment's session signs in as, and for which org, before anything is stored. */
+/** Whether the fragment's session is a verified account bound to this invitation, before anything is stored. */
 export async function inspectEmailLink(hash: string): Promise<EmailLinkCheck> {
   const fragment = parseEmailLinkFragment(hash);
   if (!fragment) return { ok: false, error: LINK_INVALID };
@@ -36,26 +39,21 @@ export async function inspectEmailLink(hash: string): Promise<EmailLinkCheck> {
   const found = await candidate(fragment.accessToken);
   if (isFailure(found)) return found.ok ? { ok: false, error: LINK_INVALID } : found;
   const viewer = await readViewer();
-  return {
-    ok: true,
-    email: found.email,
-    orgName: found.orgName,
-    currentEmail: viewer && viewer.id !== found.id ? viewer.email || "another account" : null,
-  };
+  return { ok: true, currentEmail: viewer && viewer.id !== found.id ? viewer.email || "another account" : null };
 }
 
-/** The explicit "continue as …" of the fragment's session. */
-export async function adoptEmailLink(hash: string): Promise<ActionResult> {
+/** The fragment's session, adopted only when the typed address is exactly the link's verified account. */
+export async function adoptEmailLink(hash: string, typedEmail: string): Promise<ActionResult> {
   const fragment = parseEmailLinkFragment(hash);
   if (fragment?.kind !== "session") return fail(LINK_INVALID);
-  const result = await adopt(fragment.accessToken, fragment.refreshToken);
+  const result = await adopt(fragment.accessToken, fragment.refreshToken, typedEmail);
   if (result.ok) revalidatePath(INVITATION_ACCEPT_PATH);
   return result;
 }
 
 /**
  * First step of a `token_hash` link: verify it once at GoTrue and check whose it is. The minted session waits in an
- * HTTP-only cookie scoped to this page; the page then asks "continue as …" and nothing is signed in yet.
+ * HTTP-only cookie scoped to this page; the page then asks for the address and nothing is signed in yet.
  */
 export async function verifyEmailLink(_previous: ActionResult | null, _data: FormData): Promise<ActionResult> {
   const jar = await cookies();
@@ -78,14 +76,14 @@ export async function verifyEmailLink(_previous: ActionResult | null, _data: For
   return done("Link verified.");
 }
 
-/** Second step: the explicit "continue as …" of the verified link's account. */
-export async function adoptVerifiedLink(_previous: ActionResult | null, _data: FormData): Promise<ActionResult> {
+/** Second step: the typed address must be exactly the verified link's account. */
+export async function adoptVerifiedLink(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const pending = await pendingLinkSession();
   if (!pending) return fail(LINK_EXPIRED);
   // Shown to a signed-out viewer only: if another account signed in since (another tab), it is not replaced here.
   const viewer = await readViewer();
   if (viewer) return fail(`This browser is now signed in as ${viewer.email || "another account"}. Reload the page.`);
-  const result = await adopt(pending.accessToken, pending.refreshToken);
+  const result = await adopt(pending.accessToken, pending.refreshToken, formString(data, "email"));
   if (result.ok) (await cookies()).delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
   return result;
 }

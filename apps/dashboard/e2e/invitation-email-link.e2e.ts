@@ -47,15 +47,28 @@ async function expectSanitized(page: Page) {
   expect(href).not.toMatch(/access_token|refresh_token|token=|#/);
 }
 
+/** The person types the address they expect; the page never offers it. */
+async function confirmAs(page: Page, email: string) {
+  const field = page.getByRole("textbox", { name: "Your email address" });
+  await expect(field).toHaveValue("");
+  await field.fill(email);
+  await page.getByRole("button", { name: "Sign in with this link" }).click();
+}
+
+const sessionCookies = async (page: Page) =>
+  (await page.context().cookies()).filter((cookie) => /auth-token/.test(cookie.name)).map((cookie) => cookie.value);
+
 const joined = async () => (await mockState()).members.some((member) => member.user_id === CAROL);
 
-test("a signed-out recipient confirms the link's account, reviews the org, then joins by choice", async ({ page }) => {
+test("a signed-out recipient types their own address, reviews the org, then joins by choice", async ({ page }) => {
   await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
   const link = await emailLink("carol@example.com");
   await page.goto(incoming(link));
 
-  await expect(page.getByRole("heading", { name: "Continue as carol@example.com?" })).toBeVisible();
-  await expect(page.getByText("invited to Acme")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Confirm your email address" })).toBeVisible();
+  // Nothing the link controls is shown or suggested: not its address, not the org.
+  await expect(page.locator("body")).not.toContainText("carol@example.com");
+  await expect(page.locator("body")).not.toContainText("Acme");
   await expectSanitized(page);
   // GoTrue vouched for the account and the server bound it to the invitation; nothing is stored or joined yet.
   let state = await mockState();
@@ -65,7 +78,7 @@ test("a signed-out recipient confirms the link's account, reviews the org, then 
     expect.objectContaining({ name: expect.stringMatching(/auth-token/) }),
   );
 
-  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await confirmAs(page, "carol@example.com");
   await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
   await expectSanitized(page);
   state = await mockState();
@@ -92,10 +105,48 @@ test("another signed-in account is never replaced without choosing to", async ({
   await expect(page.getByText("Signed in as bob@example.com")).toBeVisible();
 
   await page.goto(incoming(await emailLink("carol@example.com")));
-  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await confirmAs(page, "carol@example.com");
   await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
   await expect(page.getByText("Signed in as carol@example.com")).toBeVisible();
   expect(await joined()).toBe(false);
+});
+
+test("an attacker's lookalike link cannot sign the victim in: their own address does not match", async ({ page }) => {
+  // The attacker invited their own lookalike account and sends the victim its link, session included.
+  await mock("seed-invitation", { email: "carol@examp1e.com", token: INVITATION });
+  await page.goto(incoming(await emailLink("carol@examp1e.com")));
+  await expect(page.getByRole("heading", { name: "Confirm your email address" })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("examp1e");
+  await confirmAs(page, "carol@example.com");
+  await expect(alert(page)).toContainText("does not match this sign-in link, so nothing changed");
+  expect(await sessionCookies(page)).toEqual([]);
+  // The ordinary sign-in is offered, back to this invitation.
+  await page.getByRole("link", { name: "Sign in with your email address instead" }).click();
+  await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
+
+  // Signed in as herself, the victim's session is left exactly as it was.
+  await signIn(page, "carol@example.com");
+  const before = await sessionCookies(page);
+  await page.goto(incoming(await emailLink("carol@examp1e.com")));
+  await expect(page.getByText("This browser is signed in as carol@example.com.")).toBeVisible();
+  await confirmAs(page, "carol@example.com");
+  await expect(alert(page)).toContainText("nothing changed");
+  expect(await sessionCookies(page)).toEqual(before);
+
+  // The same through a token_hash link: verified, then refused at the typed address.
+  await page.context().clearCookies();
+  const { token_hash } = await mock("email-link-hash", { email: "carol@examp1e.com" });
+  await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${token_hash}&type=magiclink`);
+  await page.getByRole("button", { name: "Check this link" }).click();
+  await confirmAs(page, "carol@example.com");
+  await expect(alert(page)).toContainText("nothing changed");
+  expect(await sessionCookies(page)).toEqual([]);
+
+  const state = await mockState();
+  // No refresh token was ever exchanged and nothing was accepted or joined.
+  expect(state.authCalls).not.toContain("/token");
+  expect(state.invitationCalls.some((call) => call.route === "accept")).toBe(false);
+  expect(state.members.some((member) => member.user_id === "00000000-0000-4000-8000-000000000004")).toBe(false);
 });
 
 test("a link for another address, or a mismatched session pair, signs nobody in", async ({ page }) => {
@@ -109,7 +160,7 @@ test("a link for another address, or a mismatched session pair, signs nobody in"
   const carol = await mock("email-link-session", { email: "carol@example.com" });
   const bob = await mock("email-link-session", { email: "bob@example.com" });
   await page.goto(incoming(fragment({ ...carol, refresh_token: bob.refresh_token ?? "" })));
-  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await confirmAs(page, "carol@example.com");
   await expect(alert(page)).toContainText("could not be verified");
   await page.goto("/invitations/accept");
   await expect(page.getByRole("heading", { name: "You are invited to an organization on Armada" })).toBeVisible();
@@ -127,7 +178,9 @@ test("an expired email link says to sign in with the email address", async ({ pa
   await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
 });
 
-test("a token_hash link shows whose account it is before signing in, and joins nothing", async ({ page }) => {
+test("a token_hash link is verified first, signs in only for the typed matching address, and joins nothing", async ({
+  page,
+}) => {
   await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
   const { token_hash } = await mock("email-link-hash", { email: "carol@example.com" });
   await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${token_hash}&type=magiclink`);
@@ -136,15 +189,15 @@ test("a token_hash link shows whose account it is before signing in, and joins n
   expect((await mockState()).authCalls).toEqual([]);
 
   await page.getByRole("button", { name: "Check this link" }).click();
-  await expect(page.getByRole("heading", { name: "Continue as carol@example.com?" })).toBeVisible();
-  await expect(page.getByText("invited to Acme")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Confirm your email address" })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("carol@example.com");
   // Verified at GoTrue, but nobody is signed in yet.
   expect((await mockState()).authCalls[0]).toBe("/verify");
   expect(await page.context().cookies()).not.toContainEqual(
     expect.objectContaining({ name: expect.stringMatching(/auth-token/) }),
   );
 
-  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await confirmAs(page, "carol@example.com");
   await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
   expect(await joined()).toBe(false);
 });
@@ -154,12 +207,12 @@ test("a checked token_hash link never replaces an account signed in since, and c
   const { token_hash } = await mock("email-link-hash", { email: "carol@example.com" });
   await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${token_hash}&type=magiclink`);
   await page.getByRole("button", { name: "Check this link" }).click();
-  await expect(page.getByRole("heading", { name: "Continue as carol@example.com?" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Confirm your email address" })).toBeVisible();
 
   // Bob signs in from another tab; the first tab's stale "continue" must not replace him.
   const other = await page.context().newPage();
   await signIn(other, "bob@example.com");
-  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await confirmAs(page, "carol@example.com");
   await expect(alert(page)).toContainText("now signed in as bob@example.com");
   await other.goto("/sandboxes");
   await expect(other.getByText("Signed in as bob@example.com")).toBeVisible();

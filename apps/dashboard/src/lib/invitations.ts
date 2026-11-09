@@ -3,12 +3,19 @@
  * person who previews and accepts. The Armada server owns the invitation (#640, control API v1): authenticated POSTs
  * under `/api/v1/org/invitations/`. The dashboard never writes an invitation or a membership itself.
  *
- * The answers are parsed here, field by field, into what the pages show. BINDING POINT: until #640's
- * `packages/core/src/invitations.ts` is merged, the shapes below mirror its v1 contract for parsing only; once it is,
- * they become `import type` from `@armada/core` and only the runtime parsers stay.
+ * The wire types are `@armada/core`'s (`packages/core/src/invitations.ts`, contract v1). The answers are parsed here,
+ * field by field, against them: a server that sends anything else is refused, never shown.
  */
 
-export type InviteRole = "member" | "admin";
+import type {
+  InvitationConsentContext,
+  InvitationPreview,
+  InvitationRecipientState,
+  InvitationRole,
+  OrganizationInvitation,
+} from "@armada/core";
+
+export type InviteRole = InvitationRole;
 export const INVITE_ROLES: readonly InviteRole[] = ["member", "admin"];
 export const isInviteRole = (value: unknown): value is InviteRole => value === "member" || value === "admin";
 
@@ -16,23 +23,14 @@ export const isInviteRole = (value: unknown): value is InviteRole => value === "
  * The server's delivery state. `sent` means the mail service accepted the message, not that it reached the inbox;
  * `not_configured` means this server has no mail transport, so nothing was sent.
  */
-export type DeliveryState = "not_configured" | "pending" | "sent" | "failed";
-const DELIVERY: readonly DeliveryState[] = ["not_configured", "pending", "sent", "failed"];
+export type DeliveryState = OrganizationInvitation["delivery"];
+const DELIVERY = ["not_configured", "pending", "sent", "failed"] as const satisfies readonly DeliveryState[];
 
-export type InvitationStatus = "pending" | "accepted" | "revoked";
-const STATUS: readonly InvitationStatus[] = ["pending", "accepted", "revoked"];
+export type InvitationStatus = OrganizationInvitation["status"];
+const STATUS = ["pending", "accepted", "revoked"] as const satisfies readonly InvitationStatus[];
 
-/** One invitation as the admin's list shows it. */
-export type InvitationView = {
-  id: string;
-  orgId: string;
-  email: string;
-  role: InviteRole;
-  /** ISO 8601. */
-  expiresAt: string;
-  status: InvitationStatus;
-  delivery: DeliveryState;
-};
+/** One invitation as the admin's list shows it: the server's DTO, fields checked. */
+export type InvitationView = OrganizationInvitation;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,7 +42,8 @@ export function parseInvitation(value: unknown): InvitationView | null {
   if (typeof id !== "string" || typeof orgId !== "string" || typeof email !== "string") return null;
   if (typeof expiresAt !== "string" || Number.isNaN(Date.parse(expiresAt))) return null;
   if (!isInviteRole(role)) return null;
-  if (!STATUS.includes(status as InvitationStatus) || !DELIVERY.includes(delivery as DeliveryState)) return null;
+  if (!(STATUS as readonly unknown[]).includes(status) || !(DELIVERY as readonly unknown[]).includes(delivery))
+    return null;
   return {
     id,
     orgId,
@@ -142,25 +141,24 @@ export function expiryLabel(expiresAt: string, now: Date): string {
   return days === 1 ? "Expires tomorrow" : `Expires in ${days} days`;
 }
 
-/** What the server's recipient preview says about this invitation for the signed-in person (#640). */
-export type RecipientPreviewState =
-  | "ready"
-  | "not_found"
-  | "expired"
-  | "revoked"
-  | "used"
-  | "wrong_email"
-  | "unverified_email"
-  | "already_member";
-const WITH_CONTEXT = ["ready", "expired", "revoked", "used", "already_member"] as const;
-const WITHOUT_CONTEXT = ["not_found", "wrong_email", "unverified_email"] as const;
+const WITH_CONTEXT = [
+  "ready",
+  "expired",
+  "revoked",
+  "used",
+  "already_member",
+] as const satisfies readonly InvitationRecipientState[];
+const WITHOUT_CONTEXT = [
+  "not_found",
+  "wrong_email",
+  "unverified_email",
+] as const satisfies readonly InvitationRecipientState[];
 
 /** The org, role and expiry, shown only once the server matched the signed-in, verified address. */
-export type ConsentContext = { orgId: string; orgName: string; role: InviteRole; expiresAt: string };
+export type ConsentContext = InvitationConsentContext;
 
-export type RecipientPreview =
-  | { state: (typeof WITH_CONTEXT)[number]; context: ConsentContext }
-  | { state: (typeof WITHOUT_CONTEXT)[number]; context: null };
+/** What the server's recipient preview says about this invitation for the signed-in person. */
+export type RecipientPreview = InvitationPreview;
 
 function parseContext(value: unknown): ConsentContext | null {
   if (!isRecord(value)) return null;
@@ -189,8 +187,8 @@ export type RecipientState =
   | { kind: "sign_in" }
   /** Signed out, with the email's own sign-in (`token_hash`): continuing verifies it and signs in as its address. */
   | { kind: "link_sign_in" }
-  /** That link, verified: whose account it signs in as and for which org, before anything is stored. */
-  | { kind: "link_confirm"; email: string; orgName: string }
+  /** That link, verified and bound to the invitation: the person now types the address they expect to sign in as. */
+  | { kind: "link_confirm" }
   | { kind: "unavailable"; message: string; signInAgain: boolean }
   | { kind: "preview"; preview: RecipientPreview; signedInAs: string };
 
