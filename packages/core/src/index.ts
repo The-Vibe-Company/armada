@@ -191,10 +191,12 @@ export {
 export { resolveRepositoryDir } from "./repository-context.ts";
 export { RESOURCE_ADVICE_VERSION, type ResourceAdvice, type ResourceAdviceScope } from "./resource-advice.ts";
 export {
+  type ProviderResourceObservation,
   RESOURCE_OBSERVATION_VERSION,
   type ResourceCounters,
   type ResourceInterval,
   resourceInterval,
+  type VmResourceReading,
 } from "./resource-observation.ts";
 export {
   type CleanupResult,
