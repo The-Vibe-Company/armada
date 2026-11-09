@@ -47,6 +47,16 @@
     ".github/**",
     ".agents/**",
     "Dockerfile",
-    "railway.json"
+    "railway.json",
+    "apps/dashboard/scripts/**",
+    "apps/dashboard/src/app/.well-known/**",
+    "apps/dashboard/tsconfig.json",
+    "apps/dashboard/postcss.config.mjs",
+    "apps/dashboard/components.json",
+    "apps/dashboard/.env.example",
+    "biome.json",
+    "tsconfig.json",
+    ".claude/**",
+    ".aeom/config.json"
   ]
 }
