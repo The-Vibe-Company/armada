@@ -38,6 +38,7 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { operation } from "./operations.ts";
+import { skillCommand } from "./skill-install.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
 export interface Io {
@@ -73,6 +74,8 @@ const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxe
 Usage:
   armada --version                         Print the version
   armada --help                            Show this help
+  armada skill install (--project <directory> | --global) --yes [--revision <commit>]
+                                           Public GitHub manager + review skills; no login. See skill --help.
   armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Server-orchestrated: builds, scans and snapshots the golden on the
@@ -141,7 +144,17 @@ Usage:
   armada account status|logout              Account identity / revoke current login session
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
                                            Browser authorization waits for real completion; --no-browser prints URL
+  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
+  armada org invitations list [--org <name|UUID>] [--json]
+  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
+                                           Admin invitation management; --org overrides org use selection.
+                                           Email sent means provider accepted, not confirmed inbox delivery.
+  armada org invitations accept [--file <path>] [--json]
+                                           Token from stdin/file only; log in personally with the matching
+                                           verified email first. Opening a link never joins an organization.
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
+                                           Direct membership administration; add requires an existing account,
+                                           grants membership immediately and does not send an invitation.
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
@@ -208,6 +221,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [command, ...original] = argv;
+  if (command === "skill") return skillCommand(original, io);
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);

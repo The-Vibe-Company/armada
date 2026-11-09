@@ -9,6 +9,19 @@ test("the list shows the sandboxes a member may see and filters them", async ({ 
   await expect(page.getByRole("link", { name: "bx_alice_failed" })).toBeVisible();
   await expect(page.getByText("bx_bob_secret")).toHaveCount(0);
 
+  // Each row names its persisted provider beside the provider's mark, in a column or, on a phone, under the ID (#645).
+  const row = (name: string) => page.getByRole("row").filter({ has: page.getByRole("link", { name }) });
+  await expect(row("bx_alice_running").getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
+  await expect(row("bx_alice_failed").getByRole("cell", { name: "Modal", exact: true })).toBeVisible();
+  await expect(row("bx_alice_failed").locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
+  await page.screenshot({ path: "test-results/sandbox-providers-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(row("bx_alice_failed").getByText("Modal", { exact: true }).filter({ visible: true })).toBeVisible();
+  await expect(row("bx_alice_running").getByText("Boat", { exact: true }).filter({ visible: true })).toBeVisible();
+  await expect(row("bx_alice_running").locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
+  await page.screenshot({ path: "test-results/sandbox-providers-mobile.png", fullPage: true, animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   await page.getByLabel("Harness").selectOption("codex");
   await page.getByRole("button", { name: "Filter" }).click();
   await expect(page).toHaveURL(/harness=codex/);
@@ -59,6 +72,17 @@ test("stopping a sandbox asks first, then stops it", async ({ page }) => {
   await expect(page.getByText("Stop this sandbox?")).toBeVisible();
   await page.getByRole("button", { name: "Stop sandbox" }).click();
   await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
+  // The conversation shows the same state in the same paint, read at once rather than after its next poll (#627).
+  const conversation = page.getByRole("heading", { name: "Conversation" }).locator("xpath=ancestor::div[2]");
+  expect(await conversation.locator("[data-status]").getAttribute("data-status")).toBe("stopped");
+  await page.screenshot({ path: "test-results/conversation-status-after-stop-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "test-results/conversation-status-after-stop-mobile.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
 });
 
 const at = (seconds: number) => 1_762_596_300_000 + seconds * 1000;
@@ -447,3 +471,59 @@ test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, n
   await page.goto("/sandboxes");
   await expect(page.locator('[data-lifecycle="retrying"]')).toHaveText("Stop retrying");
 });
+
+for (const [timezoneId, zone] of [
+  ["Europe/Paris", "Nov 8, 2026, 11:05 AM GMT+1 (Europe/Paris)"],
+  ["America/Los_Angeles", "Nov 8, 2026, 2:05 AM PST (America/Los_Angeles)"],
+] as const) {
+  test.describe(timezoneId, () => {
+    test.use({ timezoneId });
+
+    test("the list says how long ago a sandbox was created, exact in the viewer's zone", async ({ page }) => {
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
+      // bx_alice_running was created at 10:05 UTC; the browser's clock is fixed, the server's is not.
+      await page.clock.install({ time: new Date("2026-11-08T10:09:00Z") });
+      await signIn(page, "alice@example.com");
+      // Signing in navigates on the client; a reload renders the list on the server and hydrates it.
+      await page.reload();
+      await page.clock.pauseAt(new Date("2026-11-08T10:10:00Z"));
+      await page.clock.runFor(30_000);
+
+      const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: "bx_alice_running" }) });
+      const created = row.locator("time");
+      await expect(created).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
+      await expect(created).toHaveText("5 min ago");
+      await page.clock.runFor("02:00");
+      await expect(created).toHaveText("7 min ago");
+
+      // Keyboard focus shows the exact time in the browser's zone, and describes the trigger to assistive technology.
+      const trigger = row.getByRole("button", { name: "7 min ago" });
+      await trigger.focus();
+      const tooltip = page.getByRole("tooltip");
+      await expect(tooltip).toHaveText(zone);
+      await expect(trigger).toHaveAttribute("aria-describedby", /.+/);
+      const shot = `test-results/sandbox-created-${timezoneId.replace("/", "-")}`;
+      await page.screenshot({ path: `${shot}-desktop.png`, animations: "disabled" });
+      await page.keyboard.press("Escape");
+      await expect(tooltip).toHaveCount(0);
+
+      // So does the pointer.
+      await page.getByRole("link", { name: "bx_alice_running" }).focus();
+      await trigger.hover();
+      await page.clock.runFor(1_000);
+      await expect(tooltip).toHaveText(zone);
+      await page.mouse.move(0, 0, { steps: 5 });
+      await page.clock.runFor(1_000);
+      await expect(tooltip).toHaveCount(0);
+      // A phone keeps the compact table: the Created column steps aside, the row link stays.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(page.getByRole("link", { name: "bx_alice_running" })).toBeVisible();
+      await expect(created).toBeHidden();
+      await page.screenshot({ path: `${shot}-mobile.png`, fullPage: true, animations: "disabled" });
+
+      expect(errors.filter((text) => /hydrat|#418|#423|#425/i.test(text))).toEqual([]);
+    });
+  });
+}

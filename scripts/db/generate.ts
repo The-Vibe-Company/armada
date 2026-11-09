@@ -33,6 +33,10 @@ const ROW_ALIASES: Record<string, string> = {
   modal_server_apps: "ModalServerAppRow",
   modal_server_scopes: "ModalServerScopeRow",
   modal_server_harnesses: "ModalServerHarnessRow",
+  orchestrators: "OrchestratorIdentityRow",
+  orchestrator_children: "OrchestratorChildRow",
+  orchestrator_operations: "OrchestratorOperationRow",
+  orchestrator_delegations: "OrchestratorDelegationRow",
   credentials: "Credential",
   github_authorizations: "GitHubAuthorization",
   github_connections: "GitHubConnection",
@@ -56,6 +60,7 @@ const ROW_ALIASES: Record<string, string> = {
   oauth_clients: "OAuthClient",
   oauth_codes: "OAuthCode",
   orgs: "Org",
+  organization_invitations: "OrganizationInvitationRow",
   sandboxes: "Sandbox",
   service_tokens: "ServiceToken",
 };
