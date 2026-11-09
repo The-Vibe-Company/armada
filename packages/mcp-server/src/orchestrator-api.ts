@@ -1,4 +1,4 @@
-import { ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
+import { MACHINE_SIZES, ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
@@ -44,6 +44,7 @@ export async function callOrchestrator(
       "provider",
       "harness",
       "repo",
+      "size",
       "model",
       "reasoningEffort",
       "modelAccountId",
@@ -53,6 +54,7 @@ export async function callOrchestrator(
     if (
       Object.keys(args).some((key) => !allowed.includes(key)) ||
       args.version !== 1 ||
+      (args.size !== undefined && !(MACHINE_SIZES as readonly unknown[]).includes(args.size)) ||
       !["name", "goldenId", "model", "modelAccountId"].every(
         (key) => typeof args[key] === "string" && (args[key] as string).length > 0,
       ) ||

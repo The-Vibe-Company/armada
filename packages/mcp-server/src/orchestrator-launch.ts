@@ -10,6 +10,7 @@ import {
   type Provider,
   type Sql,
 } from "@armada/core/server";
+import { orchestratorParentLaunchRequest } from "./orchestrator-launch-request.ts";
 import { OrchestratorRuntimeError, type RuntimeReservation } from "./orchestrator-runtime-store.ts";
 
 /** Reuses the v2 launcher; named credentials and size policy are resolved by their
@@ -127,7 +128,7 @@ export async function launchOrchestratorParent(input: {
     },
     actor,
     {
-      ...request,
+      ...orchestratorParentLaunchRequest(identity.configuration, request),
       ...{ credentialId: input.account.credentialId },
       visibility: "private",
       ttlSeconds: PROVIDER_LIMITS[identity.configuration.provider].maxTtlSeconds,
