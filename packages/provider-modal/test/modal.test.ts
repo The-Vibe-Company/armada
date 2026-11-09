@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import type { Sql } from "@armada/core";
+import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, GoldenBuildJobs } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
@@ -729,6 +729,91 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(row.id)).generation).toBe(1);
     await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "resume deliberately" });
     expect((await f.store.get(row.id)).generation).toBe(2);
+  });
+  test("durable event pages cross cursor digit widths in numeric order after compute stops", async () => {
+    // Real migrations + PostgreSQL execution own this regression: the old ORDER BY
+    // resolves the text output name, not the bigint used by the resume predicate.
+    const f = fixture();
+    const row = await runningFork(f);
+    const maximum = await db.query<{ cursor: string }>(
+      "select coalesce(max(cursor),0)::text as cursor from public.modal_events",
+    );
+    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + 130).length - 30;
+    await db.query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
+    const events: AgentEvent[] = Array.from({ length: 130 }, (_, i) => ({
+      id: `ordered-${i}`,
+      // Deliberately not time/UUID ordered: the durable cursor is authoritative.
+      at: 130 - i,
+      promptId: "ordered-prompt",
+      conversationId: i > 1 && i < 129 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
+      ...(i === 0 || i === 1 || i === 129
+        ? {
+            kind: "prompt" as const,
+            text: "task",
+            status: i === 0 ? ("queued" as const) : i === 1 ? ("running" as const) : ("finished" as const),
+          }
+        : { kind: "message" as const, text: `delta-${i}`, partial: i !== 128, tools: [] }),
+    }));
+    expect(
+      await appendModalEvents(
+        db,
+        scope,
+        row.id,
+        "1",
+        events.map((event, i) => ({
+          sequence: i + 1,
+          event,
+        })),
+      ),
+    ).toBe(130);
+    f.onRpc(async (_row, op) =>
+      op === "checkpoint" ? { watermark: 130, acknowledgedSequence: 130, generation: "1" } : undefined,
+    );
+    await f.provider.stop({ sandboxId: row.id });
+    const before = await f.store.get(row.id);
+    const calls = [...f.log];
+    const creates = f.creates;
+
+    async function read(conversationId?: string, resume?: string) {
+      const collected: AgentEvent[] = [];
+      let cursor = resume;
+      for (let pages = 0; pages < 20; pages++) {
+        const page = await f.provider.events({
+          sandboxId: row.id,
+          limit: 17,
+          ...(cursor ? { cursor } : {}),
+          ...(conversationId ? { conversationId } : {}),
+        });
+        if (page.events.length) {
+          expect(BigInt(page.cursor ?? "0")).toBeGreaterThan(BigInt(cursor ?? "0"));
+          expect(typeof page.cursor).toBe("string");
+        }
+        collected.push(...page.events);
+        cursor = page.cursor;
+        if (!page.hasMore) return { collected, cursor };
+      }
+      throw new Error("Pagination failed to terminate");
+    }
+    const all = await read();
+    expect(all.collected).toEqual(events);
+    expect(all.cursor).toBe(String(start + 129));
+    expect(await read(undefined, String(start + 16))).toEqual({
+      collected: events.slice(17),
+      cursor: all.cursor,
+    });
+    expect((await read("ordered-conversation")).collected).toEqual(
+      events.filter((event) => event.conversationId === "ordered-conversation"),
+    );
+    expect(await read(undefined, all.cursor)).toEqual({ collected: [], cursor: all.cursor });
+    expect(await f.provider.getPrompt({ sandboxId: row.id, promptId: "ordered-prompt" })).toEqual({
+      promptId: "ordered-prompt",
+      conversationId: "ordered-conversation",
+      status: "finished",
+      done: true,
+    });
+    expect(f.log).toEqual(calls);
+    expect(f.creates).toBe(creates);
+    expect(await f.store.get(row.id)).toEqual(before);
   });
   test("a prompt observation delayed across stop never enters activation", async () => {
     const f = fixture();
