@@ -55,8 +55,22 @@ test.each(["claude", "codex"] as const)(
           now: () => new Date(clock),
         },
       });
+      const account = await (await import("@armada/core/server")).resolveCredentials(
+        createSqlVaultStore(db),
+        ENCRYPTION_KEY,
+        { userId: people.owner, orgId: people.org, harness },
+      );
       const machine = (id: string): Machine => ({
-        info: { id, name: id, state: "ready", providerState: "active", labels: {} },
+        info: {
+          id,
+          name: id,
+          state: "ready",
+          providerState: "active",
+          labels: {
+            credentialId: account.binding!.credentialId,
+            credentialVersion: String(account.binding!.credentialVersion),
+          },
+        },
         launchUserId: people.owner,
         golden: false,
         phase: "active",

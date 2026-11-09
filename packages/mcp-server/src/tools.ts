@@ -39,6 +39,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
+import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding-recovery.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
@@ -255,9 +256,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const live = async (sandboxId: string) => {
+  const live = async (sandboxId: string, allowUnbound = false) => {
     const found = await visible(sandboxId);
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
+    if (!allowUnbound && found.provider === "modal" && !found.credentialId)
+      throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,
       provider: await context.provider(found),
@@ -754,7 +757,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       readOnly: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const { sandbox: found, provider } = await live(args.id, true);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
@@ -957,7 +960,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       destructive: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const { sandbox: found, provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1139,7 +1142,11 @@ function describe(error: unknown): { code: string; message: string } {
     }
     return { code: error.code, message: error.message };
   }
-  if (error instanceof VaultError) return { code: "missing_credential", message: error.message };
+  if (error instanceof VaultError)
+    return {
+      code: error.code.startsWith("credential_binding_") ? error.code : "missing_credential",
+      message: error.message,
+    };
   if (error instanceof EncryptionKeyError) return { code: "unavailable", message: error.message };
   if (error instanceof DataError) return { code: "unavailable", message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };

@@ -158,6 +158,11 @@ export async function operation(
       if (!id) throw new GoldenError("invalid_config", `armada ${command} needs a sandbox id.`);
       body.id = id;
     }
+    if (command === "bind-credential") {
+      const credentialId = single(args, "--credential-id");
+      uuid(credentialId, "credential id");
+      body.credentialId = credentialId;
+    }
     if (command === "send" || command === "steer" || command === "exec") {
       if (!rest.length) throw new GoldenError("invalid_config", "Provide the prompt or command after the id.");
       body[command === "send" ? "prompt" : command === "steer" ? "text" : "command"] = rest.join(" ");

@@ -8,6 +8,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { HarnessEnvironment, Machine, Scope } from "@armada/provider-modal";
+import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding-recovery.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 
 export interface ModalLaunchEnvironmentOptions {
@@ -41,9 +42,9 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
       (selectedVersion !== undefined && (!Number.isSafeInteger(selectedVersion) || selectedVersion < 1))
     )
       throw new VaultError("invalid", "Modal account binding is invalid.");
-    if (initialHarness)
+    if (initialHarness) {
       await options.sql.query(
-        "insert into public.modal_server_harnesses(scope,machine_id,harness,github_enabled,credential_id,credential_version) values($1,$2,$3,$4,$5::uuid,$6::integer) on conflict(scope,machine_id) do nothing",
+        "insert into public.modal_server_harnesses(scope,machine_id,harness,github_enabled,credential_id,credential_version) values($1,$2,$3,$4,$5::uuid,$6::integer) on conflict(scope,machine_id) do nothing returning machine_id",
         [
           options.scopeKey,
           machine.info.id,
@@ -53,6 +54,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
           selectedVersion ?? null,
         ],
       );
+    }
     const stored = (
       await options.sql.query<{
         harness: Harness;
@@ -71,8 +73,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
       throw new VaultError("forbidden", "Modal account identity cannot change.");
     if (selectedVersion !== undefined && stored.credential_version !== selectedVersion)
       throw new VaultError("forbidden", "Modal account revision cannot change.");
-    if (!stored.credential_id && !initialHarness)
-      throw new VaultError("unavailable", "This legacy Modal sandbox has no account binding. Relaunch it explicitly.");
+    if (!stored.credential_id) throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     const userId = machine.launchUserId ?? options.callerUserId;
     const membership = await options.sql.query("select 1 from public.members where org_id=$1 and user_id=$2", [
       options.scope.orgId,
@@ -88,14 +89,6 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
         ? { credentialId: stored.credential_id, credentialVersion: stored.credential_version ?? 0 }
         : {}),
     });
-    if (!stored.credential_id) {
-      if (!credentials.binding) throw new VaultError("unavailable", "Modal account binding is unavailable.");
-      const pinned = await options.sql.query(
-        "update public.modal_server_harnesses set credential_id=$3::uuid,credential_version=$4 where scope=$1 and machine_id=$2 and (credential_id is null or (credential_id=$3::uuid and credential_version=$4)) returning machine_id",
-        [options.scopeKey, machine.info.id, credentials.binding.credentialId, credentials.binding.credentialVersion],
-      );
-      if (!pinned.rows.length) throw new VaultError("conflict", "Modal account binding changed during bootstrap.");
-    }
     const execEnv: ExecEnvironment = {
       HOME: "/home/user",
       PATH: "/usr/local/bin:/usr/bin:/bin",

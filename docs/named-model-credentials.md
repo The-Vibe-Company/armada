@@ -60,5 +60,29 @@ routine refresh must not advance the account binding version.
 Modal bootstrap precedes the public sandbox INSERT. Core launch therefore passes
 safe account ID/version labels; the private `modal_server_harnesses` policy pins
 them for every physical generation. Restore validates that same account/revision,
-not a current default. Legacy Modal machines without a known binding must be
-relaunched rather than silently selecting a different billing account on restore.
+not a current default. Legacy Modal machines without a known binding require explicit owner recovery
+rather than selecting a different billing account on restore.
+
+## Recover a legacy unbound Modal workspace
+
+`POST /api/v1/sandbox/bind-credential` takes `{id, credentialId, org?}`.
+The API-only CLI equivalent is `armada bind-credential <sandbox-id>
+--credential-id <account-uuid> [--org UUID] [--json]`.
+Only the original sandbox owner, with live organization membership, can bind it;
+an organization admin cannot adopt another person's workspace. The chosen UUID
+must be an authorized, active, compatible account. No default is adopted.
+
+Stop safely first. Recovery requires confirmed stopped public/private state, a
+retained recovery image and no lifecycle/activity/reconciliation lease. Active,
+uncertain and leased states return HTTP 409 `credential_binding_unsafe` with stop
+and reconciliation guidance. An unbound send/restore returns
+`credential_binding_required` (409 at the control API) with chooser/CLI guidance.
+Already-bound or partially inconsistent records return `conflict`; recovery
+cannot replace a bound account.
+
+Recovery atomically CAS-pins the same ID/version on the public sandbox, private
+Modal harness policy and safe machine labels. It preserves conversation IDs,
+physical identity, generation, recovery image and workspace; it performs no
+provider request, restart, resume or allocation. A later normal send resumes the
+same retained workspace using the explicitly selected account. Success is the
+safe DTO `{id, credentialId, credentialVersion, harness, status:"bound"}`.
