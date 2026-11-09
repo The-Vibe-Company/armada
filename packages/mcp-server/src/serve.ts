@@ -112,8 +112,11 @@ export async function startServer(
     },
     provider: async (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const goldenRetirements=new GoldenSnapshotRetirements({sql,encryptionKey:config.encryptionKey,
-    provider:(actor,target)=>providers.resolve(target,{userId:actor.userId})});
+  const goldenRetirements = new GoldenSnapshotRetirements({
+    sql,
+    encryptionKey: config.encryptionKey,
+    provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
+  });
   const control: ControlOptions = {
     goldenRetirements,
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },

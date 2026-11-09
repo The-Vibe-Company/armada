@@ -26,7 +26,13 @@ describe("golden and snapshots", () => {
   });
 
   test("snapshot saves a saved snapshot, getSnapshot reads its status and deleteSnapshot removes it", async () => {
-    const saved = { snapshotId:"underlying-artifact", name: "web-golden", status: "saving", sourceSandboxId: ID, createdAt: "2026-11-09T09:05:00Z" };
+    const saved = {
+      snapshotId: "underlying-artifact",
+      name: "web-golden",
+      status: "saving",
+      sourceSandboxId: ID,
+      createdAt: "2026-11-09T09:05:00Z",
+    };
     const boat = fakeBoat(
       { status: 202, body: { ok: true, type: "snapshot.saved.saving", status: "saving", snapshot: saved } },
       { body: { ok: true, type: "snapshot.saved.info", snapshot: { ...saved, status: "failed", error: "disk full" } } },
@@ -34,7 +40,7 @@ describe("golden and snapshots", () => {
     );
     expect(await boat.provider.snapshot({ sandboxId: ID, name: "web-golden" })).toMatchObject({
       name: "web-golden",
-      artifactId:"underlying-artifact",
+      artifactId: "underlying-artifact",
       status: "saving",
       sourceSandboxId: ID,
     });

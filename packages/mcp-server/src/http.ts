@@ -187,8 +187,18 @@ export function providerRegistry(
         visibility: target.sourceGoldenVisibility ?? target.visibility,
       });
       const provider = options.providerFor(key, { userId: caller.userId, orgId: target.orgId });
-      provider.managementIdentity = async () => ({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
-      return provider;
+      const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
+      // Keep source authority immutable even if a provider factory caches a shared client.
+      return new Proxy(provider, {
+        get(instance, property) {
+          if (property === "managementIdentity") return async () => authority;
+          const value = Reflect.get(instance, property, instance);
+          return typeof value === "function" ? value.bind(instance) : value;
+        },
+        set(instance, property, value) {
+          return property !== "managementIdentity" && Reflect.set(instance, property, value, instance);
+        },
+      });
     },
     ...(modal
       ? {

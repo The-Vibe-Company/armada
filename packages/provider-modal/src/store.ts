@@ -151,7 +151,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     async imageReferenced(imageId) {
       await authorize();
       const result = await sql.query(
-        `select 1 from public.modal_machines m where m.org_id=$3 and m.record->>'phase'<>'deleted' and (
+        `select 1 from public.modal_machines m where m.org_id=$3 and m.record->>'phase' is distinct from 'deleted' and (
           (m.scope=$1 and (m.record->>'imageId'=$2 or m.record->>'recoveryImageId'=$2)) or
           (m.record->'sourceImage'->>'scopeKey'=$1 and m.record->'sourceImage'->>'imageId'=$2)
         ) limit 1`,

@@ -1,4 +1,3 @@
-import { captureGoldenPublication, captureHistoricalPublication, recordGoldenPublication, enqueueGoldenRetirement } from "./golden-snapshot-retirement.ts";
 import type { GitHubInstallationApp, GitHubResolveDeps } from "./github.ts";
 import { resolveGitHubAccess } from "./github.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
@@ -7,8 +6,14 @@ import { GoldenError } from "./golden-config.ts";
 import { type GoldenCreateDeps, GoldenCreateService } from "./golden-create-service.ts";
 import { goldenGitHubAdapter } from "./golden-github.ts";
 import { scanGoldenSandbox } from "./golden-scan.ts";
+import {
+  captureGoldenPublication,
+  captureHistoricalPublication,
+  enqueueGoldenRetirement,
+  recordGoldenPublication,
+} from "./golden-snapshot-retirement.ts";
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
-import type { Provider } from "./provider.ts";
+import { type Provider, ProviderError } from "./provider.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 export interface GoldenBackendSlot {
@@ -105,10 +110,84 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     async release(reservationId) {
       if (!options.job) await slots.release(reservationId);
     },
+    async claimRevision(provider, actor, golden, name, builderId) {
+      const backend = (await provider.backendIdentity?.())?.id;
+      if (!backend || !options.sql.transaction)
+        throw new GoldenError("conflict", "Revision namespace cannot be verified.");
+      const authority = (await provider.managementIdentity?.()) ?? null;
+      const target = {
+        provider: golden.provider,
+        orgId: golden.orgId,
+        ownerId: golden.ownerId,
+        visibility: golden.visibility,
+        modal: golden.modal,
+      };
+      await options.sql.transaction(async (tx) => {
+        const current = (
+          await tx.query<{ provider_snapshot_id: string | null; provider_sandbox_id: string | null }>(
+            "select provider_snapshot_id,provider_sandbox_id from goldens where id=$1 for update",
+            [golden.id],
+          )
+        ).rows[0];
+        if (
+          !current ||
+          current.provider_snapshot_id !== golden.providerSnapshotId ||
+          current.provider_sandbox_id !== golden.providerSandboxId
+        )
+          throw new GoldenError("conflict", "Golden revision changed before snapshot save.");
+        const member = (
+          await tx.query<{ role: string }>("select role from members where org_id=$1 and user_id=$2 for share", [
+            actor.orgId,
+            actor.userId,
+          ])
+        ).rows[0];
+        if (
+          !member ||
+          (golden.visibility === "org" && member.role !== "admin") ||
+          (golden.visibility === "private" && golden.ownerId !== actor.userId)
+        )
+          throw new GoldenError("forbidden", "Snapshot authority changed.");
+        await tx.query(
+          `insert into public.golden_snapshot_publications(id,golden_id,provider,backend_id,snapshot,source_id,authority,target,manager_id,job_id,proven)
+          values($1,$2,$3,$4,$5,$6,$7::text::jsonb,$8::text::jsonb,$9,$10,false)`,
+          [
+            crypto.randomUUID(),
+            golden.id,
+            golden.provider,
+            backend,
+            name,
+            builderId,
+            JSON.stringify(authority),
+            JSON.stringify(target),
+            actor.userId,
+            options.job?.id ?? null,
+          ],
+        );
+      });
+      try {
+        await provider.getSnapshot(name);
+      } catch (error) {
+        if (error instanceof ProviderError && error.code === "not_found") return;
+        throw error;
+      }
+      throw new GoldenError("conflict", "Rebuild saved label already exists; no snapshot was overwritten.");
+    },
     async canDiscardSnapshot(snapshot, error) {
       return typeof error === "object" && error !== null && rolledBack.get(error) === snapshot;
     },
-    async persist({ actor, provider, modal, existingGolden, name, visibility, repos, init, snapshot, builderId, reservationId }) {
+    async persist({
+      actor,
+      provider,
+      modal,
+      existingGolden,
+      name,
+      visibility,
+      repos,
+      init,
+      snapshot,
+      builderId,
+      reservationId,
+    }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -119,10 +198,36 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         ),
         init,
       };
-      const target = { provider, orgId: actor.orgId, ownerId: existingGolden?.ownerId ?? actor.userId, visibility, modal };
-      const publication = buildProvider ? await captureGoldenPublication(buildProvider, actor, target,
-        existingGolden?.id ?? crypto.randomUUID(), snapshot, builderId, options.job?.id) : undefined;
-      const predecessor = buildProvider && existingGolden?.providerSnapshotId ? await captureHistoricalPublication(options.sql,options.github.encryptionKey,buildProvider,actor,target,existingGolden.id,existingGolden.providerSnapshotId) : null;
+      const target = {
+        provider,
+        orgId: actor.orgId,
+        ownerId: existingGolden?.ownerId ?? actor.userId,
+        visibility,
+        modal,
+      };
+      const publication = buildProvider
+        ? await captureGoldenPublication(
+            buildProvider,
+            actor,
+            target,
+            existingGolden?.id ?? crypto.randomUUID(),
+            snapshot,
+            builderId,
+            options.job?.id,
+          )
+        : undefined;
+      const predecessor =
+        buildProvider && existingGolden?.providerSnapshotId
+          ? await captureHistoricalPublication(
+              options.sql,
+              options.github.encryptionKey,
+              buildProvider,
+              actor,
+              target,
+              existingGolden.id,
+              existingGolden.providerSnapshotId,
+            )
+          : null;
       let step = "transaction";
       const persist = async (sql: Sql) => {
         step = "lease_fence";
@@ -174,12 +279,31 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         if (publication) {
           publication.golden_id = inserted.id;
-          const duplicate = await sql.query("select 1 from public.golden_snapshot_publications where provider=$1 and backend_id=$2 and snapshot=$3", [provider, publication.backend_id, snapshot]);
-          if (duplicate.rows.length) throw new GoldenError("conflict", "Saved revision names cannot be reused.");
+          const duplicate = await sql.query<{ source_id: string | null; proven: boolean; golden_id: string }>(
+            "select source_id,proven,golden_id from public.golden_snapshot_publications where provider=$1 and backend_id=$2 and snapshot=$3",
+            [provider, publication.backend_id, snapshot],
+          );
+          if (
+            duplicate.rows.length &&
+            (duplicate.rows[0]?.proven ||
+              duplicate.rows[0]?.source_id !== builderId ||
+              duplicate.rows[0]?.golden_id !== inserted.id)
+          )
+            throw new GoldenError("conflict", "Saved revision names cannot be reused.");
           const next = await recordGoldenPublication(sql, publication);
           if (existingGolden?.providerSnapshotId) {
-            const old = await recordGoldenPublication(sql, predecessor ?? { ...publication, id: crypto.randomUUID(),
-              snapshot: existingGolden.providerSnapshotId, source_id: null, artifact_id: null, proven: false, job_id: null });
+            const old = await recordGoldenPublication(
+              sql,
+              predecessor ?? {
+                ...publication,
+                id: crypto.randomUUID(),
+                snapshot: existingGolden.providerSnapshotId,
+                source_id: null,
+                artifact_id: null,
+                proven: false,
+                job_id: null,
+              },
+            );
             await enqueueGoldenRetirement(sql, old, next);
           }
         }

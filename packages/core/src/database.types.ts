@@ -450,6 +450,8 @@ export type Database = {
           claim_id: string | null;
           claim_until: string | null;
           attempts: number;
+          review_receipt: string | null;
+          reviewed_by: string | null;
           reason: string | null;
           next_attempt_at: string;
           created_at: string;
@@ -469,6 +471,8 @@ export type Database = {
           claim_id?: string | null;
           claim_until?: string | null;
           attempts?: number;
+          review_receipt?: string | null;
+          reviewed_by?: string | null;
           reason?: string | null;
           next_attempt_at?: string;
           created_at?: string;
@@ -488,6 +492,8 @@ export type Database = {
           claim_id?: string | null;
           claim_until?: string | null;
           attempts?: number;
+          review_receipt?: string | null;
+          reviewed_by?: string | null;
           reason?: string | null;
           next_attempt_at?: string;
           created_at?: string;
@@ -512,6 +518,13 @@ export type Database = {
             columns: ["replacement_id"];
             isOneToOne: false;
             referencedRelation: "golden_snapshot_publications";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_snapshot_retirements_reviewed_by_fkey";
+            columns: ["reviewed_by"];
+            isOneToOne: false;
+            referencedRelation: "users";
             referencedColumns: ["id"];
           },
         ];

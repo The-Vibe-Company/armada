@@ -20,6 +20,7 @@ create table public.golden_snapshot_retirements (
  state text not null default 'pending' check(state in ('pending','deferred','uncertain','retired')),
  sealed boolean not null default false, delete_started boolean not null default false,
  claim_id uuid, claim_until timestamptz, attempts integer not null default 0,
+ review_receipt text check(review_receipt is null or review_receipt ~ '^[a-f0-9]{64}$'), reviewed_by uuid references auth.users(id),
  reason text, next_attempt_at timestamptz not null default now(), created_at timestamptz not null default now(),
  unique(provider,backend_id,old_snapshot)
 );
@@ -50,7 +51,7 @@ begin
  return new;
 end $$;
 revoke all on function public.guard_retired_golden_snapshot() from public,anon,authenticated;
-create trigger guard_retired_golden_snapshot before insert or update of provider_snapshot_id on public.goldens
+create trigger guard_retired_golden_snapshot before insert or update of provider_snapshot_id,boat_snapshot_id on public.goldens
 for each row execute function public.guard_retired_golden_snapshot();
 
 create function public.guard_golden_revision_admission() returns trigger language plpgsql
@@ -75,3 +76,33 @@ for each row execute function public.guard_golden_revision_admission();
 
 create index golden_retirement_retry on public.golden_snapshot_retirements(next_attempt_at,id) where state<>'retired';
 create index golden_publication_history on public.golden_build_jobs(golden_id,provider,snapshot) where state='succeeded';
+
+-- Published provenance and permanent collection barriers cannot be rewritten by later service code.
+create function public.guard_golden_publication_proof() returns trigger language plpgsql as $$
+begin
+ if tg_op='DELETE' then raise exception 'Publication namespace cannot be erased' using errcode='23514'; end if;
+ if (old.id,old.golden_id,old.provider,old.backend_id,old.snapshot,old.target) is distinct from
+    (new.id,new.golden_id,new.provider,new.backend_id,new.snapshot,new.target)
+    or (old.proven and new is distinct from old)
+    or (old.authority is not null and old.authority<>'null'::jsonb and new.authority is distinct from old.authority) then
+   raise exception 'Publication provenance is immutable' using errcode='23514';
+ end if;
+ return new;
+end $$;
+revoke all on function public.guard_golden_publication_proof() from public,anon,authenticated;
+create trigger golden_publication_proof before update or delete on public.golden_snapshot_publications
+for each row execute function public.guard_golden_publication_proof();
+create function public.guard_golden_retirement_barrier() returns trigger language plpgsql as $$
+begin
+ if tg_op='DELETE' then raise exception 'Retirement barrier cannot be erased' using errcode='23514'; end if;
+ if (old.golden_id,old.provider,old.backend_id,old.old_snapshot,old.new_snapshot,old.publication_id,old.replacement_id)
+    is distinct from (new.golden_id,new.provider,new.backend_id,new.old_snapshot,new.new_snapshot,new.publication_id,new.replacement_id)
+    or (old.sealed and not new.sealed) or (old.state='retired' and new.state<>'retired')
+    or (old.review_receipt is not null and (new.review_receipt,new.reviewed_by) is distinct from (old.review_receipt,old.reviewed_by)) then
+   raise exception 'Retirement identity and barrier are immutable' using errcode='23514';
+ end if;
+ return new;
+end $$;
+revoke all on function public.guard_golden_retirement_barrier() from public,anon,authenticated;
+create trigger golden_retirement_barrier before update or delete on public.golden_snapshot_retirements
+for each row execute function public.guard_golden_retirement_barrier();

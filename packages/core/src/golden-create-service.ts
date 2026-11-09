@@ -59,6 +59,14 @@ export interface GoldenCreateDeps {
   /** Only an acknowledged rollback/known loser may authorize cleanup, never an absence read.
    * The production factory records transaction outcome proof for this exact failed attempt. */
   canDiscardSnapshot?(snapshot: string, error: unknown): Promise<boolean>;
+  /** Reserve a fresh rebuild label permanently before any upstream save can overwrite it. */
+  claimRevision?(
+    provider: Provider,
+    actor: GoldenActor,
+    golden: GoldenRecord,
+    name: string,
+    builderId: string,
+  ): Promise<void>;
   /** Persist must atomically finalize a reservation when one was taken. */
   persist(input: {
     actor: GoldenActor;
@@ -126,6 +134,7 @@ export class GoldenCreateService {
     let persisted = false;
     let uncertainSnapshot = false;
     let persistAttempted = false;
+    let snapshotAttempted = false;
     let knownUnpublished = false;
     let uncertainPublication = false;
     let requestedSnapshot: string | undefined;
@@ -172,6 +181,9 @@ export class GoldenCreateService {
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       await enter("snapshot");
+      if (input.existingGolden)
+        await this.deps.claimRevision?.(provider, actor, input.existingGolden, requestedSnapshot, builder.id);
+      snapshotAttempted = true;
       uncertainSnapshot = providerId === "modal";
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
       const snapshot = started.name;
@@ -293,7 +305,7 @@ export class GoldenCreateService {
       );
     } finally {
       let cleanupSafe = !uncertainSnapshot && !uncertainPublication;
-      if (!uncertainSnapshot && !persisted && requestedSnapshot && builder) {
+      if (!uncertainSnapshot && !persisted && requestedSnapshot && builder && snapshotAttempted) {
         // A timed-out request may have created an artifact. Only reclaim a settled artifact
         // with matching source provenance; an in-flight/unknown save is left for reconciliation.
         if (!artifactSettled) {
@@ -319,7 +331,7 @@ export class GoldenCreateService {
           });
         }
       }
-      if (!persisted && requestedSnapshot && !artifactSettled) cleanupSafe = false;
+      if (!persisted && requestedSnapshot && !artifactSettled && snapshotAttempted) cleanupSafe = false;
       if (cleanupSafe && !persisted && reservation)
         await this.deps.release?.(reservation).catch(() => {
           cleanupSafe = false;

@@ -532,6 +532,25 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
   });
+  test("recovery references do not depend on a saved label surviving retirement", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const saved = await f.store.image(name);
+    const child = await f.provider.fork({ from: name });
+    await f.provider.stop({ sandboxId: child.id });
+    const recovery = (await f.store.get(child.id)).recoveryImageId;
+    expect(recovery).toBeDefined();
+    await f.provider.deleteSnapshot(name);
+    expect(f.log).not.toContain("delete-image");
+    // Recovery references are durable independently of an already-retired saved-handle row.
+    await f.store.purgeImage(name);
+    expect(await f.store.imageReferenced(saved.imageId!)).toBe(true);
+    expect(await f.store.imageReferenced(recovery!)).toBe(true);
+    await f.provider.exec({ sandboxId: child.id, command: "resume retained recovery" });
+    expect((await f.provider.get(child.id)).state).toBe("ready");
+  });
   test("concurrent lifecycle lease cannot write through the active holder", async () => {
     const f = fixture();
     const row = await f.provider.createGolden({});

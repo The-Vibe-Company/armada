@@ -204,7 +204,11 @@ export async function assertSqlGoldenMutation(sql: Sql, golden: GoldenRecord, ac
 }
 
 /** Admission and removal serialize on the golden row. Never expires on a wall-clock lease. */
-export async function beginGoldenOperation(sql: Sql, id: string, expected: { snapshotId: string | null; sandboxId: string | null }): Promise<GoldenOperation> {
+export async function beginGoldenOperation(
+  sql: Sql,
+  id: string,
+  expected: { snapshotId: string | null; sandboxId: string | null },
+): Promise<GoldenOperation> {
   try {
     const result = await sql.query<{ id: string }>(
       "insert into public.golden_operation_fences(golden_id,expected_snapshot_id,expected_sandbox_id) values ($1,$2,$3) returning id",
