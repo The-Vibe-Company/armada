@@ -86,6 +86,11 @@ export class CodexDriver implements Driver {
           );
           return;
         }
+        // Account limits have no thread ID and must stay outside the public message lane.
+        if (m.method === "account/rateLimits/updated") {
+          c.emit({ kind: "other", type: m.method, data: m.params });
+          return;
+        }
         if (m.params?.threadId !== threadId) return;
         if (m.method === "turn/completed") {
           c.emit({ kind: "other", type: m.method, data: m.params });

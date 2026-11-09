@@ -32,6 +32,20 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
     expect(await turn.done).toBe("finished");
     await steering;
     expect(sessions).toEqual(["persisted-thread"]);
+    // Account notifications have no threadId and must survive thread filtering.
+    expect(events.filter((e) => e.kind === "other" && e.type === "account/rateLimits/updated")).toEqual([
+      {
+        kind: "other",
+        type: "account/rateLimits/updated",
+        data: {
+          rateLimits: {
+            limitId: "codex",
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
+            secondary: null,
+          },
+        },
+      },
+    ]);
     expect(events.filter((e) => e.kind === "message" && e.text === "redirect delivered once")).toHaveLength(1);
     expect(events.filter((e) => e.kind === "other" && e.type === "turn/completed")).toHaveLength(2);
   } finally {

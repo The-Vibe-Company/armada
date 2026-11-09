@@ -17,6 +17,7 @@ import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelUsageApi } from "./model-usage.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -112,6 +113,7 @@ export async function startServer(
     provider: async (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ControlOptions = {
+    modelUsage: createModelUsageApi(sql),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },

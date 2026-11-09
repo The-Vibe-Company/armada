@@ -133,6 +133,55 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     }
+    if (m.message.content === "/usage") {
+      send({
+        type: "stream_event",
+        uuid: "quota-partial",
+        session_id: "fixture-session",
+        event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "private-fallback-quota" } },
+      });
+      send({
+        type: "assistant",
+        uuid: "quota-fallback",
+        session_id: "fixture-session",
+        parent_tool_use_id: null,
+        message: {
+          id: "quota-fallback",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "private-fallback-quota" }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      });
+      send({
+        type: "system",
+        subtype: "local_command_output",
+        uuid: "quota-local",
+        session_id: "fixture-session",
+        content: "private-local-quota",
+      });
+      send({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        uuid: "quota-result",
+        session_id: "fixture-session",
+        duration_ms: 1,
+        duration_api_ms: 0,
+        num_turns: 1,
+        result: "",
+        total_cost_usd: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        modelUsage: {},
+        permission_denials: [],
+        user_message_uuid: m.uuid,
+        user_message_uuids: [m.uuid],
+      });
+      return;
+    }
     if (!initial) {
       initial = m.uuid;
       send({
@@ -151,6 +200,51 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           type: "content_block_start",
           index: 1,
           content_block: { type: "tool_use", id: "tool-call", name: "Read", input: {} },
+        },
+      });
+      send({
+        type: "assistant",
+        uuid: "quota-report",
+        session_id: "fixture-session",
+        parent_tool_use_id: null,
+        usage_report: {
+          session: {
+            total_cost_usd: 0,
+            total_api_duration_ms: 0,
+            total_duration_ms: 0,
+            total_lines_added: 0,
+            total_lines_removed: 0,
+            model_usage: {},
+          },
+          rate_limits: {
+            limits: [
+              {
+                kind: "session",
+                group: "session",
+                percent: 25,
+                resets_at: "2026-11-10T00:00:00Z",
+                severity: "normal",
+                is_active: true,
+              },
+            ],
+            extra_usage: {
+              is_enabled: true,
+              monthly_limit: 2000,
+              used_credits: 125,
+              utilization: 6.25,
+              currency: "EUR",
+            },
+          },
+        },
+        message: {
+          id: "quota",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "private-account-allowance" }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
         },
       });
       send({

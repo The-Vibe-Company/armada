@@ -60,6 +60,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       );
     }
 
+    notify("account/rateLimits/updated", {
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
+        secondary: null,
+      },
+    });
     reply({ thread: { id: thread } });
   } else if (m.method === "turn/start") {
     const params = m.params as TurnStartParams;
