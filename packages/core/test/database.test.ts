@@ -183,7 +183,6 @@ describe("database", () => {
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
-        "sandboxes INSERT",
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
@@ -329,7 +328,8 @@ describe("database", () => {
         [],
       );
 
-      const sandbox = await asUser(db, people.owner, () => insertSandbox(db, people, hidden, people.owner));
+      // Registration is trusted; the assertions below still exercise user-role visibility.
+      const sandbox = await insertSandbox(db, people, hidden, people.owner);
       expect(
         await asUser(db, people.owner, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
       ).toEqual([sandbox]);

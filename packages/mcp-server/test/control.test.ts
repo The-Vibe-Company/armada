@@ -489,6 +489,8 @@ describe("control API", () => {
           createdAt: new Date().toISOString(),
         });
         const boat = fakeBoat();
+        // Registration must work with the production server role, not just the database owner.
+        await db.exec("set role service_role");
         const launch = (body: Record<string, unknown>) =>
           handleControlRequest(
             new Request("https://armada.test/api/v1/sandbox/launch", {
@@ -518,6 +520,9 @@ describe("control API", () => {
           providerSandboxId: "bx_1",
         });
         expect(boat.forks).toHaveLength(1);
+        expect((await db.query("select provider_sandbox_id from sandboxes")).rows).toEqual([
+          { provider_sandbox_id: "bx_1" },
+        ]);
         expect(boat.preparations).toEqual(
           repo === undefined ? [] : [{ sandboxId: "bx_1", harness: "claude", cwd: "/home/user/web" }],
         );

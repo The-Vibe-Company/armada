@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlGoldenStore, type GoldenActor, goldenForLaunch } from "../src/index.ts";
+import { createSqlSandboxStore } from "../src/sandbox.ts";
 
 const IDENTITY = "20261109010000_sandbox_provider_identity.sql";
 const CONFIG = JSON.stringify({
@@ -13,7 +14,7 @@ const CONFIG = JSON.stringify({
 });
 
 describe("sandbox provider identity", () => {
-  test("existing goldens and sandboxes are backfilled to Boat with their ids, and old clients keep working", async () => {
+  test("existing goldens and sandboxes are backfilled to Boat with their ids, and server writes keep Boat aliases compatible", async () => {
     const db = await openDatabase();
     try {
       // The database as the previous release left it.
@@ -46,12 +47,11 @@ describe("sandbox provider identity", () => {
       await asUser(db, people.admin, () =>
         db.query("update goldens set boat_snapshot_id = 'snap-2' where id = $1", [goldenId]),
       );
-      await asUser(db, people.admin, () =>
-        db.query(
-          `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
-           values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
-          [goldenId, people.org, people.admin],
-        ),
+      // Trusted server writes retain the legacy Boat alias contract.
+      await db.query(
+        `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
+         values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
+        [goldenId, people.org, people.admin],
       );
       expect((await db.query("select provider_snapshot_id, boat_snapshot_id from goldens")).rows).toEqual([
         { provider_snapshot_id: "snap-2", boat_snapshot_id: "snap-2" },
@@ -59,6 +59,66 @@ describe("sandbox provider identity", () => {
       expect(
         (await db.query("select provider::text, provider_sandbox_id from sandboxes where boat_id = 'bx_legacy'")).rows,
       ).toEqual([{ provider: "boat", provider_sandbox_id: "bx_legacy" }]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test("only the service role registers sandbox identities for either provider; existing rows remain readable", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const people = await fixture(db);
+      for (const provider of ["boat", "modal"] as const) {
+        const goldenId = await insertGolden(db, people, provider, `snapshot-${provider}`);
+        for (const user of [people.member, people.admin]) {
+          for (const explicit of [true, false]) {
+            await expect(
+              asUser(db, user, () =>
+                db.query(
+                  `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
+                 values ($1::public.sandbox_provider, $2, $3, $4, $5, 'claude', 'ready')`,
+                  [explicit ? provider : null, `untrusted-${user}-${explicit}`, goldenId, people.org, user],
+                ),
+              ),
+            ).rejects.toThrow(/permission denied/);
+          }
+        }
+        // Legacy Boat-only identity columns are not a registration escape hatch.
+        if (provider === "boat") {
+          await expect(
+            asUser(db, people.member, () =>
+              db.query(
+                "insert into sandboxes (boat_id,golden_id,org_id,owner_id,harness,status) values ('legacy-client',$1,$2,$3,'claude','ready')",
+                [goldenId, people.org, people.member],
+              ),
+            ),
+          ).rejects.toThrow(/permission denied/);
+        }
+        await db.exec("set role service_role");
+        let registered: Awaited<ReturnType<ReturnType<typeof createSqlSandboxStore>["insert"]>>;
+        try {
+          registered = await createSqlSandboxStore(db).insert({
+            id: crypto.randomUUID(),
+            provider,
+            providerSandboxId: `trusted-${provider}`,
+            goldenId,
+            orgId: people.org,
+            ownerId: people.member,
+            harness: "claude",
+            status: "ready",
+            model: "claude-sonnet-4-6",
+            reasoningEffort: "high",
+          });
+        } finally {
+          await db.exec("reset role");
+        }
+        expect(registered.providerSandboxId).toBe(`trusted-${provider}`);
+        const rows = await asUser(db, people.member, () =>
+          db.query("select id from sandboxes where id = $1", [registered.id]),
+        );
+        expect(rows.rows).toEqual([{ id: registered.id }]);
+      }
     } finally {
       await db.close();
     }
@@ -110,24 +170,14 @@ describe("sandbox provider identity", () => {
           [people.org, people.admin],
         ),
       ).toContain("written by the Armada server only");
-      expect(
-        await refused(
+      // Exercise provider consistency as the trusted writer so permission denial cannot mask this contract.
+      await expect(
+        db.query(
           `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
-           values ('boat', 'bx_cross', $1, $2, $3, 'claude', 'starting')`,
+         values ('boat', 'bx_cross', $1, $2, $3, 'claude', 'starting')`,
           [modalId, people.org, people.admin],
         ),
-      ).toContain("golden's provider");
-
-      // A visible trusted golden must not let a browser forge a server-owned Modal machine handle.
-      for (const provider of ["modal", null]) {
-        expect(
-          await refused(
-            `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
-           values ($1::public.sandbox_provider, $2, $3, $4, $5, 'claude', 'ready')`,
-            [provider, `sb-forged-${provider ?? "derived"}`, modalId, people.org, people.admin],
-          ),
-        ).toContain("row-level security");
-      }
+      ).rejects.toThrow("golden's provider");
 
       // Not even the server relabels a golden or moves it to another App: a rotated token cannot redirect it.
       await expect(db.query("update goldens set provider = 'modal' where id = $1", [boatId])).rejects.toThrow(
