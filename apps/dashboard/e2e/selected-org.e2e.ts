@@ -18,10 +18,18 @@ for (const mobile of [false, true]) {
     const select = page.getByLabel("Active organization");
     await expect(select).toHaveValue(ACME);
     if (mobile) {
-      // Stepping with an arrow key previews the next org without leaving the page; Enter switches to it.
+      // Stepping with an arrow key previews the next org without leaving the page: Escape or leaving the selector
+      // drops the preview, Enter switches to it.
       await select.focus();
       await page.keyboard.press("ArrowDown");
       await expect(select).toHaveValue(ZENITH);
+      await page.keyboard.press("Escape");
+      await expect(select).toHaveValue(ACME);
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("Tab");
+      await expect(select).toHaveValue(ACME);
+      await select.focus();
+      await page.keyboard.press("ArrowDown");
       await expect(select).toHaveAccessibleDescription(/Press Enter to switch/);
       await expect(page).toHaveURL(new RegExp(`/sandboxes/${IDS.running}$`));
       await page.keyboard.press("Enter");

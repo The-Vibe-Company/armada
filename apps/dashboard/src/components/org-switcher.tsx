@@ -23,7 +23,7 @@ import type { Membership } from "@/lib/data/viewer";
  * The organization every page is scoped to, and the viewer's role in it. Choosing another one switches to it at
  * once (the server checks the membership and picks the destination); while that runs the choice is locked, and a
  * refusal puts the selector back on the organization the page is actually showing. Stepping through the closed
- * selector with the keyboard only previews an org; Enter (or leaving the selector) switches to it.
+ * selector with the keyboard only previews an org: Enter switches to it, Escape or leaving the selector does not.
  */
 export function OrgSwitcher({
   memberships,
@@ -77,7 +77,7 @@ function SelectedOrg({
   }, [selected]);
   // The organization asked for, until its switch settles: shown meanwhile, and no second switch starts.
   const [target, setTarget] = useState<string | null>(null);
-  // An org reached by stepping with the keyboard: shown, switched to only on Enter or when the selector is left.
+  // An org reached by stepping with the keyboard: shown, switched to only on Enter.
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Settle on what the server answered (adjusting state during render, not in an effect): a refusal returns a
@@ -152,9 +152,7 @@ function SelectedOrg({
         value={target ?? draft ?? selected}
         onChange={choose}
         onKeyDown={key}
-        onBlur={(event) => {
-          if (draft) commit(draft, event.currentTarget);
-        }}
+        onBlur={() => setDraft(null)}
         aria-busy={busy}
         aria-disabled={busy}
         aria-describedby={described || undefined}
@@ -168,7 +166,7 @@ function SelectedOrg({
       </NativeSelect>
       {draft && (
         <p id="active-org-hint" className="px-0 text-xs text-muted-foreground md:px-2">
-          Press Enter to switch, Escape to stay.
+          Press Enter to switch.
         </p>
       )}
       <p role="status" className="sr-only">
