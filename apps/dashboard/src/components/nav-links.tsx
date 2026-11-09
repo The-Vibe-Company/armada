@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), goldens, keys and connections are set
- * up once (Build), and the account pages sit last. The hint, a tooltip, says what each page holds.
+ * up once (Build), and the account pages sit last. The hint, a tooltip, says what each page holds. On a phone the
+ * seven links fit two rows of four, so the conversation pages keep their height.
  */
 const GROUPS = [
   {
@@ -30,7 +31,7 @@ const GROUPS = [
   {
     label: "Account",
     links: [
-      { href: "/orgs", label: "Organizations", hint: "Members and roles", icon: UsersIcon },
+      { href: "/orgs", label: "Organizations", short: "Orgs", hint: "Members and roles", icon: UsersIcon },
       { href: "/settings", label: "Settings", hint: "Sandbox providers and GitHub", icon: SettingsIcon },
     ],
   },
@@ -48,13 +49,16 @@ export function NavLinks({ className }: { className?: string }) {
           >
             {group.label}
           </p>
-          {group.links.map(({ href, label, hint, icon: Icon }) => {
+          {group.links.map((link) => {
+            const { href, label, hint, icon: Icon } = link;
+            const short = "short" in link ? link.short : label;
             const active = pathname === href || pathname.startsWith(`${href}/`);
             return (
               <Link
                 key={href}
                 href={href}
                 title={hint}
+                aria-label={label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
                   "flex min-w-0 flex-col items-center gap-1 rounded-md px-1 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:flex-row md:gap-2.5 md:px-2 md:py-1.5 md:text-sm",
@@ -66,7 +70,9 @@ export function NavLinks({ className }: { className?: string }) {
                 <LinkPendingIcon>
                   <Icon />
                 </LinkPendingIcon>
-                <span className="truncate">{label}</span>
+                {/* A phone's four columns take a shorter word where the full one would be cut. */}
+                <span className="truncate md:hidden">{short}</span>
+                <span className="hidden truncate md:inline">{label}</span>
               </Link>
             );
           })}
