@@ -406,7 +406,13 @@ test("on a phone the terminal sign-in stays inside the add dialog, even for a lo
   await expect(dialog.locator("[data-terminal-login]")).toBeVisible();
   const box = await dialog.boundingBox();
   expect(box && box.x >= 0 && box.x + box.width <= 390).toBe(true);
-  // The command scrolls inside its own box; nothing pushes the page sideways.
+  // The whole command, quoted name included, is on screen: it wraps instead of hiding past a scroll.
+  const code = dialog.locator("[data-terminal-login] code");
+  await expect(code).toHaveText(
+    "armada creds login codex --name 'A very long account name for the team that shares one ChatGPT plan'",
+  );
+  expect(await code.evaluate((node) => node.scrollWidth - node.clientWidth)).toBe(0);
+  // Nothing pushes the page sideways.
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   const login = await dialog.locator("[data-terminal-login]").boundingBox();
   expect(login && login.x + login.width <= (box?.x ?? 0) + (box?.width ?? 0)).toBe(true);

@@ -781,8 +781,9 @@ function TerminalSignIn({ command, onDone }: { command: string; onDone: () => vo
         <span className="font-medium">Sign in from your terminal.</span>{" "}
         <span className="text-muted-foreground">It opens the official sign-in, then saves the account here.</span>
       </p>
-      <div className="flex items-center gap-2 rounded-md bg-muted px-3 py-2">
-        <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs whitespace-nowrap">{command}</code>
+      {/* The command wraps rather than scrolls: on a phone the quoted --name must stay on screen. */}
+      <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
+        <code className="min-w-0 flex-1 self-center font-mono text-xs break-words whitespace-pre-wrap">{command}</code>
         <Button
           type="button"
           variant="ghost"
