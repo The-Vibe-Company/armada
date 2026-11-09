@@ -1,3 +1,4 @@
+import { captureGoldenPublication, captureHistoricalPublication, recordGoldenPublication, enqueueGoldenRetirement } from "./golden-snapshot-retirement.ts";
 import type { GitHubInstallationApp, GitHubResolveDeps } from "./github.ts";
 import { resolveGitHubAccess } from "./github.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
@@ -74,11 +75,13 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
   // Identity proof of a callback failure whose managed transaction has completed rollback.
   // A commit/transport error after a successful callback is deliberately never marked here.
   const rolledBack = new WeakMap<object, string>();
+  let buildProvider: Provider | undefined;
   const deps: GoldenCreateDeps = {
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId, context) => scanGoldenSandbox(provider, sandboxId, context),
     async reserve(provider, actor, existingGolden) {
+      buildProvider = provider;
       if (options.job) {
         await options.job.phase("authorization");
         const reservation = options.job.reservationId ?? undefined;
@@ -105,7 +108,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     async canDiscardSnapshot(snapshot, error) {
       return typeof error === "object" && error !== null && rolledBack.get(error) === snapshot;
     },
-    async persist({ actor, provider, modal, existingGolden, name, visibility, repos, init, snapshot, reservationId }) {
+    async persist({ actor, provider, modal, existingGolden, name, visibility, repos, init, snapshot, builderId, reservationId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -116,6 +119,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         ),
         init,
       };
+      const target = { provider, orgId: actor.orgId, ownerId: existingGolden?.ownerId ?? actor.userId, visibility, modal };
+      const publication = buildProvider ? await captureGoldenPublication(buildProvider, actor, target,
+        existingGolden?.id ?? crypto.randomUUID(), snapshot, builderId, options.job?.id) : undefined;
+      const predecessor = buildProvider && existingGolden?.providerSnapshotId ? await captureHistoricalPublication(options.sql,options.github.encryptionKey,buildProvider,actor,target,existingGolden.id,existingGolden.providerSnapshotId) : null;
       let step = "transaction";
       const persist = async (sql: Sql) => {
         step = "lease_fence";
@@ -165,6 +172,17 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         }
         step = "snapshot_pointer";
         await transactionalStore.setSnapshot(inserted.id, snapshot);
+        if (publication) {
+          publication.golden_id = inserted.id;
+          const duplicate = await sql.query("select 1 from public.golden_snapshot_publications where provider=$1 and backend_id=$2 and snapshot=$3", [provider, publication.backend_id, snapshot]);
+          if (duplicate.rows.length) throw new GoldenError("conflict", "Saved revision names cannot be reused.");
+          const next = await recordGoldenPublication(sql, publication);
+          if (existingGolden?.providerSnapshotId) {
+            const old = await recordGoldenPublication(sql, predecessor ?? { ...publication, id: crypto.randomUUID(),
+              snapshot: existingGolden.providerSnapshotId, source_id: null, artifact_id: null, proven: false, job_id: null });
+            await enqueueGoldenRetirement(sql, old, next);
+          }
+        }
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
         step = "slot_finalize";

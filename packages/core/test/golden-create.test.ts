@@ -426,6 +426,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     };
     const provider: Provider = {
       ...readyProvider(),
+      managementIdentity:async()=>({scope:"org",ownerId:actor.orgId}),
       createGolden: async () => start(++generation),
       snapshot: async ({ name, sandboxId }) => {
         artifacts.set(name, {
@@ -440,7 +441,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       getSnapshot: async (name) => {
         const artifact = artifacts.get(name);
         if (!artifact) throw new Error("absent artifact");
-        return { name, status: artifact.status, sourceSandboxId: artifact.source };
+        return { name, status: artifact.status, sourceSandboxId: artifact.source, artifactId:"disk-"+name };
       },
       deleteSnapshot: async (name) => {
         deleted.push(name);
@@ -513,6 +514,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       );
       expect([...artifacts.keys()]).toEqual([first.snapshot]);
       expect(deleted).not.toContain(first.snapshot);
+      expect((await db.query("select id from golden_snapshot_retirements")).rows).toEqual([]);
       expect([...machines.values()].every((machine) => machine.stopped)).toBe(true);
     }
     failure = "";
@@ -524,6 +526,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     expect(after.providerSnapshotId).toBe(updated.snapshot);
     expect(after.config.init).toEqual(["echo new"]);
     expect(after.providerSandboxId).toBeNull();
+    expect((await db.query("select old_snapshot,new_snapshot from golden_snapshot_retirements")).rows).toEqual([{old_snapshot:first.snapshot,new_snapshot:updated.snapshot}]);
     expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
       binding,
     );
@@ -570,6 +573,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     expect(committed.providerSnapshotId).not.toBe(updated.snapshot);
     expect(artifacts.has(committed.providerSnapshotId!)).toBe(true);
     expect(artifacts.has(updated.snapshot)).toBe(true);
+    expect((await db.query("select new_snapshot from golden_snapshot_retirements where old_snapshot=$1",[current.providerSnapshotId])).rows).toEqual([{new_snapshot:committed.providerSnapshotId}]);
   } finally {
     await db.close();
   }

@@ -207,7 +207,7 @@ export class GoldenBuildJobs {
       const id = randomUUID();
       return (
         await sql.query<Job>(
-          "insert into public.golden_build_jobs(id,org_id,owner_id,visibility,idempotency_key,request_hash,payload_enc,reservation_id,name,golden_id,provider) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *",
+          "insert into public.golden_build_jobs(id,org_id,owner_id,visibility,idempotency_key,request_hash,payload_enc,reservation_id,name,golden_id,provider,expected_snapshot_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *",
           [
             id,
             actor.orgId,
@@ -220,6 +220,7 @@ export class GoldenBuildJobs {
             input.name,
             input.existingGolden?.id ?? null,
             providerId,
+            input.existingGolden?.providerSnapshotId ?? null,
           ],
         )
       ).rows[0]!;

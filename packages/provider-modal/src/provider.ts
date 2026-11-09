@@ -424,6 +424,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   const provider: ModalProvider = {
     id: "modal",
+    backendIdentity: async () => { await bound(); return { id: JSON.stringify([source.scope.binding.workspace,source.scope.binding.environment,source.scope.binding.appId]) }; },
+    managementIdentity: async () => ({ scope: managementAuthority.credentialScope, ownerId: managementAuthority.credentialOwnerId }),
     harnesses: ["claude", "codex"],
     capabilities: distribution.capabilities,
     createGolden: (r) => {
@@ -728,6 +730,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             name: r.name,
             status: "saving",
             sourceSandboxId: r.sandboxId,
+            managementAuthority: {scope:managementAuthority.credentialScope,ownerId:managementAuthority.credentialOwnerId},
             createdAt: new Date(),
           };
           await store.saveImage({ info, sourceId: r.sandboxId, managementAuthority: { ...managementAuthority } });
@@ -744,6 +747,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.snapshotImages = [...(row.snapshotImages ?? []), { name: r.name, imageId: image.imageId }];
           await save(row);
           info.status = "ready";
+          info.artifactId = image.imageId;
           await store.saveImage({
             info,
             sourceId: r.sandboxId,
@@ -765,7 +769,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await bound();
       const image = await source.store.image(name);
       assertAuthority(image);
-      return image.info;
+      return { ...image.info, ...(image.imageId ? { artifactId: image.imageId } : {}), ...(image.managementAuthority ? {managementAuthority:{scope:image.managementAuthority.credentialScope,ownerId:image.managementAuthority.credentialOwnerId}} : {}) };
     },
     async deleteSnapshot(name) {
       if (scopeKey(source.scope) !== scopeKey(options.scope))

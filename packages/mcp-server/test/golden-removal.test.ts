@@ -63,7 +63,7 @@ test("removal preserves child access and bindings, hides selection, and checks l
         [crypto.randomUUID(), people.org, people.admin, new Uint8Array([1]), crypto.randomUUID()],
       ),
     ).rejects.toThrow("removed");
-    await expect(member.goldens.beginOperation!(shared.id)).rejects.toMatchObject({ code: "conflict" });
+    await expect(member.goldens.beginOperation!(shared.id, {snapshotId:shared.providerSnapshotId,sandboxId:shared.providerSandboxId})).rejects.toMatchObject({ code: "conflict" });
     await expect(db.query("update goldens set removed_at=null where id=$1", [shared.id])).rejects.toThrow("immutable");
     await owner.removeGolden!(privateGolden.id);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.member]);
@@ -222,11 +222,11 @@ test("JWTs cannot forge or release service fences, including after revocation or
     const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
     const boat = fakeBoat();
     const credentials = { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) };
-    const release = await data.goldens.beginOperation!(golden.id);
+    const release = await data.goldens.beginOperation!(golden.id, {snapshotId:golden.providerSnapshotId,sandboxId:golden.providerSandboxId});
     await release.retain!({ kind: "connect", sandboxId: "bx_unknown", snapshotId: golden.providerSnapshotId! });
     // Preserve and protect pre-migration user-owned admissions as well as service-owned rows.
     const legacy = await db.query<{ id: string }>(
-      "insert into golden_operation_fences(golden_id,owner_id,receipt) values($1,$2,$3::jsonb) returning id",
+      "insert into golden_operation_fences(golden_id,owner_id,receipt,expected_snapshot_id,expected_sandbox_id) select $1,$2,$3::jsonb,provider_snapshot_id,provider_sandbox_id from goldens where id=$1 returning id",
       [
         golden.id,
         people.admin,

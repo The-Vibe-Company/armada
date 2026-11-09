@@ -17,6 +17,8 @@ export interface Provider {
   readonly maxGoldens?: number;
   /** Stable non-secret backend account identity, when supported. */
   backendIdentity?(): Promise<{ id: string }>;
+  /** Immutable credential selection, never the secret or mutable profile label. */
+  managementIdentity?(): Promise<{ scope: "org" | "user"; ownerId: string }>;
   /** Private authenticated runtime configuration; must complete before a model turn starts. */
   configureMcp?(request: {
     sandboxId: string;
@@ -125,6 +127,10 @@ export interface SandboxInfo {
 }
 
 export interface SnapshotInfo {
+  /** Immutable underlying artifact fingerprint; never a saved-handle delete argument. */
+  artifactId?: string;
+  /** Provider-persisted source credential authority, when available (required for Modal retirement). */
+  managementAuthority?: { scope: "org" | "user"; ownerId: string };
   /** Authoritative provider reference, not necessarily the requested label or underlying disk artifact ID. */
   name: string;
   status: "saving" | "ready" | "failed";

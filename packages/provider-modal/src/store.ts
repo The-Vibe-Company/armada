@@ -151,11 +151,10 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     async imageReferenced(imageId) {
       await authorize();
       const result = await sql.query(
-        `select 1 from public.modal_images i where i.scope=$1 and i.record->>'imageId'=$2 and exists (
-        select 1 from public.modal_machines m where m.org_id=$3 and m.record->>'phase'<>'deleted' and (
+        `select 1 from public.modal_machines m where m.org_id=$3 and m.record->>'phase'<>'deleted' and (
           (m.scope=$1 and (m.record->>'imageId'=$2 or m.record->>'recoveryImageId'=$2)) or
           (m.record->'sourceImage'->>'scopeKey'=$1 and m.record->'sourceImage'->>'imageId'=$2)
-        )) limit 1`,
+        ) limit 1`,
         [key, imageId, scope.orgId],
       );
       return result.rows.length > 0;

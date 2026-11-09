@@ -34,3 +34,5 @@ export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export { type SshExecDeps, shellQuote, sshStdinCheckout } from "./ssh-executor.ts";
+
+export * from "./golden-snapshot-retirement.ts";

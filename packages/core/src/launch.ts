@@ -148,7 +148,7 @@ export async function launchSandbox(
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id);
+  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, { snapshotId: golden.providerSnapshotId, sandboxId: golden.providerSandboxId });
   let childRecorded = false;
   let noAllocation = false;
   let failed = false;

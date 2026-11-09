@@ -100,6 +100,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface ControlOptions {
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
+  goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
   connections?: LaunchStores["connections"];
   /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
@@ -664,6 +665,15 @@ async function dispatch(
         required(body, "id"),
         body,
       );
+    case "golden/retirement/dry-run":
+    case "golden/retirement/reconcile": {
+      if(!options.goldenRetirements) throw new VaultError("unavailable","Snapshot retirement is not configured.");
+      const id=required(body,"id");
+      if(!UUID.test(id))throw new VaultError("invalid","id must be a golden UUID.");
+      const selected=await selectedCaller(options,caller,optional(body,"org"));
+      return options.goldenRetirements.forCaller(caller.userId,selected.orgs.map(o=>o.orgId),id,
+        body.limit===undefined?20:Number(body.limit),route.endsWith("reconcile"));
+    }
     case "golden/remove": {
       const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
       const data = options.data?.(scopedCaller);

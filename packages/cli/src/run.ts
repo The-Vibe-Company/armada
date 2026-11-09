@@ -114,6 +114,7 @@ Usage:
                                            Read actual bound connection metadata, never mutate bindings
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+  armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
   armada golden remove <golden-id> [--org UUID] [--json]
                                            Remove from launch selection; retain children and provider artifacts
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
@@ -348,6 +349,13 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           : `${capabilities.provider}: max goldens ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
       );
       return 0;
+    }
+    case "retirement": {
+      const [action,id,...extra]=args.positionals;
+      if(!["dry-run","reconcile"].includes(action??"")||!id||extra.length)throw new GoldenError("invalid_config","Use golden retirement dry-run|reconcile GOLDEN_UUID.");
+      const client=await createArmadaApiClient({env:authOf(io,deps).env,fetch:deps.fetch??authOf(io,deps).fetch,session:authOf(io,deps).session});
+      const result=await client.request(`/api/v1/golden/retirement/${action}`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,org:single(args,"--org"),limit:Number(single(args,"--limit")??20)})});
+      io.out(`${JSON.stringify(result)}\n`);return 0;
     }
     case "remove": {
       const auth = authOf(io, deps);

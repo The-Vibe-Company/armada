@@ -9,6 +9,7 @@ export function startServerWorkers(
     drain(): Promise<void>;
   },
   log: (line: string) => void = console.error,
+  retirements?: { runOne(signal: AbortSignal): Promise<boolean> },
 ) {
   const goldenWorker = startGoldenWorker(goldens, log);
   const shutdown = new AbortController();
@@ -38,10 +39,23 @@ export function startServerWorkers(
     // those operations tracked through shutdown; cancellation forbids subsequent actions.
     await lifecycle.drain();
   })();
-  const done = Promise.all([goldenWorker.done, lifecycleDone]).then(() => {});
+  const retirementDone=(async()=>{
+    while(retirements && !shutdown.signal.aborted) {
+      const timeout=AbortSignal.timeout(30_000);
+      try { if(await retirements.runOne(AbortSignal.any([shutdown.signal,timeout]))) continue; }
+      catch {log("armada: snapshot retirement unavailable; saved revisions retained.");}
+      if(!shutdown.signal.aborted) await new Promise<void>(resolve=>{
+        const timer=setTimeout(finish,1000);timer.unref();
+        function finish(){clearTimeout(timer);shutdown.signal.removeEventListener("abort",finish);resolve();}
+        shutdown.signal.addEventListener("abort",finish,{once:true});
+      });
+    }
+  })();
+  const done = Promise.all([goldenWorker.done, lifecycleDone,retirementDone]).then(() => {});
   return {
     goldenWorker,
     lifecycleWorker: { done: lifecycleDone },
+    retirementWorker:{done:retirementDone},
     done,
     stop() {
       goldenWorker.stop();

@@ -41,6 +41,8 @@ const ROW_ALIASES: Record<string, string> = {
   golden_adoption_receipts: "GoldenAdoptionReceipt",
   goldens: "Golden",
   golden_operation_fences: "GoldenOperationFence",
+  golden_snapshot_publications: "GoldenSnapshotPublication",
+  golden_snapshot_retirements: "GoldenSnapshotRetirement",
   mcp_tokens: "McpToken",
   mcp_actor_epochs: "McpActorEpoch",
   mcp_connections: "McpConnection",
