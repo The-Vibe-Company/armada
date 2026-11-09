@@ -105,3 +105,23 @@ test("unknown/hostile codes and failed synchronous/asynchronous log sinks cannot
   }, "stop").report("uncertain");
   await Promise.resolve();
 });
+
+// These refusals can happen during a real Modal create before a usable parent
+// exists; the reason must not collapse to an unexpected-error placeholder.
+test("known provider readiness, billing and harness refusals retain their safe reasons", () => {
+  const lines: string[] = [];
+  for (const code of ["sandbox_not_ready", "payment_required", "provider_not_configured"] as const) {
+    const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "create");
+    diagnostics.stage("fork");
+    diagnostics.report(
+      "uncertain",
+      new ProviderError({ provider: "modal", code, message: "synthetic-private-provider-detail", retryable: false }),
+    );
+  }
+  expect(lines.map((line) => JSON.parse(line).reason)).toEqual([
+    "provider_sandbox_not_ready",
+    "provider_payment_required",
+    "provider_provider_not_configured",
+  ]);
+  expect(lines.join("\n")).not.toContain("synthetic-private-provider-detail");
+});
