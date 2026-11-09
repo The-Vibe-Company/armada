@@ -41,7 +41,7 @@ export class Runner {
     private ingest?: IngestClient,
     mcp?: McpConfiguration,
     private stripTransientAuth?: () => Promise<void>,
-    execution: RunnerExecutionOptions = {},
+    private readonly execution: RunnerExecutionOptions = {},
   ) {
     if (
       !grant.token ||
@@ -313,14 +313,49 @@ export class Runner {
       const resume = this.drivers[r.input.harness].resumeSession?.bind(this.drivers[r.input.harness]);
       if (!resume) throw Error("native_resume_unsupported");
       this.resumingNative = true;
-      const work = Promise.resolve().then(() =>
-        resume({
-          request: r.input,
-          sessionId: saved.session,
-          signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
-          ...(this.mcp ? { mcp: this.mcp } : {}),
-        }),
-      );
+      // Consume actual604's sync redactor refresh and async private publication
+      // from the SAME execution object. A native handshake can rotate auth even
+      // without inference; its ACK must wait for publication, including failures.
+      const refresh = () => {
+        const callback = Reflect.get(this.execution, "refreshNativeSecrets");
+        if (callback === undefined) return;
+        if (typeof callback !== "function" || Reflect.apply(callback, this.execution, []) !== undefined)
+          throw Error("native_auth_state_unacknowledged");
+      };
+      const publish = async () => {
+        const callback = Reflect.get(this.execution, "publishNativeAuth");
+        if (callback === undefined) return;
+        if (typeof callback !== "function") throw Error("native_auth_state_unacknowledged");
+        await Reflect.apply(callback, this.execution, []);
+      };
+      const work = Promise.resolve().then(async () => {
+        try {
+          refresh();
+        } catch {
+          throw Error("native_auth_state_unacknowledged");
+        }
+        const outcome = await Promise.resolve()
+          .then(() =>
+            resume({
+              request: r.input,
+              sessionId: saved.session,
+              signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
+              ...(this.mcp ? { mcp: this.mcp } : {}),
+            }),
+          )
+          .then(
+            (value) => ({ ok: true as const, value }),
+            (error) => ({ ok: false as const, error }),
+          );
+        try {
+          refresh();
+          await publish();
+        } catch {
+          throw Error("native_auth_state_unacknowledged");
+        }
+        if (!outcome.ok) throw outcome.error;
+        return outcome.value;
+      });
       this.commands.add(work);
       try {
         const result = await work;

@@ -7,7 +7,7 @@ import { AUTH_HEADER, CodexDriver, type Driver, Journal, Runner } from "../src/i
 // Real private Runner RPC + native JSONL subprocess: no fake driver can echo proof.
 test("private native resume verifies the persisted session without prompt/events and denies absent or cross-harness identities", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-native-resume-"));
-  const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
+  const journal = new Journal(":memory:", (s) => s);
   const codex = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,
     cwd: root,
@@ -77,7 +77,7 @@ test("private native resume verifies the persisted session without prompt/events
 // Owns admission serialization, not native continuity proof (the subprocess test does).
 test("native verification serializes prompts, epoch mutation and checkpoint even when a driver fails synchronously", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-native-resume-race-"));
-  const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
+  const journal = new Journal(":memory:", (s) => s);
   let fail = true,
     release!: () => void,
     entered!: () => void;
@@ -156,6 +156,75 @@ test("native verification serializes prompts, epoch mutation and checkpoint even
     expect(journal.prompts()).toEqual([]);
   } finally {
     release?.();
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Actual604 RunnerExecutionOptions ABI: synchronous redactor refresh and async private publication.
+test("native no-text ACK preserves actual credential lifecycle hooks and refuses failed publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-resume-auth-"));
+  const journal = new Journal(":memory:", (s) => s);
+  const order: string[] = [];
+  let fail = false;
+  const driver: Driver = {
+    start: () => {
+      throw Error("No turn allowed.");
+    },
+    resumeSession: async () => {
+      order.push("native");
+      return { sessionId: "native" };
+    },
+    close: async () => {},
+  };
+  const grant = {
+    token: "synthetic-private-runner-token",
+    sandboxId: "s",
+    generation: "2",
+    expiresAt: Date.now() + 60000,
+  };
+  const execution = {
+    credentialFreeBuilder: false,
+    refreshNativeSecrets: () => {
+      order.push("refresh");
+    },
+    publishNativeAuth: async () => {
+      order.push("publish");
+      if (fail) throw Error("untrusted publication text must not escape");
+    },
+  };
+  const runner = new Runner(
+    journal,
+    grant,
+    { codex: driver, claude: driver },
+    undefined,
+    undefined,
+    undefined,
+    execution,
+  );
+  journal.saveSession("logical", "codex", "native");
+  const resume = () =>
+    runner.handle(
+      new Request("https://runner.invalid", {
+        method: "POST",
+        headers: { [AUTH_HEADER]: grant.token },
+        body: JSON.stringify({
+          version: 1,
+          requestId: crypto.randomUUID(),
+          sandboxId: "s",
+          op: "resumeNativeSession",
+          conversationId: "logical",
+          expectedSessionId: "native",
+          input: { sandboxId: "s", harness: "codex", model: "gpt-6.1-sol" },
+        }),
+      }),
+    );
+  try {
+    expect((await resume()).status).toBe(200);
+    expect(order).toEqual(["refresh", "native", "refresh", "publish"]);
+    fail = true;
+    expect(await (await resume()).json()).toEqual({ error: "native_auth_state_unacknowledged" });
+  } finally {
     journal.close();
     await rm(root, { recursive: true, force: true });
   }

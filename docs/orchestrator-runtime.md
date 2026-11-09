@@ -10,10 +10,10 @@ checks enables a real provider/harness.
 
 The runtime now integrates merged main, including #661 ready-admission fix
 `79472bf` / merge `d748be68`, and #653 sizing merge `ec3b89db`. Earlier
-`026babbf` running-only integration notes are superseded. Actual #603
-`eab3a12e28f7d846285f7c5ad19fcb5a739eefc2` and #604
-`77eed87ca9282e723f34e08c03b11f58dab0c259` are combined only under
-`.git/662-production-deps`; no unmerged producer files enter delivery ownership.
+`026babbf` running-only integration notes are superseded. Named-account #603/#612 is now merged (`1eaaf07d`) and consumed on actual
+main `e5fc554f`. The newer #604 branch `3fce7076af7ddd5451fa0fcde07ca724c4184f12`
+is combined only under `.git/662-auth-current`; no unmerged producer files enter
+delivery ownership. Earlier `77eed87c` combination evidence remains historical.
 
 - `reserveOrchestratorOperation(sql, input)` remains the receipt writer. The
   runtime holds the owner/member/parent lock around prior-receipt discovery and
@@ -284,3 +284,16 @@ a checkpoint/restore proof, and does not enable either harness/provider matrix.
 The production adapter must still restore a verified checkpoint with current
 native-auth lifecycle hooks and compare the restored native identity before
 installing new authority. No ordinary-worker capability is changed.
+
+
+The no-text caller preserves actual #604 `refreshNativeSecrets?: () => void`
+and `publishNativeAuth?: () => Promise<void>` from the same execution object.
+The entire handshake/redactor/publication sequence is tracked: its safe ACK waits
+for private publication even after native failure, and checkpoint waits for that
+tracked work. An unacknowledged publication is a fixed failure, not success.
+
+Current ordinary Modal stores/ingestion require current membership. Removed-owner
+checkpoint cleanup therefore additionally needs a reviewed receipt-bound cleanup
+store/outbox authorization path; avoiding model-account resolution alone is not
+sufficient. No ordinary membership check has been bypassed. The native capability
+matrix remains disabled until this composition and real conformance are complete.
