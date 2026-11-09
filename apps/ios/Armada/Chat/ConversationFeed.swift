@@ -36,6 +36,19 @@ final class ConversationFeed {
         hasLoaded = true
     }
 
+    /// Reads what is new now (pull to refresh), page by page from the current cursor. Safe beside
+    /// `follow`: events are applied once by id, so overlapping reads change nothing.
+    func refresh(_ fetch: Fetch) async throws(ServiceFailure) {
+        while !Task.isCancelled {
+            let previous = cursor
+            let page = try await fetch(cursor)
+            if let next = page.cursor { cursor = next }
+            await ingest(page.events)
+            hasLoaded = true
+            guard page.hasMore, cursor != previous else { return }
+        }
+    }
+
     /// Runs until the calling task is cancelled (the screen disappears) or the stream stops.
     func follow(_ fetch: Fetch, onSignedOut: @MainActor () -> Void) async {
         var failures = 0

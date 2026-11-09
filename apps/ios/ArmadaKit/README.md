@@ -117,3 +117,19 @@ Follow-up producer improvement: authoritative exact-key admission/receipt
 correlation would permit safe automatic recovery of pre-admission CAS conflicts.
 It is not required for the explicit warned local-abandon workflow and no endpoint
 or discriminator is invented here.
+
+## Sandbox interior (#711)
+
+`sandboxDetail(id:)`, `sandboxEvents(id:cursor:)`, `sendSandboxPrompt(id:text:)`
+and `stopSandbox(id:)` call the routes the CLI already uses (`sandbox/detail`,
+`logs/read`, `sandbox/send`, `sandbox/stop`, all `POST /api/v1/…` with the
+selected `org`). No server route was added. The interior is owner or current
+admin only (#680, `docs/contracts/sandbox-access-v1.md`); list `canOpen` is a
+hint and every call is reauthorized, its 403/404 reported as no access.
+`SandboxDetail.admission`/`canStop` are the pure composer and stop rules.
+
+`sandbox/send` has no idempotency key: a prompt is sent once and never retried
+by the client. `SandboxMutationFailure.classify` makes 400/409 a definite
+refusal and every other failure unconfirmed; the app then shows the prompt as
+not confirmed and lets the transcript show whether it arrived. Stop is safe to
+repeat. Unknown `other` events without `data` keep their page and cursor.

@@ -155,7 +155,8 @@ public struct AgentEvent: Decodable, Sendable, Identifiable {
         case "prompt": body = .prompt(text: try c.decode(String.self, forKey: .text), status: try c.decode(String.self, forKey: .status), reason: try c.decodeIfPresent(String.self, forKey: .reason))
         case "message": body = .message(text: try c.decode(String.self, forKey: .text), partial: try c.decode(Bool.self, forKey: .partial), messageId: try c.decodeIfPresent(String.self, forKey: .messageId), textMode: try c.decodeIfPresent(String.self, forKey: .textMode), model: try c.decodeIfPresent(String.self, forKey: .model), tools: try c.decode([AgentToolCall].self, forKey: .tools))
         case "steer": body = .steer(text: try c.decode(String.self, forKey: .text), mode: try c.decodeIfPresent(String.self, forKey: .mode))
-        case "other": body = .other(type: try c.decode(String.self, forKey: .type), data: try c.decode(JSONValue.self, forKey: .data))
+        // `data: unknown` is omitted from JSON when undefined; keep the event rather than fail the page.
+        case "other": body = .other(type: try c.decode(String.self, forKey: .type), data: try c.decodeIfPresent(JSONValue.self, forKey: .data) ?? .null)
         default: body = .unknown(kind: kind, payload: try JSONValue(from: decoder))
         }
     }

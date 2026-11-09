@@ -6,9 +6,9 @@ import Foundation
 /// `ArmadaKit.X` because the app declares presentation types with the same names.
 ///
 /// What ArmadaKit publishes is used as-is: capabilities, list, detail, events, the durable
-/// prepare/submit command store, and #680 sandbox metadata. What it does not publish (golden,
-/// model-account and model lists for create; a sandbox's interior) is reported as unavailable,
-/// never simulated.
+/// prepare/submit command store, #680 sandbox metadata and a sandbox's interior (detail, events,
+/// send, stop). What it does not publish (golden, model-account and model lists for create) is
+/// reported as unavailable, never simulated.
 struct ArmadaKitServices: OrchestratorService, SandboxService {
     let client: ArmadaClient
 
@@ -213,8 +213,56 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    func interior(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> SandboxInterior {
-        throw .unavailable("Opening a sandbox's conversation from the app isn't available yet. Use the dashboard or the CLI.")
+    func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState {
+        try await requireOrganization(orgID)
+        do {
+            return Self.state(try await client.sandboxDetail(id: id))
+        } catch {
+            throw Self.readFailure(error)
+        }
+    }
+
+    func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+        try await requireOrganization(orgID)
+        do {
+            let page = try await client.sandboxEvents(id: id, cursor: cursor)
+            // A sandbox stream has no orchestrator revision; every event is an agent event.
+            return OrchestratorEventPage(
+                events: page.events.map { OrchestratorEvent(id: $0.id, at: Date(timeIntervalSince1970: $0.at / 1_000), revision: 0, body: .agent(Self.agentEvent($0))) },
+                cursor: page.cursor,
+                hasMore: page.hasMore
+            )
+        } catch {
+            throw Self.readFailure(error)
+        }
+    }
+
+    func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance {
+        try await requireOrganization(orgID)
+        do {
+            let receipt = try await client.sendSandboxPrompt(id: sandboxID, text: text)
+            return SandboxPromptAcceptance(promptID: receipt.promptId, status: PromptStatus(rawValue: receipt.status))
+        } catch {
+            throw Self.sandboxMutationFailure(error, refused: "Armada refused this prompt. The sandbox's latest state is shown; your text is kept.")
+        }
+    }
+
+    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStatus {
+        try await requireOrganization(orgID)
+        do {
+            return SandboxStatus(rawValue: try await client.stopSandbox(id: id).status)
+        } catch {
+            throw Self.sandboxMutationFailure(error, refused: "Armada refused to stop this sandbox. Its latest state is shown.")
+        }
+    }
+
+    private static func sandboxMutationFailure(_ error: any Error, refused: String) -> ServiceFailure {
+        switch SandboxMutationFailure.classify(error) {
+        case .signedOut: .signedOut
+        case .noAccess: .noAccess
+        case .refused: .rejected(refused)
+        case .unconfirmed: .uncertain
+        }
     }
 
     // MARK: Gates
@@ -431,6 +479,26 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .array(let values): .array(values.map(json))
         case .object(let record): .object(record.mapValues(json))
         }
+    }
+
+    private static func state(_ value: ArmadaKit.SandboxDetail) -> SandboxState {
+        let admission: SandboxState.Admission = switch value.admission {
+        case .open: .open
+        case .turnRunning: .turnRunning
+        case .starting: .starting
+        case .stopping: .stopping
+        case .failed: .failed
+        case .deleted: .deleted
+        case .unknownStatus: .unknownStatus
+        }
+        return SandboxState(
+            status: SandboxStatus(rawValue: value.status),
+            statusReason: value.statusReason,
+            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason) },
+            admission: admission,
+            canStop: value.canStop,
+            isWorking: value.isWorking
+        )
     }
 
     private static func sandbox(_ value: ArmadaKit.SandboxMetadata) throws(ServiceFailure) -> SandboxSummary {

@@ -23,7 +23,8 @@ struct SandboxDetailView: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("sandbox.open-conversation")
                     } else {
-                        InlineBanner(text: "Only the owner or an organization admin can open this sandbox.", style: .info)
+                        InlineBanner(text: "Members see a sandbox's details. Only its owner or a current organization admin can open its conversation.", style: .info)
+                            .accessibilityIdentifier("sandbox.metadata-only")
                     }
                     SheetSection("Sandbox") {
                         SheetCard {
@@ -82,94 +83,165 @@ struct SandboxDetailView: View {
     }
 }
 
-/// The read-only conversation of a sandbox the server lets this person open.
+/// A sandbox's conversation for its owner or a current admin: the transcript followed live while a
+/// turn runs, pull to refresh, a prompt composer when the sandbox accepts one, and stop with
+/// confirmation. The server authorizes every read and action; a refusal is explained, not guessed.
 struct SandboxConversationView: View {
     let sandbox: SandboxSummary
 
     @Environment(AppModel.self) private var app
-    @State private var feed = ConversationFeed()
-    @State private var phase: Phase = .loading
-    @State private var draft = ""
-
-    private enum Phase: Equatable {
-        case loading
-        case loaded
-        case refused(ServiceFailure)
-    }
+    @State private var model: SandboxConversationModel?
+    @State private var confirmingStop = false
 
     var body: some View {
         Group {
-            switch phase {
-            case .loading:
+            if let model {
+                screen(model)
+            } else {
                 SurfaceStateView(state: .loading("Opening the conversation…"))
-            case .refused(.unavailable(let reason)):
-                SurfaceStateView(state: .unavailable(reason))
-            case .refused(.noAccess):
-                SurfaceStateView(state: .empty(
-                    title: "No access",
-                    message: "Armada did not open this sandbox for you. Only its owner or a current organization admin can.",
-                    symbol: "lock"
-                ))
-            case .refused(let failure):
-                SurfaceStateView(state: .failure(failure.message, retry: { Task { await open() } }))
-            case .loaded:
-                ConversationTranscript(
-                    items: feed.conversation.items,
-                    documents: feed.documents,
-                    pending: [],
-                    emptyTitle: "No messages",
-                    emptyMessage: "This sandbox has no conversation yet."
-                )
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if case .reconnecting = feed.connection {
-                        InlineBanner(text: "Reconnecting…", style: .info)
-                            .padding(.horizontal, 12)
-                    }
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    ChatComposer(
-                        draft: $draft,
-                        placeholder: "Message",
-                        unavailableReason: "Read-only in the app. Message this sandbox from the dashboard or CLI.",
-                        isAgentWorking: feed.conversation.running,
-                        agentName: sandbox.agentLabel,
-                        steerRestartsTurn: sandbox.harness?.steerRestartsTurn ?? false,
-                        sending: false,
-                        onSend: { _, _ in }
-                    )
-                }
-                .task {
-                    let service = app.sandboxes
-                    let id = sandbox.id
-                    let orgID = sandbox.orgID
-                    let fetch: ConversationFeed.Fetch = { (cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage in
-                        let interior = try await service.interior(id: id, orgID: orgID, cursor: cursor)
-                        return OrchestratorEventPage(events: interior.events, cursor: interior.cursor, hasMore: false)
-                    }
-                    await feed.follow(fetch) { app.sessionEnded() }
-                    // A later refusal (access revoked, capability withdrawn) replaces the stale interior.
-                    if case .stopped(let failure) = feed.connection { phase = .refused(failure) }
-                }
             }
         }
         .background(ArmadaTheme.canvas)
         .navigationTitle(sandbox.displayLabel)
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: sandbox.id) { await open() }
-    }
-
-    private func open() async {
-        phase = .loading
-        do throws(ServiceFailure) {
-            let interior = try await app.sandboxes.interior(id: sandbox.id, orgID: sandbox.orgID, cursor: nil)
-            await feed.seed(interior.events, cursor: interior.cursor)
-            phase = .loaded
-        } catch {
-            if error == .signedOut {
-                app.sessionEnded()
-            } else {
-                phase = .refused(error)
+        .task(id: sandbox.id) {
+            // Keep pending prompts and the draft when the screen reappears.
+            if model?.sandboxID != sandbox.id {
+                model = SandboxConversationModel(service: app.sandboxes, sandboxID: sandbox.id, orgID: sandbox.orgID) {
+                    app.sessionEnded()
+                }
             }
+            if model?.phase != .loaded { await model?.open() }
         }
     }
+
+    @ViewBuilder
+    private func screen(_ model: SandboxConversationModel) -> some View {
+        switch model.phase {
+        case .loading:
+            SurfaceStateView(state: .loading("Opening the conversation…"))
+        case .unavailable(let reason):
+            SurfaceStateView(state: .unavailable(reason))
+        case .noAccess:
+            SurfaceStateView(state: .empty(
+                title: "No access",
+                message: "Armada did not open this sandbox for you. Only its owner or a current organization admin can read its conversation; members see its details only.",
+                symbol: "lock"
+            ))
+        case .failed(let message):
+            SurfaceStateView(state: .failure(message, retry: { Task { await model.open() } }))
+        case .loaded:
+            conversation(model)
+        }
+    }
+
+    private func conversation(_ model: SandboxConversationModel) -> some View {
+        @Bindable var model = model
+        return ConversationTranscript(
+            items: model.feed.conversation.items,
+            documents: model.feed.documents,
+            pending: model.pending,
+            emptyTitle: "No messages yet",
+            emptyMessage: "Prompts you send and the agent's replies appear here.",
+            onRetryPending: nil,
+            onDismissPending: { model.dismiss($0) }
+        )
+        .refreshable { await model.refresh() }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            banners(model)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ChatComposer(
+                draft: $model.draft,
+                placeholder: "Message \(sandbox.agentLabel)",
+                unavailableReason: model.composerUnavailableReason,
+                isAgentWorking: model.isWorking,
+                agentName: sandbox.agentLabel,
+                steerRestartsTurn: sandbox.harness?.steerRestartsTurn ?? false,
+                sending: model.pending.contains { $0.status == .sending },
+                onSend: { text, _ in model.send(text) }
+            )
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                SandboxHeader(title: sandbox.displayLabel, state: model.state)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    if model.canStop {
+                        Button("Stop", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
+                            .accessibilityIdentifier("sandbox.stop")
+                    }
+                } label: {
+                    Label("Actions", systemImage: "ellipsis")
+                }
+                .accessibilityIdentifier("sandbox.actions")
+            }
+        }
+        .confirmationDialog("Stop \(sandbox.displayLabel)?", isPresented: $confirmingStop, titleVisibility: .visible) {
+            Button("Stop", role: .destructive) { model.stop() }
+        } message: {
+            Text(model.isWorking
+                ? "The running turn ends. The machine stops; its disk and conversation are kept, and the next prompt resumes it."
+                : "The machine stops; its disk and conversation are kept, and the next prompt resumes it.")
+        }
+        .task(id: model.sandboxID) { await model.follow() }
+        .task(id: model.sandboxID) { await model.watchState() }
+        .onChange(of: model.feed.conversation.items) { _, _ in model.streamChanged() }
+    }
+
+    @ViewBuilder
+    private func banners(_ model: SandboxConversationModel) -> some View {
+        VStack(spacing: 8) {
+            if case .reconnecting = model.feed.connection {
+                InlineBanner(text: "Reconnecting… The conversation continues from where it stopped.", style: .info)
+            }
+            if model.stopping {
+                InlineBanner(text: "Stopping… The disk and conversation are kept.", style: .info)
+            }
+            if let notice = model.notice {
+                InlineBanner(text: notice.text, style: notice.isError ? .error : .warning)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .background(ArmadaTheme.canvas.opacity(0.001))
+    }
 }
+
+/// The sandbox name with its live state: working while a turn runs, otherwise the machine status.
+private struct SandboxHeader: View {
+    let title: String
+    let state: SandboxState?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(ArmadaTheme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let state {
+                StatusDot(tone: state.isWorking ? .live : state.status.tone)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([title, label].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityIdentifier("sandbox.conversation-header")
+    }
+
+    private var label: String? {
+        guard let state else { return nil }
+        return state.isWorking ? "Working" : state.status.label
+    }
+}
+
+#if DEBUG
+#Preview("Sandbox conversation") {
+    NavigationStack {
+        SandboxConversationView(sandbox: PreviewData.sandboxes.first { $0.canOpen }!)
+    }
+    .environment(AppModel.preview())
+}
+#endif
