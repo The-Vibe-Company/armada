@@ -13,6 +13,9 @@ import {
   toHarnessCredentials,
 } from "@armada/core";
 
+import { sshHydrateAuthState } from "@armada/core/server";
+import type { ModelAuthOwnership } from "./model-auth.ts";
+
 /** The stored kinds whose value must never reach a command's output. */
 const SECRET_KINDS: readonly CredentialKind[] = ["claude_oauth", "anthropic", "openai", "codex_auth"];
 
@@ -34,8 +37,77 @@ export function launchCredentials(
   reader: CredentialReader,
   encryptionKey: string | undefined,
   github?: GitHubLaunchOptions,
+  ownership?: ModelAuthOwnership,
 ): LaunchCredentialResolver {
   return {
+    async admit(actor, credentials, sandboxId) {
+      if (!credentials.codexAuthJson) return;
+      if (!ownership) return; // Embedders without managed auth retain their legacy native path.
+      try {
+        const source = JSON.parse(credentials.env.ARMADA_CODEX_AUTH_JSON ?? "{}");
+        if (typeof source.tokens?.refresh_token !== "string") return;
+      } catch {
+        return;
+      }
+      const binding = "binding" in credentials ? credentials.binding : undefined;
+      if (
+        !binding ||
+        typeof binding !== "object" ||
+        !("credentialId" in binding) ||
+        !("credentialVersion" in binding) ||
+        typeof binding.credentialId !== "string" ||
+        typeof binding.credentialVersion !== "number"
+      )
+        return; // Unknown legacy bindings are not silently claimed or rehydrated.
+      await ownership.claim(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+    },
+    async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
+      const binding =
+        "binding" in credentials
+          ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
+          : undefined;
+      if (!ownership || !binding || !(await ownership.managed(sandboxId))) return false;
+      const saved = await ownership.bootstrap(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+      if (!saved?.authJson) throw new Error("Native hydration state is unavailable.");
+      if (provider.id === "boat") await sshHydrateAuthState(provider, providerSandboxId, saved.authJson);
+      // Modal already hydrates this exact sealed state in its private stdin bootstrap.
+      return true;
+    },
+    async releaseUnallocated(_actor, credentials, sandboxId) {
+      const binding =
+        "binding" in credentials
+          ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
+          : undefined;
+      if (ownership && binding)
+        await ownership.releaseUnallocated(binding.credentialId, binding.credentialVersion, sandboxId);
+    },
+    async nativeSecrets(actor, sandboxId, provider, providerSandboxId, phase = "after") {
+      if (!ownership) return [];
+      await ownership.assertSandbox(actor, sandboxId, false, true);
+      const managed = await ownership.managed(sandboxId);
+      if (phase === "before") await ownership.state.invalidateRedaction(actor, sandboxId);
+      const values = await ownership.capture(
+        provider,
+        providerSandboxId,
+        { userId: actor.userId, orgId: actor.orgId },
+        false,
+        phase === "before",
+      );
+      if (managed && values.length === 0)
+        throw new Error("Private native auth redaction is unavailable; no output may be returned.");
+      // Exec may be invoked by an org peer; actor is the stored sandbox owner.
+      return [
+        ...values,
+        ...(await exposedSecrets(reader, encryptionKey, { userId: actor.userId, orgId: actor.orgId })),
+      ];
+    },
+    async assertExec(actor, sandboxId) {
+      if (ownership) await ownership.assertSandbox(actor, sandboxId, false, true);
+      return ownership ? ownership.managed(sandboxId) : false;
+    },
+    async assertTurn(actor, sandboxId, resuming) {
+      if (ownership) await ownership.assertSandbox(actor, sandboxId, resuming);
+    },
     async resolve(
       actor: GoldenActor,
       harness: Harness,
@@ -46,8 +118,8 @@ export function launchCredentials(
         userId: actor.userId,
         orgId: actor.orgId,
         harness,
-        ...(credentialVersion !== undefined ? { credentialVersion } : {}),
         ...(credentialId !== undefined ? { credentialId } : {}),
+        ...(credentialVersion !== undefined ? { credentialVersion } : {}),
       });
       const access = github ? await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId) : undefined;
       return toHarnessCredentials(resolved, access);

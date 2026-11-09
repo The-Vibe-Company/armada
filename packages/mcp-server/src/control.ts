@@ -84,7 +84,9 @@ import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
+import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
 import {
   connectOrgProvider,
@@ -105,6 +107,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface ControlOptions {
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
+  modelAuth?: ModelAuthOwnership;
   credentialBindingRecovery?: CredentialBindingRecovery;
   modelUsage?: ModelUsageApi;
   invitations?: Invitations;
@@ -546,6 +549,7 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),
@@ -567,6 +571,10 @@ async function dispatch(
       return dispatchMcp(route.slice(4), caller.userId, body, options);
     }
     const org = scopedOrg(caller, optional(body, "org"));
+    if (route === "mcp/sandbox-connections") {
+      const sandbox = await options.data?.(caller).sandboxes.get(required(body, "id"));
+      if (!sandbox || sandbox.orgId !== org) throw new VaultError("not_found", "No such sandbox.");
+    }
     return dispatchMcp(route.slice(4), caller.userId, { ...body, org }, options);
   }
   if (route === "golden/capabilities") {
@@ -629,7 +637,7 @@ async function dispatch(
               providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
             }
           : {}),
-        launchCredentials: launchCredentials(options.store, options.encryptionKey),
+        launchCredentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
         now: options.now ?? (() => new Date()),
@@ -1091,12 +1099,17 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       goldens: data.goldens,
       sandboxes: data.sandboxes,
       ...(options.connections ? { connections: options.connections } : {}),
-      credentials: launchCredentials(options.store, options.encryptionKey, {
-        store: options.store,
-        app: options.github?.app ?? null,
-        ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-        ...(options.github?.now ? { now: options.github.now } : {}),
-      }),
+      credentials: launchCredentials(
+        options.store,
+        options.encryptionKey,
+        {
+          store: options.store,
+          app: options.github?.app ?? null,
+          ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+          ...(options.github?.now ? { now: options.github.now } : {}),
+        },
+        options.modelAuth,
+      ),
     },
     actor,
     {
@@ -1326,9 +1339,16 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modalProviderFor: async (tokens, binding, context) =>
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
+  const modelAuth = createModelAuthOwnership(
+    sql,
+    encryptionKey,
+    undefined,
+    undefined,
+    createHistoricalSandboxProviderResolver(providers),
+  );
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
@@ -1337,6 +1357,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     encryptionKey,
     github: { app: githubApp },
     store,
+    modelAuth,
     providerFor,
     modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),

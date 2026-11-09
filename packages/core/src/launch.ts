@@ -65,6 +65,27 @@ export interface LaunchCredentialResolver {
     credentialId?: string,
     credentialVersion?: number,
   ): Promise<HarnessCredentials>;
+  /** Server-owned native credential admission, before provider allocation/hydration. */
+  admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  hydrateNative?(
+    actor: GoldenActor,
+    credentials: HarnessCredentials,
+    sandboxId: string,
+    provider: Provider,
+    providerSandboxId: string,
+  ): Promise<boolean>;
+  releaseUnallocated?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  /** Validate the pinned native owner without rehydrating imported auth state. */
+  assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
+  /** Returns true when native output needs the shared lifecycle admission lease. */
+  assertExec?(actor: GoldenActor, sandboxId: string): Promise<boolean | void>;
+  nativeSecrets?(
+    actor: GoldenActor,
+    sandboxId: string,
+    provider: Provider,
+    providerSandboxId: string,
+    phase?: "before" | "after",
+  ): Promise<string[]>;
 }
 
 export interface LaunchStores {
@@ -140,9 +161,8 @@ export async function launchSandbox(
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
   if (repositoryDir !== null && !prepareNativeCwd)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
-  const visibility = request.visibility ?? golden.visibility;
-  if (golden.visibility === "private" && visibility === "org")
-    throw new LaunchError("invalid_request", "A private golden cannot launch an org sandbox.");
+  // Deprecated launch visibility cannot change sandbox access or source authority.
+  const visibility = golden.visibility;
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];
@@ -164,9 +184,11 @@ export async function launchSandbox(
     sandboxId: golden.providerSandboxId,
   });
   let childRecorded = false;
-  let noAllocation = false;
+  let noAllocation = true;
   let failed = false;
   try {
+    await stores.credentials.admit?.(actor, credentials, id);
+    noAllocation = false;
     const forked = await provider
       .fork({
         from: snapshot,
@@ -243,7 +265,11 @@ export async function launchSandbox(
       }
       await stores.connections?.bind(record.id, connectionIds);
       const ready = await waitReady(provider, forked.id, options);
-      if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, secrets);
+      if (
+        credentials.codexAuthJson &&
+        !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
+      )
+        await writeCodexAuth(provider, ready.id, secrets);
       const launchGithub: GitHubLaunchInfo =
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
@@ -325,6 +351,10 @@ export async function launchSandbox(
     failed = true;
     throw error;
   } finally {
+    if (noAllocation)
+      await stores.credentials.releaseUnallocated?.(actor, credentials, id).catch((error) => {
+        if (!failed) throw error;
+      });
     // An unrecorded physical outcome remains owned by this durable fence.
     if (childRecorded || noAllocation) {
       await releaseOperation?.().catch((error) => {

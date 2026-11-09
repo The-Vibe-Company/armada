@@ -188,15 +188,24 @@ test("last ten comparable launch identities do not widen owner/project/provider/
   ).rejects.toThrow("immutable");
 });
 
-test("live membership and private owner visibility apply even under privileged SQL; JWTs cannot ingest telemetry", async () => {
+test("current owner/admin interior gates apply to resource SQL regardless legacy visibility; JWTs cannot ingest telemetry", async () => {
   const f = await fixture(),
     privateId = await f.sandbox({ visibility: "private" });
   const other = createResourceStore(sql, { userId: f.other, orgs: [{ orgId: f.org, role: "admin" }], via: "service" });
+  await db.query("update sandboxes set access_owner_id=$2 where id=$1", [privateId, f.other]);
+  expect((await f.store.history(privateId, now)).target.id).toBe(privateId);
+  expect((await other.history(privateId, now)).target.id).toBe(privateId);
+  const adminClaim = await other.claim(privateId, now);
+  expect(adminClaim).not.toBeNull();
+  await other.append(privateId, f.reading(privateId), now, adminClaim!);
+  await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.org, f.owner]);
+  await db.query("update members set role='member' where org_id=$1 and user_id=$2", [f.org, f.other]);
   await expect(other.history(privateId, now)).rejects.toMatchObject({ code: "not_found" });
   await expect(other.claim(privateId, now)).rejects.toMatchObject({ code: "not_found" });
   await expect(other.append(privateId, f.reading(privateId), now, crypto.randomUUID())).rejects.toMatchObject({
     code: "not_found",
   });
+  await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.org, f.other]);
   await db.query("delete from public.members where org_id=$1 and user_id=$2", [f.org, f.owner]);
   await expect(f.store.history(privateId, now)).rejects.toMatchObject({ code: "not_found" });
   await expect(f.store.claim(privateId, now)).rejects.toMatchObject({ code: "not_found" });

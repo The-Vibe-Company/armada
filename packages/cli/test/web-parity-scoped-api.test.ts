@@ -192,7 +192,7 @@ async function fixture() {
   };
 }
 
-test("CLI list matches scoped web filters, exact totals and stable pages without exposing private or foreign rows", async () => {
+test("CLI list matches scoped web filters, exact totals and stable pages with safe metadata for legacy private rows but no foreign rows", async () => {
   const f = await fixture();
   try {
     const defaultList = await f.cli(["list", "--json"]);
@@ -206,14 +206,16 @@ test("CLI list matches scoped web filters, exact totals and stable pages without
     const first = await f.cli(["list", "--json", "--page-info"]);
     expect(first.code).toBe(0);
     const page = JSON.parse(first.out);
-    expect(page).toMatchObject({ total: 34, page: 1, limit: 25, hasMore: true, nextPage: 2 });
+    expect(page).toMatchObject({ total: 35, page: 1, limit: 25, hasMore: true, nextPage: 2 });
     expect(page.sandboxes.map((s: { id: string }) => s.id)).toEqual(Array.from({ length: 25 }, (_, n) => sid(n + 1)));
     expect(f.requests.at(-1)).toMatchObject({ path: "/api/v1/sandbox/list", body: { org } });
     const secondResponse = await f.cli(["list", "--json", "--page-info", "--page", "2"]);
     expect(secondResponse.code).toBe(0);
     const second = JSON.parse(secondResponse.out);
-    expect(second).toMatchObject({ total: 34, page: 2, limit: 25, hasMore: false, nextPage: null });
-    expect(second.sandboxes.map((s: { id: string }) => s.id)).toEqual([26, 27, 28, 29, 30, 31, 35, 38, 32].map(sid));
+    expect(second).toMatchObject({ total: 35, page: 2, limit: 25, hasMore: false, nextPage: null });
+    expect(second.sandboxes.map((s: { id: string }) => s.id)).toEqual(
+      [26, 27, 28, 29, 30, 31, 34, 35, 38, 32].map(sid),
+    );
     expect(
       JSON.parse((await f.cli(["list", "--json", "--status", "deleted"])).out).sandboxes.map(
         (s: { id: string }) => s.id,
@@ -223,7 +225,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages without
       JSON.parse((await f.cli(["list", "--json", "--harness", "claude"])).out).sandboxes.map(
         (s: { id: string }) => s.id,
       ),
-    ).toEqual([sid(31), sid(35)]);
+    ).toEqual([sid(31), sid(34), sid(35)]);
     expect(
       JSON.parse(
         (await f.cli(["list", "--json", "--agent", "codex", "--golden", secondGolden, "--owner", other])).out,
@@ -260,7 +262,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages without
     const beyond = JSON.parse(
       (await f.cli(["list", "--json", "--page-info", "--page", "1000000", "--limit", "1"])).out,
     );
-    expect(beyond).toMatchObject({ total: 34, sandboxes: [], hasMore: false, nextPage: null });
+    expect(beyond).toMatchObject({ total: 35, sandboxes: [], hasMore: false, nextPage: null });
     const foreign = JSON.parse((await f.cli(["list", "--json", "--org", secondOrg])).out);
     expect(foreign.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(36)]);
     expect(JSON.parse((await f.cli(["list", "--json", "--page-info", "--golden", sid(100)])).out)).toEqual({
@@ -365,8 +367,11 @@ test("CLI sandbox-connections reads authorized persisted bindings without hidden
       path: "/api/v1/mcp/sandbox-connections",
       body: { org, sandboxId: sid(35) },
     });
-    expect((await f.cli(["mcp", "sandbox-connections", sid(34), "--json"])).code).toBe(1);
+    const adminRead = await f.cli(["mcp", "sandbox-connections", sid(34), "--json"]);
+    expect(adminRead.code).toBe(0);
+    expect(JSON.parse(adminRead.out).connections).toEqual([]);
     expect((await f.cli(["mcp", "sandbox-connections", sid(35), "--org", secondOrg, "--json"])).code).toBe(1);
+    await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [org, other]);
     await f.setActor(other);
     expect((await f.cli(["mcp", "sandbox-connections", sid(35), "--json"])).code).toBe(1);
     expect((await f.db.query("select sandbox_id from mcp_bindings")).rows).toHaveLength(1);

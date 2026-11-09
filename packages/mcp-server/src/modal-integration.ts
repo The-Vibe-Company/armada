@@ -27,6 +27,7 @@ import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
+import { createModelAuthOwnership } from "./model-auth.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 export const MODAL_INGEST_PATH = "/api/internal/modal/events";
@@ -45,13 +46,16 @@ export async function createModalIntegration(options: {
   publicUrl: string;
   github?: GitHubLaunchOptions;
   /** Root523 lifecycle: called by the actual adapter after ready/restore, outside its lease. */
+  beforeResume?: (provider: Provider, sandboxId: string, actor: { userId: string; orgId: string }) => Promise<void>;
   beforePrompt?: (provider: Provider, sandboxId: string, actor: { userId: string; orgId: string }) => Promise<void>;
   // MCP lifecycle belongs to #523 post-init/beforePrompt/beforeSnapshot, never bootstrap.
 }) {
   const key = runnerKey(options.encryptionKey);
   const artifact = { ...MODAL_IMAGE_LOCK, ...(await loadEmbeddedRunnerArtifact()) };
   const ingestUrl = new URL(MODAL_INGEST_PATH, options.publicUrl).href;
+  const modelAuth = createModelAuthOwnership(options.sql, options.encryptionKey);
   const ingest = createModalIngestHandler({
+    publishNativeAuth: (scope, claims, raw, revision) => modelAuth.publishFromModal(scope, claims, raw, revision),
     sql: options.sql,
     async verifyGrant(token) {
       if (token.length > 4096) throw new Error("Invalid runner grant.");
@@ -182,6 +186,15 @@ export async function createModalIntegration(options: {
       signingKey: key,
       ingestUrl,
       artifact,
+      ...(options.beforeResume
+        ? {
+            beforeResume: (provider: Provider, sandboxId: string) =>
+              options.beforeResume!(provider, sandboxId, {
+                userId: context.caller.userId,
+                orgId: context.target.orgId,
+              }),
+          }
+        : {}),
       ...(options.beforePrompt
         ? {
             beforePrompt: (provider, sandboxId) =>
@@ -192,6 +205,7 @@ export async function createModalIntegration(options: {
           }
         : {}),
       resolveHarnessEnvironment: modalLaunchEnvironment({
+        modelAuth,
         sql: options.sql,
         vault: options.vault,
         encryptionKey: options.encryptionKey,
