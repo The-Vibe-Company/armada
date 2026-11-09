@@ -46,6 +46,44 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
         body: (await response.json()) as { connection: McpConnectionDto; connections: McpConnectionDto[]; ok: boolean },
       };
     };
+    const catalog = await post("catalog", { org });
+    expect(catalog.status).toBe(200);
+    expect(
+      (catalog.body as unknown as { services: { id: string; availability: string }[] }).services.find(
+        (s) => s.id === "slack",
+      )?.availability,
+    ).toBe("setup_required");
+    const preset = await post("create", {
+      org,
+      serviceId: "linear",
+      name: "Work",
+      scope: "personal",
+      url: "https://untrusted.example",
+    });
+    expect(preset.body.connection.url).toBe("https://mcp.linear.app/mcp");
+    const beforeMetadata = (
+      await db.query("select * from mcp_grants where connection_id=$1", [preset.body.connection.id])
+    ).rows;
+    const renamed = await post("metadata", {
+      org,
+      id: preset.body.connection.id,
+      name: "Work renamed",
+      defaultForLaunch: true,
+    });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.connection).toMatchObject({
+      id: preset.body.connection.id,
+      name: "Work renamed",
+      defaultForLaunch: true,
+      catalogId: "linear",
+    });
+    expect(
+      (await db.query("select * from mcp_grants where connection_id=$1", [preset.body.connection.id])).rows,
+    ).toEqual(beforeMetadata);
+    expect((await post("metadata", { org: secondOrg, id: preset.body.connection.id, name: "Wrong org" })).status).toBe(
+      403,
+    );
+    expect((await post("delete", { org, id: preset.body.connection.id })).status).toBe(200);
     const secret = crypto.randomUUID();
     const created = await post("create", {
       org: org,

@@ -50,7 +50,10 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
       sql: readSql,
       vault,
       encryptionKey: ENCRYPTION_KEY,
-      providerFor: (apiKey) => createBoatProvider({ apiKey }),
+      providerFor: (apiKey) => ({
+        ...createBoatProvider({ apiKey }),
+        backendIdentity: async () => ({ id: "trusted" }),
+      }),
     });
     const auth = createMemoryAuthStore();
     auth.addMembership(people.member, { orgId: people.org, name: "Example", role: "member" });
@@ -141,7 +144,11 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
     });
     expect(forgedMcp.isError).toBe(true);
     expect(secretReads).toBe(beforeForgery);
-    expect(await (await request({ provider: "boat" })).json()).toEqual({ provider: "boat", maxGoldens: 1 });
+    expect(await (await request({ provider: "boat" })).json()).toEqual({
+      provider: "boat",
+      maxGoldens: 1,
+      bindings: [{ goldenId: expect.any(String), relation: "unbound" }],
+    });
     // A personal pair is deliberately not an org credential fallback for this read.
     await db.query("delete from credentials where scope='org' and owner_id=$1 and kind='modal'", [people.org]);
     const removed = await request({ provider: "modal" });
@@ -153,7 +160,7 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
     expect(resourceCalls).toBe(0);
     expect(appCreates).toBe(0);
     expect(writes).toEqual([]);
-    expect(resourceAccesses).toEqual([]);
+    expect(resourceAccesses.every((sql) => /select[\s\S]*golden_backend_slots/.test(sql))).toBe(true);
     for (const table of [
       "modal_server_apps",
       "modal_machines",
@@ -166,6 +173,70 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
   } finally {
     await client?.close();
     await server?.stop(true);
+    await db.close();
+  }
+});
+
+test("Boat bindings disclose only visible requested-org goldens, including removed reservations", async () => {
+  const { db, people } = await database();
+  try {
+    await db.query("delete from goldens");
+    const ids: string[] = [];
+    for (const [name, visibility, owner, org, _removed] of [
+      ["kept", "org", people.admin, people.org, false],
+      ["removed-bound", "org", people.admin, people.org, true],
+      ["prod-smoke", "org", people.admin, people.org, true],
+      ["live-unbound", "org", people.admin, people.org, false],
+      ["elsewhere", "org", people.admin, people.org, false],
+      ["hidden", "private", people.admin, people.org, false],
+      ["foreign", "org", people.admin, people.otherOrg, false],
+    ] as const) {
+      const result = await db.query<{ id: string }>(
+        "insert into goldens(name,visibility,owner_id,org_id,config,removed_at) values($1,$2,$3,$4,'{}',$5) returning id",
+        [name, visibility, owner, org, null],
+      );
+      ids.push(result.rows[0]!.id);
+    }
+    for (const i of [0, 4, 5, 6]) {
+      await db.query(
+        "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat',$1,10,$2,$3,$4)",
+        [i === 0 ? "trusted" : "other-" + i, i === 6 ? people.otherOrg : people.org, people.admin, ids[i]],
+      );
+    }
+    await db.query("update goldens set removed_at=now() where id=any($1::uuid[])", [[ids[1], ids[2]]]);
+    const metadata = createProviderMetadata({
+      sql: db,
+      vault: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      providerFor: (apiKey) => ({
+        ...createBoatProvider({ apiKey }),
+        backendIdentity: async () => ({ id: "trusted" }),
+      }),
+    });
+    const caller = {
+      via: "service" as const,
+      userId: people.member,
+      orgs: [{ orgId: people.org, name: "Example", role: "member" as const }],
+    };
+    const result = await metadata({ orgId: people.org, provider: "boat" }, caller);
+    expect(result.bindings?.sort((a, b) => a.goldenId.localeCompare(b.goldenId))).toEqual(
+      ids
+        .slice(0, 5)
+        .map((goldenId, i) => ({
+          goldenId,
+          relation:
+            i === 0 ? ("current_backend" as const) : i === 4 ? ("other_backend" as const) : ("unbound" as const),
+        }))
+        .sort((a, b) => a.goldenId.localeCompare(b.goldenId)),
+    );
+    await db.query("update goldens set removed_at=now() where id=$1", [ids[0]]);
+    expect(
+      (await metadata({ orgId: people.org, provider: "boat" }, caller)).bindings?.find((b) => b.goldenId === ids[0]),
+    ).toEqual({ goldenId: ids[0]!, relation: "current_backend" });
+    await expect(metadata({ orgId: people.otherOrg, provider: "boat" }, caller)).rejects.toThrow("scoped");
+    await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
+    await expect(metadata({ orgId: people.org, provider: "boat" }, caller)).rejects.toThrow("membership");
+  } finally {
     await db.close();
   }
 });

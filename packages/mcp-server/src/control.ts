@@ -14,6 +14,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
+import { MCP_CATALOG } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -79,7 +80,13 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { createModalIntegration } from "./modal-integration.ts";
-import { connectOrgProvider, orgProviderStatus, type ProviderValidator, validateOrgProvider } from "./org-provider.ts";
+import {
+  connectOrgProvider,
+  disconnectOrgProvider,
+  orgProviderStatus,
+  type ProviderValidator,
+  validateOrgProvider,
+} from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { bunSql } from "./sql.ts";
@@ -591,6 +598,8 @@ async function dispatch(
       required(body, "value"),
       options.providerValidator ?? validateOrgProvider,
     );
+  if (route === "org/provider/disconnect")
+    return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
     case "org/create":
@@ -1244,6 +1253,21 @@ async function dispatchMcp(action: string, userId: string, body: Record<string, 
   if (!orgs.some((o) => o.id === orgId)) throw new VaultError("forbidden", "Organization membership required.");
   if (!options.mcp) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
   const { registry, broker } = options.mcp;
+  if (action === "catalog")
+    return {
+      services: MCP_CATALOG.map((service) => ({
+        ...service,
+        availability: service.id === "slack" ? "setup_required" : "available",
+        ...(service.id === "slack"
+          ? { setupMessage: "Registered confidential OAuth client required; not configured on this deployment." }
+          : {}),
+      })),
+    };
+  if (action === "metadata") {
+    const id = required(body, "id");
+    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");
+    return { connection: await registry.metadata(userId, orgId, id, body) };
+  }
   if (action === "list") return { connections: await registry.list(userId, orgId) };
   if (action === "create" || action === "update") {
     if (action === "update" && !UUID.test(required(body, "id")))

@@ -842,3 +842,44 @@ function outcomeProvider(status: PromptStatus, pages: AgentEvent[][]): Provider 
     },
   } as unknown as Provider;
 }
+
+test("launch resolves defaults once, respects exact and empty overrides, and fails before fork", async () => {
+  for (const selected of [undefined, [], ["exact", "exact"]]) {
+    const world = setup({ golden: golden("org") });
+    let reads = 0;
+    let bound: string[] = [];
+    world.stores.connections = {
+      defaults: async () => {
+        reads++;
+        return ["default"];
+      },
+      validate: async (_actor, ids) => {
+        if (ids.includes("invalid")) throw Error("Reconnect");
+      },
+      bind: async (_sandbox, ids) => {
+        bound = ids;
+      },
+    };
+    await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      ...(selected === undefined ? {} : { connections: selected }),
+    });
+    expect(reads).toBe(selected === undefined ? 1 : 0);
+    expect(bound).toEqual(selected === undefined ? ["default"] : selected.length ? ["exact"] : []);
+    world.stores.connections.defaults = async () => ["changed"];
+    expect(bound).not.toContain("changed");
+  }
+  const world = setup({ golden: golden("org") });
+  world.stores.connections = {
+    defaults: async () => ["invalid"],
+    validate: async () => {
+      throw Error("Reconnect");
+    },
+    bind: async () => {},
+  };
+  await expect(
+    launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+  ).rejects.toThrow("Reconnect");
+  expect(world.forks).toEqual([]);
+});

@@ -15,7 +15,7 @@ export async function operation(
   const args = parseArgs(
     argv,
     command === "mcp"
-      ? ["--scope"]
+      ? ["--scope", "--service"]
       : command === "list"
         ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
         : [],
@@ -52,6 +52,9 @@ export async function operation(
     const [action, ...parameters] = args.positionals;
     const actions = [
       "list",
+      "catalog",
+      "rename",
+      "default",
       "sandbox-connections",
       "add",
       "update",
@@ -63,15 +66,19 @@ export async function operation(
       "revoke",
       "delete",
     ];
+    const serviceId = single(args, "--service");
+    const serviceAdd = action === "add" && serviceId !== undefined && parameters.length === 1;
     const shortcut = action === "add" && parameters.length === 2;
     if (
       !action ||
       !actions.includes(action) ||
-      (action === "list"
+      (action === "list" || action === "catalog"
         ? parameters.length !== 0
         : action === "add"
-          ? parameters.length !== 0 && !shortcut
-          : parameters.length !== 1)
+          ? parameters.length !== 0 && !shortcut && !serviceAdd
+          : action === "rename" || action === "default"
+            ? parameters.length !== 2
+            : parameters.length !== 1)
     ) {
       throw new GoldenError(
         "invalid_config",
@@ -79,12 +86,12 @@ export async function operation(
       );
     }
     const scope = single(args, "--scope");
-    if (scope !== undefined && !shortcut)
+    if (scope !== undefined && !shortcut && !serviceAdd)
       throw new GoldenError(
         "invalid_config",
         "--scope is for the URL create shortcut only; put scope in a full create definition. Updates cannot change scope.",
       );
-    const id = action === "add" || action === "list" ? undefined : parameters[0];
+    const id = action === "add" || action === "list" || action === "catalog" ? undefined : parameters[0];
     route = `mcp/${action === "add" ? "create" : action}`;
     if (id) body.id = id;
     if (action === "sandbox-connections") {
@@ -97,7 +104,18 @@ export async function operation(
       body.enabled = action === "enable";
     }
     if (action === "reconnect") route = "mcp/connect";
-    if (shortcut) {
+    if (action === "rename" || action === "default") {
+      route = "mcp/metadata";
+      if (action === "rename") body.name = parameters[1];
+      else {
+        if (!["on", "off"].includes(parameters[1] ?? ""))
+          throw new GoldenError("invalid_config", "default requires on or off.");
+        body.defaultForLaunch = parameters[1] === "on";
+      }
+    }
+    if (serviceAdd) {
+      Object.assign(body, { serviceId, name: parameters[0], scope: scope ?? "personal" });
+    } else if (shortcut) {
       if (single(args, "--file") !== undefined)
         throw new GoldenError("invalid_config", "Use either NAME URL or a JSON definition, not both.");
       const [name, url] = parameters;
