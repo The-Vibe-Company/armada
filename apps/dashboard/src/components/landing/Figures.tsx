@@ -49,7 +49,7 @@ export function GoldenFigure() {
   return (
     <Figure
       view="0 0 640 540"
-      label="Three repositories feed two separate builds: a golden built and saved on Boat, and another built and saved on Modal. Each build clones as you, runs the setup, scans for tokens and saves its own snapshot."
+      label="Three repositories feed two separate builds: a golden built and saved on Boat, and another built and saved on Modal. Each build clones as you, runs the setup, scans for GitHub tokens and saves its own snapshot."
     >
       {REPOS.map((r, k) => {
         const y = 24 + k * 132;
