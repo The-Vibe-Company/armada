@@ -153,6 +153,7 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
+export * from "./orchestrator.ts";
 export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
 export {
   type AgentEvent,
