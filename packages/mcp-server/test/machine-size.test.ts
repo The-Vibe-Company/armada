@@ -88,3 +88,78 @@ test("size policies use live org admin/private owner authority, persist without 
     await server.close();
   }
 });
+
+test("versioned launch enforces sizing before allocation and shares override/default resolution without breaking legacy launch", async () => {
+  const server = await harness();
+  try {
+    const { db, people } = server;
+    const control = {
+      authStore: server.auth,
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
+      store: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(db),
+      providerFor: server.boat.providerFor,
+    };
+    const token = await server.token(people.member);
+    const launch = async (body: Record<string, unknown>, route = "sandbox/launch-sized-v1") =>
+      handleControlRequest(
+        new Request(`${PUBLIC_URL}/api/v1/${route}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ golden: "shared", harness: "claude", ...body }),
+        }),
+        control,
+      );
+    for (const body of [
+      { size: "small" },
+      { sizePolicyVersion: 2, size: "small" },
+      { sizePolicyVersion: 1, size: "invalid" },
+    ]) {
+      expect((await launch(body))?.status).toBe(400);
+      expect(server.boat.forks).toHaveLength(0);
+    }
+    await db.query(`update goldens set size_policy=$1::jsonb where name='shared'`, [
+      JSON.stringify({ version: 1, golden: "large", repositories: {} }),
+    ]);
+    const sized = await launch({ sizePolicyVersion: 1, size: "small" });
+    expect(sized?.status).toBe(200);
+    expect(await sized?.json()).toMatchObject({
+      sandbox: {
+        machineSize: {
+          requested: "small",
+          effective: "small",
+          source: "override",
+        },
+      },
+    });
+    const defaults = await launch({ sizePolicyVersion: 1 });
+    expect(defaults?.status).toBe(200);
+    expect(await defaults?.json()).toMatchObject({
+      sandbox: {
+        machineSize: {
+          requested: null,
+          effective: "large",
+          source: "golden",
+        },
+      },
+    });
+    const client = await server.client(token);
+    const invalid = await call(client, "launch_sized_v1", { golden: "shared", harness: "claude", size: "small" });
+    expect(invalid.isError).toBe(true);
+    expect(server.boat.forks).toHaveLength(2);
+    const mcp = await call(client, "launch_sized_v1", {
+      golden: "shared",
+      harness: "claude",
+      size_policy_version: 1,
+      size: "medium",
+    });
+    expect(mcp.isError).not.toBe(true);
+    expect(server.boat.forks.at(-1)?.size).toBe("medium");
+    const legacy = await launch({}, "sandbox/launch");
+    expect(legacy?.status).toBe(200);
+    expect(server.boat.forks).toHaveLength(4);
+  } finally {
+    await server.close();
+  }
+});
