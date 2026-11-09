@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.9.0](https://github.com/The-Vibe-Company/armada/compare/v2.8.0...v2.9.0) (2026-11-09)
+
+
+### Features
+
+* **dashboard:** require provider setup and trim copy ([#580](https://github.com/The-Vibe-Company/armada/issues/580)) ([e57ee84](https://github.com/The-Vibe-Company/armada/commit/e57ee84cc874691fd1f62ed278e57e6714854b89))
+* **onboarding:** connect organization sandbox providers ([#578](https://github.com/The-Vibe-Company/armada/issues/578)) ([0e25b31](https://github.com/The-Vibe-Company/armada/commit/0e25b314b42fd127aa87b151c30a156d6768402a))
+
 ## [2.8.0](https://github.com/The-Vibe-Company/armada/compare/v2.7.0...v2.8.0) (2026-11-09)
 
 
