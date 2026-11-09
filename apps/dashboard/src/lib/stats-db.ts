@@ -12,7 +12,6 @@ export async function statsAccounts(): Promise<{ client: Queryable } | null> {
     prepare: false,
     idle_timeout: 20,
     connect_timeout: 10,
-    connection: { statement_timeout: 10000 },
   });
   const sql = client;
   return {

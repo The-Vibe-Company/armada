@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
 import { statsRoute } from "../src/lib/stats";
 
@@ -78,13 +78,22 @@ test("unconfigured database returns unknown counts", async () => {
 });
 
 test("database errors return only a generic unavailable response", async () => {
-  const response = await statsRoute(get(`Bearer ${TOKEN}`), {
-    ...deps,
-    accounts: async () => {
-      throw new Error("synthetic database failure");
-    },
-  });
-  expect(response.status).toBe(503);
-  expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(await response.json()).toEqual({ error: "stats unavailable" });
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = await statsRoute(get(`Bearer ${TOKEN}`), {
+      ...deps,
+      accounts: async () => {
+        throw Object.assign(new Error("postgres://synthetic:secret@database.test"), {
+          code: "08P01",
+          detail: "synthetic sensitive detail",
+        });
+      },
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ error: "stats unavailable" });
+    expect(log.mock.calls).toEqual([["armada dashboard: stats query failed", { name: "Error", code: "08P01" }]]);
+  } finally {
+    log.mockRestore();
+  }
 });
