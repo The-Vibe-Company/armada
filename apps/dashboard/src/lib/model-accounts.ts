@@ -257,6 +257,50 @@ export type LaunchAccounts =
   | { state: "legacy" }
   | { state: "unavailable"; reason: string };
 
+/**
+ * The model accounts of the viewer and of the selected org. `legacy` is a server older than named accounts: its
+ * keys still launch, but they cannot be listed by name here. A failed read is an error, never an empty list.
+ */
+export type AccountList =
+  | { state: "ready"; orgId: string; orgName: string; accounts: ModelAccount[] }
+  | { state: "legacy" }
+  | { state: "no-org" }
+  | { state: "not-configured" }
+  | { state: "error"; message: string };
+
+/**
+ * The account a launch request bills, as the server action decides it: `id` undefined only where no account is
+ * sent (a server older than named accounts, or an agent with no account at all, which the server then refuses on
+ * its own). Otherwise the request must name a listed, compatible, usable account: a blank, foreign or unusable choice
+ * is refused, so the server never picks who is billed.
+ */
+export function checkAccountChoice(
+  list: AccountList,
+  harness: Harness,
+  requested: string,
+  now: number,
+): { ok: true; id: string | undefined } | { ok: false; error: string } {
+  if (requested && !UUID.test(requested)) return { ok: false, error: "That request is not valid." };
+  if (list.state === "legacy") return { ok: true, id: undefined };
+  if (list.state !== "ready")
+    return {
+      ok: false,
+      error: `Model accounts could not be loaded${list.state === "error" ? `: ${list.message}` : "."} Reload and try again.`,
+    };
+  const compatible = accountsFor(list.accounts, harness);
+  if (compatible.length === 0) {
+    return requested
+      ? { ok: false, error: "That account is not available for this agent." }
+      : { ok: true, id: undefined };
+  }
+  if (!requested) return { ok: false, error: "Choose which account the agent runs on." };
+  const chosen = compatible.find((item) => item.id === requested);
+  if (!chosen) return { ok: false, error: "That account is not available for this agent. Reload and choose again." };
+  const problem = accountProblem(chosen, now);
+  if (problem) return { ok: false, error: `${chosen.name} is ${problem}. Replace its token or choose another.` };
+  return { ok: true, id: chosen.id };
+}
+
 /* ---------------------------------------------------------------- usage (#604) */
 
 /**

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { accountsFromList, createAccountControl } from "../src/lib/account-control.ts";
 import {
   type AccountUsage,
+  checkAccountChoice,
   launchDefault,
   type ModelAccount,
   parseAuthCapabilities,
@@ -66,6 +67,47 @@ describe("the account a launch bills", () => {
     expect(resolved.state).toBe(expected.state);
     if ("id" in expected && "account" in resolved) expect(resolved.account.id).toBe(uuid(expected.id));
     if ("why" in expected && resolved.state === "resolved") expect(resolved.why).toBe(expected.why);
+  });
+});
+
+describe("the account a launch request bills, as the server action checks it", () => {
+  const ready = (...accounts: ModelAccount[]) => ({ state: "ready", orgId: "org", orgName: "Acme", accounts }) as const;
+  const work = account(1, { name: "Work" });
+  const other = account(2, { kind: "codex_auth", name: "Codex" });
+
+  test.each([
+    ["a listed, usable account", ready(work, other), "claude", work.id, { ok: true, id: work.id }],
+    [
+      "a server older than named accounts sends none",
+      { state: "legacy" } as const,
+      "claude",
+      "",
+      { ok: true, id: undefined },
+    ],
+    ["an agent with no account sends none", ready(other), "claude", "", { ok: true, id: undefined }],
+    ["a blank choice", ready(work), "claude", "", { ok: false, error: "Choose which account the agent runs on." }],
+    ["another agent's account", ready(work, other), "claude", other.id, { ok: false }],
+    ["an id that is not listed (another org's)", ready(work), "claude", uuid(99), { ok: false }],
+    ["any id when the agent has no account", ready(other), "claude", uuid(99), { ok: false }],
+    [
+      "an expired account",
+      ready(account(3, { name: "Old", expiresAt: "2026-11-01T00:00:00.000Z" })),
+      "claude",
+      uuid(3),
+      { ok: false, error: "Old is expired. Replace its token or choose another." },
+    ],
+    ["a revoked account", ready(account(4, { status: "revoked" })), "claude", uuid(4), { ok: false }],
+    ["a malformed id", ready(work), "claude", "not-a-uuid", { ok: false, error: "That request is not valid." }],
+    [
+      "an unreadable list",
+      { state: "error", message: "Timed out." } as const,
+      "claude",
+      work.id,
+      { ok: false, error: "Model accounts could not be loaded: Timed out. Reload and try again." },
+    ],
+    ["no Armada server", { state: "not-configured" } as const, "claude", "", { ok: false }],
+  ] as const)("%s", (_name, list, harness, requested, expected) => {
+    expect(checkAccountChoice(list, harness, requested, NOW)).toMatchObject(expected);
   });
 });
 

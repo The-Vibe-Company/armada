@@ -772,6 +772,9 @@ export function AddAccountDialog({
  */
 function TerminalSignIn({ command, onDone }: { command: string; onDone: () => void }) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  // A new name is a new command: "Copied." would otherwise describe the previous one.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the reset is keyed on the command on purpose.
+  useEffect(() => setCopied("idle"), [command]);
   return (
     <div className="min-w-0 space-y-3 rounded-md border p-3" data-terminal-login>
       <p className="text-sm">
@@ -784,12 +787,14 @@ function TerminalSignIn({ command, onDone }: { command: string; onDone: () => vo
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() =>
+          onClick={() => {
+            // No clipboard outside a secure context: say so rather than throw.
+            if (!navigator.clipboard) return setCopied("failed");
             navigator.clipboard.writeText(command).then(
               () => setCopied("copied"),
               () => setCopied("failed"),
-            )
-          }
+            );
+          }}
         >
           <CopyIcon /> Copy
         </Button>

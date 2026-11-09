@@ -186,7 +186,7 @@ function AccountField({
             <optgroup key={group} label={group}>
               {rows.map((account) => (
                 <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
-                  {optionLabel(account, accounts.now)}
+                  {optionLabel(account, accounts.now, accounts.orgName)}
                 </option>
               ))}
             </optgroup>
@@ -204,9 +204,15 @@ function AccountField({
   );
 }
 
-/** "Work (Claude subscription, default)": the name, then only the notes that add something. */
-function optionLabel(account: ModelAccount, now: number): string {
-  const notes = [kindNote(account), account.isDefault ? "default" : null, accountProblem(account, now)].filter(Boolean);
+/**
+ * "Work (Claude subscription, default)": the name, then only the notes that add something. An org account names
+ * its org, so the closed select still says who is billed when a personal and an org account share a name.
+ */
+function optionLabel(account: ModelAccount, now: number, orgName: string): string {
+  const owner = account.scope === "org" ? orgName : null;
+  const notes = [owner, kindNote(account), account.isDefault ? "default" : null, accountProblem(account, now)].filter(
+    Boolean,
+  );
   return notes.length ? `${account.name} (${notes.join(", ")})` : account.name;
 }
 

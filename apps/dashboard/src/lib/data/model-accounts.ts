@@ -3,6 +3,7 @@ import { type AccountControl, createAccountControl } from "@/lib/account-control
 import { ControlError } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
 import {
+  type AccountList,
   type AccountUsage,
   type AuthCapabilities,
   KIND_INFO,
@@ -20,16 +21,7 @@ export async function viewerAccountControl(): Promise<AccountControl | null> {
   return createAccountControl({ serverUrl: url, token: viewer.token });
 }
 
-/**
- * The model accounts of the viewer and of the selected org. `legacy` is a server older than named accounts: its
- * keys still launch, but they cannot be listed by name here. A failed read is an error, never an empty list.
- */
-export type AccountList =
-  | { state: "ready"; orgId: string; orgName: string; accounts: ModelAccount[] }
-  | { state: "legacy" }
-  | { state: "no-org" }
-  | { state: "not-configured" }
-  | { state: "error"; message: string };
+export type { AccountList } from "@/lib/model-accounts";
 
 export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
   const selected = await selectedOrganization();

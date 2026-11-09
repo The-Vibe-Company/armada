@@ -169,6 +169,50 @@ test("a member sees the org's accounts but only manages their own", async ({ pag
   await expect(page.getByRole("dialog").getByRole("radio", { name: /Acme/ })).toHaveCount(0);
 });
 
+test("replacing a token keeps the account and names the version seen; a replacement from a stale page is refused", async ({
+  page,
+}) => {
+  const work = account(41, "Work", { is_default: true });
+  await mock("/__test/accounts", { seed: [work] });
+  await signIn(page, "alice@example.com", "/credentials");
+  // A second tab read the same version before the first one replaced the token.
+  const stale = await page.context().newPage();
+  await stale.goto("/credentials");
+
+  const replace = async (on: Page, token: string) => {
+    await on.getByRole("button", { name: "Replace token, Work" }).click();
+    const dialog = on.getByRole("dialog");
+    await dialog.getByLabel("OAuth token").fill(token);
+    await dialog.getByRole("button", { name: "Save OAuth token" }).click();
+    return dialog;
+  };
+  await expect(await replace(page, HOME_TOKEN)).toHaveCount(0);
+  const calls = ((await mock("/__test/accounts")).calls as { route: string; body: Row }[]).filter(
+    (call) => call.route === "creds/accounts/set",
+  );
+  expect(calls).toEqual([
+    {
+      route: "creds/accounts/set",
+      body: expect.objectContaining({ scope: "user", id: work.id, expectedVersion: 1, name: "Work", value: "[sent]" }),
+    },
+  ]);
+  const row = ((await mock("/__test/credentials")) as unknown as Row[]).find((item) => item.id === work.id);
+  expect(row).toMatchObject({ version: 2, is_default: true, name: "Work" });
+
+  const refused = await replace(stale, WORK_TOKEN);
+  await expect(refused).toContainText("This account changed elsewhere. Reload the page and try again.");
+  await expect(refused).not.toContainText(WORK_TOKEN);
+});
+
+test("the launch select names the org on an org account, so equal names still say who is billed", async ({ page }) => {
+  // A personal account named like the org's migrated one.
+  await mock("/__test/accounts", { seed: [account(42, "Anthropic API key", { kind: "anthropic", is_default: true })] });
+  await signIn(page, "alice@example.com", "/credentials");
+  const select = (await openLaunch(page)).getByLabel("Account");
+  await expect(select.locator("option:checked")).toHaveText("Anthropic API key (default)");
+  await expect(select.locator('optgroup[label="Acme"] option')).toHaveText(["Anthropic API key (Acme)"]);
+});
+
 test("a server older than named accounts is said plainly, and launches send no account", async ({ page }) => {
   await mock("/__test/accounts", { legacy: true });
   await signIn(page, "alice@example.com", "/credentials");
@@ -350,4 +394,20 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
     .check();
   await expect(page.getByRole("dialog").locator("[data-terminal-login]")).toHaveCount(0);
   await expect(page.getByRole("dialog").getByLabel("auth.json")).toBeVisible();
+});
+
+test("on a phone the terminal sign-in stays inside the add dialog, even for a long name", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page, "alice@example.com", "/credentials");
+  await page.getByRole("button", { name: "Add account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
+  await dialog.getByLabel("Name").fill("A very long account name for the team that shares one ChatGPT plan");
+  await expect(dialog.locator("[data-terminal-login]")).toBeVisible();
+  const box = await dialog.boundingBox();
+  expect(box && box.x >= 0 && box.x + box.width <= 390).toBe(true);
+  // The command scrolls inside its own box; nothing pushes the page sideways.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  const login = await dialog.locator("[data-terminal-login]").boundingBox();
+  expect(login && login.x + login.width <= (box?.x ?? 0) + (box?.width ?? 0)).toBe(true);
 });

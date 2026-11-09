@@ -18,7 +18,7 @@ import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
 import { launchSandbox } from "@/lib/launch";
-import { accountProblem, accountsFor } from "@/lib/model-accounts";
+import { checkAccountChoice } from "@/lib/model-accounts";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -200,23 +200,5 @@ async function accountChoice(
   requested: string,
 ): Promise<{ ok: true; id: string | undefined } | { ok: false; error: string }> {
   if (requested && !isUuid(requested)) return { ok: false, error: "That request is not valid." };
-  const list = await listSelectedAccounts();
-  if (list.state === "legacy") return { ok: true, id: undefined };
-  if (list.state !== "ready")
-    return {
-      ok: false,
-      error: `Model accounts could not be loaded${list.state === "error" ? `: ${list.message}` : "."} Reload and try again.`,
-    };
-  const compatible = accountsFor(list.accounts, harness);
-  if (compatible.length === 0) {
-    return requested
-      ? { ok: false, error: "That account is not available for this agent." }
-      : { ok: true, id: undefined };
-  }
-  if (!requested) return { ok: false, error: "Choose which account the agent runs on." };
-  const chosen = compatible.find((item) => item.id === requested);
-  if (!chosen) return { ok: false, error: "That account is not available for this agent. Reload and choose again." };
-  const problem = accountProblem(chosen, Date.now());
-  if (problem) return { ok: false, error: `${chosen.name} is ${problem}. Replace its token or choose another.` };
-  return { ok: true, id: chosen.id };
+  return checkAccountChoice(await listSelectedAccounts(), harness, requested, Date.now());
 }
