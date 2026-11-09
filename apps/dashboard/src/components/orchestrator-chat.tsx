@@ -647,7 +647,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
             <p>
               {delegation.revokedAt
                 ? "Revoked."
-                : `Launches, reads, messages and stops its own workers only. This grant ends ${timeUntil(delegation.expiresAt, now) ?? "now"}; Armada replaces it between turns.`}
+                : `Launches, reads, messages and stops its own workers only. ${grantEnd(timeUntil(delegation.expiresAt, now))} Armada replaces it between turns.`}
             </p>
             <p className="text-muted-foreground">Configured by Armada; nothing to copy or paste.</p>
           </div>
@@ -713,4 +713,9 @@ function Fold({
       <div className="pt-2">{none ? <p className="text-xs text-muted-foreground">{empty}</p> : children}</div>
     </details>
   );
+}
+
+/** When the current delegated grant ends, or that it has: it is bounded and never renewed in place. */
+function grantEnd(until: string | null): string {
+  return until ? `This grant ends ${until}.` : "This grant has ended.";
 }
