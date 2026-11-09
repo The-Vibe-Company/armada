@@ -47,6 +47,7 @@ import {
   type McpConnectionInput,
   type McpRegistry,
   type ModelChoice,
+  mutateCredentialAccount,
   normalizeGitHubGoldenConfig,
   type Provider,
   ProviderError,
@@ -138,6 +139,8 @@ export interface ControlOptions {
 }
 
 const STATUS: Record<VaultErrorCode, number> = {
+  credential_binding_required: 409,
+  credential_binding_unsafe: 409,
   invalid: 400,
   forbidden: 403,
   not_found: 404,
@@ -636,6 +639,24 @@ async function dispatch(
     case "members/remove":
       await removeMember(store, userId, { org, email: required(body, "email") });
       return { ok: true };
+    case "creds/accounts/set":
+    case "creds/accounts/rename":
+    case "creds/accounts/default":
+    case "creds/accounts/remove": {
+      const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove";
+      const account = await mutateCredentialAccount(store, encryptionKey, userId, {
+        action,
+        ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
+        ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
+        scope: scope(body),
+        ...(org ? { org } : {}),
+        ...(body.id !== undefined ? { id: required(body, "id") } : {}),
+        ...(body.name !== undefined ? { name: required(body, "name") } : {}),
+        ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
+        ...(optional(body, "value") ? { value: required(body, "value") } : {}),
+      });
+      return { account };
+    }
     case "creds/set":
       await setCredential(store, encryptionKey, userId, {
         scope: scope(body),
@@ -979,6 +1000,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     },
     actor,
     {
+      ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
       golden: name,
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),

@@ -36,6 +36,7 @@ export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS)
 const OUTPUT_LIMIT = 2000;
 
 export interface LaunchRequest {
+  credentialId?: string;
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
   golden: string;
   visibility?: "private" | "org";
@@ -56,7 +57,12 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
-  resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials>;
+  resolve(
+    actor: GoldenActor,
+    harness: Harness,
+    credentialId?: string,
+    credentialVersion?: number,
+  ): Promise<HarnessCredentials>;
 }
 
 export interface LaunchStores {
@@ -141,7 +147,7 @@ export async function launchSandbox(
   await stores.connections?.validate(actor, connectionIds, visibility);
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  const credentials = await stores.credentials.resolve(actor, harness);
+  const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
   const connected = github.status === "connected" ? github : null;
   const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
@@ -167,6 +173,12 @@ export async function launchSandbox(
           golden: golden.name,
           visibility,
           harness,
+          ...(credentials.binding
+            ? {
+                credentialId: credentials.binding.credentialId,
+                credentialVersion: String(credentials.binding.credentialVersion),
+              }
+            : {}),
         },
       })
       .catch((error) => {
@@ -178,6 +190,7 @@ export async function launchSandbox(
     let record: SandboxRecord;
     try {
       record = await stores.sandboxes.insert({
+        ...credentials.binding,
         id,
         provider: golden.provider,
         providerSandboxId: forked.id,

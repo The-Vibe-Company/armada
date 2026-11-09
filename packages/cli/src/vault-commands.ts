@@ -162,7 +162,20 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
       const kind = parseCredentialKind(name ?? "");
       const value = parseCredentialValue(kind, await readValue(args, io));
-      await control(io.auth, "creds/set", { scope, org, kind: credentialName(kind), value });
+      await control(
+        io.auth,
+        single(args, "--id") !== undefined || single(args, "--name") !== undefined ? "creds/accounts/set" : "creds/set",
+        {
+          scope,
+          org,
+          kind: credentialName(kind),
+          value,
+          expectedVersion:
+            single(args, "--expected-version") === undefined ? undefined : Number(single(args, "--expected-version")),
+          id: single(args, "--id"),
+          name: single(args, "--name"),
+        },
+      );
       if (flag(args, "--json")) {
         io.auth.out(`${JSON.stringify({ ok: true })}\n`);
         return 0;
@@ -184,6 +197,18 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out(`${out.join("\n")}\n`);
       return 0;
     }
+    case "rename":
+    case "default":
+    case "remove": {
+      const [id, name] = expect(
+        args.positionals,
+        sub === "rename" ? 2 : 1,
+        `armada creds ${sub} <id>${sub === "rename" ? " <name>" : ""}`,
+      );
+      const result = await control(io.auth, `creds/accounts/${sub}`, { scope, org, id, name });
+      io.auth.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
     case "rm": {
       const [name] = expect(args.positionals, 1, "armada creds rm <kind> [--org <name>]");
       const kind = parseCredentialKind(name ?? "");
@@ -196,7 +221,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       return 0;
     }
     default:
-      throw usage("Run armada creds set, list or rm.");
+      throw usage("Run armada creds set, list, rename, default, remove or rm.");
   }
 }
 
@@ -220,7 +245,8 @@ async function readValue(args: ReturnType<typeof parseArgs>, io: VaultIo): Promi
 function section(title: string, rows: CredentialInfo[]): string {
   if (rows.length === 0) return `${title}: none`;
   const lines = rows.map(
-    (row) => `  ${credentialName(row.kind)}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
+    (row) =>
+      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
   );
   return `${title}:\n${lines.join("\n")}`;
 }
