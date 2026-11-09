@@ -325,9 +325,10 @@ function parseWindow(row: unknown): UsageWindow | null {
   if (used !== null && !(typeof used === "number" && Number.isFinite(used))) return null;
   const model = text(row.model, 60);
   const qualifiers = [model, text(row.surface, 40), text(row.group, 40)].filter(Boolean);
+  // #624 v1 sends a stable `id` and a source-derived `label`; an older report is identified by its kind.
   return {
-    id: [kind, model, text(row.surface, 40), text(row.group, 40)].filter(Boolean).join("/"),
-    label: `${humanize(kind)}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}`,
+    id: text(row.id, 60) ?? [kind, ...qualifiers].join("/"),
+    label: text(row.label, 60) ?? `${humanize(kind)}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}`,
     usedPercent: used === null ? null : Math.min(100, Math.max(0, used)),
     resetsAt,
   };
@@ -346,19 +347,23 @@ function humanize(kind: string): string {
 function extraUsage(extra: unknown): AccountUsage["extraUsage"] {
   if (!isRow(extra) || extra.enabled !== true) return null;
   const currency = typeof extra.currency === "string" ? extra.currency : "";
-  const minor = (amount: unknown) =>
-    typeof amount === "number" && Number.isInteger(amount) && amount >= 0 ? amount : null;
-  const used = minor(extra.usedMinor);
-  if (!/^[A-Z]{3}$/.test(currency) || used === null) return null;
+  if (!/^[A-Z]{3}$/.test(currency)) return null;
   let digits: number;
   try {
     digits = new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
   } catch {
     return null;
   }
-  const limit = minor(extra.limitMinor);
-  const major = (amount: number) => amount / 10 ** digits;
-  return { used: major(used), limit: limit === null ? null : major(limit), currency };
+  const amount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+  // #624 v1 sends major units (`used`, `limit`) beside the canonical minor ones: prefer them, else convert minor.
+  const major = (value: unknown, minor: unknown) => {
+    const direct = amount(value);
+    if (direct !== null) return direct;
+    const units = amount(minor);
+    return units === null ? null : units / 10 ** digits;
+  };
+  const used = major(extra.used, extra.usedMinor);
+  return used === null ? null : { used, limit: major(extra.limit, extra.limitMinor), currency };
 }
 
 /** The report for an account the server answered but in a shape this dashboard cannot read. */
@@ -394,7 +399,8 @@ export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount
   if (usage.status === "unreadable")
     return { kind: "unreadable", reason: "This server reports usage in a form this dashboard cannot read yet." };
   if (usage.status === "error") return { kind: "error", reason: "The last read failed. Reload the page to try again." };
-  if (usage.status === "unavailable" || !usage.observedAt || usage.windows.length === 0)
+  // Reported spend alone is shown without windows: no window or zero allowance is invented for it.
+  if (usage.status === "unavailable" || !usage.observedAt || (usage.windows.length === 0 && !usage.extraUsage))
     return { kind: "unavailable", reason: "This account does not report its allowance." };
   const stale = usage.status === "stale" || usage.version !== account.version;
   return {

@@ -130,6 +130,12 @@ describe("usage", () => {
     ["a current report", report(), "fresh"],
     ["a report the server marks stale", report({ status: "stale" }), "stale"],
     ["a report from before the token was replaced", report({ version: 0 }), "stale"],
+    [
+      "reported spend with no rolling windows",
+      report({ windows: [], extraUsage: { used: 12.5, limit: null, currency: "EUR" } }),
+      "fresh",
+    ],
+    ["a fresh read with neither windows nor spend", report({ windows: [] }), "unavailable"],
   ] as const)("%s reads as %s", (_name, usage, kind) => {
     const view = usageView(usage, { version: 1 });
     expect(view.kind).toBe(kind);
@@ -151,6 +157,10 @@ describe("usage", () => {
       limit: null,
       currency: "JPY",
     });
+    // The producer's major-unit aliases win over our own exponent table (HUF is 2 in ISO, 0 for some processors).
+    expect(
+      extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: 450, limit: null }),
+    ).toEqual({ used: 450, limit: null, currency: "HUF" });
     expect(extra({ enabled: false, currency: "USD", usedMinor: 450, limitMinor: 2000 })).toBeNull();
     expect(extra({ enabled: true, currency: null, usedMinor: 450, limitMinor: 2000 })).toBeNull();
   });
@@ -188,6 +198,12 @@ describe("usage", () => {
     ]);
     expect(new Set(repeated?.windows.map((window) => window.id)).size).toBe(2);
     expect(repeated?.hiddenWindows).toBe(0);
+    // #624 v1 sends its own stable id and source-derived label: used as they are.
+    const v1 = parseUsage({
+      ...report,
+      windows: [{ id: "five_hour", label: "5-hour limit", kind: "five_hour", usedPercent: 30, resetsAt: null }],
+    });
+    expect(v1?.windows.map((window) => [window.id, window.label])).toEqual([["five_hour", "5-hour limit"]]);
     // Only a report none of whose windows can be read is an unrecognized format.
     expect(parseUsage({ ...report, windows: [{ kind: "monthly", utilization: 0.4 }] })).toBeNull();
   });

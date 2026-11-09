@@ -184,7 +184,10 @@ test("a server older than named accounts is said plainly, and launches send no a
 test("usage reads as reported: current windows, last-known after a token change, unavailable, failed, unknown", async ({
   page,
 }) => {
+  // #624 v1 Window: a stable id and a source-derived label beside the native kind.
   const window = (used: number | null) => ({
+    id: "five_hour",
+    label: "5-hour limit",
     kind: "five_hour",
     usedPercent: used,
     resetsAt: "2099-01-01T00:00:00.000Z",
@@ -204,15 +207,27 @@ test("usage reads as reported: current windows, last-known after a token change,
       account(3, "Token only"),
       account(4, "Failing"),
       account(5, "Older server"),
+      account(6, "Spend only"),
+      account(7, "Revoked", { status: "revoked" }),
     ],
     usage: {
       [String(account(1, "").id)]: report(1, {
-        windows: [window(35), { kind: "seven_day", usedPercent: null, resetsAt: null }, { surface: "unknown" }],
-        extraUsage: { enabled: true, currency: "USD", usedMinor: 450, limitMinor: 2000 },
+        windows: [
+          window(35),
+          { id: "seven_day", label: "Weekly limit", kind: "seven_day", usedPercent: null, resetsAt: null },
+          { surface: "unknown" },
+        ],
+        extraUsage: { enabled: true, currency: "USD", usedMinor: 450, limitMinor: 2000, used: 4.5, limit: 20 },
       }),
       [String(account(2, "").id)]: report(2, {}),
       [String(account(3, "").id)]: report(3, { status: "unavailable", windows: [] }),
       [String(account(4, "").id)]: { fail: 503 },
+      // Spend with no rolling windows; the revoked account's report must never be asked for.
+      [String(account(6, "").id)]: report(6, {
+        windows: [],
+        extraUsage: { enabled: true, currency: "EUR", usedMinor: 1250, limitMinor: null, used: 12.5, limit: null },
+      }),
+      [String(account(7, "").id)]: report(7, {}),
     },
   });
   await signIn(page, "alice@example.com", "/credentials");
@@ -221,7 +236,8 @@ test("usage reads as reported: current windows, last-known after a token change,
   await expect(card("Fresh").locator('[data-usage="fresh"]')).toContainText("65% left");
   await expect(card("Fresh")).toContainText("35% used, resets in");
   // A null reading is the provider saying "unavailable" for that window; an unrecognized sibling is counted, not shown.
-  await expect(card("Fresh")).toContainText("Seven dayUnavailable");
+  await expect(card("Fresh")).toContainText("5-hour limit");
+  await expect(card("Fresh")).toContainText("Weekly limitUnavailable");
   await expect(card("Fresh")).toContainText("Reading unavailable");
   await expect(card("Fresh")).toContainText("1 window in a form this dashboard cannot read yet.");
   await expect(card("Fresh")).toContainText("Extra usage: $4.50 of $20.00");
@@ -231,6 +247,16 @@ test("usage reads as reported: current windows, last-known after a token change,
   await expect(card("Failing").locator('[data-usage="error"]')).toContainText("Usage not read");
   await expect(card("Older server").locator('[data-usage="unknown"]')).toContainText("Usage unknown");
   for (const name of ["Token only", "Failing", "Older server"]) await expect(card(name)).not.toContainText("%");
+  // Reported spend alone: shown as spend, with no invented window and no zero allowance.
+  await expect(card("Spend only").locator('[data-usage="fresh"]')).toContainText("Extra usage: €12.50");
+  await expect(card("Spend only")).not.toContainText("%");
+  await expect(card("Spend only")).not.toContainText("Usage unavailable");
+  // A revoked account has nothing to read: no usage block, and its usage is never requested.
+  await expect(card("Revoked").locator("[data-usage]")).toHaveCount(0);
+  const asked = ((await mock("/__test/accounts")).calls as { route: string; body: Row }[])
+    .filter((call) => call.route === "creds/accounts/usage")
+    .map((call) => call.body.id);
+  expect(asked).not.toContain(account(7, "").id);
 });
 
 test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays behind a disclosure", async ({

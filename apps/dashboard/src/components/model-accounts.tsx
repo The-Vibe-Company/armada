@@ -170,47 +170,49 @@ export function UsagePanel({
   }
   return (
     <div className="space-y-2" data-usage={view.kind}>
-      <ul className="grid gap-3 sm:grid-cols-2">
-        {view.windows.map((window) => {
-          const left = window.usedPercent === null ? null : Math.round(100 - window.usedPercent);
-          return (
-            <li key={window.id} className="space-y-1">
-              <div className="flex items-baseline justify-between gap-2 text-xs">
-                <span className="font-medium">{window.label}</span>
-                <span className={cn("tabular-nums", view.kind === "stale" && "text-muted-foreground")}>
-                  {left === null ? "Unavailable" : `${left}% left`}
-                </span>
-              </div>
-              {/* No track for an unavailable reading: an empty bar would read as 0% used. */}
-              {window.usedPercent !== null && (
-                <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-full rounded-full",
-                      view.kind === "stale"
-                        ? "bg-muted-foreground/40"
-                        : window.usedPercent >= 90
-                          ? "bg-destructive"
-                          : window.usedPercent >= 70
-                            ? "bg-warning"
-                            : "bg-foreground/70",
-                    )}
-                    style={{ width: `${window.usedPercent}%` }}
-                  />
+      {view.windows.length > 0 && (
+        <ul className="grid gap-3 sm:grid-cols-2">
+          {view.windows.map((window) => {
+            const left = window.usedPercent === null ? null : Math.round(100 - window.usedPercent);
+            return (
+              <li key={window.id} className="space-y-1">
+                <div className="flex items-baseline justify-between gap-2 text-xs">
+                  <span className="font-medium">{window.label}</span>
+                  <span className={cn("tabular-nums", view.kind === "stale" && "text-muted-foreground")}>
+                    {left === null ? "Unavailable" : `${left}% left`}
+                  </span>
                 </div>
-              )}
-              <p className="text-xs text-muted-foreground">
-                {window.usedPercent === null ? "Reading unavailable" : `${Math.round(window.usedPercent)}% used`}
-                {window.resetsAt ? (
-                  <>
-                    , resets <time dateTime={window.resetsAt}>{relativeTime(window.resetsAt, now)}</time>
-                  </>
-                ) : null}
-              </p>
-            </li>
-          );
-        })}
-      </ul>
+                {/* No track for an unavailable reading: an empty bar would read as 0% used. */}
+                {window.usedPercent !== null && (
+                  <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={cn(
+                        "h-full rounded-full",
+                        view.kind === "stale"
+                          ? "bg-muted-foreground/40"
+                          : window.usedPercent >= 90
+                            ? "bg-destructive"
+                            : window.usedPercent >= 70
+                              ? "bg-warning"
+                              : "bg-foreground/70",
+                      )}
+                      style={{ width: `${window.usedPercent}%` }}
+                    />
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {window.usedPercent === null ? "Reading unavailable" : `${Math.round(window.usedPercent)}% used`}
+                  {window.resetsAt ? (
+                    <>
+                      , resets <time dateTime={window.resetsAt}>{relativeTime(window.resetsAt, now)}</time>
+                    </>
+                  ) : null}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {view.hiddenWindows > 0 && (
         <p className="text-xs text-muted-foreground">
           {view.hiddenWindows === 1 ? "1 window" : `${view.hiddenWindows} windows`} in a form this dashboard cannot read
@@ -309,7 +311,10 @@ export function AccountRow({
           </div>
         )}
       </div>
-      {info.billing === "subscription" && <UsagePanel usage={usage} account={account} now={now} />}
+      {/* A revoked or removed account has no usage to read: its status already says what to do. */}
+      {info.billing === "subscription" && account.status === "active" && (
+        <UsagePanel usage={usage} account={account} now={now} />
+      )}
       <ResultLine result={result} />
     </li>
   );

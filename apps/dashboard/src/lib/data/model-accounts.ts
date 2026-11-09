@@ -78,7 +78,10 @@ export async function readAccountUsage(
 ): Promise<Record<string, AccountUsage | null>> {
   const control = await viewerAccountControl();
   if (!control) return {};
-  const asked = accounts.filter((account) => KIND_INFO[account.kind].billing === "subscription");
+  // #624 answers 404 for a revoked account: only active subscriptions are asked.
+  const asked = accounts.filter(
+    (account) => KIND_INFO[account.kind].billing === "subscription" && account.status === "active",
+  );
   const failed = (account: ModelAccount): AccountUsage => ({
     accountId: account.id,
     version: account.version,
