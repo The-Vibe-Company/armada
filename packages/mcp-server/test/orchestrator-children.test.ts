@@ -632,3 +632,208 @@ for (const outcome of ["direct-success", "direct-failed", "discovery-success"] a
     }
   });
 }
+
+for (const proof of [
+  "closed-owned-resource",
+  "wrong-resource",
+  "no-stop-proof",
+  "contradictory-no-allocation",
+] as const) {
+  test(`uncertain child allocation settles only on matching terminal provider evidence (${proof})`, async () => {
+    const { db, sql, p, id, authority, token, selection } = await fixture();
+    try {
+      await configureOrchestratorLifecycle(sql, {
+        key: "explicit-child-policy",
+        orchestratorId: id,
+        ownerId: p.owner,
+        expectedRevision: 0,
+        idleSeconds: 7200,
+        maxActiveChildren: 1,
+      });
+      let allocations = 0;
+      const children = createOrchestratorChildren(sql, authority, {
+        async launch(op) {
+          allocations++;
+          await sql.query("update orchestrator_child_operations set provider_sandbox_id=$2 where id=$1", [
+            op.id,
+            `allocated-${op.id}`,
+          ]);
+          throw Error("registration response unavailable after allocation");
+        },
+        async reconcile(op) {
+          return {
+            operationId: op.id,
+            sandboxId: op.sandboxId,
+            state: "failed",
+            providerSandboxId: proof === "wrong-resource" ? "another-user-resource" : `allocated-${op.id}`,
+            resourceStopped: proof === "closed-owned-resource" || proof === "wrong-resource",
+            noAllocation: proof === "contradictory-no-allocation",
+          };
+        },
+        async read() {
+          throw Error("unexpected");
+        },
+        async message() {
+          throw Error("unexpected");
+        },
+        async stop() {
+          throw Error("readonly reconciliation must not stop");
+        },
+      });
+      const first = await children.launch(token, "ambiguous-allocation", selection);
+      expect(first.state).toBe("uncertain");
+      await expect(children.launch(token, "while-unknown", selection)).rejects.toThrow("Owner child policy");
+      await children.reconcileOne();
+      const state = (
+        await sql.query<{ state: string }>("select state from orchestrator_child_operations where id=$1", [first.id])
+      ).rows[0]?.state;
+      expect(state).toBe(proof === "closed-owned-resource" ? "failed" : "uncertain");
+      if (proof === "closed-owned-resource") {
+        await children.launch(token, "after-confirmed-stop", selection);
+        expect(allocations).toBe(2);
+      } else {
+        await expect(children.launch(token, "without-terminal-proof", selection)).rejects.toThrow("Owner child policy");
+        expect(allocations).toBe(1);
+      }
+    } finally {
+      await db.close();
+    }
+  });
+}
+
+test("registered failed child with confirmed stopped compute releases explicit capacity and does not block parent idle", async () => {
+  const { db, sql, p, id, authority, token, selection } = await fixture();
+  try {
+    await configureOrchestratorLifecycle(sql, {
+      key: "one-child-policy",
+      orchestratorId: id,
+      ownerId: p.owner,
+      expectedRevision: 0,
+      idleSeconds: 7200,
+      maxActiveChildren: 1,
+    });
+    const boat = fakeBoat();
+    const failedProvider = new Proxy(boat.provider, {
+      get(target, key) {
+        if (key === "exec")
+          return async () => {
+            throw Error("synthetic repository preparation failure");
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let executionCalls = 0;
+    const children = createOrchestratorChildren(sql, authority, {
+      async launch(op, chosen) {
+        if (++executionCalls > 1) {
+          const { ChildLaunchNotAllocated } = await import("../src/orchestrator-child-launch.ts");
+          throw new ChildLaunchNotAllocated("preallocation_rejected");
+        }
+        return launchOrchestratorChild({
+          sql,
+          provider: failedProvider,
+          operation: op,
+          selection: chosen,
+          stores: {
+            goldens: createSqlGoldenStore(sql),
+            sandboxes: createSqlSandboxStore(sql),
+            credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+          },
+          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+        });
+      },
+      async reconcile(op) {
+        const row = (
+          await sql.query<{ provider_sandbox_id: string }>(
+            "select provider_sandbox_id from orchestrator_child_operations where id=$1",
+            [op.id],
+          )
+        ).rows[0];
+        if (!row) throw Error("missing provider receipt");
+        const info = await boat.provider.get(row.provider_sandbox_id);
+        return {
+          operationId: op.id,
+          sandboxId: op.sandboxId,
+          state: "failed",
+          providerSandboxId: info.id,
+          resourceStopped: info.state === "stopped",
+        };
+      },
+      async read() {
+        throw Error("unexpected");
+      },
+      async message() {
+        throw Error("unexpected");
+      },
+      async stop() {
+        throw Error("readonly proof only");
+      },
+    });
+    const failed = await children.launch(token, "registered-child-fails", selection);
+    expect(failed.state).toBe("uncertain");
+    const { createSandboxLifecycle } = await import("../src/sandbox-lifecycle.ts");
+    expect(await createSandboxLifecycle(sql, async () => boat.provider).reconcileOne()).toBe(true);
+    const row = (
+      await sql.query<{ status: string; stopped_at: Date | null; status_reason: string }>(
+        "select status,stopped_at,status_reason from sandboxes where id=$1",
+        [failed.sandboxId],
+      )
+    ).rows[0];
+    expect(row?.status).toBe("failed");
+    expect(row?.stopped_at).not.toBeNull();
+    const diagnostic = row?.status_reason;
+    await children.reconcileOne();
+    expect((await children.launch(token, "capacity-after-confirmed-closure", selection)).state).toBe("failed");
+    expect(executionCalls).toBe(2);
+    expect(boat.forks).toHaveLength(1);
+    const { createOrchestratorLifecycle } = await import("../src/orchestrator-lifecycle.ts");
+    const clock = (await sql.query<{ now: Date }>("select clock_timestamp() as now")).rows[0];
+    if (!clock) throw Error("missing clock");
+    let now = new Date(clock.now);
+    let parentStops = 0;
+    const worker = createOrchestratorLifecycle(
+      sql,
+      {
+        async observe(machine) {
+          return {
+            ...machine,
+            physicalGeneration: "synthetic-parent-native",
+            state: "quiescent",
+            evidence: "finished-parent-prompt",
+          };
+        },
+        async stop(machine, _reason, operationId) {
+          parentStops++;
+          return {
+            ...machine,
+            physicalGeneration: machine.physicalGeneration ?? null,
+            operationId,
+            state: "stopped",
+            continuity: "native",
+          };
+        },
+        async reconcileStop() {
+          throw Error("no uncertain parent stop");
+        },
+      },
+      () => now,
+    );
+    await worker.reconcileOne();
+    now = new Date(now.getTime() + 7_201_000);
+    await worker.reconcileOne();
+    expect(parentStops).toBe(1);
+    expect(
+      (
+        await sql.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
+          failed.sandboxId,
+        ])
+      ).rows[0]?.status_reason,
+    ).toBe(diagnostic);
+    expect(
+      (await sql.query("select sandbox_id from orchestrator_children where sandbox_id=$1", [failed.sandboxId])).rows,
+    ).toHaveLength(1);
+  } finally {
+    await db.close();
+  }
+});

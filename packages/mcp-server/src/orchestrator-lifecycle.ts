@@ -199,7 +199,7 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
         const blockers = (
           await tx.query<{ children: boolean; operations: boolean; waits: boolean; capped: boolean }>(
             `select exists(select 1 from public.orchestrator_children c join public.sandboxes s on s.id=c.sandbox_id
-             where c.orchestrator_id=$1 and s.status not in ('stopped','deleted')) as children,
+             where c.orchestrator_id=$1 and s.status not in ('stopped','deleted') and not (s.status='failed' and s.stopped_at is not null)) as children,
            (exists(select 1 from public.orchestrator_child_operations where orchestrator_id=$1 and state in ('pending','uncertain'))
             or exists(select 1 from public.orchestrator_operations where orchestrator_id=$1 and state in ('pending','uncertain'))) as operations,
            exists(select 1 from public.orchestrator_waits where orchestrator_id=$1 and released_at is null) as waits,

@@ -42,6 +42,8 @@ export interface OrchestratorChildExecutor {
     state: "succeeded" | "failed" | "unknown";
     providerSandboxId?: string;
     noAllocation?: boolean;
+    /** Positive exact SDK stop/exit evidence, never absence/404 or an uncorrelated resource. */
+    resourceStopped?: boolean;
   }>;
   read(sandboxId: string, ownerId: string, orgId: string): Promise<unknown>;
 }
@@ -138,7 +140,7 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
           await tx.query<{ count: string }>(
             `select count(*) as count from (
               select c.sandbox_id from public.orchestrator_children c join public.sandboxes s on s.id=c.sandbox_id
-                where c.orchestrator_id=$1 and s.status not in ('stopped','deleted')
+                where c.orchestrator_id=$1 and s.status not in ('stopped','deleted') and not (s.status='failed' and s.stopped_at is not null)
               union select target_id from public.orchestrator_child_operations
                 where orchestrator_id=$1 and action='launch' and state in ('pending','uncertain')
             ) active`,
@@ -316,12 +318,13 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
           parent_epoch: string;
           action: ChildOperation["action"];
           target_id: string;
+          provider_sandbox_id: string | null;
         }>(
           `update public.orchestrator_child_operations set reconcile_lease=$1,reconcile_until=now()+interval '2 minutes'
         where id=(select id from public.orchestrator_child_operations where state in ('pending','uncertain')
           and reconcile_after<=now() and (reconcile_until is null or reconcile_until<now())
           order by created_at for update skip locked limit 1)
-        returning id,orchestrator_id,owner_id,org_id,parent_generation,parent_epoch,action,target_id`,
+        returning id,orchestrator_id,owner_id,org_id,parent_generation,parent_epoch,action,target_id,provider_sandbox_id`,
           [lease],
         )
       ).rows[0];
@@ -337,11 +340,21 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
         sandboxId: row.target_id,
       };
       let state = "uncertain";
+      let noAllocation = false;
+      let closedProviderId: string | null = null;
       try {
         const found = await operations.run(() => executor.reconcile(operation, signal), signal);
         if (found.operationId !== row.id || found.sandboxId !== row.target_id)
           throw Error("Uncorrelated child receipt.");
-        if (found.state === "failed" && (row.action !== "launch" || found.noAllocation === true)) state = "failed";
+        noAllocation = found.noAllocation === true && found.providerSandboxId === undefined;
+        closedProviderId = found.resourceStopped === true && found.providerSandboxId ? found.providerSandboxId : null;
+        if (
+          found.state === "failed" &&
+          (row.action !== "launch" ||
+            (noAllocation && row.provider_sandbox_id === null) ||
+            (closedProviderId !== null && closedProviderId === row.provider_sandbox_id))
+        )
+          state = "failed";
         if (found.state === "succeeded") {
           if (row.action === "launch") {
             if (!found.providerSandboxId || !sql.transaction) throw Error("Launch receipt missing.");
@@ -382,8 +395,10 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
         `update public.orchestrator_child_operations set state=case when $3='uncertain' and state='pending' then state else $3 end,
         error_code=case when $3='uncertain' then 'child_outcome_unconfirmed' else null end,
         reconcile_lease=null,reconcile_until=null,reconcile_after=now()+interval '1 minute'
-        where id=$1 and reconcile_lease=$2 and reconcile_until>now() and state in ('pending','uncertain')`,
-        [row.id, lease, state],
+        where id=$1 and reconcile_lease=$2 and reconcile_until>now() and state in ('pending','uncertain')
+        and ($3<>'failed' or action<>'launch' or (provider_sandbox_id is null and $4::boolean)
+          or ($5::text is not null and provider_sandbox_id=$5))`,
+        [row.id, lease, state, noAllocation, closedProviderId],
       );
       // A delayed observation must never rewrite a confirmed terminal outcome.
       await sql.query(

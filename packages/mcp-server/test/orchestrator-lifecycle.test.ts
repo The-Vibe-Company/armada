@@ -162,14 +162,21 @@ test("confirmed quiescence starts an idle interval; polling cannot extend it and
   }
 });
 
-for (const kind of ["silent-prompt", "unknown", "child", "expired-wait", "operation"] as const) {
+for (const kind of [
+  "silent-prompt",
+  "unknown",
+  "child",
+  "failed-child-unconfirmed",
+  "expired-wait",
+  "operation",
+] as const) {
   test(`${kind} cannot be mistaken for inactivity after the cutoff`, async () => {
     const f = await fixture();
     try {
       await f.worker.reconcileOne();
       if (kind === "silent-prompt") f.observe("active");
       if (kind === "unknown") f.observe("unknown");
-      if (kind === "child") {
+      if (kind === "child" || kind === "failed-child-unconfirmed") {
         const golden = (await f.db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
         if (!golden) throw Error("missing golden");
         const child = await createSqlSandboxStore(f.sql).insert({
@@ -180,7 +187,7 @@ for (const kind of ["silent-prompt", "unknown", "child", "expired-wait", "operat
           orgId: f.people.org,
           ownerId: f.people.owner,
           harness: "claude",
-          status: "running",
+          status: kind === "failed-child-unconfirmed" ? "failed" : "running",
           model: "m",
           reasoningEffort: "high",
           visibility: "private",

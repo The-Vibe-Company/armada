@@ -153,3 +153,31 @@ Child selection now consumes actual `LaunchRequest["size"]` and core
 forwarded unchanged to ordinary `launchSandbox`. Core owns the selected-repository
 > golden default and explicit-override precedence. This module adds no size policy,
 quota, default concurrency or provider historical-event repair.
+
+## Explicit dependency and delegated-wait boundary
+
+File presence is not a production migration/application claim. On current
+`origin/main` the exact inventory is: **202 present, 203 absent, 208 present**;
+**209 belongs to this branch**, and **210 exists only in the actual #662
+runtime candidate/isolated dependency combination**, not main. Current sizing
+migration 206 does not stand in for missing 203. The root integrator must provide
+and review the actual 203 dependency and its compatibility with 202/208/209/210;
+this consumer neither recreates it nor assumes schemas compose additively.
+
+Delegated wait mutation remains unsupported by the committed authority producer.
+The exact requested producer port is `admitWait(token, { action, kind, reference },
+reserve)` with actual `DelegatedOrchestrator`, current grant/membership/parent and
+separate SQL/native generation checks held through SQL-only reservation. Unknown
+fields/actions, URLs, client-claimed completion and read-only mutation must deny.
+The proposed explicit `work:wait` permission requires #661/root-reviewed consent
+and a new schema extension if needed: it is not an existing supported scope, no
+consumer cast is used, and applied 208 must not be edited. Source/evidence is
+inspected outside SQL and reauthorized before persistence, never via a forged
+owner `Caller`, token renewal or heartbeat-only lease extension.
+
+Uncertain allocated workers can settle as failed only when read-only discovery
+positively confirms closure of the exact provider resource already bound to the
+owned reservation. A different resource, missing closure evidence, or a
+contradictory no-allocation claim keeps the outcome uncertain. This releases an
+explicit owner concurrency reservation only after confirmation, never by quota
+polling, absence, another allocation or stopping an unrelated resource.
