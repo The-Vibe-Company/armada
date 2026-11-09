@@ -130,6 +130,9 @@ Usage:
   armada token revoke <id>
   armada org create <name>                 Create an org; you are its first admin
   armada org list
+  armada org setup [--org <name>]          Show organization provider setup status
+  armada org connect boat|modal [--org <name>] [--file <path>]
+                                           Connect an org provider using stdin or a file
   armada org use <name|UUID|none>           Persist selection for this Armada server
   armada org current                        Show selected organization
   armada account status|logout              Account identity / revoke current login session
@@ -140,7 +143,7 @@ Usage:
                                            Store a credential, encrypted; the value is read from stdin or a file
   armada creds list [--org <name>]         Kinds and dates, never values
   armada creds rm <kind> [--org <name>]
-                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat
+                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal
 
 Every command after 'armada login' acts as the user who signed in. golden commands take --org <name>
 when you belong to more than one org.
@@ -220,7 +223,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   if (
     command &&
     (scoped.includes(command) ||
-      (command === "org" && rest[0] === "members") ||
+      (command === "org" && ["members", "setup", "connect"].includes(rest[0] ?? "")) ||
       (command === "creds" && rest[0] === "list") ||
       (command === "token" && rest[0] === "create")) &&
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))

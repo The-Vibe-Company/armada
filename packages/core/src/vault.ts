@@ -165,6 +165,7 @@ export async function setCredential(
   }
   const org = await resolveAdminOrg(store, userId, input.org);
   const sealed = await encryptSecret(value, encryptionKey);
+  await resolveAdminOrg(store, userId, org.id);
   if (input.kind === "boat") await store.setOrgBoatKey(org.id, sealed);
   else await store.upsertCredential("org", org.id, input.kind, sealed);
 }

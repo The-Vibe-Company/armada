@@ -161,3 +161,50 @@ test("rejects missing configuration and authorization", async () => {
   if (env === undefined) delete process.env.ARMADA_MCP_URL;
   else process.env.ARMADA_MCP_URL = env;
 });
+
+test("organization provider setup crosses the public-origin proxy over real HTTP", async () => {
+  const received: { path: string; body: string; bearer: string | null }[] = [];
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      received.push({
+        path: new URL(request.url).pathname,
+        body: await request.text(),
+        bearer: request.headers.get("authorization"),
+      });
+      return Response.json(
+        { error: { code: "invalid", message: "The provider rejected this credential." } },
+        { status: 400 },
+      );
+    },
+  });
+  const publicOrigin = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => forwardControl(request, new URL(request.url).pathname.slice("/api/v1/".length).split("/")),
+  });
+  process.env.ARMADA_MCP_URL = upstream.url.toString();
+  try {
+    for (const action of ["status", "connect"]) {
+      const body = JSON.stringify(
+        action === "status" ? { org: "org-id" } : { org: "org-id", provider: "boat", value: "synthetic-input" },
+      );
+      const response = await fetch(new URL(`/api/v1/org/provider/${action}`, publicOrigin.url), {
+        method: "POST",
+        headers: { authorization: "Bearer masked", "content-type": "application/json" },
+        body,
+      });
+      expect(received.at(-1)).toEqual({ path: `/api/v1/org/provider/${action}`, body, bearer: "Bearer masked" });
+      expect(response.status).toBe(400);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({
+        error: { code: "invalid", message: "The provider rejected this credential." },
+      });
+    }
+  } finally {
+    process.env.ARMADA_MCP_URL = env;
+    await publicOrigin.stop(true);
+    await upstream.stop(true);
+  }
+});

@@ -48,6 +48,28 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       io.auth.out(`${JSON.stringify({ org: matches[0] })}\n`);
       return 0;
     }
+    case "setup":
+    case "connect": {
+      const args = parseArgs(rest);
+      const org = single(args, "--org");
+      let body: Record<string, unknown> = { org };
+      if (sub === "connect") {
+        const provider = one(args.positionals, "armada org connect boat|modal [--org <name>] [--file <path>]");
+        if (provider !== "boat" && provider !== "modal") throw usage("Provider is boat or modal.");
+        body = { org, provider, value: parseCredentialValue(provider, await readValue(args, io)) };
+      } else expect(args.positionals, 0, "armada org setup [--org <name>]");
+      const status = await control<{
+        org: OrgSummary;
+        ready: boolean;
+        providers: { provider: string; configured: boolean }[];
+      }>(io.auth, `org/provider/${sub === "setup" ? "status" : "connect"}`, body);
+      io.auth.out(
+        flag(args, "--json")
+          ? `${JSON.stringify(status)}\n`
+          : `${status.org.name}: ${status.ready ? "ready" : "provider connection required"}\n${status.providers.map((p) => `${p.provider}: ${p.configured ? "configured" : "not configured"}`).join("\n")}\n`,
+      );
+      return 0;
+    }
     case "create": {
       const args = parseArgs(rest);
       const name = one(args.positionals, "armada org create <name>");
@@ -55,7 +77,7 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       io.auth.out(
         flag(args, "--json")
           ? `${JSON.stringify({ org })}\n`
-          : `Created org ${org.name}. You are its admin.\nid: ${org.id}\n`,
+          : `Created org ${org.name}. You are its admin.\nid: ${org.id}\nRequired next: pipe a provider credential into armada org connect boat|modal --org ${org.id}.\n`,
       );
       return 0;
     }
@@ -74,7 +96,7 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
     case "members":
       return members(rest, io);
     default:
-      throw usage("Run armada org create, list or members.");
+      throw usage("Run armada org create, list, setup, connect or members.");
   }
 }
 
