@@ -414,6 +414,11 @@ test("same-name goldens on Boat and Modal are listed apart, and rebuild and laun
   // A single repository is the default project; choosing another directory stays in Advanced.
   await expect(dialog.getByLabel("Project")).toHaveValue("docs");
   await expect(dialog.getByLabel("Project").locator("option")).toHaveText(["Default directory", "docs"]);
+  const summary = dialog.locator("[data-launch-summary]");
+  await expect(summary).toContainText("docs");
+  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog.getByLabel("Project").selectOption("");
+  await expect(summary).toContainText("Default directory");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await page.setViewportSize({ width: 390, height: 844 });
