@@ -3,6 +3,8 @@ import { MOCK, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
+const ACME = "00000000-0000-4000-8000-000000000010";
+
 const SECRET = "sk-ant-oat01-super-secret-token";
 
 test("a token is stored encrypted and never shown again", async ({ page }) => {
@@ -37,14 +39,46 @@ test("a value with spaces is refused before anything is stored", async ({ page }
   await expect(mine.locator('p[role="alert"]')).toContainText("no spaces");
 });
 
-test("an admin manages the org keys, a member only sees which are set", async ({ page }) => {
+test("the org Boat key is the one launches use: shown, removed and saved through the server, never as a row", async ({
+  page,
+}) => {
+  const state = async () =>
+    (await (await fetch(`${MOCK}/__test/state`, { method: "POST", body: "{}" })).json()) as {
+      orgBoatKeys: string[];
+      providerCalls: { route: string; body: Record<string, unknown> }[];
+    };
   await signIn(page, "alice@example.com", "/credentials");
   const org = page.locator('[data-credentials="Acme (org)"]');
-  await expect(org.getByLabel("Value", { exact: true })).toBeVisible();
+  const boat = org.locator("li", { hasText: "boat.dev API key" });
+  // Acme's key predates the dashboard: it is the org's column, which a user JWT cannot read.
+  await expect(boat.getByRole("img", { name: "Value hidden" })).toBeVisible();
+
+  await boat.getByRole("button", { name: "Remove boat.dev API key" }).click();
+  await expect(boat.getByText("Not set")).toBeVisible();
+  expect((await state()).orgBoatKeys).not.toContain(ACME);
+
   await org.getByLabel("Kind").selectOption("boat");
   await org.getByLabel("Value", { exact: true }).fill("boat-org-key-123");
   await org.getByRole("button", { name: "Save credential" }).click();
   await expect(org.getByText("boat.dev API key saved.")).toBeVisible();
+  await expect(boat.getByRole("img", { name: "Value hidden" })).toBeVisible();
+  const after = await state();
+  expect(after.orgBoatKeys).toContain(ACME);
+  const writes = after.providerCalls.filter((call) => call.route !== "org/provider/status");
+  expect(writes.map((call) => [call.route, call.body.org])).toEqual([
+    ["creds/rm", ACME],
+    ["org/provider/connect", ACME],
+  ]);
+
+  // A status the server cannot give is not shown as either answer, and offers no removal.
+  await fetch(`${MOCK}/__test/provider-status-fail`, {
+    method: "POST",
+    body: JSON.stringify({ fail: { status: 503, message: "Unavailable." } }),
+  });
+  await page.reload();
+  await expect(boat.getByText("Unavailable")).toBeVisible();
+  await expect(boat.getByRole("button", { name: "Remove boat.dev API key" })).toHaveCount(0);
+  await fetch(`${MOCK}/__test/provider-status-fail`, { method: "POST", body: JSON.stringify({ fail: null }) });
 
   await page.context().clearCookies();
   await signIn(page, "bob@example.com", "/credentials");

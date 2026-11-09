@@ -524,7 +524,6 @@ test("a build is tracked by its own form: never by the twin on the other provide
 
   // In another org, the same URL reads and resubmits nothing.
   await page.getByLabel("Active organization").selectOption("00000000-0000-4000-8000-000000000011");
-  await page.getByRole("button", { name: "Switch organization" }).click();
   // The switch is done only when its action has redirected to the bare page and Zenith's rows are shown: the
   // Goldens heading was already visible, and navigating before the action finishes would abort it.
   await expect(page).toHaveURL(/\/goldens$/);
@@ -561,7 +560,6 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   const other = await context.newPage();
   await other.goto("/goldens");
   await other.getByLabel("Active organization").selectOption("00000000-0000-4000-8000-000000000011");
-  await other.getByRole("button", { name: "Switch organization" }).click();
   await expect(other.locator('[data-golden="zenith-golden"]')).toBeVisible();
   await other.close();
 

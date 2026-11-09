@@ -29,6 +29,25 @@ test("a signed-out visitor sees the landing on / and signs in from it", async ({
   await expect(page.getByText("Sign in to Armada")).toBeVisible();
 });
 
+test("the landing and the login page link the Armada icons, served to a signed-out visitor", async ({ page }) => {
+  for (const path of ["/", "/login"]) {
+    await page.goto(path);
+    const links = page.locator('head link[rel="icon"], head link[rel="apple-touch-icon"]');
+    const hrefs = await links.evaluateAll((all) => all.map((link) => (link as HTMLLinkElement).href));
+    expect(hrefs.map((href) => new URL(href).pathname).sort()).toEqual([
+      "/apple-icon.png",
+      "/favicon.ico",
+      "/icon.svg",
+    ]);
+    for (const href of hrefs) {
+      // No session cookie: an icon is served as is, never sent to the login page.
+      const icon = await page.request.get(href, { maxRedirects: 0 });
+      expect(icon.status()).toBe(200);
+      expect(icon.headers()["content-type"]).toMatch(/^image\//);
+    }
+  }
+});
+
 test("a signed-in member's / is the dashboard, not the landing", async ({ page }) => {
   await signIn(page, "alice@example.com", "/sandboxes");
   const front = await page.request.get("/", { maxRedirects: 0 });

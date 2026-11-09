@@ -73,12 +73,17 @@ describe("armada org and armada creds against the control API", () => {
         key: "test-value",
         scope: "org",
       });
-      await options.store.setOrgBoatKey(org.id, null);
-      for (const kind of ["boat", "modal"] as const) {
-        await options.store.upsertCredential("org", org.id, kind, await encryptSecret("test-value", KEY));
-        expect((await status()).ready).toBe(true);
-        await options.store.deleteCredential("org", org.id, kind);
-      }
+      expect(
+        JSON.parse((await member.run(["creds", "list", "--org", org.id, "--json"])).out).orgs[0].credentials,
+      ).toEqual([{ kind: "boat", createdAt: null }]);
+      expect((await admin.run(["creds", "rm", "boat", "--org", org.id])).code).toBe(0);
+      expect((await status()).ready).toBe(false);
+      await expect(
+        resolveBoatKey(options.store, KEY, { userId: STAN, orgId: org.id, visibility: "org" }),
+      ).rejects.toThrow(/no boat.dev key/);
+      await options.store.upsertCredential("org", org.id, "modal", await encryptSecret("test-value", KEY));
+      expect((await status()).ready).toBe(true);
+      await options.store.deleteCredential("org", org.id, "modal");
       const pair = JSON.stringify({ token_id: "ak-test12345678", token_secret: "as-test12345678" });
       expect((await admin.run(["org", "connect", "modal", "--file", "input"], { files: { input: pair } })).code).toBe(
         0,

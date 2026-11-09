@@ -383,7 +383,6 @@ test("switching organization switches the connections and their launch choices",
   await fetch(`${MOCK}/__test/reset`, { method: "POST", body: JSON.stringify({ multiOrg: true }) });
   await signIn(page, "alice@example.com", "/connections");
   await page.getByLabel("Active organization").selectOption(ZENITH);
-  await page.getByRole("button", { name: "Switch organization" }).click();
   await expect(page).toHaveURL(/\/connections$/);
   await expect(card(page, "Zenith Search")).toBeVisible();
   await expect(card(page, "Acme Docs")).toHaveCount(0);
