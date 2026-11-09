@@ -1,0 +1,195 @@
+name: Database migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/migrations.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Operation (migrate preserves the dry_run switch)
+        type: choice
+        options: [migrate, history, repair]
+        default: migrate
+        required: true
+      versions:
+        description: Space-separated 14-digit versions to repair
+        type: string
+      status:
+        description: Repair history status (does not execute or undo SQL)
+        type: choice
+        options: [applied, reverted]
+        default: applied
+      confirmation:
+        description: 'Repair only: type REPAIR PRODUCTION MIGRATION HISTORY'
+        type: string
+      dry_run:
+        description: Preview pending production migrations without applying them
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Migration dry-run (disposable database)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.75.0
+      - name: Preview migration plan without production credentials
+        env:
+          PGSSLMODE: disable # Disposable service only; production retains TLS.
+        run: supabase db push --db-url postgresql://postgres@127.0.0.1:5432/postgres --dry-run
+
+  production:
+    name: Production migrations
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: production-supabase-migrations
+      cancel-in-progress: false
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      # Always use current main, including when retrying an older failed run.
+      # Thus a later run subsumes any pending run replaced by concurrency.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.75.0
+      - name: Validate operation before connecting
+        env:
+          MODE: ${{ inputs.mode || 'migrate' }}
+          VERSIONS: ${{ inputs.versions }}
+          STATUS: ${{ inputs.status }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        shell: bash
+        run: |
+          case "$MODE" in
+            migrate|history) ;;
+            repair)
+              [[ "$CONFIRMATION" == 'REPAIR PRODUCTION MIGRATION HISTORY' ]] || exit 1
+              [[ "$STATUS" == applied || "$STATUS" == reverted ]] || exit 1
+              [[ "$VERSIONS" =~ ^[0-9]{14}(\ [0-9]{14})*$ ]] || exit 1
+              ;;
+            *) exit 1 ;;
+          esac
+      - name: Require history connection
+        if: inputs.mode == 'history' || inputs.mode == 'repair'
+        env:
+          PGDATABASE: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          [[ -n "$PGDATABASE" && -n "$SUPABASE_DB_PASSWORD" ]] || {
+            echo "::error::Missing SUPABASE_DB_URL or SUPABASE_DB_PASSWORD"
+            exit 1
+          }
+      - name: Read history and compare local files
+        if: inputs.mode == 'history' || inputs.mode == 'repair'
+        env:
+          PGDATABASE: ${{ secrets.SUPABASE_DB_URL }}
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGOPTIONS: -c default_transaction_read_only=on
+        shell: bash
+        run: |
+          # No CLI metadata initialization, no psql startup file, SELECT only.
+          psql --dbname "$PGDATABASE" -X --no-password -v ON_ERROR_STOP=1 -A -F $'\t' -t \
+            -c 'SELECT version, name FROM supabase_migrations.schema_migrations ORDER BY version' > "$RUNNER_TEMP/remote-history.tsv"
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          remote = dict(line.split("\t", 1) for line in
+                        Path(os.environ["RUNNER_TEMP"], "remote-history.tsv").read_text().splitlines())
+          local = {p.name.split("_", 1)[0]: p.name for p in Path("supabase/migrations").glob("*.sql")}
+          # Escape control characters in names; never emit workflow commands from DB values.
+          print("Remote version/name:", repr(sorted(remote.items())))
+          print("Local version/file:", repr(sorted(local.items())))
+          for label, versions in [
+              ("remote-only", remote.keys() - local.keys()),
+              ("local-only", local.keys() - remote.keys()),
+              ("both", remote.keys() & local.keys()),
+          ]:
+              print(label + ": " + repr(sorted(versions)))
+          PYTHON
+      - name: Repair history only
+        if: inputs.mode == 'repair'
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+          VERSIONS: ${{ inputs.versions }}
+          STATUS: ${{ inputs.status }}
+        shell: bash
+        run: |
+          read -r -a versions <<< "$VERSIONS"
+          supabase migration repair --db-url "$DATABASE_URL" --status "$STATUS" "${versions[@]}"
+      - name: Read history after repair
+        shell: bash
+        if: inputs.mode == 'repair'
+        env:
+          PGDATABASE: ${{ secrets.SUPABASE_DB_URL }}
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          psql --dbname "$PGDATABASE" -X --no-password -v ON_ERROR_STOP=1 -At \
+            -c 'SELECT version, name FROM supabase_migrations.schema_migrations ORDER BY version' \
+            | python3 -c 'import sys; print("After repair:", repr(sys.stdin.read()))'
+      - name: Require production configuration
+        if: inputs.mode != 'history' && inputs.mode != 'repair'
+        shell: bash
+        run: |
+          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Missing production environment secret: $key"
+              exit 1
+            fi
+          done
+      - name: Link production project
+        if: inputs.mode != 'history' && inputs.mode != 'repair'
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Show local and applied remote versions
+        if: inputs.mode != 'history' && inputs.mode != 'repair'
+        run: supabase migration list --linked
+      - name: Preview pending migrations
+        if: inputs.mode != 'history' && inputs.mode != 'repair'
+        run: supabase db push --linked --dry-run
+      - name: Apply pending migrations (forward only)
+        if: (github.event_name == 'push' || !inputs.dry_run) && inputs.mode != 'history' && inputs.mode != 'repair'
+        run: supabase db push --linked --yes
+      - name: Show resulting migration versions
+        if: inputs.mode != 'history' && inputs.mode != 'repair'
+        run: supabase migration list --linked
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error::Production migration workflow failed. Do not release schema-dependent server code; see docs/database-migrations.md."

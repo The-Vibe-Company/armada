@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult } from "@armada/core";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
@@ -7,6 +7,7 @@ import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
 import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { NativeEpoch } from "./native-epoch.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -24,13 +25,19 @@ import { sampleVmResources } from "./resource-sampler.ts";
 export class Runner {
   private active = new Map<
     string,
-    { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt }
+    { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
   >();
   private barrier = false;
   private mcp: McpConfiguration | undefined;
+  private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
+  private exclusiveNativeAuth = false;
+  private publishNativeAuth: (() => Promise<void>) | undefined;
+  private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
+  private resumingNative = false;
+  private configureGitHub: RunnerExecutionOptions["configureGitHub"];
   constructor(
     readonly journal: Journal,
     readonly grant: Grant,
@@ -38,7 +45,7 @@ export class Runner {
     private ingest?: IngestClient,
     mcp?: McpConfiguration,
     private stripTransientAuth?: () => Promise<void>,
-    execution: RunnerExecutionOptions = {},
+    private readonly execution: RunnerExecutionOptions = {},
   ) {
     if (
       !grant.token ||
@@ -51,6 +58,10 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.configureGitHub = execution.configureGitHub;
+    this.refreshNativeSecrets = execution.refreshNativeSecrets;
+    this.publishNativeAuth = execution.publishNativeAuth;
+    this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
@@ -63,6 +74,21 @@ export class Runner {
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);
     journal.bindIdentity(grant);
+    this.nativeEpoch = new NativeEpoch(
+      grant.generation,
+      journal,
+      checkpointIdentityKey(grant),
+      () =>
+        this.active.size === 0 &&
+        this.commands.size === 0 &&
+        !this.resumingNative &&
+        !this.barrier &&
+        !this.journal.checkpointPending(this.grant),
+      () => this.mcp,
+      (configuration) => {
+        this.configureMcp(configuration, true);
+      },
+    );
     if (mcp) this.configureMcp(mcp);
     for (const row of journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[]) {
       const state = JSON.parse(row.body);
@@ -100,6 +126,53 @@ export class Runner {
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
         throw Error("invalid_request");
+      if (r.op === "installOrchestratorEpoch" || r.op === "scrubOrchestratorEpoch") {
+        if (this.credentialFreeBuilder) throw Error("builder_credentials_forbidden");
+        const allowed =
+          r.op === "installOrchestratorEpoch"
+            ? ["version", "requestId", "sandboxId", "op", "token", "binding", "url"]
+            : ["version", "requestId", "sandboxId", "op", "tokenHash"];
+        if (
+          Object.keys(r).some((key) => !allowed.includes(key)) ||
+          (r.op === "installOrchestratorEpoch" &&
+            Object.keys(r.binding ?? {}).some((key) => !["epoch", "physicalGeneration"].includes(key)))
+        )
+          throw Error("invalid_request");
+        if (r.requestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(r.requestId)) throw Error("invalid_request");
+        let result: { acknowledged: boolean };
+        if (r.op === "installOrchestratorEpoch") result = this.nativeEpoch.install(r.token, r.binding, r.url);
+        else {
+          this.nativeEpoch.scrub(r.tokenHash);
+          result = { acknowledged: true };
+        }
+        // Never put this private request/body or bearer in the replay cache.
+        return new Response(this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result })), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (r.op === "configureGitHub") {
+        // Private configuration is never persisted in request receipts or returned to callers.
+        if (
+          this.credentialFreeBuilder ||
+          this.barrier ||
+          this.journal.checkpointPending(this.grant) ||
+          !this.configureGitHub
+        )
+          throw Error("github_configuration_denied");
+        if (Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "configuration"].includes(key)))
+          throw Error("github_configuration_denied");
+        if (
+          r.configuration &&
+          (r.configuration.generation !== this.grant.generation || r.configuration.expiresAt > this.grant.expiresAt)
+        )
+          throw Error("github_configuration_denied");
+        try {
+          await this.configureGitHub(r.configuration);
+        } catch {
+          throw Error("github_configuration_denied");
+        }
+        return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
+      }
       if (r.op === "configureMcp") {
         if (r.requestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(r.requestId)) throw Error("invalid_request");
         if (Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "configuration"].includes(k)))
@@ -120,7 +193,9 @@ export class Runner {
       } | null;
       if (old && r.op !== "checkpoint")
         return new Response(old.body, { headers: { "content-type": "application/json" } });
-      const mutating = !["events", "health", "getPrompt", "getExec", "checkpoint"].includes(r.op);
+      const mutating = !["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(
+        r.op,
+      );
       // Fence before side effects. A crash leaves an explicit unknown outcome, never a duplicate turn.
       if (mutating)
         this.journal.db
@@ -128,7 +203,7 @@ export class Runner {
           .run(r.requestId, JSON.stringify({ version: 1, requestId: r.requestId, error: "request_outcome_unknown" }));
       const result = await this.dispatch(r);
       const body = this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }));
-      if (!["events", "health", "getPrompt", "getExec", "checkpoint"].includes(r.op))
+      if (!["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(r.op))
         this.journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(r.requestId, body);
       return new Response(body, { headers: { "content-type": "application/json" } });
     } catch (error) {
@@ -138,7 +213,8 @@ export class Runner {
       );
     }
   }
-  private configureMcp(value: unknown): ConfigureMcpResult {
+  private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
+    if (this.nativeEpoch?.active && !epochControl) throw Error("orchestrator_authority_managed");
     if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
     if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
     const configuration = validateMcpConfiguration(value),
@@ -178,7 +254,166 @@ export class Runner {
     this.mcp = configuration;
     return { revision: configuration.revision };
   }
-  private async dispatch(r: Exclude<RunnerRequest, { op: "configureMcp" | "resourceObservation" }>): Promise<unknown> {
+  private async dispatch(
+    r: Exclude<
+      RunnerRequest,
+      {
+        op:
+          | "configureMcp"
+          | "configureGitHub"
+          | "resourceObservation"
+          | "installOrchestratorEpoch"
+          | "scrubOrchestratorEpoch";
+      }
+    >,
+  ): Promise<unknown> {
+    if (r.op === "observeOrchestrator") {
+      if (
+        r.conversationId !== undefined &&
+        (typeof r.conversationId !== "string" || !r.conversationId || r.conversationId.length > 256)
+      )
+        throw Error("invalid_request");
+      const watermark = Number(
+        (this.journal.db.query("SELECT coalesce(max(seq),0) AS watermark FROM events").get() as { watermark: number })
+          .watermark,
+      );
+      let state: "active" | "quiescent" | "unknown" =
+        this.barrier || this.journal.checkpointPending(this.grant) ? "unknown" : "quiescent";
+      const processes: Array<{ pid: number; state: string }> = [];
+      for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {
+        pid: number;
+        body: string;
+      }[]) {
+        const saved = JSON.parse(row.body) as { status: string; identity?: ProcessIdentity };
+        if (!["running", "running_after_restart", "unknown_after_restart"].includes(saved.status)) continue;
+        const status = groupState(row.pid, saved.identity);
+        processes.push({ pid: row.pid, state: status });
+        if (status === "unverifiable") state = "unknown";
+        else if (status === "live" && state !== "unknown") state = "active";
+      }
+      if ((this.active.size > 0 || this.commands.size > 0) && state !== "unknown") state = "active";
+      const acknowledgedSequence = this.journal.ack;
+      if (state === "quiescent" && acknowledgedSequence < watermark) state = "unknown";
+      const evidence = createHash("sha256")
+        .update(
+          JSON.stringify({
+            generation: this.grant.generation,
+            watermark,
+            acknowledgedSequence,
+            active: [...this.active.keys()].sort(),
+            commands: this.commands.size,
+            processes,
+          }),
+        )
+        .digest("hex");
+      return {
+        physicalGeneration: this.grant.generation,
+        state,
+        evidence,
+        eventWatermark: watermark,
+        acknowledgedSequence,
+        nativeSessionId: r.conversationId ? (this.journal.session(r.conversationId) ?? null) : null,
+      };
+    }
+    if (r.op === "resumeNativeSession") {
+      if (this.credentialFreeBuilder || this.barrier || this.active.size || this.commands.size || this.resumingNative)
+        throw Error("native_resume_unavailable");
+      if (
+        Object.keys(r).some(
+          (key) =>
+            !["version", "requestId", "sandboxId", "op", "conversationId", "expectedSessionId", "input"].includes(key),
+        ) ||
+        !r.input ||
+        typeof r.input !== "object" ||
+        Array.isArray(r.input) ||
+        typeof r.input.model !== "string" ||
+        !r.input.model ||
+        r.input.model.length > 256 ||
+        (r.input.reasoningEffort !== undefined && typeof r.input.reasoningEffort !== "string") ||
+        Object.keys(r.input).some(
+          (key) => !["sandboxId", "harness", "model", "reasoningEffort", "cwd"].includes(key),
+        ) ||
+        r.input.sandboxId !== this.grant.sandboxId ||
+        !["claude", "codex"].includes(r.input.harness) ||
+        typeof r.conversationId !== "string" ||
+        !r.conversationId ||
+        r.conversationId.length > 256 ||
+        typeof r.expectedSessionId !== "string" ||
+        !r.expectedSessionId ||
+        r.expectedSessionId.length > 256
+      )
+        throw Error("invalid_native_resume");
+      const saved = this.journal.db
+        .query("SELECT harness,session FROM sessions WHERE conversation=?")
+        .get(r.conversationId) as { harness: string; session: string } | null;
+      if (!saved || saved.harness !== r.input.harness || saved.session !== r.expectedSessionId)
+        throw Error("native_session_identity_changed");
+      const resume = this.drivers[r.input.harness].resumeSession?.bind(this.drivers[r.input.harness]);
+      if (!resume) throw Error("native_resume_unsupported");
+      this.resumingNative = true;
+      // Consume actual604's sync redactor refresh and async private publication
+      // from the SAME execution object. A native handshake can rotate auth even
+      // without inference; its ACK must wait for publication, including failures.
+      const refresh = () => {
+        const callback = Reflect.get(this.execution, "refreshNativeSecrets");
+        if (callback === undefined) return;
+        if (typeof callback !== "function" || Reflect.apply(callback, this.execution, []) !== undefined)
+          throw Error("native_auth_state_unacknowledged");
+      };
+      const publish = async () => {
+        const callback = Reflect.get(this.execution, "publishNativeAuth");
+        if (callback === undefined) return;
+        if (typeof callback !== "function") throw Error("native_auth_state_unacknowledged");
+        await Reflect.apply(callback, this.execution, []);
+      };
+      const work = Promise.resolve().then(async () => {
+        try {
+          refresh();
+        } catch {
+          throw Error("native_auth_state_unacknowledged");
+        }
+        const outcome = await Promise.resolve()
+          .then(() =>
+            resume({
+              request: r.input,
+              sessionId: saved.session,
+              signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
+              ...(this.mcp ? { mcp: this.mcp } : {}),
+            }),
+          )
+          .then(
+            (value) => ({ ok: true as const, value }),
+            (error) => ({ ok: false as const, error }),
+          );
+        try {
+          refresh();
+          await publish();
+        } catch {
+          throw Error("native_auth_state_unacknowledged");
+        }
+        if (!outcome.ok) throw outcome.error;
+        return outcome.value;
+      });
+      this.commands.add(work);
+      try {
+        const result = await work;
+        if (
+          result.sessionId !== saved.session ||
+          this.journal.session(r.conversationId) !== saved.session ||
+          Date.now() >= this.grant.expiresAt
+        )
+          throw Error("native_session_identity_changed");
+        return {
+          physicalGeneration: this.grant.generation,
+          conversationId: r.conversationId,
+          nativeSessionId: saved.session,
+          verified: true,
+        };
+      } finally {
+        this.commands.delete(work);
+        this.resumingNative = false;
+      }
+    }
     if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier };
     if (r.op === "getPrompt") {
       const p = this.journal.get(r.promptId);
@@ -215,6 +450,7 @@ export class Runner {
       return value;
     }
     if (r.op === "checkpoint") {
+      this.nativeEpoch.assertEmpty();
       this.barrier = true;
       this.journal.checkpointFence(this.grant, "preparing");
       for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {
@@ -232,7 +468,7 @@ export class Runner {
       }
       await Promise.all(
         [...this.active.values()].map(async (a) => {
-          await a.turn.interrupt();
+          if (!a.terminal) await a.turn.interrupt();
           await a.done;
         }),
       );
@@ -241,6 +477,7 @@ export class Runner {
       await this.flushOutbox();
       const watermark = this.journal.events(0, Number.MAX_SAFE_INTEGER).at(-1)?.sequence ?? 0;
       if (this.journal.ack < watermark) throw Error("checkpoint_upstream_unacknowledged");
+      await this.configureGitHub?.(null);
       await this.stripTransientAuth?.();
       this.journal.checkpointFence(this.grant, "complete");
       this.journal.flush();
@@ -248,6 +485,7 @@ export class Runner {
     }
     if (this.barrier) throw Error("checkpoint_in_progress");
     if (r.op === "exec") {
+      this.refreshNativeSecrets?.();
       const work = this.exec(r.input);
       this.commands.add(work);
       try {
@@ -257,7 +495,14 @@ export class Runner {
       }
     }
     if (r.op === "prompt") {
+      if (this.resumingNative) throw Error("native_resume_in_progress");
       if (this.credentialFreeBuilder) throw Error("builder_model_prompts_forbidden");
+      if (
+        this.exclusiveNativeAuth &&
+        r.input.harness === "codex" &&
+        [...this.active.values()].some((value) => value.prompt.request.harness === "codex")
+      )
+        throw Error("native_auth_writer_busy");
       if (r.input.conversationId) {
         const existing = this.journal.prompts().find((p) => p.conversationId === r.input.conversationId);
         if (existing && existing.request.harness !== r.input.harness) throw Error("conversation_harness_mismatch");
@@ -283,7 +528,7 @@ export class Runner {
     if (r.op === "interrupt") {
       await Promise.all(
         targets.map(async (a) => {
-          await a.turn.interrupt();
+          if (!a.terminal) await a.turn.interrupt();
           await a.done;
         }),
       );
@@ -325,20 +570,27 @@ export class Runner {
             promptId: p.promptId,
           }),
       });
+      const active = { turn, controller, prompt: p, done: Promise.resolve(), terminal: false };
       const done = turn.done
         .then(
-          (status) => {
+          async (status) => {
+            active.terminal = true;
+            await this.publishNativeAuth?.();
             this.journal.transition(p, status);
           },
-          (error: unknown) => {
+          async (error: unknown) => {
+            active.terminal = true;
+            await this.publishNativeAuth?.();
             this.journal.transition(p, "failed", error instanceof HarnessError ? error.code : "harness_failed");
           },
         )
+        .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
         .finally(() => {
           this.active.delete(p.conversationId);
           void this.flushOutbox().catch(() => {});
         });
-      this.active.set(p.conversationId, { turn, controller, prompt: p, done });
+      active.done = done;
+      this.active.set(p.conversationId, active);
     } catch {
       this.journal.transition(p, "failed", "harness_start_failed");
     }
@@ -448,6 +700,21 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
+        try {
+          this.refreshNativeSecrets?.();
+        } catch {
+          const safe: ExecResult = {
+            detached: false,
+            exitCode: null,
+            stdout: "",
+            stderr: "Native auth state could not be safely redacted.",
+            timedOut: false,
+            truncated: true,
+          };
+          save({ pid, status: "exited", identity, ...safe });
+          resolve(safe);
+          return;
+        }
         const result: ExecResult = {
           detached: false,
           exitCode,

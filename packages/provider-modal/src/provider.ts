@@ -7,6 +7,11 @@ import { chooseManagementAuthority, matchesManagementAuthority } from "./authori
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
+import {
+  assertSameCheckpoint,
+  checkpointReceipt,
+  type ModalOrchestratorCheckpoint,
+} from "./orchestrator-checkpoint.ts";
 import type {
   Machine,
   McpConfiguration,
@@ -36,9 +41,35 @@ export interface ModalProviderOptions extends ModalConnection {
   ssh?: SshPreparation;
   /** Trusted server lifecycle hook. Runs after ready/restore OUTSIDE the store lease; may call
    * get/configureMcp. Failure prevents native submission; incarnation is fenced on reacquisition. */
+  beforeResume?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
+  checkpointOrchestrator(request: {
+    sandboxId: string;
+    operationId: string;
+    physicalGeneration: string;
+    conversationId: string | null;
+    harness: "claude" | "codex";
+    model: string;
+    reasoningEffort?: string;
+    cwd?: string;
+  }): Promise<ModalOrchestratorCheckpoint>;
+  readOrchestratorCheckpoint(request: {
+    sandboxId: string;
+    operationId: string;
+  }): Promise<ModalOrchestratorCheckpoint | null>;
+  restoreOrchestratorCheckpoint(request: {
+    sandboxId: string;
+    operationId: string;
+    checkpoint: ModalOrchestratorCheckpoint;
+  }): Promise<{
+    physicalGeneration: string;
+    conversationId: string;
+    nativeSessionId: string;
+    verified: true;
+  }>;
+  configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
   prepareNativeHarnessCwd(request: { sandboxId: string; harness: "claude" | "codex"; cwd: string }): Promise<void>;
@@ -359,6 +390,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource(row);
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
+      await options.beforeResume?.(provider, row.info.id);
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
       row.generation++;
       row.quiesced = false;
@@ -430,6 +462,72 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     )
       throw refusal("conflict", "Checkpoint lacks a matching durably acknowledged event watermark; source retained.");
     row.checkpointWatermark = result.watermark;
+    await save(row);
+  }
+  async function verifyNativeSession(
+    row: Machine,
+    request: Parameters<NonNullable<Provider["verifyOrchestratorSession"]>>[0],
+  ) {
+    if (row.golden || row.phase !== "active" || request.physicalGeneration !== String(row.generation))
+      throw refusal("conflict", "Native session verification requires the bound active incarnation.");
+    const result = await runner.call<{
+      physicalGeneration: string;
+      conversationId: string;
+      nativeSessionId: string;
+      verified: boolean;
+    }>(row, "resumeNativeSession", {
+      conversationId: request.conversationId,
+      expectedSessionId: request.nativeSessionId,
+      input: {
+        sandboxId: request.sandboxId,
+        harness: request.harness,
+        model: request.model,
+        ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
+        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+      },
+    });
+    if (
+      result?.physicalGeneration !== request.physicalGeneration ||
+      result.conversationId !== request.conversationId ||
+      result.nativeSessionId !== request.nativeSessionId ||
+      result.verified !== true
+    )
+      throw refusal("conflict", "Native session verification did not match the persisted identity.");
+    return {
+      physicalGeneration: request.physicalGeneration,
+      conversationId: request.conversationId,
+      nativeSessionId: request.nativeSessionId,
+      verified: true as const,
+    };
+  }
+  async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<void> {
+    if (row.phase === "stopped") return;
+    const sb = await physical(row);
+    if (row.phase !== "terminate") {
+      if (!["active", "checkpoint"].includes(row.phase))
+        throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");
+      row.phase = "checkpoint";
+      row.info.state = "stopping";
+      await save(row);
+      if (!row.quiesced) {
+        await checkpoint(row, save);
+        await distribution.prepareSnapshot(sb, row);
+        row.quiesced = true;
+      }
+      row.phase = "snapshot";
+      await save(row);
+      const image = await sb.snapshotFilesystem({ ttlMs: null });
+      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+      row.recoveryImageId = image.imageId;
+      row.phase = "terminate";
+      await save(row);
+    }
+    await sb.terminate({ wait: true });
+    if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+    row.phase = "stopped";
+    row.info.state = "stopped";
+    row.info.providerState = "stopped";
+    row.info.stoppedAt = new Date();
     await save(row);
   }
   async function collectFrom(imagesStore: ModalStore) {
@@ -723,6 +821,34 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await save(active);
       });
     },
+    async configureGitHub({
+      sandboxId,
+      configuration,
+    }: {
+      sandboxId: string;
+      configuration: import("@armada/core").GitHubRuntimeConfiguration | null;
+    }) {
+      return admit(sandboxId, async (row) => {
+        // Renewal must never restore or allocate a stopped machine.
+        if (
+          row.golden ||
+          !row.physicalId ||
+          !["ready", "running"].includes(row.info.state) ||
+          (configuration && configuration.generation !== String(row.generation))
+        )
+          throw refusal("unauthorized", "GitHub runtime generation is not active.");
+        const bounded =
+          configuration && row.grantExpiresAt
+            ? { ...configuration, expiresAt: Math.min(configuration.expiresAt, row.grantExpiresAt) }
+            : configuration;
+        const result = await runner.call<{ acknowledged?: boolean }>(row, "configureGitHub", {
+          configuration: bounded,
+        });
+        if (result?.acknowledged !== true)
+          throw refusal("unavailable", "GitHub runtime did not acknowledge configuration.");
+        return { acknowledged: true };
+      });
+    },
     async configureMcp({ sandboxId, configuration }) {
       if (
         !configuration ||
@@ -741,6 +867,205 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("unavailable", "Runner did not acknowledge the requested MCP revision.");
         // Do not persist or echo servers, auth or arbitrary fields returned by the runner.
         return { revision: configuration.revision };
+      });
+    },
+    async installOrchestratorEpoch({ sandboxId, token, binding, url }) {
+      return admit(sandboxId, async (row, save) => {
+        if (row.golden || row.phase !== "active" || binding.physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Orchestrator authority requires the bound active physical generation.");
+        const active = await healthyAdmission(row, save);
+        if (binding.physicalGeneration !== String(active.generation))
+          throw refusal("conflict", "Physical generation changed during authority admission.");
+        const result = await runner.call<{ acknowledged?: unknown }>(active, "installOrchestratorEpoch", {
+          token,
+          binding,
+          url,
+        });
+        if (result?.acknowledged !== true)
+          throw refusal("unavailable", "Private runner did not acknowledge authority delivery.");
+        return { acknowledged: true };
+      });
+    },
+    async observeOrchestrator({ sandboxId, physicalGeneration, conversationId }) {
+      return admit(sandboxId, async (row) => {
+        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Observation requires the bound active native generation.");
+        const observed = await runner.call<{
+          physicalGeneration: string;
+          state: "active" | "quiescent" | "unknown";
+          evidence: string;
+          eventWatermark: number;
+          acknowledgedSequence: number;
+          nativeSessionId: string | null;
+        }>(row, "observeOrchestrator", { ...(conversationId === undefined ? {} : { conversationId }) });
+        if (
+          observed?.physicalGeneration !== physicalGeneration ||
+          !["active", "quiescent", "unknown"].includes(observed.state) ||
+          typeof observed.evidence !== "string" ||
+          !/^[a-f0-9]{64}$/.test(observed.evidence) ||
+          !Number.isSafeInteger(observed.eventWatermark) ||
+          observed.eventWatermark < 0 ||
+          !Number.isSafeInteger(observed.acknowledgedSequence) ||
+          observed.acknowledgedSequence < 0 ||
+          observed.acknowledgedSequence > observed.eventWatermark ||
+          (observed.nativeSessionId !== null && typeof observed.nativeSessionId !== "string")
+        )
+          throw refusal("unavailable", "Invalid native observation receipt.");
+        return observed;
+      });
+    },
+    async readOrchestratorCheckpoint({ sandboxId, operationId }) {
+      // Store lookup only: never ready(), health admission, SDK stop or restore.
+      return checkpointReceipt(await store.get(sandboxId), operationId);
+    },
+    async checkpointOrchestrator(request) {
+      return admit(request.sandboxId, async (row, save) => {
+        const prior = checkpointReceipt(row, request.operationId);
+        if (prior) return prior; // Unknown dispatch never repeats the native effect.
+        if (
+          row.golden ||
+          row.phase !== "active" ||
+          String(row.generation) !== request.physicalGeneration ||
+          !request.operationId ||
+          (request.conversationId !== null && !request.conversationId) ||
+          !request.model ||
+          !["claude", "codex"].includes(request.harness)
+        )
+          throw refusal("conflict", "Native checkpoint requires an exact active parent identity.");
+        const observed = await runner.call<{
+          physicalGeneration: string;
+          state: string;
+          nativeSessionId: string | null;
+          eventWatermark: number;
+          acknowledgedSequence: number;
+        }>(
+          row,
+          "observeOrchestrator",
+          request.conversationId === null ? {} : { conversationId: request.conversationId },
+        );
+        if (
+          observed.physicalGeneration !== request.physicalGeneration ||
+          observed.state !== "quiescent" ||
+          (request.conversationId === null
+            ? observed.nativeSessionId !== null
+            : typeof observed.nativeSessionId !== "string" || !observed.nativeSessionId) ||
+          !Number.isSafeInteger(observed.eventWatermark) ||
+          observed.eventWatermark < 0 ||
+          observed.acknowledgedSequence !== observed.eventWatermark
+        )
+          throw refusal("conflict", "Native checkpoint lacks quiescence/session/durable event acknowledgement.");
+        row.orchestratorCheckpoint = {
+          receipt: {
+            version: 1,
+            operationId: request.operationId,
+            sandboxId: request.sandboxId,
+            physicalGeneration: request.physicalGeneration,
+            conversationId: request.conversationId,
+            nativeSessionId: observed.nativeSessionId,
+            harness: request.harness,
+            model: request.model,
+            ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
+            ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+            eventWatermark: observed.eventWatermark,
+            acknowledgedSequence: observed.acknowledgedSequence,
+            checkpointId: null,
+            state: "pending",
+          },
+        };
+        await save(row); // Durable dispatch before checkpoint/snapshot/termination.
+        await stopLeased(row, save);
+        const complete = checkpointReceipt(row, request.operationId);
+        if (!complete || complete.state !== "stopped") throw refusal("conflict", "Native checkpoint evidence changed.");
+        row.orchestratorCheckpoint.receipt = complete;
+        await save(row);
+        return complete;
+      });
+    },
+    async restoreOrchestratorCheckpoint(request) {
+      if (
+        !request.checkpoint.conversationId ||
+        !request.checkpoint.nativeSessionId ||
+        request.checkpoint.harness !== "codex"
+      )
+        throw refusal("unavailable", "No verified no-text driver for this harness.");
+      const activated = await admit(request.sandboxId, async (row, save) => {
+        const saved = checkpointReceipt(row, request.checkpoint.operationId);
+        if (!saved || saved.state !== "stopped" || !saved.checkpointId)
+          throw refusal("conflict", "Native checkpoint is not complete.");
+        assertSameCheckpoint(request.checkpoint, saved);
+        const record = row.orchestratorCheckpoint!;
+        if (record.restore)
+          throw refusal(
+            "conflict",
+            "Native restore outcome requires read-only reconciliation; never replay allocation.",
+          );
+        if (
+          row.phase !== "stopped" ||
+          String(row.generation) !== saved.physicalGeneration ||
+          row.recoveryImageId !== saved.checkpointId
+        )
+          throw refusal("conflict", "Native checkpoint source is no longer current.");
+        record.restore = { operationId: request.operationId, verified: false };
+        await save(row);
+        const active = await readyLeased(row, save); // Actual beforeResume hook, verified image, no text.
+        return String(active.generation);
+      });
+      // Actual credential/MCP lifecycle may take the same native lease; never call it inside ours.
+      await options.beforePrompt?.(provider, request.sandboxId);
+      return admit(request.sandboxId, async (row, save) => {
+        const record = row.orchestratorCheckpoint;
+        if (
+          !record ||
+          !record.receipt.conversationId ||
+          !record.receipt.nativeSessionId ||
+          record.restore?.operationId !== request.operationId ||
+          String(row.generation) !== activated
+        )
+          throw refusal("conflict", "Native restore generation changed.");
+        const verified = await verifyNativeSession(row, {
+          sandboxId: request.sandboxId,
+          physicalGeneration: activated,
+          conversationId: record.receipt.conversationId,
+          nativeSessionId: record.receipt.nativeSessionId,
+          harness: record.receipt.harness,
+          model: record.receipt.model,
+          ...(record.receipt.reasoningEffort === undefined ? {} : { reasoningEffort: record.receipt.reasoningEffort }),
+          ...(record.receipt.cwd === undefined ? {} : { cwd: record.receipt.cwd }),
+        });
+        record.restore = { operationId: request.operationId, generation: activated, verified: true };
+        await save(row);
+        return verified;
+      });
+    },
+    async verifyOrchestratorSession(request) {
+      return admit(request.sandboxId, async (row) => {
+        return verifyNativeSession(row, request);
+      });
+    },
+    async quiesceOrchestrator({ sandboxId, physicalGeneration }) {
+      return admit(sandboxId, async (row, save) => {
+        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Quiescence requires the bound active physical generation.");
+        const active = await healthyAdmission(row, save);
+        if (physicalGeneration !== String(active.generation))
+          throw refusal("conflict", "Physical generation changed during quiescence.");
+        await runner.call(active, "interrupt", {});
+        return { acknowledged: true };
+      });
+    },
+    async scrubOrchestratorEpoch({ sandboxId, physicalGeneration, tokenHash }) {
+      return admit(sandboxId, async (row, save) => {
+        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Orchestrator scrub requires the bound active physical generation.");
+        const active = await healthyAdmission(row, save);
+        if (physicalGeneration !== String(active.generation))
+          throw refusal("conflict", "Physical generation changed during authority scrub.");
+        const result = await runner.call<{ acknowledged?: unknown }>(active, "scrubOrchestratorEpoch", {
+          ...(tokenHash === undefined ? {} : { tokenHash }),
+        });
+        if (result?.acknowledged !== true)
+          throw refusal("unavailable", "Private runner did not acknowledge authority scrub.");
+        return { acknowledged: true };
       });
     },
     async prompt(r) {
@@ -947,35 +1272,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       try {
         await store.lease(sandboxId, async (row, save) => {
           observed = row;
-          if (row.phase === "stopped") return;
-          const sb = await physical(row);
-          if (row.phase !== "terminate") {
-            if (!["active", "checkpoint"].includes(row.phase))
-              throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");
-            row.phase = "checkpoint";
-            row.info.state = "stopping";
-            await save(row);
-            if (!row.quiesced) {
-              await checkpoint(row, save);
-              await distribution.prepareSnapshot(sb, row);
-              row.quiesced = true;
-            }
-            row.phase = "snapshot";
-            await save(row);
-            const image = await sb.snapshotFilesystem({ ttlMs: null });
-            if (row.recoveryImageId)
-              row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-            row.recoveryImageId = image.imageId;
-            row.phase = "terminate";
-            await save(row);
-          }
-          await sb.terminate({ wait: true });
-          if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
-          row.phase = "stopped";
-          row.info.state = "stopped";
-          row.info.providerState = "stopped";
-          row.info.stoppedAt = new Date();
-          await save(row);
+          await stopLeased(row, save);
         });
       } catch (error) {
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));

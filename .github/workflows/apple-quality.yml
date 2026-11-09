@@ -1,0 +1,28 @@
+name: Apple Quality
+
+on:
+  pull_request:
+    paths: ['apps/ios/**', '.github/workflows/apple-quality.yml']
+  push:
+    branches: [main]
+    paths: ['apps/ios/**', '.github/workflows/apple-quality.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: Swift package tests and iOS simulator compile
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install project generator
+        run: brew install xcodegen
+      - name: Test real ArmadaKit and compile both app variants (no simulator boot)
+        run: apps/ios/scripts/verify.sh

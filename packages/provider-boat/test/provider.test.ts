@@ -634,6 +634,24 @@ test("a stopped-only beforeResume hook refuses the provider resume API on fence 
   expect(methods).toEqual(["GET"]);
 });
 
+test.each([true, false])("native private state ACK precedes Boat stop API (%s)", async (acknowledged) => {
+  const order: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    beforeStop: async () => {
+      order.push("private-state");
+      if (!acknowledged) throw Error("native state publication unknown");
+    },
+    fetch: (async () => {
+      order.push("stop");
+      return Response.json({ ok: true, type: "sandbox.stopped" });
+    }) as unknown as typeof fetch,
+  });
+  if (acknowledged) await provider.stop({ sandboxId: ID });
+  else await expect(provider.stop({ sandboxId: ID })).rejects.toThrow("native state publication unknown");
+  expect(order).toEqual(acknowledged ? ["private-state", "stop"] : ["private-state"]);
+});
+
 test("resource collection uses bounded fixed file reads, boot fencing and no commands or telemetry writes", async () => {
   // Synthetic protocol response, not real provider utilization evidence.
   const boot = "00000000-0000-0000-0000-000000000001";

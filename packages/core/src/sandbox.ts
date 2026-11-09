@@ -70,7 +70,7 @@ export interface SandboxPatch {
 
 /**
  * Sandboxes through a database. The connection's role is the caller: a sandbox is visible
- * exactly when its golden is, so a private golden's sandboxes are the owner's alone.
+ * to its current organization owner/admin for interior. Lists use the separate SandboxListMetadata projection.
  */
 export interface SandboxStore {
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */

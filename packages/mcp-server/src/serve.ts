@@ -1,4 +1,5 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
+import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
   createGoldenAdoption,
   createSqlVaultStore,
@@ -6,8 +7,6 @@ import {
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
-  type ProviderRegistry,
-  type Sql,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
@@ -15,14 +14,19 @@ import { type ConfiguredControlOptions, handleControlRequest } from "./control.t
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
+import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
+import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
-import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
+import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
+import type { createOrchestratorServices } from "./orchestrator-composition.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -41,13 +45,21 @@ export { bunSql };
 export async function startServer(
   env: Record<string, string | undefined>,
   options: {
-    routes?: readonly Route[];
-    /** Reviewed native adapters only; absent by default, with no environment enablement shortcut. */
+    /** Trusted composition only; absent until native matrix and producer contracts are verified. */
     orchestrators?: (context: {
       sql: Sql;
       providers: ProviderRegistry;
+      credentials: NamedOrchestratorCredentials;
+      encryptionKey: string | undefined;
+      connections: NonNullable<ConfiguredControlOptions["connections"]>;
+      publicUrl: string;
       scopedMcpUrl: string;
-    }) => OrchestratorServiceBundle | Promise<OrchestratorServiceBundle>;
+    }) =>
+      | Promise<
+          Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle"> | OrchestratorServiceBundle
+        >
+      | OrchestratorServiceBundle;
+    routes?: readonly Route[];
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
     logError?: (line: string) => void;
@@ -62,11 +74,15 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl);
+  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, (tx, id) =>
+    createHistoricalSandboxProviderResolver(providers)(tx, id),
+  );
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
+    github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,
     encryptionKey: config.encryptionKey,
@@ -81,16 +97,33 @@ export async function startServer(
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
+      sanitizeEvents: async (provider, id, events) => {
+        if (!caller) throw Error("Native events require trusted Armada caller scope.");
+        return modelAuth.redactEvents(provider, id, caller, events);
+      },
+      beforeStop: async (provider, id) => {
+        if (caller) await modelAuth.beforeStop(provider, id, caller);
+      },
+      afterPrompt: async (provider, id) => {
+        if (caller) await modelAuth.capture(provider, id, caller);
+      },
       beforeResume: async (provider, id) => {
         if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
+        await modelAuth.beforeResume(provider, id, caller);
         return mcp.beforeResume(provider, id, caller);
       },
       beforePrompt: async (provider, id) => {
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
         await mcp.beforePrompt(provider, id, caller);
+        await modelAuth.beforePrompt(provider, id, caller);
       },
-      beforeSnapshot: mcp.beforeSnapshot,
+      beforeSnapshot: async (provider, id) => {
+        if (caller) await modelAuth.capture(provider, id, caller);
+        await mcp.beforeSnapshot(provider, id);
+      },
     });
+    provider.configureGitHub = ({ sandboxId, configuration }) =>
+      configureBoatGitHub(provider, sandboxId, configuration);
     provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
     return provider;
   };
@@ -101,6 +134,7 @@ export async function startServer(
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
   });
   const modal = await createModalIntegration({
+    beforeResume: (provider, id, caller) => modelAuth.beforeResume(provider, id, caller),
     sql,
     vault: store,
     encryptionKey: config.encryptionKey,
@@ -131,17 +165,12 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const orchestrators = await options.orchestrators?.({
-    sql,
-    providers,
-    scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
-  });
   const control: ConfiguredControlOptions = {
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+    modelAuth,
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
-    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -175,8 +204,27 @@ export async function startServer(
       };
     },
   };
+  // Actual604 exposes the same ownership object on control.modelAuth. Reflect keeps
+  // pre-producer deployments type-safe; no second ownership/redaction registry is created.
+  const credentials = Reflect.apply(launchCredentials, undefined, [
+    store,
+    config.encryptionKey,
+    { store, app: githubApp },
+    Reflect.get(control, "modelAuth"),
+  ]) as NamedOrchestratorCredentials;
+  const orchestrators = await options.orchestrators?.({
+    sql,
+    providers,
+    credentials,
+    encryptionKey: config.encryptionKey,
+    connections: mcp.connections,
+    publicUrl: config.publicUrl,
+    scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
+  });
+  if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
+    modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
       .split(",")
@@ -199,7 +247,7 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
-      ...(orchestrators
+      ...(orchestrators && "scopedToolsRoute" in orchestrators
         ? [
             orchestrators.scopedToolsRoute,
             orchestrators.ownerLifecycleRoute({
@@ -225,7 +273,11 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneResourceObservations(sql, new Date()),
-    orchestrators ? [orchestrators.lifecycleWorker, orchestrators.childWorker] : [],
+    orchestrators
+      ? "lifecycle" in orchestrators
+        ? orchestrators.lifecycle
+        : [orchestrators.lifecycleWorker, orchestrators.childWorker]
+      : [],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

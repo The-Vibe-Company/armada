@@ -45,4 +45,12 @@ export {
 export { reserveOrchestratorOperation } from "./orchestrator-operations.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
-export { type SshExecDeps, shellQuote, sshStdinCheckout } from "./ssh-executor.ts";
+export {
+  type SshExecDeps,
+  shellQuote,
+  sshHydrateAuthState,
+  sshNativeAuthAdmission,
+  sshPrivateAuthState,
+  sshStdinCheckout,
+} from "./ssh-executor.ts";
+export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";

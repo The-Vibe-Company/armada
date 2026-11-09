@@ -111,11 +111,13 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     await expect(
       db.query("insert into orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [p.org, p.owner, child.id]),
     ).rejects.toThrow("not a child");
+    const nativeGeneration = "0212ab63-8227-47fa-aa85-25b93c909200";
+    await db.query("update sandboxes set orchestrator_native_generation=$2 where id=$1", [parent.id, nativeGeneration]);
     const { token, hash } = newOrchestratorEpochSecret();
     await db.query(
-      `insert into orchestrator_delegations(orchestrator_id,hash,epoch,physical_generation,scopes,golden_ids,account_ids,expires_at,acknowledged_at)
- values($1,$2,1,1,array['worker:read'],array[]::uuid[],array[]::uuid[],now()+interval '24 hours',now())`,
-      [id, hash],
+      `insert into orchestrator_delegations(orchestrator_id,hash,epoch,physical_generation,scopes,golden_ids,account_ids,expires_at,acknowledged_at,native_generation)
+ select $1,$2,authority_epoch,1,array['worker:read'],array[]::uuid[],array[]::uuid[],now()+interval '24 hours',now(),$3 from orchestrators where id=$1`,
+      [id, hash, nativeGeneration],
     );
     const authority = new OrchestratorAuthority(sql, async () => {
       throw new Error("no account adapter enabled");
@@ -129,13 +131,13 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     for (const change of [
       "acknowledged_at=null",
       "created_at=now()-interval '2 hours',expires_at=now()-interval '1 second'",
-      "physical_generation=2",
+      "native_generation='different-native-incarnation'",
       "revoked_at=now()",
     ]) {
       await db.exec(`update orchestrator_delegations set ${change}`);
       await expect(read()).rejects.toThrow("denied");
       await db.exec(
-        "update orchestrator_delegations set created_at=now(),expires_at=now()+interval '24 hours',acknowledged_at=now(),physical_generation=1,revoked_at=null",
+        "update orchestrator_delegations set created_at=now(),expires_at=now()+interval '24 hours',acknowledged_at=now(),native_generation='0212ab63-8227-47fa-aa85-25b93c909200',physical_generation=1,revoked_at=null",
       );
     }
     let delivered = "";
@@ -151,7 +153,10 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     });
     let scrubbedHash = "";
     const transport = {
+      physicalGeneration: nativeGeneration,
+      lifecycleGeneration: "1",
       deliver: async (value: string, binding: { epoch: string; physicalGeneration: string }) => {
+        expect(binding.physicalGeneration).toBe(nativeGeneration);
         if (delayNext) {
           delayNext = false;
           enteredA();
@@ -182,9 +187,28 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     acknowledgeA();
     expect(await oldRejected).toContain("denied");
     expect(scrubbedHash).toMatch(/^[a-f0-9]{64}$/);
+    // SQL activity advances do not replace the native process or expire its 24h epoch.
+    await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [parent.id]);
+    expect(await authority.admit(delivered, { method: "read", childId: child.id }, async () => true)).toBe(true);
+    // An old installation snapshot cannot rebind the new SQL incarnation.
+    await expect(authority.installEpoch(id, transport, consent)).rejects.toThrow("denied");
+    transport.lifecycleGeneration = "2";
+    await authority.installEpoch(id, transport, consent);
+    await db.query("update sandboxes set orchestrator_native_generation='replaced-native' where id=$1", [parent.id]);
+    await expect(authority.admit(delivered, { method: "read", childId: child.id }, async () => true)).rejects.toThrow(
+      "denied",
+    );
+    await db.query("update sandboxes set orchestrator_native_generation=$2 where id=$1", [parent.id, nativeGeneration]);
+    // Rebinding an old native name cannot resurrect its retired token.
+    await expect(authority.admit(delivered, { method: "read", childId: child.id }, async () => true)).rejects.toThrow(
+      "denied",
+    );
+    await authority.installEpoch(id, transport, consent);
     expect(await authority.admit(delivered, { method: "read", childId: child.id }, async () => true)).toBe(true);
     await expect(
       authority.scrubBeforeCheckpoint(id, {
+        physicalGeneration: nativeGeneration,
+        lifecycleGeneration: "1",
         deliver: async () => ({ acknowledged: false }),
         scrub: async () => {
           throw new Error("synthetic-private-transport-error");

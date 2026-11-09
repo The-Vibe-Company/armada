@@ -15,6 +15,7 @@ export { executeGoldenCommand } from "./golden-exec.ts";
 export { createGenerationGrants } from "./grants.ts";
 export { MODAL_CONFORMANCE_APP, MODAL_IMAGE_LOCK } from "./image-lock.ts";
 export { createModalIngestHandler } from "./ingest.ts";
+export type { ModalOrchestratorCheckpoint } from "./orchestrator-checkpoint.ts";
 export type * from "./ports.ts";
 export { captureProcessBaseline, quiesceSandboxProcesses } from "./process-scope.ts";
 export { createModalProvider, type ModalProvider, type ModalProviderOptions } from "./provider.ts";

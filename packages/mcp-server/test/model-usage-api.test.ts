@@ -18,7 +18,7 @@ const KEY = Buffer.alloc(32, 7).toString("base64");
 
 test.each([
   ["user", "org", false],
-  ["org", "org", true],
+  ["org", "org", false],
   ["org", "private", false],
 ] as const)(
   "real usage API authorizes %s account independently of %s sandbox visibility",
@@ -140,6 +140,10 @@ test.each([
       const peer = await request(PEER);
       expect(peer.status).toBe(peerAllowed ? 200 : 404);
       expect(await peer.text()).not.toContain("never-return-native-envelope");
+      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [ORG, PEER]);
+      expect((await request(PEER)).status).toBe(scope === "org" ? 200 : 404);
+      await db.query("update members set role='member' where org_id=$1 and user_id=$2", [ORG, PEER]);
+      expect((await request(PEER)).status).toBe(404);
       const before = reads;
       await db.query("delete from members where org_id=$1 and user_id=$2", [ORG, OWNER]);
       expect((await request(OWNER)).status).toBe(404);
@@ -180,9 +184,9 @@ test.each([
         expect(resolvedSources.at(-1)).toBe(worker); // Skip the newer, hidden parent.
         const visibleReads = reads;
         await db.query("update sandboxes set access_owner_id=$2 where id=$1", [worker, PEER]);
-        expect(await (await request(OWNER, false)).json()).toMatchObject({ status: "unavailable", windows: [] });
-        expect(reads).toBe(visibleReads); // Original owner cannot reuse cached private access.
-        expect((await request(PEER, false)).status).toBe(200);
+        expect((await request(OWNER, false)).status).toBe(200);
+        expect(reads).toBe(visibleReads); // Legacy access owner cannot remove actual owner's authority.
+        expect(await (await request(PEER, false)).json()).toMatchObject({ status: "unavailable", windows: [] });
         expect(resolvedSources.at(-1)).toBe(worker);
       }
     } finally {

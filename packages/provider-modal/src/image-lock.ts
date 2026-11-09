@@ -11,6 +11,7 @@ export const MODAL_IMAGE_LOCK = {
     caCertificates: "20250419~deb12u2",
     curl: "7.88.1-10+deb12u15",
     unzip: "6.0-28+deb12u1",
+    python3: "3.11.2-1+b1",
   },
 } as const;
 

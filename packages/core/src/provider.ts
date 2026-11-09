@@ -9,7 +9,22 @@ import type { ProviderTarget } from "./sandbox-provider.ts";
  * Ids are the provider's own (for boat, `bx_...` sandboxes and saved-snapshot names). Every call takes the
  * sandbox it acts on; a provider holds no per-sandbox state, so one instance serves any number of callers.
  */
+export interface GitHubRuntimeConfiguration {
+  version: 1;
+  revision: string;
+  retired?: readonly string[];
+  generation: string;
+  url: string;
+  capability: string;
+  expiresAt: number;
+}
+
 export interface Provider {
+  /** Private GitHub-only configuration, never exec argv or a public command receipt. */
+  configureGitHub?(request: {
+    sandboxId: string;
+    configuration: GitHubRuntimeConfiguration | null;
+  }): Promise<{ acknowledged: boolean }>;
   /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
   observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
   prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
@@ -35,6 +50,43 @@ export interface Provider {
       >;
     };
   }): Promise<void | { revision: string }>;
+
+  /** Private runner control, not exec/prompt/client-visible credential configuration.
+   * Optional until the backend provides native physical-incarnation fencing and ACK. */
+  installOrchestratorEpoch?(request: {
+    sandboxId: string;
+    token: string;
+    binding: { epoch: string; physicalGeneration: string };
+    url: string;
+  }): Promise<{ acknowledged: boolean }>;
+  /** Read-only native work observation. Missing port is unavailable, never log-silence quiescence. */
+  observeOrchestrator?(request: { sandboxId: string; physicalGeneration: string; conversationId?: string }): Promise<{
+    physicalGeneration: string;
+    state: "active" | "quiescent" | "unknown";
+    evidence: string;
+    eventWatermark: number;
+    acknowledgedSequence: number;
+    nativeSessionId: string | null;
+  }>;
+  /** Private no-text native handshake on an ALREADY active incarnation. This does
+   * not restore compute or prove a checkpoint. Unsupported harnesses must refuse. */
+  verifyOrchestratorSession?(request: {
+    sandboxId: string;
+    physicalGeneration: string;
+    conversationId: string;
+    nativeSessionId: string;
+    harness: Harness;
+    model: string;
+    reasoningEffort?: string;
+    cwd?: string;
+  }): Promise<{ physicalGeneration: string; conversationId: string; nativeSessionId: string; verified: true }>;
+  /** Private active-incarnation interrupt; never activates stopped compute. */
+  quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
+  scrubOrchestratorEpoch?(request: {
+    sandboxId: string;
+    physicalGeneration: string;
+    tokenHash?: string;
+  }): Promise<{ acknowledged: boolean }>;
 
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.

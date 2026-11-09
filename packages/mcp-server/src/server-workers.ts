@@ -13,10 +13,10 @@ export function startServerWorkers(
   log: (line: string) => void = console.error,
   retirements?: { runOne(signal: AbortSignal): Promise<boolean> },
   maintenance?: () => Promise<void>,
-  managed: readonly ServerLifecycleLane[] = [],
+  managed: readonly ServerLifecycleLane[] | ServerLifecycleLane = [],
 ) {
   const goldenWorker = startGoldenWorker(goldens, log);
-  const lanes = [lifecycle, ...managed];
+  const lanes = [lifecycle, ...("reconcileOne" in managed ? [managed] : managed)];
   let nextLane = 0;
   const shutdown = new AbortController();
   let wake: (() => void) | undefined;

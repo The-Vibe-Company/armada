@@ -246,7 +246,7 @@ test("a launch from a page rendered while Boat was connected is refused once Boa
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("First prompt").fill("Ship it");
+  await dialog.getByLabel("Task").fill("Ship it");
   // Modal stays connected: the launch still needs the golden's own provider.
   await post("/__test/clear-legacy-boat", { org: ACME });
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();

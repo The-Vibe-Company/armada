@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { IDS, MOCK, reset, signIn } from "./helpers";
+import { IDS, MOCK, openLaunch, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
@@ -364,17 +364,22 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   await expect(page.getByLabel("Model")).toHaveValue("claude-opus-5-5");
   await expect(page.getByLabel("Reasoning effort")).toHaveValue("medium");
   // Repository context of a multi-repo golden: default first, reset when the dialog is reopened.
-  const repo = page.getByLabel("Working directory");
+  const repo = page.getByLabel("Project");
   await expect(repo).toHaveValue("");
-  await expect(repo.locator("option")).toHaveText(["No repository (default directory)", "web", "api"]);
-  await expect(page.getByText("Where the agent starts. All repositories stay available.")).toBeVisible();
+  await expect(repo.locator("option")).toHaveText(["Default directory", "web", "api"]);
   await repo.selectOption("web");
+  await page.getByRole("radio", { name: "Codex" }).check();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-  await expect(page.getByLabel("Working directory")).toHaveValue("");
-  await page.getByLabel("Working directory").selectOption("api");
-  await page.getByLabel("Agent").selectOption("codex");
+  await openLaunch(page, "shared-golden");
+  await expect(page.getByLabel("Project")).toHaveValue("");
+  await expect(page.getByRole("radio", { name: "Claude Code" })).toBeChecked();
+  await page.getByLabel("Project").selectOption("api");
+  // Switching the agent selects that agent's own defaults, and the summary follows.
+  const summary = page.locator("[data-launch-summary]");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Org · No MCP");
+  await page.getByRole("radio", { name: "Codex" }).check();
   await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
+  await expect(summary).toHaveText("GPT-6.1 Sol · Medium · Org · No MCP");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
   await expect(page.getByLabel("Reasoning effort").locator("option[value=ultra]")).toHaveCount(0);
   await page.getByLabel("Reasoning effort").selectOption("high");

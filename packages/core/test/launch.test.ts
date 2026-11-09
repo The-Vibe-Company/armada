@@ -47,6 +47,42 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  test.each(["invalid_request", "unavailable"] as const)(
+    "native admission releases only a confirmed unallocated fork (%s)",
+    async (code) => {
+      const world = setup({ golden: golden("org") });
+      let released = 0;
+      world.stores.credentials.admit = async () => {};
+      world.stores.credentials.releaseUnallocated = async () => {
+        released++;
+      };
+      world.provider.fork = async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code,
+          message: "fixture refusal",
+          retryable: false,
+        });
+      };
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+      ).rejects.toMatchObject({ code });
+      expect(released).toBe(code === "invalid_request" ? 1 : 0);
+    },
+  );
+  test("native ownership refusal happens before any provider receives credentials", async () => {
+    const world = setup({ golden: golden("org") });
+    world.stores.credentials.admit = async () => {
+      throw Error("credential_busy");
+    };
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "go" }),
+    ).rejects.toThrow("credential_busy");
+    expect(world.forks).toEqual([]);
+    expect(world.execs).toEqual([]);
+    expect(world.prompts).toEqual([]);
+  });
+
   test("size precedence is override, selected repository, golden, then unchanged legacy fork", async () => {
     for (const [size, repo, policy, effective, source] of [
       ["small", "web", { version: 1, golden: "large", repositories: { web: "xlarge" } }, "small", "override"],
@@ -117,21 +153,16 @@ describe("launch", () => {
     }
   });
 
-  test("a legacy store that drops independent private visibility cannot start an agent", async () => {
+  test("deprecated sandbox visibility does not change source authority or prevent launch", async () => {
     const world = setup({ golden: golden("org") });
-    const insert = world.stores.sandboxes.insert.bind(world.stores.sandboxes);
-    world.stores.sandboxes.insert = async (input) => ({ ...(await insert(input)), visibility: "org" });
-    await expect(
-      launchSandbox(world.provider, world.stores, owner, {
-        golden: "web",
-        harness: "claude",
-        visibility: "private",
-        prompt: "work",
-      }),
-    ).rejects.toThrow("did not persist");
-    expect(world.deleted).toEqual(["bx_1"]);
-    expect(world.prompts).toHaveLength(0);
-    expect(world.stopped).toEqual(["bx_1"]);
+    const result = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      visibility: "private",
+      prompt: "work",
+    });
+    expect(result.sandbox.visibility).toBe("org");
+    expect(world.prompts).toHaveLength(1);
   });
 
   test("forks the stored snapshot with only this harness's credentials, pulls and inits, then prompts", async () => {

@@ -217,7 +217,18 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     const exchangesBefore = tokenExchanges;
     expect((await callback(superseded.authorizationUrl)).status).toBe(400);
     expect(tokenExchanges).toBe(exchangesBefore);
+    const priorEpoch = (
+      await db.query<{ connection_epoch: string }>("select connection_epoch from github_connections where user_id=$1", [
+        owner,
+      ])
+    ).rows[0]?.connection_epoch;
     expect((await callback(replacement.authorizationUrl, "GET")).status).toBe(200);
+    const nextEpoch = (
+      await db.query<{ connection_epoch: string }>("select connection_epoch from github_connections where user_id=$1", [
+        owner,
+      ])
+    ).rows[0]?.connection_epoch;
+    expect(nextEpoch).not.toBe(priorEpoch);
     expect((await command("disconnect")).status).toBe(200);
     const racing = await start();
     duringExchange = async () => {

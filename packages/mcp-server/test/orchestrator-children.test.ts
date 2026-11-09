@@ -85,6 +85,8 @@ async function fixture(parentState: "ready" | "running" = "running") {
   await authority.installEpoch(
     id,
     {
+      physicalGeneration: "synthetic-native-physical-663",
+      lifecycleGeneration: String(parent.lifecycleGeneration),
       async deliver(secret) {
         token = secret;
         return { acknowledged: true };
@@ -511,6 +513,8 @@ test("read-only delegated scope cannot override the launch method through untrus
     await authority.installEpoch(
       id,
       {
+        physicalGeneration: "synthetic-native-physical-663",
+        lifecycleGeneration: String(parent.lifecycleGeneration),
         async deliver(token) {
           readToken = token;
           return { acknowledged: true };
@@ -1032,6 +1036,8 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     await authority.installEpoch(
       id,
       {
+        physicalGeneration: "synthetic-native-physical-663",
+        lifecycleGeneration: String(parent.lifecycleGeneration),
         async deliver(secret) {
           readonly = secret;
           return { acknowledged: true };
