@@ -179,7 +179,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000 || (input.cursor && !/^\d+$/.test(input.cursor)))
         throw refusal("invalid_request", "Invalid event pagination.");
       const result = await sql.query<{ cursor: string; event: AgentEvent }>(
-        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and cursor>$3::bigint and ($4::text is null or event->>'conversationId'=$4) order by cursor limit $5`,
+        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and cursor>$3::bigint and ($4::text is null or event->>'conversationId'=$4) order by public.modal_events.cursor limit $5`,
         [key, input.sandboxId, input.cursor ?? "0", input.conversationId ?? null, limit + 1],
       );
       const page = result.rows.slice(0, limit);
