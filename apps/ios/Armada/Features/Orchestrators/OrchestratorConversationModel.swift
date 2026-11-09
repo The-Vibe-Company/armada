@@ -2,8 +2,8 @@ import Foundation
 import Observation
 
 /// One orchestrator's conversation and owner actions. Every mutation is fenced by the revision the
-/// person saw and carries an idempotency key; a retry after an unknown outcome resends the exact
-/// same request. A stale revision refreshes the state and hands the draft back.
+/// person saw and saved once as a durable ArmadaKit command; a retry after an unknown outcome
+/// resends exactly that command. A stale revision refreshes the state and hands the draft back.
 @MainActor
 @Observable
 final class OrchestratorConversationModel {
@@ -13,11 +13,6 @@ final class OrchestratorConversationModel {
         case unavailable(String)
         case noAccess
         case failed(String)
-    }
-
-    struct ActionRequest: Hashable, Sendable {
-        let action: OrchestratorAction
-        let expectedRevision: Int
     }
 
     enum LifecycleStatus: Equatable {
@@ -33,8 +28,9 @@ final class OrchestratorConversationModel {
     var draft = ""
     let feed = ConversationFeed()
 
-    @ObservationIgnored private var mutations: [String: PendingMutation<ActionRequest>] = [:]
-    @ObservationIgnored private var lifecycleMutation: PendingMutation<ActionRequest>?
+    /// Saved command handle per local bubble id.
+    @ObservationIgnored private var handles: [String: String] = [:]
+    @ObservationIgnored private var lifecycleHandle: String?
     @ObservationIgnored private let service: any OrchestratorService
     @ObservationIgnored let orchestratorID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
@@ -81,6 +77,20 @@ final class OrchestratorConversationModel {
         } catch {
             handleReadFailure(error)
         }
+        await recoverOpenCommand()
+    }
+
+    /// A command saved by an earlier launch (or lost with its bubble) still blocks new ones until it
+    /// resolves; show it with a retry of exactly that command.
+    private func recoverOpenCommand() async {
+        guard lifecycle == nil, lifecycleHandle == nil, let orgID = summary?.orgID,
+              !pending.contains(where: { $0.status != .accepted }),
+              let open = await service.unresolved(orgID: orgID, orchestratorID: orchestratorID),
+              !handles.values.contains(open.handle) else { return }
+        lifecycleHandle = open.handle
+        // Accepted-but-open and unknown commands alike: retrying resends the same key, and the
+        // server answers with the original receipt.
+        lifecycle = .unconfirmed(open.kind)
     }
 
     /// Follows the event stream until the screen disappears.
@@ -113,18 +123,29 @@ final class OrchestratorConversationModel {
     func send(_ text: String, intent: ComposerIntent) {
         guard let summary, composerUnavailableReason == nil else { return }
         let action: OrchestratorAction = intent == .steer ? .steer(text) : .message(text)
-        let mutation = PendingMutation(request: ActionRequest(action: action, expectedRevision: summary.revision))
-        mutations[mutation.idempotencyKey] = mutation
-        pending.append(PendingBubble(id: mutation.idempotencyKey, text: text, intent: intent, sentAt: .now, status: .sending))
+        let bubbleID = UUID().uuidString
+        let revision = summary.revision
+        pending.append(PendingBubble(id: bubbleID, text: text, intent: intent, sentAt: .now, status: .sending))
         draft = ""
         notice = nil
-        Task { await perform(mutation) }
+        Task {
+            do throws(ServiceFailure) {
+                handles[bubbleID] = try await service.prepareMutation(action, orchestratorID: orchestratorID, expectedRevision: revision)
+            } catch {
+                if error == .signedOut { onSignedOut() }
+                removeBubble(bubbleID, restoreDraft: true)
+                notice = (error.message, true)
+                await recoverOpenCommand()
+                return
+            }
+            await submit(bubbleID)
+        }
     }
 
     func retry(_ bubble: PendingBubble) {
-        guard let mutation = mutations[bubble.id], bubble.status == .unconfirmed else { return }
+        guard handles[bubble.id] != nil, bubble.status == .unconfirmed else { return }
         setStatus(.sending, for: bubble.id)
-        Task { await perform(mutation) }
+        Task { await submit(bubble.id) }
     }
 
     /// Hides an unconfirmed bubble. Its text is NOT returned to the draft: the server may still have
@@ -134,19 +155,15 @@ final class OrchestratorConversationModel {
         removeBubble(bubble.id, restoreDraft: false)
     }
 
-    private func perform(_ mutation: PendingMutation<ActionRequest>) async {
+    private func submit(_ bubbleID: String) async {
+        guard let handle = handles[bubbleID] else { return }
         do throws(ServiceFailure) {
-            let receipt = try await service.perform(
-                mutation.request.action,
-                orchestratorID: orchestratorID,
-                expectedRevision: mutation.request.expectedRevision,
-                idempotencyKey: mutation.idempotencyKey
-            )
+            let receipt = try await service.submit(handle: handle)
             if receipt.state == .failed {
-                removeBubble(mutation.idempotencyKey, restoreDraft: true)
+                removeBubble(bubbleID, restoreDraft: true)
                 notice = (Self.failedMessage(receipt), true)
             } else {
-                setStatus(.accepted, for: mutation.idempotencyKey)
+                setStatus(.accepted, for: bubbleID)
             }
             await load()
         } catch {
@@ -154,15 +171,15 @@ final class OrchestratorConversationModel {
             case .signedOut:
                 onSignedOut()
             case .uncertain, .offline:
-                setStatus(.unconfirmed, for: mutation.idempotencyKey)
+                setStatus(.unconfirmed, for: bubbleID)
             case .staleRevision:
-                removeBubble(mutation.idempotencyKey, restoreDraft: true)
+                removeBubble(bubbleID, restoreDraft: true)
                 notice = (ServiceFailure.staleRevision.message, false)
                 await load()
             case .noAccess:
                 phase = .noAccess
             case .unavailable(let reason), .rejected(let reason):
-                removeBubble(mutation.idempotencyKey, restoreDraft: true)
+                removeBubble(bubbleID, restoreDraft: true)
                 notice = (reason, true)
             }
         }
@@ -172,37 +189,41 @@ final class OrchestratorConversationModel {
 
     func stop() {
         guard let summary, canStop else { return }
-        startLifecycle(ActionRequest(action: .stop, expectedRevision: summary.revision))
+        startLifecycle(.stop, revision: summary.revision)
     }
 
     func resume() {
         guard let summary, canResume else { return }
-        startLifecycle(ActionRequest(action: .resume, expectedRevision: summary.revision))
+        startLifecycle(.resume, revision: summary.revision)
     }
 
     func retryLifecycle() {
-        guard let lifecycleMutation, case .unconfirmed(let kind) = lifecycle else { return }
+        guard let lifecycleHandle, case .unconfirmed(let kind) = lifecycle else { return }
         lifecycle = .sending(kind)
-        Task { await performLifecycle(lifecycleMutation) }
+        Task { await submitLifecycle(lifecycleHandle, kind: kind) }
     }
 
-    private func startLifecycle(_ request: ActionRequest) {
-        let mutation = PendingMutation(request: request)
-        lifecycleMutation = mutation
-        lifecycle = .sending(request.action.kind)
+    private func startLifecycle(_ action: OrchestratorAction, revision: Int) {
+        let kind = action.kind
+        lifecycle = .sending(kind)
         notice = nil
-        Task { await performLifecycle(mutation) }
+        Task {
+            do throws(ServiceFailure) {
+                let handle = try await service.prepareMutation(action, orchestratorID: orchestratorID, expectedRevision: revision)
+                lifecycleHandle = handle
+                await submitLifecycle(handle, kind: kind)
+            } catch {
+                if error == .signedOut { onSignedOut() }
+                finishLifecycle()
+                notice = (error.message, true)
+                await recoverOpenCommand()
+            }
+        }
     }
 
-    private func performLifecycle(_ mutation: PendingMutation<ActionRequest>) async {
-        let kind = mutation.request.action.kind
+    private func submitLifecycle(_ handle: String, kind: OperationKind) async {
         do throws(ServiceFailure) {
-            let receipt = try await service.perform(
-                mutation.request.action,
-                orchestratorID: orchestratorID,
-                expectedRevision: mutation.request.expectedRevision,
-                idempotencyKey: mutation.idempotencyKey
-            )
+            let receipt = try await service.submit(handle: handle)
             finishLifecycle()
             if receipt.state == .failed { notice = (Self.failedMessage(receipt), true) }
             await load()
@@ -228,7 +249,7 @@ final class OrchestratorConversationModel {
 
     private func finishLifecycle() {
         lifecycle = nil
-        lifecycleMutation = nil
+        lifecycleHandle = nil
     }
 
     // MARK: Helpers
@@ -241,7 +262,7 @@ final class OrchestratorConversationModel {
     private func removeBubble(_ id: String, restoreDraft: Bool) {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         let bubble = pending.remove(at: index)
-        mutations[id] = nil
+        handles[id] = nil
         if restoreDraft {
             draft = draft.isEmpty ? bubble.text : bubble.text + "\n" + draft
         }
@@ -260,7 +281,7 @@ final class OrchestratorConversationModel {
                 default: return false
                 }
             }
-            if delivered { mutations[bubble.id] = nil }
+            if delivered { handles[bubble.id] = nil }
             return delivered
         }
     }

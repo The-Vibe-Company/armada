@@ -138,7 +138,7 @@ struct OrchestratorConversationView: View {
             }
             switch model.lifecycle {
             case .sending(let kind):
-                InlineBanner(text: kind == .stop ? "Stopping… Admission closes first, then the conversation is saved." : "Resuming the same conversation…", style: .info)
+                InlineBanner(text: Self.sendingText(kind), style: .info)
             case .unconfirmed(let kind):
                 InlineBanner(
                     text: "\(kind.label) was not confirmed. Retrying sends the same request.",
@@ -156,6 +156,14 @@ struct OrchestratorConversationView: View {
         .padding(.horizontal, 12)
         .padding(.top, 4)
         .background(ArmadaTheme.canvas.opacity(0.001))
+    }
+
+    private static func sendingText(_ kind: OperationKind) -> String {
+        switch kind {
+        case .stop: "Stopping… Admission closes first, then the conversation is saved."
+        case .resume: "Resuming the same conversation…"
+        default: "Sending the \(kind.label.lowercased()) again…"
+        }
     }
 
     private func stopMessage(_ model: OrchestratorConversationModel) -> String {

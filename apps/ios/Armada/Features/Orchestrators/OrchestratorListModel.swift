@@ -2,7 +2,8 @@ import Foundation
 import Observation
 
 /// The owner's orchestrators in the selected organization, newest page first as the server
-/// returns them, plus the create request whose outcome is not known yet.
+/// returns them, plus a create command whose outcome is not known yet. That command lives in
+/// ArmadaKit's durable store, so it survives dismissing the sheet and relaunching the app.
 @MainActor
 @Observable
 final class OrchestratorListModel {
@@ -15,8 +16,10 @@ final class OrchestratorListModel {
 
     enum CreateStatus: Equatable {
         case sending
-        /// Sent, outcome unknown. Only a retry with the same key is offered.
+        /// Sent, outcome unknown. Only a retry of the same saved command is offered.
         case unconfirmed
+        /// Saved but not sent, because the capability is off. Retrying sends the same command.
+        case notSent(String)
         case refused(String)
     }
 
@@ -24,9 +27,11 @@ final class OrchestratorListModel {
     private(set) var items: [OrchestratorSummary] = []
     private(set) var loadingMore = false
     private(set) var refreshError: String?
-    private(set) var pendingCreate: PendingMutation<OrchestratorCreateRequest>?
     private(set) var createStatus: CreateStatus?
+    /// The name of the pending create when this launch made it; nil when recovered from an earlier one.
+    private(set) var pendingCreateName: String?
 
+    @ObservationIgnored private var pendingCreateHandle: String?
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let service: any OrchestratorService
     @ObservationIgnored let orgID: String
@@ -40,6 +45,9 @@ final class OrchestratorListModel {
 
     var hasMore: Bool { cursor != nil }
 
+    /// A create command is open: the form stays locked until it resolves.
+    var hasOpenCreate: Bool { pendingCreateHandle != nil && createStatus != nil }
+
     func load() async {
         if items.isEmpty { phase = .loading }
         do throws(ServiceFailure) {
@@ -51,6 +59,7 @@ final class OrchestratorListModel {
         } catch {
             handleReadFailure(error)
         }
+        await recoverOpenCreate()
     }
 
     func loadMore() async {
@@ -67,35 +76,56 @@ final class OrchestratorListModel {
         }
     }
 
-    /// Starts a create with a fresh key, unless one is already pending: then nothing new is sent.
-    /// Returns the new orchestrator's id when the server accepted the request.
+    /// Saves a new create command and sends it. Nothing new is saved while one is open.
+    /// Returns the new orchestrator's id when the server accepted it.
     func create(_ request: OrchestratorCreateRequest) async -> String? {
-        guard pendingCreate == nil else { return nil }
-        let mutation = PendingMutation(request: request)
-        pendingCreate = mutation
-        return await send(mutation)
+        guard pendingCreateHandle == nil else { return nil }
+        createStatus = .sending
+        pendingCreateName = request.name
+        do throws(ServiceFailure) {
+            pendingCreateHandle = try await service.prepareCreate(request)
+        } catch {
+            if error == .signedOut {
+                onSignedOut()
+            } else {
+                createStatus = .refused(error.message)
+            }
+            return nil
+        }
+        return await submit()
     }
 
-    /// Resends the exact pending request with its original key.
+    /// Resends exactly the saved command.
     func retryCreate() async -> String? {
-        guard let pendingCreate, createStatus != .sending else { return nil }
-        return await send(pendingCreate)
+        guard pendingCreateHandle != nil, createStatus != .sending else { return nil }
+        return await submit()
     }
 
-    /// Forgets a create the server refused. An unconfirmed create cannot be discarded here: it
-    /// may still be allocating, and only its own key can reconcile it.
+    /// Clears a refused create. An unconfirmed or unsent command stays saved: only its own key
+    /// can reconcile it.
     func clearRefusedCreate() {
         guard case .refused = createStatus else { return }
-        pendingCreate = nil
         createStatus = nil
+        pendingCreateName = nil
+        if let handle = pendingCreateHandle {
+            pendingCreateHandle = nil
+            Task { await service.discard(handle: handle) }
+        }
     }
 
-    private func send(_ mutation: PendingMutation<OrchestratorCreateRequest>) async -> String? {
+    private func submit() async -> String? {
+        guard let handle = pendingCreateHandle else { return nil }
         createStatus = .sending
         do throws(ServiceFailure) {
-            let operation = try await service.create(mutation.request, idempotencyKey: mutation.idempotencyKey)
-            pendingCreate = nil
+            let operation = try await service.submit(handle: handle)
+            if operation.state == .failed {
+                pendingCreateHandle = nil
+                createStatus = .refused(operation.errorCode.map { "Armada could not create it (\($0))." } ?? "Armada could not create it.")
+                return nil
+            }
+            pendingCreateHandle = nil
             createStatus = nil
+            pendingCreateName = nil
             await load()
             return operation.orchestratorID
         } catch {
@@ -105,14 +135,22 @@ final class OrchestratorListModel {
             case .uncertain, .offline:
                 createStatus = .unconfirmed
             case .unavailable(let reason):
-                pendingCreate = nil
-                createStatus = nil
-                phase = .unavailable(reason)
-            case .noAccess, .staleRevision, .rejected:
+                createStatus = .notSent(reason)
+            case .rejected, .noAccess, .staleRevision:
+                // The service has already forgotten a definitively refused command.
+                pendingCreateHandle = nil
                 createStatus = .refused(error.message)
             }
             return nil
         }
+    }
+
+    private func recoverOpenCreate() async {
+        guard pendingCreateHandle == nil,
+              let open = await service.unresolved(orgID: orgID, orchestratorID: nil) else { return }
+        pendingCreateHandle = open.handle
+        pendingCreateName = nil
+        createStatus = .unconfirmed
     }
 
     private func handleReadFailure(_ error: ServiceFailure) {

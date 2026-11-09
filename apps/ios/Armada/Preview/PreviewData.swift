@@ -214,19 +214,29 @@ enum PreviewData {
             PreviewData.createOptions
         }
 
-        func create(_ request: OrchestratorCreateRequest, idempotencyKey: String) async throws(ServiceFailure) -> OperationSummary {
-            OperationSummary(id: idempotencyKey, orchestratorID: PreviewData.leadID, kind: .create, state: .pending, revision: 1, errorCode: nil)
+        func prepareCreate(_ request: OrchestratorCreateRequest) async throws(ServiceFailure) -> String {
+            "create-\(UUID().uuidString)"
         }
 
-        func perform(
+        func prepareMutation(
             _ action: OrchestratorAction,
             orchestratorID: String,
-            expectedRevision: Int,
-            idempotencyKey: String
-        ) async throws(ServiceFailure) -> OperationSummary {
-            // Shows the unconfirmed path in previews: the outcome is never invented as success.
-            throw .uncertain
+            expectedRevision: Int
+        ) async throws(ServiceFailure) -> String {
+            "mutation-\(UUID().uuidString)"
         }
+
+        func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
+            guard handle.hasPrefix("create-") else {
+                // Shows the unconfirmed path in previews: an outcome is never invented as success.
+                throw .uncertain
+            }
+            return OperationSummary(id: handle, orchestratorID: PreviewData.leadID, kind: .create, state: .pending, revision: 1, errorCode: nil)
+        }
+
+        func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation? { nil }
+
+        func discard(handle: String) async {}
 
         func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage {
             SandboxPage(items: empty ? [] : PreviewData.sandboxes, total: empty ? 0 : PreviewData.sandboxes.count, nextPage: nil)

@@ -57,7 +57,7 @@ struct CreateOrchestratorView: View {
 
     /// A pending create (sending or unconfirmed) owns the form until it resolves.
     private var isLocked: Bool {
-        list.createStatus == .sending || list.createStatus == .unconfirmed
+        list.hasOpenCreate || list.createStatus == .sending
     }
 
     private func form(_ options: CreateOptions) -> some View {
@@ -67,9 +67,11 @@ struct CreateOrchestratorView: View {
                     switch status {
                     case .sending:
                         Label("Creating…", systemImage: "hourglass")
-                    case .unconfirmed:
+                    case .unconfirmed, .notSent:
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Armada did not confirm this request. Retrying resends the same request, so it cannot start a second orchestrator.")
+                            Text(status == .unconfirmed
+                                ? "Armada did not confirm this request. Retrying resends the same request, so it cannot start a second orchestrator."
+                                : "This request is saved on this device but was not sent. Retrying sends exactly it.")
                                 .font(.footnote)
                             Button("Retry the Same Request") {
                                 Task {

@@ -88,7 +88,7 @@ struct OrchestratorListView: View {
         List {
             if let status = model.createStatus {
                 Section {
-                    PendingCreateRow(status: status, name: model.pendingCreate?.request.name ?? "") {
+                    PendingCreateRow(status: status, name: model.pendingCreateName ?? "An earlier orchestrator") {
                         Task {
                             if let id = await model.retryCreate() { path.append(OrchestratorRoute(id: id)) }
                         }
@@ -217,7 +217,7 @@ private struct PendingCreateRow: View {
                 .foregroundStyle(ArmadaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             switch status {
-            case .unconfirmed:
+            case .unconfirmed, .notSent:
                 Button(action: retry) {
                     Text("Retry the Same Request").frame(minHeight: 44)
                 }
@@ -238,6 +238,7 @@ private struct PendingCreateRow: View {
         switch status {
         case .sending: "Creating \(name)…"
         case .unconfirmed: "\(name) is not confirmed"
+        case .notSent: "\(name) was not sent"
         case .refused: "\(name) was not created"
         }
     }
@@ -248,6 +249,8 @@ private struct PendingCreateRow: View {
             "Armada is recording the orchestrator before it starts its compute."
         case .unconfirmed:
             "Armada did not confirm this request. Retrying resends the same request, so it cannot start a second orchestrator."
+        case .notSent(let reason):
+            "\(reason) The request is saved on this device; retrying sends exactly it."
         case .refused(let reason):
             reason
         }
