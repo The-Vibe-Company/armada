@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createSqlVaultStore, encryptSecret, mutateCredentialAccount } from "@armada/core/server";
 import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { database, ENCRYPTION_KEY, SECRETS } from "./support.ts";
@@ -55,8 +55,22 @@ test.each(["claude", "codex"] as const)(
           now: () => new Date(clock),
         },
       });
+      const account = await (await import("@armada/core/server")).resolveCredentials(
+        createSqlVaultStore(db),
+        ENCRYPTION_KEY,
+        { userId: people.owner, orgId: people.org, harness },
+      );
       const machine = (id: string): Machine => ({
-        info: { id, name: id, state: "ready", providerState: "active", labels: {} },
+        info: {
+          id,
+          name: id,
+          state: "ready",
+          providerState: "active",
+          labels: {
+            credentialId: account.binding!.credentialId,
+            credentialVersion: String(account.binding!.credentialVersion),
+          },
+        },
         launchUserId: people.owner,
         golden: false,
         phase: "active",
@@ -125,3 +139,87 @@ test.each(["claude", "codex"] as const)(
     }
   },
 );
+
+test("Modal bootstrap and restore use the explicit pinned account rather than current defaults", async () => {
+  const { db, people } = await database();
+  try {
+    const scope: Scope = {
+      orgId: people.org,
+      userId: people.owner,
+      visibility: "private",
+      binding: { workspace: "ws", environment: "main", appId: "ap-bound" },
+    };
+    await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+      scopeKey(scope),
+      JSON.stringify(scope),
+    ]);
+    const store = createSqlVaultStore(db);
+    const original = (await store.listCredentials("user", people.owner)).find((row) => row.kind === "claude_oauth")!;
+    await mutateCredentialAccount(store, ENCRYPTION_KEY, people.owner, {
+      action: "default",
+      scope: "user",
+      id: original.id!,
+    });
+    const selected = await mutateCredentialAccount(store, ENCRYPTION_KEY, people.owner, {
+      action: "set",
+      scope: "user",
+      kind: "claude_oauth",
+      name: "Explicit",
+      value: "explicit-modal-account",
+    });
+    const machine: Machine = {
+      info: {
+        id: "pinned-account",
+        name: "pinned",
+        state: "ready",
+        providerState: "active",
+        labels: { credentialId: selected.id!, credentialVersion: String(selected.version) },
+      },
+      launchUserId: people.owner,
+      golden: false,
+      phase: "active",
+      generation: 1,
+      ttlSeconds: 60,
+      physicalName: "pinned",
+    };
+    const resolver = modalLaunchEnvironment({
+      sql: db,
+      vault: store,
+      encryptionKey: ENCRYPTION_KEY,
+      scope,
+      scopeKey: scopeKey(scope),
+      callerUserId: people.owner,
+    });
+    expect(
+      (await resolver(machine, { CLAUDE_CODE_OAUTH_TOKEN: "explicit-modal-account" })).claudeEnv
+        .CLAUDE_CODE_OAUTH_TOKEN,
+    ).toBe("explicit-modal-account");
+    await expect(
+      db.query("update modal_server_harnesses set credential_version=null where scope=$1 and machine_id=$2", [
+        scopeKey(scope),
+        machine.info.id,
+      ]),
+    ).rejects.toThrow(/modal_harness_credential_binding_chk/);
+    await mutateCredentialAccount(store, ENCRYPTION_KEY, people.owner, {
+      action: "default",
+      scope: "user",
+      id: selected.id!,
+    });
+    await mutateCredentialAccount(store, ENCRYPTION_KEY, people.owner, {
+      action: "default",
+      scope: "user",
+      id: original.id!,
+    });
+    expect((await resolver({ ...machine, generation: 2 }, {})).claudeEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(
+      "explicit-modal-account",
+    );
+    await mutateCredentialAccount(store, ENCRYPTION_KEY, people.owner, {
+      action: "remove",
+      scope: "user",
+      id: selected.id!,
+    });
+    await expect(resolver({ ...machine, generation: 3 }, {})).rejects.toThrow(/No fallback was used/);
+  } finally {
+    await db.close();
+  }
+});

@@ -10,6 +10,8 @@ const response = {
     goldenId: "golden",
     orgId: "org",
     ownerId: "owner",
+    credentialId: "33333333-3333-4333-8333-333333333333",
+    credentialVersion: 7,
     harness: "codex",
     status: "running",
     conversationIds: ["conversation"],
@@ -53,6 +55,7 @@ describe("launch through the Armada API", () => {
             "--org",
             "org",
             "--json",
+            ...(repo === undefined ? ["--credential-id", "33333333-3333-4333-8333-333333333333"] : []),
             ...(repo === undefined ? [] : ["--repo", repo]),
             ...(selection === undefined
               ? []
@@ -80,6 +83,8 @@ describe("launch through the Armada API", () => {
         expect(code).toBe(0);
         expect(JSON.parse(out)).toMatchObject({
           golden: "web",
+          credentialId: "33333333-3333-4333-8333-333333333333",
+          credentialVersion: 7,
           harness: "codex",
           promptId: "prompt",
           provider: "boat",
@@ -92,7 +97,7 @@ describe("launch through the Armada API", () => {
         expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
         expect(await calls[0]?.json()).toEqual({
           golden: "web",
-          ...(repo === undefined ? {} : { repo }),
+          ...(repo === undefined ? { credentialId: "33333333-3333-4333-8333-333333333333" } : { repo }),
           ...(selection === undefined ? {} : { connections: [...selection] }),
           model: "gpt-6.1-sol",
           reasoningEffort: "medium",

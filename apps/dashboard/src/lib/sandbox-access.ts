@@ -1,4 +1,5 @@
 import { HARNESSES, MACHINE_SIZES, type MachineSize, SANDBOX_PROVIDERS, type SandboxListMetadata } from "@armada/core";
+import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
 
 /**
@@ -70,15 +71,8 @@ export function sandboxName(sandbox: Pick<SandboxListMetadata, "providerSandboxI
   return sandbox.providerSandboxId ?? sandbox.displayLabel;
 }
 
-const SIZE_LABELS: Record<MachineSize, string> = {
-  small: "Small",
-  medium: "Medium",
-  large: "Large",
-  xlarge: "Extra large",
-};
-
 export function machineSizeLabel(size: MachineSize): string {
-  return SIZE_LABELS[size];
+  return MACHINE_SIZE_LABELS[size];
 }
 
 function text(value: unknown): value is string {

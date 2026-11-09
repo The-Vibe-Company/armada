@@ -1,12 +1,13 @@
 "use client";
 
-import type { Harness, SandboxProviderId } from "@armada/core";
+import type { Harness, MachineSizePolicy, SandboxProviderId } from "@armada/core";
 import { CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
+import { MachineSizeField } from "@/components/machine-size-field";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +36,12 @@ import { cn } from "@/lib/utils";
 export type LaunchConnections = { connections: McpConnection[] } | { unavailable: string };
 
 /**
+ * The golden's machine size policy (`@armada/core` contract version 1), `null` when none is set. Absent while the
+ * server cannot take a size for this launch: the dialog then shows no size and launches as before.
+ */
+export type LaunchSizing = { policy: MachineSizePolicy | null };
+
+/**
  * Launches an agent from a golden: harness, model, reasoning effort, the MCP connections it gets and an optional
  * first prompt. Who may open the sandbox is not a choice: its owner and the org's admins (#680).
  */
@@ -45,6 +52,7 @@ export function LaunchDialog({
   catalog,
   connections,
   repositories,
+  sizing,
 }: {
   golden: string;
   provider: SandboxProviderId;
@@ -53,13 +61,17 @@ export function LaunchDialog({
   connections: LaunchConnections;
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
+  sizing?: LaunchSizing;
 }) {
+  const initialRepository = repositories.length === 1 ? (repositories[0] ?? "") : "";
+  const [repository, setRepository] = useState(initialRepository);
   const [harness, setHarness] = useState<Harness>("claude");
   // A default that is not connected holds the launch until the person reconnects it or goes on without it.
   const [held, setHeld] = useState(false);
   const id = useId();
   return (
-    <Dialog>
+    // The form unmounts on close; the repository it reported must go with it, so reopening starts from the default.
+    <Dialog onOpenChange={(open) => !open && setRepository(initialRepository)}>
       <DialogTrigger asChild>
         <Button size="sm" aria-label={`Launch from ${golden} on ${PROVIDER_LABELS[provider]}`}>
           <RocketIcon /> Launch
@@ -95,7 +107,22 @@ export function LaunchDialog({
             harness={harness}
             catalog={catalog}
           />
-          <RepositoryField key={JSON.stringify([orgId, provider, golden])} idPrefix={id} repositories={repositories} />
+          <RepositoryField
+            key={JSON.stringify([orgId, provider, golden])}
+            idPrefix={id}
+            repositories={repositories}
+            initial={initialRepository}
+            onChange={setRepository}
+          />
+          {sizing && (
+            <MachineSizeField
+              key={JSON.stringify([orgId, provider, golden])}
+              idPrefix={id}
+              provider={provider}
+              policy={sizing.policy}
+              repositoryDir={repository}
+            />
+          )}
           <AccessFields idPrefix={id} connections={connections} onHeld={setHeld} />
           <div className="space-y-2">
             <Label htmlFor={`${id}-prompt`}>First prompt</Label>
@@ -114,15 +141,36 @@ export function LaunchDialog({
   );
 }
 
-/** The selected configured checkout. Native reset restores the launch default without stale controlled state. */
-function RepositoryField({ idPrefix, repositories }: { idPrefix: string; repositories: readonly string[] }) {
+/**
+ * The selected configured checkout. Uncontrolled, so the native reset after a launch attempt restores the default
+ * option; the reported selection follows it to the same default.
+ */
+function RepositoryField({
+  idPrefix,
+  repositories,
+  initial,
+  onChange,
+}: {
+  idPrefix: string;
+  repositories: readonly string[];
+  initial: string;
+  onChange: (dir: string) => void;
+}) {
+  const group = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const form = group.current?.closest("form");
+    const reset = () => onChange(initial);
+    form?.addEventListener("reset", reset);
+    return () => form?.removeEventListener("reset", reset);
+  }, [initial, onChange]);
   return (
-    <div className="space-y-2">
+    <div ref={group} className="space-y-2">
       <Label htmlFor={`${idPrefix}-repo`}>Working directory</Label>
       <NativeSelect
         id={`${idPrefix}-repo`}
         name="repo"
-        defaultValue={repositories.length === 1 ? repositories[0] : ""}
+        defaultValue={initial}
+        onChange={(event) => onChange(event.target.value)}
         disabled={repositories.length === 0}
         aria-describedby={`${idPrefix}-repo-hint`}
       >

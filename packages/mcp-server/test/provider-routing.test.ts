@@ -35,7 +35,7 @@ async function seedModal(target: TestServer) {
 async function setOrgModalPair(target: TestServer, pair: typeof PAIR) {
   await target.db.query(
     `insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'modal', $2)
-     on conflict (scope, owner_id, kind) do update set value_enc = excluded.value_enc`,
+     on conflict (scope, owner_id, kind) where kind in ('boat','modal') do update set value_enc = excluded.value_enc`,
     [target.people.org, await encryptSecret(JSON.stringify(pair), ENCRYPTION_KEY)],
   );
 }

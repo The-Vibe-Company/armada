@@ -1,3 +1,5 @@
+import { type MachineSizePolicy, resolveMachineSize } from "@armada/core";
+
 /**
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
  * It models what the dashboard relies on: sessions by bearer token, the row level security
@@ -41,8 +43,10 @@ type State = {
   failNextTool: string | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
-  /** Every `POST /api/v1/sandbox/launch` body, as the dashboard sent it. */
+  /** Every launch body that reached allocation, as the dashboard sent it. */
   launches: Row[];
+  /** The route of each of `launches`, in order. */
+  launchRoutes: string[];
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -53,6 +57,14 @@ type State = {
     /** Status reads fail (a 503) while set; the jobs themselves are unaffected. */
     failStatus?: boolean;
   };
+  /** Every `golden/size-policy` body (#653), as the dashboard sent it. */
+  sizePolicyCalls: Row[];
+  /** A launch asking for this size is refused by the provider, as Boat refuses a plan-gated size. */
+  refuseSize: string | null;
+  /** The database has #653's columns but the server predates it: `size` is ignored and its routes are unknown. */
+  olderServer: boolean;
+  /** Sized launches refused before allocation (an older replica's 404, a missing version's 400). */
+  sizedRefusals: Row[];
   /** Every `golden/remove` body, as the dashboard sent it, and whether it carried a session. */
   goldenRemoveCalls: { body: Row; authorized: boolean }[];
   /** Every `golden/build/status` body, as the dashboard sent it. */
@@ -76,6 +88,16 @@ type State = {
   providerCalls: { route: string; body: Row; authorized: boolean }[];
   /** While set, `org/provider/status` answers this failure instead of the stored state; `html` is an edge page body. */
   providerStatusFail: { status: number; code?: string; message: string; html?: string } | null;
+  /** Organization invitations (#640 contract v1). `token` is what the email link carries; no response includes it. */
+  invitations: Row[];
+  /** The delivery state the next create or resend records: what the mail transport answered. */
+  nextDelivery: "not_configured" | "pending" | "sent" | "failed";
+  /** Every `org/invitations/*` call: its route, the body as sent and whether it carried a session. */
+  invitationCalls: { route: string; body: Row; authorized: boolean }[];
+  /** Accounts whose email address is not verified yet. */
+  unverifiedEmails: string[];
+  /** GoTrue calls that establish or check an identity (`/verify`, `/token`, `/user`), in order. */
+  authCalls: string[];
 };
 
 function seed(): State {
@@ -167,6 +189,11 @@ function seed(): State {
     capabilities: { boat: { maxGoldens: 1, fail: null }, modal: { maxGoldens: null, fail: null } },
     githubCliCalls: [],
     otpEmails: [],
+    invitations: [],
+    nextDelivery: "sent",
+    invitationCalls: [],
+    unverifiedEmails: [],
+    authCalls: [],
     connections: [
       mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
         url: "https://docs.acme.test/mcp",
@@ -216,6 +243,11 @@ function seed(): State {
     ],
     controlCalls: [],
     providerCalls: [],
+    sizePolicyCalls: [],
+    refuseSize: null,
+    olderServer: false,
+    sizedRefusals: [],
+    launchRoutes: [],
     providerStatusFail: null,
   };
   // The org golden records two repositories, so its launch form offers a working directory.
@@ -695,6 +727,7 @@ function rpc(name: string, args: Row, userId: string): Response {
 
 function auth(request: Request, url: URL, body: Row): Response {
   const path = url.pathname.replace("/auth/v1", "");
+  if (path === "/verify" || path === "/token" || path === "/user") state.authCalls.push(path);
   if (path === "/otp") {
     state.otpEmails.push(String(body.email));
     return json({});
@@ -828,9 +861,10 @@ function mcp(message: RpcMessage, userId: string | null): Response {
  * exactly one of its `config.repos[].dir`, and every named connection is the caller's to use in the org, personal or
  * org, and connected (#681: the legacy visibility plays no part). The sandbox row records what was launched.
  */
-function launchRoute(body: Row, userId: string | null): Response {
+function launchRoute(body: Row, userId: string | null, route = "sandbox/launch"): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
+  state.launchRoutes.push(route);
   const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
@@ -842,6 +876,12 @@ function launchRoute(body: Row, userId: string | null): Response {
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
   }
+  const sized = "size_policy" in source && !state.olderServer;
+  if (sized && body.size !== undefined && !SIZES.includes(String(body.size)))
+    return controlFail(400, "invalid_request", "Size must be small, medium, large or xlarge.");
+  // As the server maps Boat's `machine_class_plan_required` ProviderError: 403 forbidden, nothing allocated.
+  if (sized && body.size !== undefined && body.size === state.refuseSize)
+    return controlFail(403, "forbidden", "Requested size cannot be allocated.");
   // #681: omitted connections are the caller's enabled defaults, snapshotted here; every one must be connected.
   const ids = Array.isArray(body.connections)
     ? body.connections.map(String)
@@ -872,8 +912,27 @@ function launchRoute(body: Row, userId: string | null): Response {
   if (body.visibility !== undefined) row.visibility = body.visibility;
   row.connections = ids;
   row.repository_dir = body.repo ?? null;
+  // The producer's own resolution, as the server records it; an older server records nothing.
+  const machineSize = sized
+    ? resolveMachineSize(
+        source.provider as "boat" | "modal",
+        body.size,
+        (body.repo as string | undefined) ?? null,
+        source.size_policy as MachineSizePolicy | null,
+      )
+    : null;
+  row.provider = source.provider;
+  if ("size_policy" in source) row.machine_size = machineSize;
   state.sandboxes.unshift(row);
-  return json({ sandbox: { id: row.id, boatId: row.boat_id, repositoryDir: row.repository_dir } });
+  return json({
+    sandbox: {
+      id: row.id,
+      boatId: row.boat_id,
+      repositoryDir: row.repository_dir,
+      // An older server answers no `machineSize` key at all.
+      ...(sized ? { machineSize } : {}),
+    },
+  });
 }
 
 /* The registry's control API (issue #522): POST /api/v1/mcp/<operation>, user JWT as the bearer. */
@@ -895,6 +954,109 @@ function visibleConnections(orgId: string, userId: string): Row[] {
 function connectionDto(row: Row): Row {
   const { owner: _owner, authentication: _secret, statusBeforeDisable: _previous, ...dto } = row;
   return dto;
+}
+
+const invitationDto = (row: Row) => {
+  const { token: _token, ...dto } = row;
+  return dto;
+};
+
+/**
+ * `org/invitations/{create,list,resend,revoke,accept}`, as #640's control API v1 serves them: admin-only management,
+ * a fresh token on every send (a resend invalidates the previous link), and an accept bound to the signed-in user's
+ * email, single-use, that adds the membership only then. Delivery is whatever the test set the transport to answer.
+ */
+function invitations(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.invitationCalls.push({ route, body, authorized: Boolean(userId) });
+  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
+  const fresh = () => `mock-invitation-${++sequence}-0123456789abcdef`;
+  if (route === "preview" || route === "accept") {
+    const row = state.invitations.find((item) => item.token === body.token);
+    const email = users.get(userId)?.email;
+    // The server's order: the address must match before anything about the org is said. The first failing check wins.
+    const checks: [boolean, string][] = [
+      [!row, "not_found"],
+      [row?.email !== email, "wrong_email"],
+      [state.unverifiedEmails.includes(String(email)), "unverified_email"],
+      [row?.status === "revoked", "revoked"],
+      [row?.status === "accepted", "used"],
+      [Date.parse(String(row?.expiresAt)) <= Date.now(), "expired"],
+      [Boolean(row) && isMember(row?.orgId, userId), "already_member"],
+    ];
+    const reason = checks.find(([failed]) => failed)?.[1] ?? null;
+    if (route === "preview") {
+      const named = row && reason !== "not_found" && reason !== "wrong_email" && reason !== "unverified_email";
+      const org = named ? state.orgs.find((item) => item.id === row.orgId) : null;
+      return json({
+        state: reason ?? "ready",
+        context: org ? { orgId: org.id, orgName: org.name, role: row?.role, expiresAt: row?.expiresAt } : null,
+      });
+    }
+    if (reason || !row) {
+      const refusal: Record<string, [number, string]> = {
+        wrong_email: [403, "forbidden"],
+        unverified_email: [403, "forbidden"],
+        used: [409, "conflict"],
+        already_member: [409, "conflict"],
+      };
+      const [status, code] = refusal[String(reason)] ?? [404, "not_found"];
+      return json({ error: { code, message: "The invitation cannot be accepted.", reason } }, status);
+    }
+    row.status = "accepted";
+    state.members.push({ org_id: row.orgId, user_id: userId, role: row.role, created_at: new Date().toISOString() });
+    return json({ orgId: row.orgId, accepted: true });
+  }
+  const org = state.orgs.find((item) => item.id === body.org);
+  if (!org || !isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin manages invitations.");
+  if (route === "list")
+    return json({ invitations: state.invitations.filter((row) => row.orgId === org.id).map(invitationDto) });
+  if (route === "create") {
+    const email = String(body.email ?? "").toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email) || (body.role !== "member" && body.role !== "admin"))
+      return controlFail(400, "invalid", "An invitation needs an email and a role.");
+    const member = [...users.values()].find((user) => user.email === email);
+    if (member && isMember(org.id, member.id))
+      return json(
+        { error: { code: "conflict", message: `${email} is already a member.`, reason: "already_member" } },
+        409,
+      );
+    if (state.invitations.some((row) => row.orgId === org.id && row.email === email && row.status === "pending"))
+      return json(
+        {
+          error: {
+            code: "conflict",
+            message: `${email} already has a pending invitation. Resend it instead.`,
+            reason: "pending_exists",
+          },
+        },
+        409,
+      );
+    const row: Row = {
+      id: id(++sequence),
+      orgId: org.id,
+      email,
+      role: body.role,
+      expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      status: "pending",
+      delivery: state.nextDelivery,
+      token: fresh(),
+    };
+    state.invitations.push(row);
+    return json({ invitation: invitationDto(row) });
+  }
+  const row = state.invitations.find((item) => item.id === body.id && item.orgId === org.id);
+  if (row?.status !== "pending") return controlFail(404, "not_found", "Invitation not found.");
+  if (route === "resend") {
+    row.token = fresh();
+    row.delivery = state.nextDelivery;
+    return json({ invitation: invitationDto(row) });
+  }
+  if (route === "revoke") {
+    row.status = "revoked";
+    return json({ invitation: invitationDto(row) });
+  }
+  return controlFail(404, "not_found", "Unknown route.");
 }
 
 function controlFail(status: number, code: string, message: string): Response {
@@ -1311,6 +1473,40 @@ function publishGoldenBuild(route: string, body: Row, userId: string): Row | nul
   return { name, visibility: target.visibility, snapshot };
 }
 
+const SIZES = ["small", "medium", "large", "xlarge"];
+
+/**
+ * `golden/size-policy {golden, org, provider, policy?}` (#653): reads, or with `policy` replaces, a visible golden's
+ * size defaults under the owner (private) or admin (org) rule; directories must be the golden's configured ones.
+ */
+function goldenSizePolicy(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.sizePolicyCalls.push(body);
+  if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
+  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
+  const row = liveGoldens(userId).find(
+    (item) => item.name === body.golden && item.org_id === body.org && item.provider === (body.provider ?? "boat"),
+  );
+  if (!row) return controlFail(404, "not_found", "No golden named that.");
+  const repositories = ((row.config as { repos?: Row[] }).repos ?? []) as Row[];
+  if (body.policy !== undefined) {
+    const allowed = row.visibility === "private" ? row.owner_id === userId : isAdmin(row.org_id, userId);
+    if (!allowed) return controlFail(403, "forbidden", "You cannot change this golden's size policy.");
+    const policy = body.policy as { version?: unknown; golden?: unknown; repositories?: Record<string, unknown> };
+    const dirs = repositories.map((repo) => repo.dir);
+    if (
+      policy.version !== 1 ||
+      (policy.golden !== null && !SIZES.includes(String(policy.golden))) ||
+      Object.entries(policy.repositories ?? {}).some(
+        ([dir, size]) => !dirs.includes(dir) || !SIZES.includes(String(size)),
+      )
+    )
+      return controlFail(400, "invalid_request", "Unsupported size policy.");
+    row.size_policy = policy;
+  }
+  return json({ goldenId: row.id, provider: row.provider, repositories, policy: row.size_policy ?? null });
+}
+
 /**
  * `golden/remove {id, org?}` (#566): retires a visible golden by id under the owner/admin rule. The row stays as a
  * tombstone so its sandboxes and their history remain; provider artifacts are retained. Answers
@@ -1529,6 +1725,14 @@ function control(url: URL, body: Row): Response {
         }),
       );
     }
+    if (body.sizePolicies) {
+      // The server has #653's column: every golden reads `size_policy`; the Boat org golden has defaults.
+      for (const row of state.goldens) row.size_policy = null;
+      const shared = state.goldens.find((row) => row.name === "shared-golden" && row.provider === "boat");
+      if (shared) shared.size_policy = { version: 1, golden: "medium", repositories: { api: "large" } };
+      state.refuseSize = typeof body.refuseSize === "string" ? body.refuseSize : null;
+      state.olderServer = body.olderServer === true;
+    }
     if (body.modalTwin) {
       // A Modal golden with the same name as the Boat `shared-golden`, recording another repository.
       state.goldens.push({
@@ -1539,6 +1743,7 @@ function control(url: URL, body: Row): Response {
           repos: [{ url: "https://github.com/acme/docs.git", branch: "main", dir: "docs" }],
           init: [],
         },
+        ...(body.sizePolicies ? { size_policy: null } : {}),
       });
     }
     if (body.novaOrg) {
@@ -1691,6 +1896,49 @@ function control(url: URL, body: Row): Response {
     failSandboxConnections = true;
     return json({ ok: true });
   }
+  /**
+   * What GoTrue's `/verify` hands the browser for #649's email OTP (sent without a PKCE challenge): a live session for
+   * the address, which the redirect puts in the URL fragment. The tests build the incoming URL from it to prove the
+   * dashboard never uses it. No email is sent.
+   */
+  if (url.pathname === "/__test/email-link-session") {
+    const user = [...users.values()].find((candidate) => candidate.email === body.email);
+    return user ? json(session(user.id)) : json({ error: "unknown user" }, 404);
+  }
+  if (url.pathname === "/__test/unverified-email") {
+    state.unverifiedEmails.push(String(body.email));
+    return json({ ok: true });
+  }
+  /** Marks an invitation as the server would after a revoke or an acceptance elsewhere. */
+  if (url.pathname === "/__test/invitation-status") {
+    const row = state.invitations.find((item) => item.token === body.token);
+    if (row) row.status = body.status;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/invitation-delivery") {
+    state.nextDelivery = body.delivery as State["nextDelivery"];
+    return json({ ok: true });
+  }
+  /** The link an invitation email would carry right now: the current token of that address's pending invitation. */
+  if (url.pathname === "/__test/invitation-link") {
+    const row = state.invitations.find((item) => item.email === body.email && item.status === "pending");
+    return json({ token: row?.token ?? null });
+  }
+  /** A pending invitation as the server would hold it, for the recipient pages (expired ones included). */
+  if (url.pathname === "/__test/seed-invitation") {
+    const row: Row = {
+      id: id(++sequence),
+      orgId: ACME,
+      email: body.email,
+      role: body.role ?? "member",
+      expiresAt: new Date(Date.now() + Number(body.expiresInMs ?? 7 * 86_400_000)).toISOString(),
+      status: "pending",
+      delivery: "sent",
+      token: body.token,
+    };
+    state.invitations.push(row);
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/state") {
     return json({
       orgBoatKeys: state.orgs.filter((org) => org.boat_api_key_enc).map((org) => org.id),
@@ -1701,10 +1949,17 @@ function control(url: URL, body: Row): Response {
       goldenCalls: state.goldenCalls,
       goldenStatusCalls: state.goldenStatusCalls,
       goldenRemoveCalls: state.goldenRemoveCalls,
+      sizePolicyCalls: state.sizePolicyCalls,
+      sizedRefusals: state.sizedRefusals,
+      launchRoutes: state.launchRoutes,
       capabilityCalls: state.capabilityCalls,
       githubCliCalls: state.githubCliCalls,
       controlCalls: state.controlCalls,
       providerCalls: state.providerCalls,
+      invitationCalls: state.invitationCalls,
+      authCalls: state.authCalls,
+      invitations: state.invitations.map(invitationDto),
+      members: state.members,
       connections: state.connections.map((row) => ({ ...row })),
     });
   }
@@ -1725,6 +1980,16 @@ const server = Bun.serve({
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
+    if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
+      // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
+      // Either refusal comes before anything is allocated.
+      state.sizedRefusals.push(body);
+      if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
+      if (body.sizePolicyVersion !== 1)
+        return controlFail(400, "invalid", "The sized launch route requires sizePolicyVersion 1.");
+      state.sizedRefusals.pop();
+      return launchRoute(body, viewer(request), "sandbox/launch-sized-v1");
+    }
     if (url.pathname === "/api/v1/github/oauth/callback" && request.method === "POST") {
       return githubCliCallback(request, body);
     }
@@ -1739,8 +2004,11 @@ const server = Bun.serve({
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);
+      if (route === "golden/size-policy") return goldenSizePolicy(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
+      if (route.startsWith("org/invitations/"))
+        return invitations(route.slice("org/invitations/".length), body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);
