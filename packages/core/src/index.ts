@@ -243,3 +243,5 @@ export {
 export { VaultError, type VaultErrorCode } from "./vault-error.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";
+
+export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
