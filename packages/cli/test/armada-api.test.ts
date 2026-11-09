@@ -109,6 +109,30 @@ test("API calls leave the explicit signal as the only client-side deadline", asy
   expect(options).toMatchObject({ signal: controller.signal, timeout: false });
 });
 
+test("request cancellation also cancels saved-session refresh, preserving optional advice deadlines", async () => {
+  const controller = new AbortController();
+  let refreshAborted = false;
+  let calls = 0;
+  const client = await createArmadaApiClient({
+    ...io({}),
+    fetch: async (_input, init) => {
+      calls++;
+      if (calls === 1) {
+        controller.abort();
+        return new Response(null, { status: 401 });
+      }
+      refreshAborted = init?.signal?.aborted === true;
+      init?.signal?.throwIfAborted();
+      throw new Error("refresh must inherit cancellation");
+    },
+  });
+  await expect(client.request("/api/v1/sandbox/advice", { signal: controller.signal })).rejects.toThrow(
+    "could not reach",
+  );
+  expect(calls).toBe(2);
+  expect(refreshAborted).toBe(true);
+});
+
 // API transport owns redaction; server payloads must not become terminal output.
 for (const path of [
   "sandbox/detail",

@@ -77,7 +77,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
 
       if (response.status === 401 && !environmentToken && saved) {
-        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
         token = saved.accessToken;
         try {
           response = await io.fetch(url, {
@@ -152,6 +152,7 @@ async function refresh(
   refreshToken: string,
   saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
   let response: Response;
   try {
@@ -160,7 +161,7 @@ async function refresh(
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ refreshToken }),
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new AuthError("Armada could not reach the server.", "unavailable");
