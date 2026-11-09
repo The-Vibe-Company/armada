@@ -9,7 +9,20 @@ Source of truth: browser-safe `@armada/core` exports from
   Omit policy to read. Supply a complete version-1 policy to replace atomically.
   Clear with `{version:1,golden:null,repositories:{}}`.
 - MCP `golden_size_policy` uses the same fields and result.
-- HTTP `sandbox/launch` and MCP `launch` accept optional `size`:
+- Fail-closed HTTP `POST /api/v1/sandbox/launch-sized-v1` requires
+  `SizedLaunchRequestV1` (`LaunchRequest` plus optional org and mandatory `sizePolicyVersion:1`).
+  `SIZED_LAUNCH_ROUTE_V1` exports its exact path. MCP `launch_sized_v1`
+  (`SIZED_LAUNCH_TOOL_V1`) requires `size_policy_version:1` and otherwise uses
+  the same inputs/output as `launch`. Both reuse the existing launch handler/service.
+  Old replicas do not register these names and reject before allocation.
+  Use these transports for explicit sizes **or whenever repository/golden policy
+  semantics are required**, including a launch without an explicit size.
+  Never retry on the legacy route/tool after 404, unsupported version, or failure;
+  a preflight plus legacy launch is not safe under mixed server replicas.
+  Launch responses are unchanged (HTTP `sandbox.machineSize`, MCP `machineSize`).
+- Legacy HTTP `sandbox/launch` and MCP `launch` remain available unchanged for
+  old clients. New clients must not use them to promise sizing semantics.
+  Both legacy and versioned transports accept optional `size`:
   `small | medium | large | xlarge`. Boat's native `default` is canonical `medium`.
 - Evidence: HTTP launch `sandbox.machineSize`; MCP launch/list/status/wait
   `machineSize` (list: each sandbox). SQL `sandboxes.machine_size`.
