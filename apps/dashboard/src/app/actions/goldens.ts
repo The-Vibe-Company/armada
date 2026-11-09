@@ -2,13 +2,14 @@
 
 import type { Golden, SandboxProviderId } from "@armada/core";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
-import { ControlError, createControlClient, isGoldenBuildStatus } from "@/lib/control";
+import { ControlError, createControlClient, isGoldenBuildStatus, isGoldenRemoval } from "@/lib/control";
 import { listGoldens } from "@/lib/data/goldens";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
-import { goldenRequest, goldenRowState, PROVIDER_LABELS, type RepoRow } from "@/lib/golden-form";
+import { goldenRemoveBlocker, goldenRequest, goldenRowState, PROVIDER_LABELS, type RepoRow } from "@/lib/golden-form";
 import { createClient } from "@/lib/supabase/server";
 
 export async function setGoldenVisibility(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -126,6 +127,46 @@ export async function recoverGoldenBuild(idempotencyKey: string, org: string) {
   });
   if (!isGoldenBuildStatus(result)) throw new Error("Unexpected build status.");
   return result;
+}
+
+/**
+ * Retires a golden through the Armada server (`golden/remove {id, org}`, #566) with the viewer's session. The server
+ * keeps the row as a tombstone: sandboxes started from it, their conversations and logs stay, and provider artifacts
+ * are retained. This action only narrows the request to a golden visible in the selected org and the owner/admin
+ * rule; the server checks both again. One request, never retried. On success the lists are refreshed and the page
+ * says what was removed.
+ */
+export async function removeGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const viewer = await requireViewer();
+  const goldenId = formString(data, "golden");
+  const org = formString(data, "org");
+  if (!isUuid(goldenId) || !isUuid(org)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+  const supabase = await createClient();
+  const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
+  const target = goldens.find((row) => row.id === goldenId && row.org_id === org);
+  if (!target) return fail("That golden is not available in this scope.");
+  const isAdmin = memberships.some((item) => item.org.id === org && item.role === "admin");
+  const blocker = goldenRemoveBlocker(target, { id: viewer.id, isAdmin });
+  if (blocker) return fail(blocker);
+  let result: unknown;
+  try {
+    result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/remove", {
+      id: target.id,
+      org,
+    });
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.status === 404 && error.code === undefined)
+      return fail("This Armada server does not offer removing goldens yet.");
+    return fail(error.message);
+  }
+  if (!isGoldenRemoval(result) || result.id !== target.id) return fail("The Armada server sent an unexpected answer.");
+  revalidatePath("/goldens");
+  revalidatePath("/sandboxes");
+  redirect(`/goldens?removed=${target.id}`);
 }
 
 /** The server's idempotency key shape: 16–128 letters, digits, underscores or hyphens. */

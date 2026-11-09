@@ -40,12 +40,12 @@ export default async function OrgPage({ params }: Props) {
     <>
       <PageHeader title={membership.org.name} description={`You are ${isAdmin ? "an admin" : "a member"} of this org.`}>
         <Button variant="outline" asChild>
-          <Link href="/credentials">Org keys</Link>
+          <Link href="/credentials">Org credentials</Link>
         </Button>
       </PageHeader>
 
       <section className="space-y-3" aria-label="Members">
-        <h2 className="text-lg font-medium">Members</h2>
+        <h2 className="text-base font-semibold">Members</h2>
         <div className="rounded-lg border">
           <Table>
             <TableHeader>

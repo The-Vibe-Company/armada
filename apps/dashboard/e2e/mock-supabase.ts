@@ -50,6 +50,8 @@ type State = {
     /** Status reads fail (a 503) while set; the jobs themselves are unaffected. */
     failStatus?: boolean;
   };
+  /** Every `golden/remove` body, as the dashboard sent it, and whether it carried a session. */
+  goldenRemoveCalls: { body: Row; authorized: boolean }[];
   /** Every `golden/build/status` body, as the dashboard sent it. */
   goldenStatusCalls: Row[];
   capabilityCalls: { body: Row; authorized: boolean }[];
@@ -129,6 +131,7 @@ function seed(): State {
     toolCalls: [],
     launches: [],
     goldenCalls: [],
+    goldenRemoveCalls: [],
     goldenStatusCalls: [],
     goldenGate: { hold: false, fail: null },
     capabilityCalls: [],
@@ -330,6 +333,11 @@ function canReadGolden(row: Row, userId: string): boolean {
   return row.visibility === "org" || row.owner_id === userId;
 }
 
+/** The goldens the server acts on (launch, rebuild, remove): visible and not removed. */
+function liveGoldens(userId: string): Row[] {
+  return visibleRows("goldens", userId).filter((row) => !row.removed_at);
+}
+
 function visibleRows(table: string, userId: string): Row[] {
   switch (table) {
     case "orgs":
@@ -337,6 +345,8 @@ function visibleRows(table: string, userId: string): Row[] {
     case "members":
       return state.members.filter((member) => isMember(member.org_id, userId));
     case "goldens":
+      // As in the #566 migration, a removed golden stays readable (a tombstone its sandboxes still join to); a list
+      // that should not show it filters `removed_at=is.null` itself.
       return state.goldens.filter((row) => canReadGolden(row, userId));
     case "sandboxes":
       return state.sandboxes.filter((row) => {
@@ -379,6 +389,8 @@ function matches(row: Row, params: URLSearchParams): boolean {
     if (op === "eq" && actual !== operand) return false;
     if (op === "neq" && actual === operand) return false;
     if (op === "in" && !operand.slice(1, -1).split(",").includes(actual)) return false;
+    if (op === "is" && operand === "null" && row[key] !== null && row[key] !== undefined) return false;
+    if (op === "not" && operand === "is.null" && (row[key] === null || row[key] === undefined)) return false;
   }
   return true;
 }
@@ -677,7 +689,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 function launchRoute(body: Row, userId: string | null): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
-  const source = visibleRows("goldens", userId).find(
+  const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
   if (!source) return controlFail(404, "not_found", "No such golden.");
@@ -1041,7 +1053,7 @@ function admitGoldenBuild(route: string, body: Row, userId: string): Response | 
 
 /** The server's selectGolden: the name, narrowed to the body's provider; still more than one is a conflict. */
 function rebuildTarget(body: Row, userId: string): Row | Response {
-  const rows = visibleRows("goldens", userId).filter(
+  const rows = liveGoldens(userId).filter(
     (row) =>
       row.org_id === body.org &&
       row.name === body.name &&
@@ -1079,6 +1091,26 @@ function publishGoldenBuild(route: string, body: Row, userId: string): Row | nul
   target.provider_snapshot_id = snapshot;
   if (target.provider === "boat") target.boat_snapshot_id = snapshot;
   return { name, visibility: target.visibility, snapshot };
+}
+
+/**
+ * `golden/remove {id, org?}` (#566): retires a visible golden by id under the owner/admin rule. The row stays as a
+ * tombstone so its sandboxes and their history remain; provider artifacts are retained. Answers
+ * `{id, removedAt, artifacts: "retained"}`.
+ */
+function goldenRemove(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.goldenRemoveCalls.push({ body, authorized: Boolean(userId) });
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  const row = liveGoldens(userId).find(
+    (item) => item.id === body.id && (body.org === undefined || item.org_id === body.org),
+  );
+  if (!row) return json({ error: { code: "not_found", message: "No golden." } }, 404);
+  const allowed = row.visibility === "private" ? row.owner_id === userId : isAdmin(row.org_id, userId);
+  if (!allowed)
+    return json({ error: { code: "forbidden", message: "Only the owner or an org admin removes this golden." } }, 403);
+  row.removed_at = new Date().toISOString();
+  return json({ id: row.id, removedAt: row.removed_at, artifacts: "retained" });
 }
 
 /** `golden/capabilities {org, provider}`: the server's scoped read of the org's limit on that provider. */
@@ -1274,6 +1306,13 @@ function control(url: URL, body: Row): Response {
     });
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/sandbox-lifecycle") {
+    // The additive #565 fields on one sandbox row, as the database would hold them; the status is left alone.
+    const row = state.sandboxes.find((item) => item.id === body.id);
+    if (!row) return json({ message: "no sandbox" }, 404);
+    Object.assign(row, body.fields as Row);
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/fail-sandbox-connections") {
     failSandboxConnections = true;
     return json({ ok: true });
@@ -1286,6 +1325,7 @@ function control(url: URL, body: Row): Response {
       launches: state.launches,
       goldenCalls: state.goldenCalls,
       goldenStatusCalls: state.goldenStatusCalls,
+      goldenRemoveCalls: state.goldenRemoveCalls,
       capabilityCalls: state.capabilityCalls,
       githubCliCalls: state.githubCliCalls,
       controlCalls: state.controlCalls,
@@ -1322,6 +1362,7 @@ const server = Bun.serve({
       if (route === "golden/build/status") return goldenJobStatus(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
+      if (route === "golden/remove") return goldenRemove(body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);

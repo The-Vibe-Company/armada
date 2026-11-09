@@ -292,3 +292,15 @@ export function isGoldenBuildStatus(value: unknown): value is GoldenBuildStatus 
     (value.result === null || isGoldenBuildResult(value.result))
   );
 }
+
+/** `golden/remove {id, org?}`'s answer: the golden is retired; its sandboxes and provider artifacts are kept. */
+export type GoldenRemoval = { id: string; removedAt: string; artifacts: "retained" };
+
+export function isGoldenRemoval(value: unknown): value is GoldenRemoval {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.removedAt === "string" &&
+    value.artifacts === "retained"
+  );
+}

@@ -17,6 +17,7 @@ async function mockState(): Promise<{
   launches: Record<string, unknown>[];
   toolCalls: ToolCall[];
   capabilityCalls: CapabilityCall[];
+  goldenRemoveCalls: { body: Record<string, unknown>; authorized: boolean }[];
 }> {
   return (await post("/__test/state")).json();
 }
@@ -584,4 +585,94 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   const after = await mockState();
   expect(after.goldenStatusCalls.slice(before.goldenStatusCalls.length)).toEqual([]);
   expect(after.goldenCalls).toHaveLength(1);
+});
+
+test("removing a golden asks first, retires only the golden, and keeps its sandboxes and history", async ({
+  page,
+  context,
+}) => {
+  await signIn(page, "alice@example.com", "/goldens");
+  // A crafted link cannot announce a removal: neither a live golden's id nor a bare name shows a confirmation.
+  for (const removed of ["00000000-0000-4000-8000-000000000020", "shared-golden"]) {
+    await page.goto(`/goldens?removed=${removed}`);
+    await expect(page.locator('[data-golden="shared-golden"]')).toBeVisible();
+    await expect(page.locator("[data-golden-removed]")).toHaveCount(0);
+  }
+  // Another tab still shows the launch dialog of the golden about to be removed.
+  const stale = await context.newPage();
+  await stale.goto("/goldens");
+  await stale.getByRole("button", { name: "Launch from shared-golden" }).click();
+
+  const card = page.locator('[data-golden="shared-golden"]');
+  await card.getByRole("button", { name: "Remove golden" }).click();
+  const confirm = page.getByRole("alertdialog");
+  await expect(confirm).toContainText("Remove shared-golden on Boat?");
+  await expect(confirm).toContainText("Sandboxes already started from it stay, with their conversations and logs");
+  await page.screenshot({ path: "test-results/golden-remove-confirm.png", animations: "disabled" });
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(card).toBeVisible();
+  expect((await mockState()).goldenRemoveCalls).toEqual([]);
+
+  await card.getByRole("button", { name: "Remove golden" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remove golden" }).click();
+  await expect(page).toHaveURL(/\/goldens\?removed=00000000-0000-4000-8000-000000000020$/);
+  await expect(page.locator("[data-golden-removed]")).toContainText("Removed shared-golden");
+  // The tombstone stays readable in the database; the page itself must leave it out.
+  await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Launch from shared-golden/ })).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
+  // Retirement keeps the provider slot (#566): the Boat count still includes it and says removing does not free it.
+  const boat = page.locator('[data-capacity-provider="boat"]');
+  await expect(boat).toHaveAttribute("data-capacity", "legacy");
+  await expect(boat).toHaveAttribute("data-capacity-removed", "1");
+  await expect(boat).toContainText("2 of 1");
+  await expect(boat).toContainText("removing a golden does not free its slot");
+  await expect(page.locator("[data-legacy-conflict]")).toContainText("removed: still holds its slot");
+  // One request, by id in the selected org, with the session; never a delete of anything else.
+  expect((await mockState()).goldenRemoveCalls).toEqual([
+    {
+      body: { id: "00000000-0000-4000-8000-000000000020", org: "00000000-0000-4000-8000-000000000010" },
+      authorized: true,
+    },
+  ]);
+
+  // A launch prepared before the removal is refused by the dashboard's own selection, before the server.
+  await stale.getByRole("dialog").getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(stale.getByRole("dialog").getByRole("alert")).toContainText(
+    "That golden is not available in this organization.",
+  );
+  expect((await mockState()).launches).toEqual([]);
+  await stale.close();
+
+  // Its sandboxes keep their history and still name the golden they started from.
+  await page.goto("/sandboxes");
+  await expect(page.getByRole("row", { name: /bx_alice_running/ })).toContainText("shared-golden (removed)");
+  await expect(
+    page.getByLabel("Golden", { exact: true }).getByRole("option", { name: "shared-golden (removed)" }),
+  ).toHaveCount(1);
+  await page.getByRole("link", { name: "bx_alice_running" }).click();
+  await expect(page.getByRole("heading", { name: "bx_alice_running" })).toBeVisible();
+  await expect(page.locator("dl").first()).toContainText("shared-golden (removed)");
+  await expect(page.getByText("Fix the failing test")).toBeVisible();
+});
+
+test("only the owner or an org admin is offered removal, and a forged removal is refused before the server", async ({
+  page,
+}) => {
+  await signIn(page, "bob@example.com", "/goldens");
+  await expect(
+    page.locator('[data-golden="shared-golden"]').getByRole("button", { name: "Remove golden" }),
+  ).toHaveCount(0);
+  const own = page.locator('[data-golden="bob-private"]');
+  await own.getByRole("button", { name: "Remove golden" }).click();
+  const confirm = page.getByRole("alertdialog");
+  await confirm.locator('input[name="golden"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000020";
+  });
+  await confirm.getByRole("button", { name: "Remove golden" }).click();
+  await expect(confirm.getByRole("alert")).toContainText("Only an org admin removes an org golden.");
+  expect((await mockState()).goldenRemoveCalls).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-golden="bob-private"]')).toBeVisible();
 });

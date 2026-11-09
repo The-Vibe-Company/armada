@@ -1,4 +1,5 @@
 import { HARNESSES } from "@armada/core";
+import { RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { LinkPendingIcon } from "@/components/link-pending";
@@ -7,10 +8,12 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { listGoldens } from "@/lib/data/goldens";
+import { listGoldenHistory } from "@/lib/data/goldens";
 import { listSandboxes } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { HARNESS_LABELS } from "@/lib/labels";
+import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -26,7 +29,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const selected = await selectedOrganization();
   const [{ rows, total }, goldens, directory] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
-    listGoldens(supabase),
+    // Removed goldens included: a retained sandbox keeps naming (and filtering by) the golden it started from.
+    listGoldenHistory(supabase),
     listMemberships(supabase, viewer.id)
       .then((items) => items.filter((item) => item.org.id === selected?.org.id))
       .then((memberships) =>
@@ -36,25 +40,48 @@ export default async function SandboxesPage({ searchParams }: Props) {
         ),
       ),
   ]);
-  const goldenName = new Map(goldens.map((golden) => [golden.id, golden.name]));
+  const goldenName = new Map(
+    goldens.map((golden) => [golden.id, golden.removed_at ? `${golden.name} (removed)` : golden.name]),
+  );
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const now = new Date();
   const filtered = Boolean(filters.status || filters.harness || filters.golden || filters.owner);
+
+  const launchAction = selected ? (
+    <Button asChild>
+      <Link href="/goldens">
+        <LinkPendingIcon>
+          <RocketIcon />
+        </LinkPendingIcon>
+        Launch a sandbox
+      </Link>
+    </Button>
+  ) : null;
 
   return (
     <>
-      <PageHeader title="Sandboxes" description="Agents running on boat.dev, from the goldens you can see." />
+      <PageHeader
+        title="Sandboxes"
+        description={
+          selected
+            ? `The agents of ${selected.org.name} you can see. Open one to follow its logs, send it a message or stop it.`
+            : "The agents you can see. Sandboxes belong to an organization."
+        }
+      >
+        {launchAction}
+      </PageHeader>
 
       <form
         key={filtersToSearch(filters)}
         method="get"
-        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(4,1fr)_auto]"
+        className="grid grid-cols-2 gap-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]"
         aria-label="Filters"
       >
         <NativeSelect name="status" defaultValue={filters.status ?? ""} aria-label="Status">
           <option value="">Any status</option>
           {SANDBOX_STATUSES.map((status) => (
             <option key={status} value={status}>
-              {status}
+              {capitalize(status)}
             </option>
           ))}
         </NativeSelect>
@@ -62,7 +89,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
           <option value="">Any harness</option>
           {HARNESSES.map((harness) => (
             <option key={harness} value={harness}>
-              {harness}
+              {HARNESS_LABELS[harness]}
             </option>
           ))}
         </NativeSelect>
@@ -70,7 +97,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
           <option value="">Any golden</option>
           {goldens.map((golden) => (
             <option key={golden.id} value={golden.id}>
-              {golden.name}
+              {goldenName.get(golden.id)}
             </option>
           ))}
         </NativeSelect>
@@ -85,8 +112,10 @@ export default async function SandboxesPage({ searchParams }: Props) {
               </option>
             ))}
         </NativeSelect>
-        <div className="flex gap-2">
-          <Button type="submit">Filter</Button>
+        <div className="col-span-2 flex gap-2 lg:col-span-1">
+          <Button type="submit" variant="secondary">
+            Filter
+          </Button>
           {filtered && (
             <Button variant="ghost" asChild>
               <Link href="/sandboxes">Clear</Link>
@@ -96,43 +125,55 @@ export default async function SandboxesPage({ searchParams }: Props) {
       </form>
 
       {rows.length === 0 ? (
-        <Empty title={filtered ? "No sandbox matches these filters" : "No sandboxes yet"}>
-          {filtered
-            ? "Try clearing a filter."
-            : "Launch one with `armada launch <golden>` or from an orchestrator over MCP."}
-        </Empty>
+        filtered ? (
+          <Empty title="No sandbox matches these filters">Try clearing a filter.</Empty>
+        ) : (
+          <Empty title="No sandboxes yet" action={launchAction}>
+            A sandbox starts from a golden. Pick one on the Goldens page, or run{" "}
+            <code className="font-mono text-xs">armada launch &lt;golden&gt;</code> or launch from an orchestrator over
+            MCP.
+          </Empty>
+        )
       ) : (
-        <div className="rounded-lg border">
+        <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
-              <TableRow>
+              <TableRow className="bg-muted/40 hover:bg-muted/40">
                 <TableHead>Sandbox</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Golden</TableHead>
-                <TableHead>Harness</TableHead>
-                <TableHead>Owner</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead className="hidden sm:table-cell">Golden</TableHead>
+                <TableHead className="hidden md:table-cell">Harness</TableHead>
+                <TableHead className="hidden md:table-cell">Owner</TableHead>
+                <TableHead className="hidden lg:table-cell">Created</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((sandbox) => (
                 <TableRow key={sandbox.id}>
-                  <TableCell>
+                  <TableCell className="max-w-0 min-w-40 sm:max-w-none">
                     <Link
                       href={`/sandboxes/${sandbox.id}`}
-                      className="inline-flex items-center gap-1.5 font-mono text-sm underline-offset-4 hover:underline"
+                      className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm font-medium underline-offset-4 hover:underline"
                     >
-                      {sandbox.provider_sandbox_id}
+                      <span className="truncate">{sandbox.provider_sandbox_id}</span>
                       <LinkPendingIcon />
                     </Link>
+                    <p className="truncate text-xs text-muted-foreground sm:hidden">
+                      {goldenName.get(sandbox.golden_id) ?? "Unknown golden"}, {HARNESS_LABELS[sandbox.harness]}
+                    </p>
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={sandbox.status} />
+                    <LifecycleHint view={lifecycleView(sandbox.status, readLifecycle(sandbox), now)} />
                   </TableCell>
-                  <TableCell>{goldenName.get(sandbox.golden_id) ?? "Unknown"}</TableCell>
-                  <TableCell>{sandbox.harness}</TableCell>
-                  <TableCell>{displayUser(directory, sandbox.owner_id, viewer.id)}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="hidden sm:table-cell">
+                    {goldenName.get(sandbox.golden_id) ?? "Unknown"}
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell">{HARNESS_LABELS[sandbox.harness]}</TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    {displayUser(directory, sandbox.owner_id, viewer.id)}
+                  </TableCell>
+                  <TableCell className="hidden text-muted-foreground lg:table-cell">
                     <time dateTime={sandbox.created_at}>{formatDate(sandbox.created_at)}</time>
                   </TableCell>
                 </TableRow>
@@ -145,7 +186,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
       {pages > 1 && (
         <nav aria-label="Pages" className="flex items-center justify-between text-sm text-muted-foreground">
           <span>
-            Page {filters.page} of {pages} · {total} sandboxes
+            Page {filters.page} of {pages}, {total} sandboxes
           </span>
           <div className="flex gap-2">
             {filters.page > 1 && (
@@ -163,6 +204,27 @@ export default async function SandboxesPage({ searchParams }: Props) {
       )}
     </>
   );
+}
+
+/** Under the status, quietly: the time left, or that the deadline passed or a stop is being retried. */
+function LifecycleHint({ view }: { view: LifecycleView }) {
+  if (view.notice)
+    return (
+      <p className="mt-1 text-xs text-warning" data-lifecycle={view.notice.kind}>
+        {view.notice.kind === "retrying" ? "Stop retrying" : "Past deadline"}
+      </p>
+    );
+  if (view.remaining)
+    return (
+      <p className="mt-1 text-xs text-muted-foreground" data-lifecycle="remaining">
+        {view.remaining}
+      </p>
+    );
+  return null;
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function formatDate(iso: string): string {

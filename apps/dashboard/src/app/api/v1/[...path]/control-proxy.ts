@@ -29,6 +29,7 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/create",
   "golden/build/status",
   "golden/update",
+  "golden/remove",
   "golden/snapshot",
   "golden/connect",
   "sandbox/launch",
