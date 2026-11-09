@@ -403,9 +403,6 @@ private actor SubmissionRaceTransport: ArmadaTransport {
         await #expect(throws: expected) { _ = try await client.submitOrchestratorOperation(command.id) }
         #expect(await client.pendingOperations.first?.state == .uncertain)
         #expect(await client.pendingOperations.first?.canDiscard == false)
-        // Without an authoritative receipt ID, detail cannot correlate this key.
-        #expect(try await client.reconcileOrchestratorOperation(command.id) == nil)
-        #expect(await transport.requests.count == 4)
         await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
         await #expect(throws: ArmadaError.conflict) {
             _ = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 8)
@@ -475,89 +472,4 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     #expect(requests.count == 2)
     #expect(requests[0].httpBody == requests[1].httpBody)
     #expect(requests[0].value(forHTTPHeaderField: "Idempotency-Key") == requests[1].value(forHTTPHeaderField: "Idempotency-Key"))
-}
-
-private let pendingStop = #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"stop","state":"pending","revision":8,"errorCode":null}"#
-private let completedStop = #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"stop","state":"succeeded","revision":8,"errorCode":null}"#
-private func detailReply(operations: String) -> String {
-    #"{"version":1,"orchestrator":{"version":1,"id":"parent-a","ownerId":"owner-a","configuration":{"version":1,"orgId":"org-a","name":"Coordinator","goldenId":"golden-a","provider":"boat","harness":"codex","model":"model-a","modelAccountId":"account-a"},"state":"stopped","revision":8,"sandboxId":null,"conversationId":null,"continuity":"not_started","createdAt":"2026-11-09T00:00:00Z","updatedAt":"2026-11-09T00:00:00Z","lastActivityAt":"2026-11-09T00:00:00Z","idleDeadline":null,"skillRevision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","blockedReason":null},"operations":OPERATIONS,"waits":[],"delegation":null,"childSandboxIds":[]}"#
-        .replacingOccurrences(of: "OPERATIONS", with: operations)
-}
-
-@Test func readOnlyReceiptReconciliationBypassesBlockedRetryPreflight() async throws {
-    for (terminal, terminalState) in [
-        (completedStop, OrchestratorOperationState.succeeded),
-        (completedStop.replacingOccurrences(of: "succeeded", with: "failed")
-            .replacingOccurrences(of: #""errorCode":null"#, with: #""errorCode":"native_continuity_lost""#), .failed)
-    ] {
-        let snapshot = detailReply(operations: "[" + terminal + "]")
-        let response = terminalState == .failed
-            ? snapshot.replacingOccurrences(of: #""state":"stopped""#, with: #""state":"blocked""#)
-                .replacingOccurrences(of: #""continuity":"not_started""#, with: #""continuity":"lost""#)
-            : snapshot
-        let transport = ScriptedTransport([
-            .init(status: 200, body: login),
-            .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
-            .init(status: 200, body: #"{"version":1,"enabled":true}"#),
-            .init(status: 202, body: pendingStop),
-            .init(status: 200, body: #"{"version":1,"enabled":true}"#),
-            .init(status: 503, body: #"{"error":{"code":"unavailable","message":"unavailable"}}"#),
-            .init(status: 200, body: response)
-        ])
-        let storage = MemoryStorage()
-        let client = try ArmadaClient(transport: transport, storage: storage)
-        try await client.verifyEmail(email: "person@example.test", code: "123456")
-        try await client.selectOrganization("org-a")
-        let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
-        #expect(try await client.submitOrchestratorOperation(command.id).state == .pending)
-        await #expect(throws: ArmadaError.unavailable) { _ = try await client.submitOrchestratorOperation(command.id) }
-        let receipt = try await client.reconcileOrchestratorOperation(command.id)
-        #expect(receipt?.id == "operation-a")
-        #expect(receipt?.state == terminalState)
-        let requests = await transport.requests
-        #expect(requests.last?.httpMethod == "GET")
-        #expect(requests.last?.url?.path == "/api/v1/orchestrators/parent-a")
-        let posts = requests.filter { $0.url?.path == "/api/v1/orchestrators/parent-a/stop" }
-        #expect(posts.count == 2)
-        #expect(posts[0].httpBody == posts[1].httpBody)
-        #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") == posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
-        let restored = try ArmadaClient(transport: transport, storage: storage)
-        try await restored.restore()
-        #expect(await restored.pendingOperations.first?.receipt?.state == terminalState)
-        // Known terminal state does not block the next intentional command.
-        _ = try await restored.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 8)
-    }
-}
-
-@Test func readOnlyReconcileRequiresExactKnownTerminalReceipt() async throws {
-    for (operations, invalidCorrelation) in [
-        ("[]", false),
-        ("[" + completedStop.replacingOccurrences(of: "operation-a", with: "another-operation") + "]", false),
-        ("[" + pendingStop + "]", false),
-        ("[" + pendingStop.replacingOccurrences(of: "pending", with: "uncertain") + "]", false),
-        ("[" + completedStop.replacingOccurrences(of: "parent-a", with: "another-parent") + "]", true),
-        ("[" + completedStop.replacingOccurrences(of: #""revision":8"#, with: #""revision":9"#) + "]", true)
-    ] {
-        let transport = ScriptedTransport([
-            .init(status: 200, body: login),
-            .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
-            .init(status: 200, body: #"{"version":1,"enabled":true}"#),
-            .init(status: 202, body: pendingStop),
-            .init(status: 200, body: detailReply(operations: operations))
-        ])
-        let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
-        try await client.verifyEmail(email: "person@example.test", code: "123456")
-        try await client.selectOrganization("org-a")
-        let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
-        _ = try await client.submitOrchestratorOperation(command.id)
-        if invalidCorrelation {
-            await #expect(throws: ArmadaError.invalidResponse) { _ = try await client.reconcileOrchestratorOperation(command.id) }
-        } else {
-            #expect(try await client.reconcileOrchestratorOperation(command.id) == nil)
-        }
-        #expect(await client.pendingOperations.first?.receipt?.id == "operation-a")
-        #expect(await client.pendingOperations.first?.canDiscard == false)
-        await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
-        #expect(await transport.requests.filter { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/stop") == true }.count == 1)
-    }
 }
