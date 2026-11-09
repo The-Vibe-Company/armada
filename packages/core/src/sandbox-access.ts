@@ -9,6 +9,10 @@ export interface SandboxListMetadata {
   orgId: string;
   ownerId: string;
   provider: SandboxProviderId;
+  /** Canonical provider display id (bx_ on Boat), not a credential or routing URL. Null if unavailable. */
+  providerSandboxId: string | null;
+  /** Compatibility display alias: equals providerSandboxId for Boat, always null for Modal. */
+  boatId: string | null;
   harness: Harness;
   model: string | null;
   reasoningEffort: string | null;

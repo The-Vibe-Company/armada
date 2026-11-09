@@ -207,7 +207,7 @@ export {
   type SandboxStore,
   statusReasonOf,
 } from "./sandbox.ts";
-export * from "./sandbox-access.ts";
+export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
 export {
   assertProviderOf,
   createProviderRegistry,

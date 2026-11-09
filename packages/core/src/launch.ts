@@ -133,9 +133,8 @@ export async function launchSandbox(
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
   if (repositoryDir !== null && !prepareNativeCwd)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
-  const visibility = request.visibility ?? golden.visibility;
-  if (golden.visibility === "private" && visibility === "org")
-    throw new LaunchError("invalid_request", "A private golden cannot launch an org sandbox.");
+  // Deprecated launch visibility cannot change sandbox access or source authority.
+  const visibility = golden.visibility;
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];

@@ -285,7 +285,8 @@ export function createSqlMcpRegistry(
       const visible = await sql.query<{ id: string; owner_id: string; role: "admin" | "member" }>(
         `select s.id,s.owner_id,m.role from public.sandboxes s
         join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid
-        where s.id=$1::uuid and s.org_id=$2::uuid`,
+        where s.id=$1::uuid and s.org_id=$2::uuid
+        and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
         [sandboxId, org, user],
       );
       const sandbox = visible.rows[0];

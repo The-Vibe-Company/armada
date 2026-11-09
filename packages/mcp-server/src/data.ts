@@ -6,6 +6,7 @@ import {
   type ModalBinding,
   mapGoldenRow,
   mapSandboxRow,
+  type SandboxListMetadata,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStatus,
@@ -39,13 +40,13 @@ export interface ServerSandboxStore extends SandboxStore {
     ownerId?: string;
     limit: number;
     page?: number;
-  }): Promise<{ rows: SandboxView[]; total: number }>;
+  }): Promise<{ rows: SandboxListMetadata[]; total: number }>;
 }
 
 /**
  * What one caller may read and change. The server's database connection is privileged, so row level
  * security does not apply to it: every query here carries the same rule itself. The caller's orgs only,
- * and a private golden and its sandboxes only for the owner, admins included.
+ * and private goldens only for their owner. Sandbox metadata is org-visible; interior is owner/admin.
  */
 export interface ScopedData {
   goldens: GoldenStore;
@@ -69,8 +70,20 @@ const SANDBOX_COLUMNS = `s.id, s.provider::text as provider, s.provider_sandbox_
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.org_id = g.org_id and s.org_id=any($1::uuid[]) and (s.visibility='org' or s.access_owner_id=$2::uuid)
-  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)`;
+const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+  and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m
+  where m.org_id=s.org_id and m.user_id=$2::uuid)`;
+const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
+  where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
+const SANDBOX_LIST_COLUMNS = `nullif(s.provider_sandbox_id,'') as "providerSandboxId",
+  case when s.provider='boat' then nullif(s.provider_sandbox_id,'') else null end as "boatId", s.id, s.org_id as "orgId", s.owner_id as "ownerId",
+  s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
+  s.status::text as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
+  s.effective_ttl_seconds as "effectiveTtlSeconds",
+  case when s.machine_size->>'effective' in ('small','medium','large','xlarge') then s.machine_size->>'effective' else null end as "machineSize",
+  'Sandbox ' || s.id::text as "displayLabel",
+  (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canOpen",
+  (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canManage"`;
 
 type SandboxViewRow = SandboxRow & {
   golden: string;
@@ -210,8 +223,8 @@ export function createSqlData(sql: Sql): DataSource {
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
              reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, machine_size)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,coalesce($12::public.visibility,visible.visibility),$2::uuid,$13::text,$14::integer,$15::integer,now()+$15 * interval '1 second',$16::uuid,case when $16::uuid is not null then now()+interval '2 minutes' else null end,$17::text::jsonb from visible
-           where visible.visibility='org' or coalesce($12::public.visibility,visible.visibility)='private'
+             $9::text, $10::text, $11::public.sandbox_provider,visible.visibility,$2::uuid,$12::text,$13::integer,$14::integer,now()+$14 * interval '1 second',$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::text::jsonb from visible
+
            returning id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
              conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
@@ -225,7 +238,6 @@ export function createSqlData(sql: Sql): DataSource {
             input.model,
             input.reasoningEffort,
             input.provider,
-            input.visibility ?? null,
             input.repositoryDir ?? null,
             input.requestedTtlSeconds ?? null,
             input.effectiveTtlSeconds ?? 14400,
@@ -314,17 +326,18 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async list(filter) {
         const statuses = filter.statuses?.length ? [...filter.statuses] : null;
-        const result = await sql.query<(SandboxViewRow & { total: number }) | { id: null; total: number }>(
+        const result = await sql.query<(SandboxListMetadata & { total: number }) | { id: null; total: number }>(
           `with matched as (
-             select ${SANDBOX_COLUMNS} from public.sandboxes s join public.goldens g on g.id = s.golden_id
-             where ${SANDBOX_VISIBLE}
+             select ${SANDBOX_LIST_COLUMNS} from public.sandboxes s
+             where ${SANDBOX_MEMBER}
                and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
                and ($4::text is null or s.harness::text = $4)
-               and ($5::uuid is null or s.golden_id = $5)
+               and ($5::uuid is null or s.golden_id = $5 and exists(select 1 from public.goldens g where g.id=s.golden_id
+                 and g.org_id=s.org_id and g.removed_at is null and (g.visibility='org' or g.owner_id=$2::uuid)))
                and ($6::uuid is null or s.owner_id = $6)
            ) select p.*, totals.total from (select count(*)::int as total from matched) totals
-             left join (select * from matched order by created_at desc, id limit $7 offset $8) p on true
-             order by p.created_at desc, p.id`,
+             left join (select * from matched order by "createdAt" desc, id limit $7 offset $8) p on true
+             order by p."createdAt" desc, p.id`,
           [
             ...scope,
             statuses,
@@ -338,7 +351,14 @@ export function createSqlData(sql: Sql): DataSource {
         const page = result.rows[0];
         if (!page) throw new DataError("The sandbox page could not be read.");
         return {
-          rows: result.rows.filter((row): row is SandboxViewRow & { total: number } => row.id !== null).map(mapView),
+          rows: result.rows
+            .filter((row): row is SandboxListMetadata & { total: number } => row.id !== null)
+            .map(({ total: _total, ...row }) => ({
+              ...row,
+              createdAt: new Date(row.createdAt).toISOString(),
+              stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
+              expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),
+            })),
           total: page.total,
         };
       },

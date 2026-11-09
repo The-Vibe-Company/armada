@@ -283,8 +283,8 @@ export function createMcpLifecycle(options: {
         const sandbox = (
           await tx.query<{ id: string; owner_id: string }>(
             `select id,owner_id from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
-          and status not in ('deleted','failed') and deleted_at is null for update`,
-            [provider.id, providerSandboxId, caller.orgId],
+          and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
+            [provider.id, providerSandboxId, caller.orgId, caller.userId],
           )
         ).rows[0];
         if (
@@ -315,7 +315,7 @@ export function createMcpLifecycle(options: {
     },
     async beforePrompt(provider: Provider, providerSandboxId: string, caller: { userId: string; orgId: string }) {
       const r = await sql.query<{ id: string; org_id: string; owner_id: string; role: "admin" | "member" }>(
-        `select s.id,s.org_id,s.owner_id,m.role from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid`,
+        `select s.id,s.org_id,s.owner_id,m.role from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
         [provider.id, providerSandboxId, caller.userId, caller.orgId],
       );
       const row = r.rows[0];

@@ -7,6 +7,7 @@ import {
   createSqlMcpRegistry,
   type Sql,
 } from "@armada/core";
+import { createSqlData } from "../src/data.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
 test("registry separates personal grants, fences leases on revoke, and refuses shared impersonation", async () => {
@@ -570,6 +571,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
           },
           encryptionKey: ENCRYPTION_KEY,
           store: createSqlVaultStore(db),
+          data: createSqlData(db),
           mcp: { registry },
         },
       );
@@ -590,6 +592,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
     expect((await call(p.owner, "sandbox-connections", { org: p.org, id: empty })).body.connections).toEqual([]);
     for (const actor of [p.member])
       expect((await call(actor, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
+    expect((await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).status).toBe(404);
     expect(
       (await call(p.admin, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections.map((c) => c.id),
     ).toEqual([shared.id]);
@@ -653,7 +656,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
     ).toBe("not_connected");
     expect(await grants.acquire(shared.id, crypto.randomUUID())).toBeNull();
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
-    expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(403);
+    expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
   } finally {
     await db.close();
   }
