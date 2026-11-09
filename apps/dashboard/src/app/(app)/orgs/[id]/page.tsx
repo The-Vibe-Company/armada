@@ -1,29 +1,52 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { addMember, changeMemberRole, removeMember } from "@/app/actions/orgs";
+import { inviteMember, resendInvitation, revokeInvitation } from "@/app/actions/invitations";
+import { changeMemberRole, removeMember } from "@/app/actions/orgs";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { InvitationList, InviteForm } from "@/components/invitations";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { isUuid } from "@/lib/action";
+import { ControlError, createInvitationControl } from "@/lib/control";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
-import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { listMemberships, requireViewer, type Viewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
+import { type InvitationView, pendingInvitations } from "@/lib/invitations";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Organization" };
 export const dynamic = "force-dynamic";
 
-type Props = { params: Promise<{ id: string }> };
+type Props = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
 
-export default async function OrgPage({ params }: Props) {
+type Invitations = { ok: true; rows: InvitationView[] } | { ok: false; message: string };
+
+/** The org's pending invitations, read by the Armada server for an admin. A failed read leaves the page usable. */
+async function readInvitations(viewer: Viewer, org: string, now: Date): Promise<Invitations> {
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token)
+    return { ok: false, message: "The Armada server is not configured for this dashboard." };
+  try {
+    const list = await createInvitationControl({ serverUrl, token: viewer.token }).list(org);
+    const rows = pendingInvitations(list, org, now);
+    return rows ? { ok: true, rows } : { ok: false, message: "The Armada server sent an unexpected invitation list." };
+  } catch (error) {
+    if (error instanceof ControlError) return { ok: false, message: error.message };
+    throw error;
+  }
+}
+
+export default async function OrgPage({ params, searchParams }: Props) {
   const { id } = await params;
+  const joined = (await searchParams).joined === "1";
   if (!isUuid(id)) notFound();
   if (!(await isSelectedOrganization(id))) redirect("/orgs");
   const viewer = await requireViewer();
@@ -36,6 +59,8 @@ export default async function OrgPage({ params }: Props) {
   if (!membership) notFound();
   const isAdmin = membership.role === "admin";
   if (roster.error) throw new Error(roster.error.message);
+  const now = new Date();
+  const invitations = isAdmin ? await readInvitations(viewer, id, now) : null;
 
   return (
     <>
@@ -47,6 +72,40 @@ export default async function OrgPage({ params }: Props) {
           <Link href="/credentials">Org credentials</Link>
         </Button>
       </PageHeader>
+
+      {joined && (
+        <p role="status" className="rounded-lg border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
+          You joined {membership.org.name} as {membership.role === "admin" ? "an admin" : "a member"}.
+        </p>
+      )}
+
+      {invitations && (
+        <section className="space-y-3" aria-labelledby="invite-heading">
+          <div>
+            <h2 id="invite-heading" className="text-base font-semibold">
+              Invite a teammate
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              They get an email link, sign in with that address and accept. They join only then.
+            </p>
+          </div>
+          <InviteForm org={id} action={inviteMember} />
+          <h3 className="pt-2 text-sm font-medium">Pending invitations</h3>
+          {invitations.ok ? (
+            <InvitationList
+              org={id}
+              invitations={invitations.rows}
+              now={now}
+              resend={resendInvitation}
+              revoke={revokeInvitation}
+            />
+          ) : (
+            <p role="alert" className="text-sm text-destructive">
+              Pending invitations could not be loaded: {invitations.message}
+            </p>
+          )}
+        </section>
+      )}
 
       <section className="space-y-3" aria-label="Members">
         <h2 className="text-base font-semibold">Members</h2>
@@ -105,32 +164,6 @@ export default async function OrgPage({ params }: Props) {
           </Table>
         </div>
       </section>
-
-      {isAdmin && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Add a member</CardTitle>
-            <CardDescription>They must have signed in to Armada once.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ActionForm action={addMember} resetOnSuccess className="flex flex-col gap-3 sm:max-w-md">
-              <input type="hidden" name="org" value={id} />
-              <div className="space-y-2">
-                <Label htmlFor="member-email">Email</Label>
-                <Input id="member-email" name="email" type="email" required placeholder="teammate@company.com" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="member-role">Role</Label>
-                <NativeSelect id="member-role" name="role" defaultValue="member">
-                  <option value="member">member</option>
-                  <option value="admin">admin</option>
-                </NativeSelect>
-              </div>
-              <SubmitButton className="self-start">Add member</SubmitButton>
-            </ActionForm>
-          </CardContent>
-        </Card>
-      )}
     </>
   );
 }

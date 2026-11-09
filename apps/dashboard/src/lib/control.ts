@@ -11,6 +11,7 @@ import {
   safeAuthorizationUrl,
   type UpdateConnectionRequest,
 } from "./connections.ts";
+import { type InvitationView, type InviteRole, parseInvitation } from "./invitations.ts";
 
 /**
  * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
@@ -342,4 +343,39 @@ export function isGoldenRemoval(value: unknown): value is GoldenRemoval {
     typeof value.removedAt === "string" &&
     value.artifacts === "retained"
   );
+}
+
+/**
+ * Organization invitations, control API v1 (#640): `org/invitations/{create,list,resend,revoke,accept}`, POST with
+ * the viewer's bearer. The server checks the admin role, the recipient's verified email and the token; the
+ * dashboard relays and parses. The accept token is a request body field only, never part of a URL or an error.
+ */
+export function createInvitationControl(options: ArmadaApiOptions) {
+  const post = (operation: string, body: object) =>
+    controlPost(options, `/api/v1/org/invitations/${operation}`, body, "organization invitations");
+
+  async function one(operation: string, body: object): Promise<InvitationView> {
+    const invitation = parseInvitation((await post(operation, body)).invitation);
+    if (!invitation) throw new ControlError("The Armada server sent an unexpected invitation.");
+    return invitation;
+  }
+
+  return {
+    create: (request: { org: string; email: string; role: InviteRole }) => one("create", request),
+    /** Every invitation of the org the server returns; the page keeps the pending ones. */
+    async list(org: string): Promise<unknown[]> {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.invitations)) throw new ControlError("The Armada server sent no invitation list.");
+      return payload.invitations;
+    },
+    resend: (target: { org: string; id: string }) => one("resend", target),
+    revoke: (target: { org: string; id: string }) => one("revoke", target),
+    /** The explicit join. Answers the org now joined. */
+    async accept(token: string): Promise<{ orgId: string }> {
+      const payload = await post("accept", { token });
+      if (payload.accepted !== true || typeof payload.orgId !== "string")
+        throw new ControlError("The Armada server did not confirm the invitation.");
+      return { orgId: payload.orgId };
+    },
+  };
 }

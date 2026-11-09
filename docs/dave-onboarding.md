@@ -41,16 +41,16 @@ Browser login runs through Armada (PKCE, with a one-time callback on `127.0.0.1`
 
 The session (the Armada URL, an access token and a refresh token) is saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), readable only by you. Later commands reuse it and refresh it automatically. `armada logout` deletes it. For scripts and CI, set `ARMADA_TOKEN` to a service token (step 7) instead: it takes precedence over the saved session.
 
-This first sign-in creates your Armada account. You must do it before anyone can add you to an org.
+This first sign-in creates your Armada account. An admin can invite you before you have one (step 4); adding you directly from the CLI needs it.
 
 ## 4. Join an org
 
-There are no invitations. An org admin adds an existing account by email, once that person has signed in at least once (step 3). Either way of adding a member works:
+An org admin invites you by email from the dashboard, or adds an existing account directly from the CLI:
 
-- **CLI**: an admin runs `armada org members add you@example.com --org <org> [--role member|admin]`.
-- **Dashboard**: an admin opens the org's page, fills in **Add a member** (email and role) and submits it. This calls the `add_org_member` database function, which checks that the caller is an admin of the org.
+- **Dashboard**: an admin opens the org's page and fills in **Invite a teammate** (email and role). Armada emails you a link; you sign in or create your account with that address, then click **Accept and join**. Opening the link joins nothing: only the button does. The admin sees each pending invitation with its email state (*Sent* means the mail service accepted it, not that it reached your inbox) and can resend or revoke it.
+- **CLI**: an admin runs `armada org members add you@example.com --org <org> [--role member|admin]`. This adds an existing account at once, without an invitation, so you must have signed in at least once (step 3); otherwise it says "No Armada account has that email. The person signs in with 'armada login' first."
 
-If the email has no account yet, both refuse: the CLI says "No Armada account has that email. The person signs in with 'armada login' first.", the dashboard "no account for that email: the person signs in to Armada once first". Once added, check:
+Once you are a member, check:
 
 ```sh
 armada org list                          # your orgs: name, your role, id
