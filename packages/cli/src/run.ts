@@ -114,6 +114,8 @@ Usage:
                                            Read actual bound connection metadata, never mutate bindings
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+  armada golden remove <golden-id> [--org UUID] [--json]
+                                           Remove from launch selection; retain children and provider artifacts
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
@@ -340,6 +342,22 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           ? `${JSON.stringify(capabilities)}\n`
           : `${capabilities.provider}: max goldens ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
       );
+      return 0;
+    }
+    case "remove": {
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const result = await client.request("/api/v1/golden/remove", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: oneName(args.positionals), org: single(args, "--org") }),
+      });
+      io.out(`${JSON.stringify(result)}
+`);
       return 0;
     }
     case "visibility": {

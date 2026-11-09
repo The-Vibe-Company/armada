@@ -61,6 +61,7 @@ describe("database", () => {
         "golden_adoption_receipts",
         "golden_backend_slots",
         "golden_build_jobs",
+        "golden_operation_fences",
         "goldens",
         "mcp_actor_epochs",
         "mcp_bindings",

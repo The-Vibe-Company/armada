@@ -833,3 +833,34 @@ describe("controlOptionsFromEnv", () => {
     expect(() => controlOptionsFromEnv({})).toThrow("ARMADA_DATABASE_URL");
   });
 });
+
+test("CLI removal uses authorized API and returns only the retained-artifact receipt", async () => {
+  await withServer(async ({ db, options, cli }) => {
+    const stan = cli(STAN);
+    await stan.run(["org", "create", "Removal"]);
+    const org = (await options.store.memberships(STAN))[0]!;
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    const result = await db.query<{ id: string }>(
+      "insert into goldens(org_id,owner_id,name,visibility,config) values($1,$2,'remove-me','org',$3::jsonb) returning id",
+      [
+        org.id,
+        STAN,
+        JSON.stringify({ repos: [{ url: "https://github.com/acme/web", branch: "main", dir: "web" }], init: [] }),
+      ],
+    );
+    const id = result.rows[0]!.id;
+    const removed = await stan.run(["golden", "remove", id, "--org", org.id, "--json"]);
+    expect(removed).toMatchObject({ code: 0 });
+    expect(JSON.parse(removed.out)).toEqual({ id, removedAt: expect.any(String), artifacts: "retained" });
+    expect((await stan.run(["golden", "list", "--json"])).out).not.toContain("remove-me");
+    const unauthenticated = await handleControlRequest(
+      new Request("http://armada.test/api/v1/golden/remove", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      }),
+      options,
+    );
+    expect(unauthenticated?.status).toBe(401);
+  });
+});

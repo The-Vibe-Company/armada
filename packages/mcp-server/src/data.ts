@@ -15,6 +15,7 @@ import {
   type Visibility,
 } from "@armada/core";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
+import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
@@ -49,6 +50,7 @@ export interface ServerSandboxStore extends SandboxStore {
 export interface ScopedData {
   goldens: GoldenStore;
   sandboxes: ServerSandboxStore;
+  removeGolden?(id: string): Promise<{ id: string; removedAt: string; artifacts: "retained" }>;
   setGoldenVisibility?(id: string, visibility: Visibility): Promise<void>;
 }
 
@@ -110,6 +112,8 @@ export function createSqlData(sql: Sql): DataSource {
       if (!result.rows.length) throw new GoldenError("forbidden", "You cannot change this golden.");
     };
     const goldens: GoldenStore = {
+      reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
+      beginOperation: (id) => beginGoldenOperation(sql, id),
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
@@ -119,7 +123,7 @@ export function createSqlData(sql: Sql): DataSource {
       async list(orgId) {
         ownOrg(orgId);
         const result = await sql.query<GoldenRow>(
-          `select ${GOLDEN_COLUMNS} from public.goldens g where ${GOLDEN_VISIBLE} and g.org_id = $3::uuid
+          `select ${GOLDEN_COLUMNS} from public.goldens g where ${GOLDEN_VISIBLE} and g.removed_at is null and g.org_id = $3::uuid
            order by g.name, g.visibility`,
           [...scope, orgId],
         );
@@ -128,7 +132,7 @@ export function createSqlData(sql: Sql): DataSource {
       async findByName(orgId, name) {
         ownOrg(orgId);
         const result = await sql.query<GoldenRow>(
-          `select ${GOLDEN_COLUMNS} from public.goldens g where ${GOLDEN_VISIBLE} and g.org_id = $3::uuid
+          `select ${GOLDEN_COLUMNS} from public.goldens g where ${GOLDEN_VISIBLE} and g.removed_at is null and g.org_id = $3::uuid
              and g.name = $4 order by g.visibility`,
           [...scope, orgId, name],
         );
@@ -288,6 +292,31 @@ export function createSqlData(sql: Sql): DataSource {
     return {
       goldens,
       sandboxes,
+      async removeGolden(id) {
+        if (!UUID.test(id)) throw new GoldenError("not_found", "No such golden.");
+        const visible = await sql.query<{ id: string }>(
+          `select g.id from public.goldens g where ${GOLDEN_VISIBLE} and g.id=$3::uuid`,
+          [...scope, id],
+        );
+        if (!visible.rows.length) throw new GoldenError("not_found", "No such golden.");
+        if (!sql.transaction) throw new GoldenError("conflict", "Removal requires a transaction.");
+        try {
+          const removedAt = await sql.transaction(async (tx) => {
+            await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [caller.userId]);
+            const result = await tx.query<{ removed_at: string | Date }>(
+              "select public.remove_golden($1::uuid) as removed_at",
+              [id],
+            );
+            return result.rows[0]!.removed_at;
+          });
+          return { id, removedAt: new Date(removedAt).toISOString(), artifacts: "retained" };
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === "P0002") throw new GoldenError("not_found", "No such golden.");
+          if (code === "42501") throw new GoldenError("forbidden", "Only an org admin can remove this golden.");
+          throw new GoldenError("conflict", "Golden removal is blocked by unresolved operations.");
+        }
+      },
       async setGoldenVisibility(id, visibility) {
         const visible = await sql.query<{ id: string }>(
           `select g.id from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3::uuid`,

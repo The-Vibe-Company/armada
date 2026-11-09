@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { connectGolden, type Provider, type Sql } from "@armada/core";
+import { connectGolden, type Provider, ProviderError, type Sql } from "@armada/core";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlData } from "../src/data.ts";
 
@@ -70,6 +70,20 @@ test("scoped stopped-master restore CAS publishes one ready fork, cleans the los
       code: "not_found",
     });
     expect(forks).toBe(0);
+    const refused = {
+      ...provider,
+      fork: async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "forbidden",
+          retryable: false,
+          message: "Explicit provider refusal",
+        });
+      },
+    };
+    await expect(connectGolden(refused, ownerStore, actor, "web")).rejects.toMatchObject({ code: "forbidden" });
+    expect((await db.query("select id from golden_operation_fences")).rows).toEqual([]);
+
     const results = await Promise.allSettled([
       connectGolden(provider, ownerStore, actor, "web"),
       connectGolden(provider, ownerStore, actor, "web"),
@@ -155,9 +169,19 @@ test("a committed restore with a lost SQL response never deletes the canonical f
         });
       expect(writeCommitted).toBe(true);
       expect(deleted).toEqual([]);
-      const durableStore = createSqlData(db)(caller).goldens;
+      const scoped = createSqlData(db)(caller);
+      const goldenId = (await scoped.goldens.findByName(org, name))[0]!.id;
+      const fences = async () =>
+        (await db.query("select id from golden_operation_fences where golden_id=$1", [goldenId])).rows;
+      if (!reconcileAvailable) {
+        expect(await fences()).toHaveLength(1);
+        await expect(scoped.removeGolden!(goldenId)).rejects.toMatchObject({ code: "conflict" });
+      } else expect(await fences()).toHaveLength(0);
+      const durableStore = scoped.goldens;
       expect((await durableStore.findByName(org, name))[0]?.providerSandboxId).toBe(restoredId);
       expect((await connectGolden(provider, durableStore, actor, name)).sandbox.id).toBe(restoredId);
+      expect(await fences()).toHaveLength(0);
+      await expect(scoped.removeGolden!(goldenId)).resolves.toMatchObject({ artifacts: "retained" });
       expect(forks).toBe(1);
       expect(deleted).toEqual([]);
     }
@@ -165,3 +189,81 @@ test("a committed restore with a lost SQL response never deletes the canonical f
     await db.close();
   }
 });
+
+test.each(["lost-delete", "lost-confirmation", "confirmed-gone"] as const)(
+  "acknowledged losing Boat restore retains ownership until terminal cleanup (%s)",
+  async (mode) => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      await db.query("insert into auth.users(id) values($1)", [owner]);
+      await db.query("insert into orgs(id,name) values($1,'LoserCleanup')", [org]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
+      const inserted = await db.query<{ id: string }>(
+        "insert into goldens(org_id,name,visibility,owner_id,boat_sandbox_id,boat_snapshot_id,config) values($1,'loser','private',$2,'bx_old','snapshot',$3::jsonb) returning id",
+        [
+          org,
+          owner,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const id = inserted.rows[0]!.id;
+      await bindBackend(db, "loser");
+      const actor = { userId: owner, orgId: org, role: "admin" as const };
+      const scoped = createSqlData(db)({ userId: owner, via: "supabase", orgs: [{ orgId: org, role: "admin" }] });
+      let deleting = false;
+      let deleteCalls = 0;
+      const provider = {
+        id: "boat",
+        backendIdentity: async () => ({ id: backendId + ":loser" }),
+        async get(sandboxId: string) {
+          if (sandboxId === "bx_loser" && deleting) {
+            if (mode === "lost-confirmation") throw new Error("confirmation transport lost");
+            throw new ProviderError({ provider: "boat", code: "not_found", retryable: false, message: "Gone" });
+          }
+          return { id: sandboxId, state: sandboxId === "bx_old" ? "stopped" : "ready" };
+        },
+        async fork() {
+          // Another successful publication wins in SQL while this restore is in flight.
+          expect(await scoped.goldens.replaceSandbox!(id, "bx_old", "snapshot", "bx_winner")).toBe(true);
+          return { id: "bx_loser" };
+        },
+        async delete({ sandboxId }: { sandboxId: string }) {
+          expect(sandboxId).toBe("bx_loser");
+          deleteCalls++;
+          deleting = true;
+          if (mode === "lost-delete") throw new Error("delete transport lost");
+        },
+      } as unknown as Provider;
+      await expect(connectGolden(provider, scoped.goldens, actor, "loser")).rejects.toThrow(
+        mode === "lost-delete"
+          ? "delete transport lost"
+          : mode === "lost-confirmation"
+            ? "confirmation transport lost"
+            : "golden changed while restoring",
+      );
+      expect(deleteCalls).toBe(1);
+      expect((await scoped.goldens.findByName(org, "loser"))[0]?.providerSandboxId).toBe("bx_winner");
+      const fences = () =>
+        db.query<{ receipt: unknown }>("select receipt from golden_operation_fences where golden_id=$1", [id]);
+      if (mode === "confirmed-gone") {
+        expect((await fences()).rows).toEqual([]);
+        await expect(scoped.removeGolden!(id)).resolves.toMatchObject({ artifacts: "retained" });
+      } else {
+        expect((await fences()).rows).toEqual([
+          {
+            receipt: { kind: "connect", sandboxId: "bx_loser", snapshotId: "snapshot" },
+          },
+        ]);
+        await expect(scoped.removeGolden!(id)).rejects.toMatchObject({ code: "conflict" });
+        // Canonical winner readback cannot settle a different loser's unknown cleanup.
+        expect((await connectGolden(provider, scoped.goldens, actor, "loser")).sandbox.id).toBe("bx_winner");
+        expect((await fences()).rows).toHaveLength(1);
+        await expect(scoped.removeGolden!(id)).rejects.toMatchObject({ code: "conflict" });
+        expect(deleteCalls).toBe(1);
+      }
+    } finally {
+      await db.close();
+    }
+  },
+);
