@@ -270,7 +270,7 @@ function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
   const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
   if (!outcome && !preservation) return null;
   return (
-    <div className="mt-1 max-w-56 space-y-1" data-list-outcome={outcome?.kind}>
+    <div className="mt-1 max-w-56 space-y-1 whitespace-normal" data-list-outcome={outcome?.kind}>
       {outcome && <OutcomeBadge outcome={outcome} />}
       {outcome && <OutcomeDetail outcome={outcome} className="line-clamp-2 text-xs" />}
       {preservation && (

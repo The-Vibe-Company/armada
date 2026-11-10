@@ -38,7 +38,6 @@ export default async function FleetPage({ searchParams }: Props) {
   const all = sortBoard(board.rows);
   const needed = all.filter(needsOperator).length;
   const rows = view === "needs-me" ? all.filter(needsOperator) : all;
-  const waiting = all.filter((row) => row.state.kind !== "working" && row.state.kind !== "stopped").length;
 
   return (
     <>
@@ -90,9 +89,7 @@ export default async function FleetPage({ searchParams }: Props) {
       ) : (
         <section aria-label="Agents" className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            {waiting === 0
-              ? "Nothing waits for you."
-              : `${waiting} ${waiting === 1 ? "agent needs" : "agents need"} you.`}{" "}
+            {needed === 0 ? "Nothing needs you." : `${needed} ${needed === 1 ? "agent needs" : "agents need"} you.`}{" "}
             {board.capped && (
               <>
                 Only the most recent are shown; the rest are on the{" "}
