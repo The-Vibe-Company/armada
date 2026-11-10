@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { goldenPanel, goldenRow, MOCK, openCreate, reset, signIn } from "./helpers";
 
-/** The #808 skeleton shared by Environments and Tools: strip, sorted list, panel (a sheet on a phone), New (#898). */
+/** The #808 skeleton shared by Environments and Tools: strip, sorted list, panel (a sheet on a phone), New; Environments creates on a page (#898). */
 
 const ALICE_PRIVATE = "00000000-0000-4000-8000-000000000021";
 

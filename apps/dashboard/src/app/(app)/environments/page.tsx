@@ -169,6 +169,8 @@ export default async function GoldensPage({ searchParams }: Props) {
     selected && capacities && (canStart || createTracked)
       ? {
           label: "New",
+          // A long form (provider, repositories, init, setup): a page of its own, not the narrow side panel.
+          layout: "page" as const,
           title: "Create a golden",
           subtitle: "Repositories, branches and init commands, built once and saved as a snapshot.",
           content: (
