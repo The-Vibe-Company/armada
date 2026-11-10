@@ -69,6 +69,15 @@ changes that gate nor deploys it; #822/#830/#825 cover its enablement smoke chec
 When the managed runtime is active, use the next normal prompt to reconcile it,
 not the legacy repair command.
 
+## Optional GitHub availability
+
+Automatic preparation does not prevent local/model work when GitHub is unavailable,
+revoked or not configured: it injects no new access material and lets the prompt
+proceed. Explicit `armada github refresh` instead returns the closed failure so a
+caller does not mistake it for a successful repair. Owner membership failures and
+unsafe filesystem/private-transport failures remain fatal to preparation. This
+availability policy does not make a stale inherited token valid.
+
 ## Operator production check (not run by this PR)
 
 1. Record deployed revision and runtime gate state, without recording tokens.
