@@ -211,7 +211,7 @@ for (const failure of ["502", "network"] as const) {
     state.fetch = (async () => {
       if (failure === "network") throw Error(token);
       return Response.json({ error: { message: token } }, { status: 502 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const client = await createArmadaApiClient(state);
     await expect(client.request("/api/v1/sandbox/launch", { method: "POST" })).rejects.toThrow(
       "Launch outcome unknown. Run armada list to check before retrying.",

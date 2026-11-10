@@ -4,8 +4,8 @@ import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { bunLikeSql, database, fakeBoat } from "./support.ts";
 
-for (const missing of [false, true]) {
-  test(`SIGKILL after launch registration is readable and reconciled (missing=${missing})`, async () => {
+for (const outcome of ["allocated", "missing", "unavailable"] as const) {
+  test(`SIGKILL after launch registration is readable and reconciled (outcome=${outcome})`, async () => {
     const { db, people } = await database();
     const sql = bunLikeSql(db);
     const server = Bun.serve({
@@ -40,9 +40,14 @@ for (const missing of [false, true]) {
       const row = (await db.query<{ id: string }>("select id from sandboxes where status='starting'")).rows[0]!;
       const found = (await data.sandboxes.get(row.id))!;
       const boat = fakeBoat();
-      if (!missing) await boat.provider.fork({ from: "snapshot", labels: { sandbox: found.id } });
+      if (outcome !== "missing") await boat.provider.fork({ from: "snapshot", labels: { sandbox: found.id } });
       // Before the fix, this attempts to promote to ready and hits the SQL activity fence.
       expect((await readStatus(boat.provider, data.sandboxes, found, { now: new Date() })).status).toBe("starting");
+      const get = boat.provider.get.bind(boat.provider);
+      if (outcome === "unavailable")
+        boat.provider.get = async () => {
+          throw Error("Transport failure");
+        };
       const lifecycle = createSandboxLifecycle(sql, async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(false);
       await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [found.id]);
@@ -50,8 +55,16 @@ for (const missing of [false, true]) {
       const recovered = (await data.sandboxes.get(found.id))!;
       expect(recovered.status).toBe("failed");
       expect(recovered.statusReason).toContain("Launch interrupted");
-      expect(recovered.stoppedAt).not.toBeNull();
-      expect(boat.stops).toEqual(missing ? [] : [found.providerSandboxId]);
+      expect(recovered.stoppedAt === null).toBe(outcome === "unavailable");
+      expect((await readStatus(boat.provider, data.sandboxes, recovered, { now: new Date() })).status).toBe("failed");
+      expect(boat.stops).toEqual(outcome === "allocated" ? [found.providerSandboxId] : []);
+      if (outcome === "unavailable") {
+        boat.provider.get = get;
+        await db.query("update sandboxes set reconcile_after=now() where id=$1", [found.id]);
+        await lifecycle.reconcileOne();
+        expect((await data.sandboxes.get(found.id))?.stoppedAt).not.toBeNull();
+        expect(boat.stops).toEqual([found.providerSandboxId]);
+      }
     } finally {
       await server.stop(true);
       await db.close();

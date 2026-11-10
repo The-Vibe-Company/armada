@@ -102,7 +102,7 @@ for (const fails of [false, true])
           await release.promise;
         }
         return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     try {
       const launch = launchSandbox(
@@ -175,7 +175,7 @@ test("actual Boat resume rearms deadline even when the earlier send sample was r
       if (path.endsWith("/prompt"))
         return Response.json({ ok: true, promptId: "p", conversationId: "c", status: "queued" });
       return Response.json({ ok: true, sandbox: sandbox({ state: ++gets === 1 || ready ? "idle" : "archived" }) });
-    }) as typeof fetch,
+    }) as unknown as typeof fetch,
   });
   try {
     await f.insert();
@@ -215,7 +215,7 @@ for (const outcome of ["error", "unconfirmed"] as const)
         }
         if (request.method === "POST") return Response.json({ ok: true });
         return Response.json({ ok: true, sandbox: sandbox({ state: terminal ? "archived" : "archiving" }) });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     try {
       await f.insert();
@@ -268,7 +268,7 @@ test("initial launch preserves sequential 600-second setup command budgets", asy
         });
       }
       return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
-    }) as typeof fetch,
+    }) as unknown as typeof fetch,
   });
   try {
     jest.useFakeTimers();

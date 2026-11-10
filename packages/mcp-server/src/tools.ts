@@ -52,7 +52,7 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
-import { latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -355,6 +355,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     const provider =
       found.status === "deleted" ||
       found.status === "starting" ||
+      isInterruptedLaunch(found) ||
       (found.status === "failed" && found.stoppedAt !== null)
         ? null
         : await context.provider(found);

@@ -1,5 +1,6 @@
 import { type Provider, ProviderError, type Sql } from "@armada/core/server";
 
+import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop } from "./work-preservation.ts";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
@@ -102,7 +103,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
         status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
-        status_reason=case when status='starting' then coalesce(status_reason,'Launch interrupted before completion; provider cleanup is retried until confirmed.') when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') else status_reason end,
+        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') else status_reason end,
         stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
@@ -112,7 +113,16 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         reconcile_lease_until=case when $6 then reconcile_lease_until else null end
         where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
           and (activity_until is null or activity_until<now())`,
-        [row.id, token, row.lifecycle_generation, terminal, error, signal?.aborted ?? false, physicalExit],
+        [
+          row.id,
+          token,
+          row.lifecycle_generation,
+          terminal,
+          error,
+          signal?.aborted ?? false,
+          physicalExit,
+          INTERRUPTED_LAUNCH_REASON,
+        ],
       );
       return true;
     },
