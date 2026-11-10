@@ -90,6 +90,9 @@ export interface SandboxPatch {
  * to its current organization owner/admin for interior. Lists use the separate SandboxListMetadata projection.
  */
 export interface SandboxStore {
+  recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
+  readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
+  recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
   recordSkills?(id: string, skills: OrchestratorSkillReceipt[]): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
@@ -209,8 +212,10 @@ export const MAX_STATUS_REASON_LENGTH = 2000;
 const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
-export function createSqlSandboxStore(sql: Sql): SandboxStore {
+/** Turn evidence is service-role-only; caller-role stores must not gain these ports. */
+export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
   return {
+    ...(options.turnModels ? sqlTurnModelStore(sql) : {}),
     async recordSkills(id, skills) {
       const result = await sql.query(
         "update public.sandboxes set skills=$2::text::jsonb where id=$1::uuid returning id",
@@ -362,4 +367,31 @@ function decodeLifecycleGeneration(value: SandboxRow["lifecycle_generation"]): n
   const decoded = Number(value);
   if (!Number.isSafeInteger(decoded) || decoded < 1) throw new Error("Sandbox lifecycle generation is invalid.");
   return decoded;
+}
+
+function sqlTurnModelStore(
+  sql: Sql,
+): Pick<SandboxStore, "recordTurnModel" | "readTurnModel" | "recordTurnModelEvidence"> {
+  return {
+    async recordTurnModel(id, promptId, requestedModel) {
+      await sql.query(
+        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
+        values($1::uuid,$2,$3) on conflict do nothing`,
+        [id, promptId, requestedModel],
+      );
+    },
+    async readTurnModel(id, promptId) {
+      const result = await sql.query<{ requestedModel: string | null; evidence: unknown }>(
+        `select requested_model as "requestedModel", evidence from public.sandbox_turn_models where sandbox_id=$1::uuid and prompt_id=$2`,
+        [id, promptId],
+      );
+      return result.rows[0] ?? null;
+    },
+    async recordTurnModelEvidence(id, promptId, evidence) {
+      await sql.query(
+        `update public.sandbox_turn_models set evidence=$3::text::jsonb where sandbox_id=$1::uuid and prompt_id=$2`,
+        [id, promptId, JSON.stringify(evidence)],
+      );
+    },
+  };
 }

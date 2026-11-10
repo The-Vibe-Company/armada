@@ -976,7 +976,11 @@ function outcomeProvider(status: PromptStatus, pages: AgentEvent[][]): Provider 
     async getPrompt() {
       return { promptId: "p1", status, done: status !== "running" && status !== "queued" };
     },
-    async events({ cursor }: { cursor?: string }) {
+    async events({ cursor, direction }: { cursor?: string; direction?: string }) {
+      if (direction === "backward") {
+        const index = cursor ? Number(cursor) : pages.length - 1;
+        return { events: pages[index] ?? [], olderCursor: String(index - 1), hasMore: index > 0 };
+      }
       const index = cursor ? Number(cursor) : 0;
       const page = pages[index] ?? [];
       const more = index + 1 < pages.length;

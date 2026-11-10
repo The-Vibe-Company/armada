@@ -8,6 +8,10 @@ public struct SandboxTurn: Decodable, Sendable, Equatable {
     public let state: String
     /// Safe, server-written reason of a failed or interrupted turn.
     public let reason: String?
+    public let requestedModel: String?
+    public let observedModel: String?
+    public let modelSelectionReason: String?
+    public let modelSelectionMessage: String?
 
     /// Closed interruption reasons are safe to offer as a manual resend, never an automatic replay.
     public var resendHint: String? {

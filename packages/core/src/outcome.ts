@@ -1,4 +1,4 @@
-import type { AgentEvent, Provider } from "./provider.ts";
+import type { AgentEvent, PromptState, Provider } from "./provider.ts";
 
 /** Event types boat sends when a turn ends "finished" but the agent could not work. */
 const FAILURE_EVENTS = new Set(["usage_limit", "auth_expiry"]);
@@ -47,10 +47,14 @@ export function dedupeEvents(events: readonly AgentEvent[]): AgentEvent[] {
 export async function promptOutcome(
   provider: Provider,
   request: { sandboxId: string; promptId: string; conversationId?: string },
+  observation?: { state: PromptState; events: readonly AgentEvent[] },
 ): Promise<PromptOutcome> {
-  const state = await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId });
+  const state =
+    observation?.state ?? (await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId }));
   if (state.status === "interrupted" || state.status === "failed") {
-    const reason = (await promptEvents(provider, request)).find((event) => event.kind === "prompt" && event.reason);
+    const reason = (observation?.events ?? (await promptEvents(provider, request)))
+      .filter((event) => event.promptId === request.promptId)
+      .find((event) => event.kind === "prompt" && event.reason);
     const message = reason?.kind === "prompt" ? reason.reason : undefined;
     const interruption = turnInterruptionReason(message);
     if (interruption) return { state: "interrupted", reason: interruption };
@@ -61,31 +65,61 @@ export async function promptOutcome(
     };
   }
   if (state.status !== "finished") return { state: "running" };
-  const stop = (await promptEvents(provider, request)).find(
-    (event) => event.kind === "other" && FAILURE_EVENTS.has(event.type),
-  );
+  const stop = (observation?.events ?? (await promptEvents(provider, request)))
+    .filter((event) => event.promptId === request.promptId)
+    .find((event) => event.kind === "other" && FAILURE_EVENTS.has(event.type));
   if (stop?.kind === "other") return { state: "failed", reason: failureReason(stop.type, stop.data) };
   return { state: "finished" };
+}
+
+/** Bounded newest-first read stopping at this prompt's own start, not sandbox creation. */
+export async function readPromptEvents(
+  provider: Provider,
+  request: { sandboxId: string; promptId: string; conversationId?: string },
+): Promise<{ events: AgentEvent[]; complete: boolean }> {
+  const all: AgentEvent[] = [];
+  let cursor: string | undefined;
+  const seen = new Set<string>();
+  for (let page = 0; page < OUTCOME_PAGES; page++) {
+    const read = await provider.events({
+      sandboxId: request.sandboxId,
+      direction: "backward",
+      ...(cursor ? { cursor } : {}),
+      ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+      limit: OUTCOME_PAGE_LIMIT,
+    });
+    all.unshift(...read.events);
+    const foundStart = read.events.some(
+      (event) =>
+        event.kind === "prompt" &&
+        event.promptId === request.promptId &&
+        (provider.id === "boat" || event.status === "queued" || event.status === "running"),
+    );
+    if (foundStart || !read.hasMore)
+      return {
+        events: dedupeEvents(all).filter((event) => event.promptId === request.promptId || !event.promptId),
+        complete: foundStart,
+      };
+    const next = read.olderCursor;
+    if (!next || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
+  }
+  return {
+    events: dedupeEvents(all).filter((event) => event.promptId === request.promptId || !event.promptId),
+    complete: false,
+  };
 }
 
 async function promptEvents(
   provider: Provider,
   request: { sandboxId: string; promptId: string; conversationId?: string },
 ): Promise<AgentEvent[]> {
-  const all: AgentEvent[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < OUTCOME_PAGES; page++) {
-    const read = await provider.events({
-      sandboxId: request.sandboxId,
-      ...(cursor ? { cursor } : {}),
-      ...(request.conversationId ? { conversationId: request.conversationId } : {}),
-      limit: OUTCOME_PAGE_LIMIT,
-    });
-    all.push(...read.events);
-    if (!read.hasMore || !read.cursor || read.cursor === cursor) break;
-    cursor = read.cursor;
-  }
-  return dedupeEvents(all).filter((event) => event.promptId === request.promptId);
+  try {
+    return (await readPromptEvents(provider, request)).events.filter((event) => event.promptId === request.promptId);
+  } catch {
+    return [];
+  } // Optional event evidence must not turn a provider-finished turn into a transport failure.
 }
 
 function failureReason(type: string, data: unknown): string {

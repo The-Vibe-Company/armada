@@ -34,7 +34,17 @@ export async function checkSandboxSkillLaunch(input: {
   const detail = await request("status", { id });
   assert.equal(detail.status, 200, JSON.stringify(detail.body));
   assert.deepEqual(detail.body.skills, [catalogReceipt], "Status must read the persisted verified receipt");
-  const stopped = await request("stop", { id });
+  let stopped = await request("stop", { id });
+  // A lifecycle observer may own the sandbox after terminal status settles it.
+  // Follow the public refresh-and-retry contract; never clear or bypass its lease.
+  for (
+    let attempt = 0;
+    attempt < 10 && stopped.status === 409 && stopped.body.error?.code === "sandbox_not_ready";
+    attempt++
+  ) {
+    await request("status", { id });
+    stopped = await request("stop", { id });
+  }
   assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
   const allocations = input.allocations();
   for (const invalidPin of ["example/notes", "notes@1.0.0"]) {
