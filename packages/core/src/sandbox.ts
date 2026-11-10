@@ -55,6 +55,8 @@ export interface SandboxRecord {
 }
 
 export interface SandboxPatch {
+  /** Admission guard for explicit owner/admin deletion of terminal, unmanaged sandboxes. */
+  deleteRequested?: boolean;
   clearTaskOutcome?: boolean;
   taskPromptId?: string;
   renewLifecycle?: boolean;

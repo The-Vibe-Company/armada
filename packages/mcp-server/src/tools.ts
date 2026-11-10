@@ -1259,6 +1259,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "delete",
+    {
+      title: "Delete a stopped sandbox",
+      description:
+        "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Managed orchestrator parents and children are refused.",
+      input: { id },
+      output: { id: z.string(), status: z.literal("deleted") },
+      destructive: true,
+    },
+    async (args) => {
+      if (!data.sandboxes.assertDeletionAllowed)
+        throw new ToolError("unavailable", "Sandbox deletion is not configured.");
+      await data.sandboxes.assertDeletionAllowed(args.id);
+      const found = await visible(args.id);
+      if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
+      const provider = found.providerSandboxId ? await context.provider(found) : null;
+      return sandboxActivity(data.sandboxes, found, { deleteRequested: true }, async (signal) => {
+        signal.throwIfAborted();
+        if (provider) {
+          try {
+            const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
+            if (!["deleted", "completed"].includes(receipt.status))
+              throw new ToolError(
+                "conflict",
+                "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
+              );
+          } catch (error) {
+            if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+          }
+        }
+        return {
+          result: { id: found.id, status: "deleted" as const },
+          patch: { status: "deleted", deletedAt: context.now().toISOString() },
+        };
+      });
+    },
+  );
+
+  tool(
     "stop",
     {
       title: "Stop a sandbox",

@@ -140,6 +140,7 @@ Usage:
                                            Human launch guidance uses stderr only; --json launch never requests advice.
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
+  armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
@@ -282,6 +283,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "interrupt",
     "exec",
     "stop",
+    "rm",
     "wait",
     "logs",
     "mcp",
@@ -329,6 +331,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "interrupt":
     case "exec":
     case "stop":
+    case "rm":
     case "wait":
     case "mcp":
       return operation(
