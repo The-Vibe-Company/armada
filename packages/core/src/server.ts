@@ -54,3 +54,5 @@ export {
   sshStdinCheckout,
 } from "./ssh-executor.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
+
+export { preserveWork, type WorkPreservation } from "./work-preservation.ts";

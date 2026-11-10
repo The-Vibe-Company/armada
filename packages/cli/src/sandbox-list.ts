@@ -27,6 +27,7 @@ export function sandboxListText(rows: unknown[], now: Date): string {
       row.providerSandboxId === null ? "—" : text(row.providerSandboxId),
       text(row.status),
       age,
+      row.preservationNote ? text(row.preservationNote) : "—",
       text(row.ownerId),
       typeof row.canOpen !== "boolean" || typeof row.canManage !== "boolean"
         ? "UNKNOWN (server reauthorizes)"
@@ -37,5 +38,5 @@ export function sandboxListText(rows: unknown[], now: Date): string {
           : "metadata only",
     ].join("  ");
   });
-  return `ID  LABEL  PROVIDER  PROVIDER ID  STATUS  AGE  OWNER  ACCESS\n${lines.join("\n")}\n`;
+  return `ID  LABEL  PROVIDER  PROVIDER ID  STATUS  AGE  PRESERVATION  OWNER  ACCESS\n${lines.join("\n")}\n`;
 }

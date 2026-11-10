@@ -24,6 +24,7 @@ import type { OrchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-native.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
+import { preserveBeforeStop } from "./work-preservation.ts";
 
 /** Real production composition. Only Modal-owned Codex sessions have an implemented
  * private no-text restore driver. The deployment setting is admission policy, not
@@ -176,6 +177,7 @@ export function createProductionOrchestrators(input: {
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       await sandboxActivity(stores.sandboxes, saved, { stopRequested: true }, async () => {
+        await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId).catch(() => {});
         await provider.stop({ sandboxId: saved.providerSandboxId });
         return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
       });

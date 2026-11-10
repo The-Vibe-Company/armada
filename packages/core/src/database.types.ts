@@ -2366,6 +2366,35 @@ export type Database = {
           },
         ];
       };
+      sandbox_work_recovery: {
+        Row: {
+          id: string;
+          sandbox_id: string;
+          archive_enc: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          sandbox_id: string;
+          archive_enc: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          sandbox_id?: string;
+          archive_enc?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_work_recovery_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandboxes: {
         Row: {
           id: string;
@@ -2409,6 +2438,7 @@ export type Database = {
           resource_sampling_after: string | null;
           resource_sampling_generation: number | null;
           orchestrator_native_generation: string | null;
+          preservation_note: string | null;
         };
         Insert: {
           id?: string;
@@ -2452,6 +2482,7 @@ export type Database = {
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
           orchestrator_native_generation?: string | null;
+          preservation_note?: string | null;
         };
         Update: {
           id?: string;
@@ -2495,6 +2526,7 @@ export type Database = {
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
           orchestrator_native_generation?: string | null;
+          preservation_note?: string | null;
         };
         Relationships: [
           {
@@ -2646,6 +2678,7 @@ export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrator
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
+export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];
 export type CredentialKind = Database["public"]["Enums"]["credential_kind"];

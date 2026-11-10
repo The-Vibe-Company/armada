@@ -27,6 +27,7 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  sandbox_work_recovery: "SandboxWorkRecovery",
   orchestrator_activity: "OrchestratorActivity",
   orchestrator_child_operations: "OrchestratorChildOperation",
   orchestrator_lifecycle: "OrchestratorLifecycle",

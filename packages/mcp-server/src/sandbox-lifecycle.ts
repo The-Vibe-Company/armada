@@ -1,5 +1,7 @@
 import type { Provider, Sql } from "@armada/core/server";
 
+import { preserveBeforeStop } from "./work-preservation.ts";
+
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Promise<Provider>) {
@@ -75,6 +77,8 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
             [row.id, token, row.lifecycle_generation],
           );
           if (!owned.rows[0]) return true;
+          signal?.throwIfAborted();
+          await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {});
           signal?.throwIfAborted();
           await operation(signal, () => provider.stop({ sandboxId: row.provider_sandbox_id }));
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));

@@ -14,6 +14,7 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  preservationNote?: string | null;
   resourceProject?: ResourceProject | null;
   machineSize?: MachineSizeEvidence | null;
   credentialId?: string | null;
@@ -146,6 +147,7 @@ export async function cleanupSandboxes(
 }
 
 export interface SandboxRow {
+  preservation_note?: string | null;
   machine_size?: MachineSizeEvidence | null;
   resource_project?: ResourceProject | null;
   credential_id?: string | null;
@@ -178,7 +180,7 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `preservation_note, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
@@ -265,6 +267,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
+    preservationNote: row.preservation_note ?? null,
     id: row.id,
     provider: row.provider,
     providerSandboxId: row.provider_sandbox_id,

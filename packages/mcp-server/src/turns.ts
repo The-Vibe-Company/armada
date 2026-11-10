@@ -25,6 +25,7 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  preservationNote?: string | null;
   credentialId?: string | null;
   credentialVersion?: number | null;
   id: string;
@@ -146,6 +147,7 @@ function report(
     statusReason: status === "failed" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
+    preservationNote: sandbox.preservationNote ?? null,
     expiresAt: expiresAt ? expiresAt.toISOString() : null,
     prompt,
     settled: machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting"),

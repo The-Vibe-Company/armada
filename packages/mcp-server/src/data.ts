@@ -15,10 +15,12 @@ import {
   statusReasonOf,
   type Visibility,
 } from "@armada/core";
+import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -31,6 +33,8 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  preserveWork?(id: string, provider: Provider, providerId: string): Promise<void>;
+  readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
   get(id: string): Promise<SandboxView | null>;
   /** Newest first. */
@@ -64,7 +68,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
   g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.created_at`;
-const SANDBOX_COLUMNS = `s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+const SANDBOX_COLUMNS = `s.preservation_note, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
@@ -77,7 +81,7 @@ const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.
   where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
   where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
-const SANDBOX_LIST_COLUMNS = `nullif(s.provider_sandbox_id,'') as "providerSandboxId",
+const SANDBOX_LIST_COLUMNS = `s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
   case when s.provider='boat' then nullif(s.provider_sandbox_id,'') else null end as "boatId", s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
   s.status::text as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
@@ -252,6 +256,14 @@ export function createSqlData(sql: Sql): DataSource {
         const row = result.rows[0];
         if (!row) throw new DataError("The sandbox could not be recorded.");
         return mapSandboxRow(row);
+      },
+      async preserveWork(id, provider, providerId) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await preserveBeforeStop(sql, provider, id, providerId);
+      },
+      async readWorkRecovery(id, recoveryId) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        return readWorkRecovery(sql, id, recoveryId);
       },
       async update(id, patch) {
         const sets: string[] = [];

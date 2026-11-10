@@ -15,3 +15,28 @@ lifecycle reconciler attempts preservation when it drives expiry while compute i
 still available. There is no idle-stop scheduler today. Oversize, unavailable or
 late capture is reported, never allowed to prevent a stop. Automatic restoration,
 rescue-ref pushing and external object storage are deliberately out of scope.
+
+## Retrieval and restore
+
+`armada status <sandbox-id>` and `armada list` show a preservation receipt.
+Use `armada recovery <sandbox-id>` (or MCP `work_recovery`) to retrieve the latest
+archive as base64 JSON. MCP also accepts `recovery_id` from an earlier receipt;
+subsequent stops never overwrite older archives. These are sensitive responses:
+redirect to a private file, not a shared transcript. Archives are retained until
+the sandbox metadata is deleted; ordinary stop does not delete them.
+
+Decode the `archive` field to a tar file. Extract only into an empty private
+directory (treat paths and symlinks as untrusted). `manifest.json` maps `repo-N`
+directories to original repositories. Clone `commits.bundle` for each repository,
+or initialize an empty repository when `head` is null. Apply nonempty
+`index.patch` with `git apply --index`, then `worktree.patch` with `git apply`;
+copy `untracked/` contents into the worktree. Bundles include local refs and HEAD.
+No ignored files, external LFS objects or submodule object stores are promised.
+
+Capture requires Python 3 and git in the provider image. The archive limit is
+2 MiB total; collection gets 12 seconds at the provider and a 15-second server
+bound. The whole preservation attempt has a 20-second wait budget. SQL failure
+may prevent recording a receipt, but never prevents stopping compute. In-flight
+storage operations can finish after the wait budget. Parent orchestrator recovery
+continues to use its existing fenced checkpoint protocol; child sandbox stops
+use this work archive too.

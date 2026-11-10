@@ -5,6 +5,7 @@ import type { SandboxProviderId } from "./sandbox-provider.ts";
 
 /** Version 1 organization list contract. Never extend from the interior SandboxRecord. */
 export interface SandboxListMetadata {
+  preservationNote?: string | null;
   id: string;
   orgId: string;
   ownerId: string;
