@@ -377,23 +377,33 @@ restore clears and refreshes this baseline. Metadata is nonsensitive server SQL 
 not an auth/cache file or log. A missing legacy/populated baseline is NOT reconstructed
 after admission; snapshot fails closed and retains source.
 
-Checkpoint preparation preserves exact trusted control identities, PID1 and the
-verified current cleanup ancestry (including a verified outside-namespace parent0
-boundary used by SDK exec). It enumerates all additional root AND user processes,
-including setsid/double-fork orphans reparented to PID1, and freezes them before killing.
-Linux pidfds anchor signals when supported. gVisor can permanently deny namespace
-links and pidfds: PID1 namespace links are never required, and unreadable self links
-are supplementary rather than a refusal. Denied/unsupported pidfds fall back to
-in-sandbox numeric signals with PID/start identity revalidated immediately before
-each signal. A reused control PID is not trusted as the old control incarnation.
-Sweeps repeat until no additional live writer remains. Mismatched physical/generation
-or readable namespace evidence, invalid PID1 baseline identity, a positive uninspectable
-process entry or an actual surviving writer still refuse the save. Closed inspection
-primitive/errno labels accompany survivor diagnostics, never command lines or secrets.
-Only after quiescence are SSH keys/auth removed and,
-for golden purpose, managed history unlinked. FD/cwd checks remain defense-in-depth,
-not the writer fence. Current SDK cleanup commands operate under the lifecycle lease;
-management credentials never enter the VM.
+Checkpoint preparation preserves PID1, the scrub exec's verified ancestors, root
+kernel tasks and exact pre-admission PID/start control identities. Bootstrap can
+introduce additional root platform/launcher processes, so the production adapter
+seals that control set once after authenticated health and before publishing
+active. The health responder PID is explicitly excluded: the private Runner still
+owns the journal and must terminate. Positive managed cwd/FD links also veto a
+control exception.
+
+Current ancestry or session membership is never proof of birth ownership. A root
+orphan adopted by a platform subreaper remains a writer if it was not recorded
+before admission. No arbitrary root child, orphan or same-named executable gains
+trust. Pending baselines become sealed with a valid health PID or legacy without
+one; sealed/legacy/old baselines can never be rebuilt after admission. This uses
+optional registry JSON and an additive private health PID, not a schema migration.
+
+Pidfds anchor signals when supported; denied/unsupported pidfds fall back to
+immediate PID/start revalidation in the SDK-selected physical sandbox. No PID1
+namespace link is required. Freeze/kill sweeps target managed writers. Unknown
+survivors still refuse with closed UID, ancestor/PID1 booleans, exe/comm match
+classes, ownership role, state, managed-state evidence and bounded count (4096
+means at least 4096). Inspection denial exposes only primitive/errno class. Raw
+names, argv, paths and environment are never logged.
+
+Only after quiescence are SSH credentials removed and, for golden purpose,
+managed history unlinked. Opaque platform controls rely on verified pre-admission
+provenance, not a claim that denied inspection proves an absence of writes.
+Management credentials never enter the VM.
 
 `captureProcessBaseline` and `quiesceSandboxProcesses` are production helpers, using
 only public SDK exec and the pinned private Bun. `RunnerDistribution.captureProcessBaseline`

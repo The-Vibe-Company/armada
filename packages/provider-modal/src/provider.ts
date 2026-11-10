@@ -251,6 +251,28 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     }
   }
+  async function sealBaselineBeforeAdmission(
+    sb: Sandbox,
+    row: Machine,
+    save: (row: Machine) => Promise<void>,
+    runnerPid: unknown,
+  ): Promise<void> {
+    // Only newly captured, never-admitted incarnations may gain trusted controls.
+    // Old active parents and legacy runtimes never recapture exclusions.
+    const baseline = row.processBaseline;
+    if (baseline?.admissionState !== "pending") return;
+    await bootStage("baseline", async () => {
+      if (
+        distribution.sealProcessBaseline &&
+        typeof runnerPid === "number" &&
+        Number.isSafeInteger(runnerPid) &&
+        runnerPid >= 1
+      )
+        row.processBaseline = await distribution.sealProcessBaseline(sb, row, runnerPid);
+      else row.processBaseline = { ...baseline, admissionState: "legacy" };
+      await save(row);
+    });
+  }
   async function create(
     row: Machine,
     save: (row: Machine) => Promise<void>,
@@ -327,13 +349,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     }
     await bootStage("start", () => distribution.start(sb, row, env));
+    let managedRunnerPid: unknown;
     await bootStage("health", async () => {
       let healthy = false;
       for (let attempt = 0; attempt < 120; attempt++) {
         try {
-          const health = await runner.call<{ generation?: string; ready?: boolean }>(row, "health", {});
+          const health = await runner.call<{ generation?: string; ready?: boolean; pid?: unknown }>(row, "health", {});
           if (health.generation !== String(row.generation) || health.ready !== true)
             throw refusal("conflict", "Runner health belongs to another or closed generation.");
+          managedRunnerPid = health.pid;
           healthy = true;
           break;
         } catch (error) {
@@ -343,6 +367,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
       if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
     });
+    await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
     row.phase = "active";
     row.info.state = "ready";
     row.info.providerState = "active";
@@ -783,13 +808,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             // A committed boot may have lost its last SQL/HTTP response. Reconcile without starting a
             // second runner or resetting admission/session state on that same physical machine.
             if (row.phase === "booting" && row.physicalId) {
-              let health: { generation: string; ready: boolean } | undefined;
+              let health: { generation: string; ready: boolean; pid?: unknown } | undefined;
               try {
                 health = await runner.call(row, "health", {});
               } catch {
                 /* Unknown boot remains protected by the single-runner lock. */
               }
               if (health?.generation === String(row.generation) && health.ready) {
+                if (row.processBaseline?.admissionState === "pending")
+                  await sealBaselineBeforeAdmission(await physical(row), row, save, health.pid);
                 row.phase = "active";
                 row.info.state = "ready";
                 row.info.providerState = "active";

@@ -7,7 +7,7 @@ import { projectGitHubExecEnvironment, withTrustedHarnessPath } from "./exec-env
 import { createGenerationGrants } from "./grants.ts";
 import { createModalIngestHandler } from "./ingest.ts";
 import type { ExecEnvironment, Machine, McpConfiguration, ModalManagementProvenance, Scope } from "./ports.ts";
-import { captureProcessBaseline } from "./process-scope.ts";
+import { captureProcessBaseline, sealProcessBaseline } from "./process-scope.ts";
 import { assertSourceTargetScopes, createModalProvider, type ModalProviderOptions } from "./provider.ts";
 import { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 import { createSqlModalStore, scopeKey } from "./store.ts";
@@ -150,6 +150,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
     prepareSnapshot: prepareFilesystemSnapshot,
     prepareFreshMachine: prepareFreshFilesystem,
     captureProcessBaseline,
+    sealProcessBaseline,
   });
   const provider = createModalProvider({
     ...options,
