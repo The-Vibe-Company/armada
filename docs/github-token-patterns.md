@@ -139,9 +139,12 @@ credentials still depend on the environment executing Git.
 
 ## What this means for Armada
 
-The desired pattern is **workspace helper → narrow local broker → authenticated
-control-plane acquisition**, not “refresh environment variables periodically.”
-Armada's already-merged managed runtime matches that Coder/Gitpod-style division:
+For automatic credential delivery, the surveyed pattern is **workspace helper →
+narrow local broker → authenticated control-plane acquisition**, not periodic
+environment snapshots. This describes option 2, not a decision that GitHub secrets
+belong in guests. The [broader options comparison](github-delivery-options.md)
+recommends credential-free publish-by-bundle instead. Armada's already-merged
+managed runtime matches the Coder/Gitpod-style division:
 
 - The encrypted rotating GitHub refresh token stays server-side in
   `github_connections`; `resolveGitHubAccess` shares and serializes owner refresh.
