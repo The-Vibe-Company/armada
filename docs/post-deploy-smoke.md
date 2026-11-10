@@ -113,7 +113,13 @@ currently the orchestrator supports Modal/Codex only. Use a separate cases file
 containing only supported pairs for that run.
 
 The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
-a successful GitHub `deployment_status` for environment exactly `staging`.
+a successful GitHub `deployment_status` for environment exactly `armada / staging`
+(Railway's GitHub deployment name, not the GitHub secrets environment). To
+override the accepted name, set the repository variable
+`ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT` to the exact staging deployment name.
+Leave it unset or empty to use the default; never set it to a production name.
+Use repository scope: environment-scoped variables are unavailable when GitHub
+evaluates the job's `if` condition, before the `staging` environment is attached.
 Your deployment system must publish that GitHub status; a Railway/Vercel deploy
 alone is not assumed to produce it. It uses reviewed main code, not arbitrary
 deployment refs. Missing any required secret produces a notice and makes no
