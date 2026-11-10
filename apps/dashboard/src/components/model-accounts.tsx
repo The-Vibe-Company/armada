@@ -658,13 +658,16 @@ export function AddAccountDialog({
     </label>
   );
 
+  // Each opening leads with the subscription sign-in again (#805): an API key chosen last time is not kept.
   useEffect(() => {
     if (state?.ok) {
       setName("");
+      setKind(initialKind);
+      setScope("user");
       setOpen(false);
       setGeneration((value) => value + 1);
     }
-  }, [state]);
+  }, [state, initialKind]);
 
   return (
     <>
@@ -677,7 +680,10 @@ export function AddAccountDialog({
         open={open}
         onOpenChange={(next) => {
           setOpen(next);
-          if (!next) setGeneration((value) => value + 1);
+          if (next) return;
+          setKind(initialKind);
+          setScope("user");
+          setGeneration((value) => value + 1);
         }}
       >
         <DialogTrigger asChild>

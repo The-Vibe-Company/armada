@@ -46,6 +46,11 @@ test("adding a subscription leads with the sign-in; an API key is the secondary 
   await expect(dialog).toHaveCount(0);
   await expect(codex.locator('[data-account="Team key"]')).toBeVisible();
   expect(await page.content()).not.toContain(OPENAI_KEY);
+  // The next opening leads with the subscription again, not the API key chosen last time.
+  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "Add a subscription" })).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: /Claude subscription/ })).toBeChecked();
+  await page.keyboard.press("Escape");
 
   const calls = (
     (await (await fetch(`${MOCK}/__test/accounts`, { method: "POST", body: "{}" })).json()) as {

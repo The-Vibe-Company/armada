@@ -162,7 +162,7 @@ test("a choice that lost a race to another binding says so instead of rebinding"
   await expect(section(page)).toHaveCount(0);
 });
 
-test("only the owner chooses; no usable account points to Credentials; Boat and bound sandboxes are untouched", async ({
+test("only the owner chooses; no usable account points to Harness; Boat and bound sandboxes are untouched", async ({
   page,
 }) => {
   await legacy({ status: "stopped", owner_id: "00000000-0000-4000-8000-000000000002", visibility: "org" });

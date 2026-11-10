@@ -1,5 +1,5 @@
 /**
- * Named model accounts as the dashboard sees them: the safe DTO of the control API (#603) and the rules the Credentials page and the launch dialog apply to them. These are narrow app
+ * Named model accounts as the dashboard sees them: the safe DTO of the control API (#603) and the rules the Harness page and the launch dialog apply to them. These are narrow app
  * interfaces matching the published contract, so the dashboard compiles on its own; no DTO carries a token, a
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
