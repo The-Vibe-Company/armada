@@ -145,7 +145,11 @@ export function orchestratorCostRows(cost: OrchestratorCost, liveChildren: reado
   const counted = workers.length - missing;
   const label = `Its ${workers.length} worker${workers.length === 1 ? "" : "s"}${missing > 0 ? `, ${missing} not counted` : ""}`;
   return [
-    [cost.total.label, text(cost.total, missing > 0)],
+    // Nothing counted while some workers are not: the total is unknown, not "No usage yet".
+    [
+      cost.total.label,
+      missing > 0 && costFigure(cost.total).kind === "none" ? "Not counted" : text(cost.total, missing > 0),
+    ],
     ["Its own", text(cost.own, false)],
     [label, workers.length === 0 ? "None yet" : counted === 0 ? "Not counted" : text(cost.workers, missing > 0)],
   ];

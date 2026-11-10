@@ -109,9 +109,10 @@ describe("orchestrator cost", () => {
       ["Its own", "No usage yet"],
       ["Its 2 workers, 1 not counted", "≥ $2.00"],
     ]);
-    expect(orchestratorCostRows(orchestratorCost(null, ["w9"], new Map()), ["w9"])[2]).toEqual([
-      "Its 1 worker, 1 not counted",
-      "Not counted",
+    expect(orchestratorCostRows(orchestratorCost(null, ["w9"], new Map()), ["w9"])).toEqual([
+      ["API-equivalent cost", "Not counted"],
+      ["Its own", "No usage yet"],
+      ["Its 1 worker, 1 not counted", "Not counted"],
     ]);
     expect(orchestratorCostRows(orchestratorCost(null, [], new Map()), [])[2]).toEqual(["Its 0 workers", "None yet"]);
   });
