@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type { OrchestratorOperation } from "@armada/core";
 import {
   createSqlGoldenStore,
@@ -166,6 +167,35 @@ test("delegated child reservation precedes ambiguous allocation and retries cann
     const children = createOrchestratorChildren(sql, authority, executor);
     const first = await children.launch(token, "ticket-663", selection);
     expect(first.state).toBe("uncertain");
+    // Persisted no-skill receipts must remain replayable across the skills rollout.
+    const legacyDigest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          "launch",
+          [
+            selection.goldenId,
+            selection.harness,
+            selection.credentialId,
+            selection.credentialVersion,
+            selection.model,
+            null,
+            null,
+            null,
+            null,
+          ],
+        ]),
+      )
+      .digest("hex");
+    expect(
+      (
+        await db.query<{ request_digest: string }>(
+          "select request_digest from orchestrator_child_operations where id=$1",
+          [first.id],
+        )
+      ).rows[0]?.request_digest,
+    ).toBe(legacyDigest);
+    expect(await children.launch(token, "ticket-663", { ...selection, skills: [] })).toEqual(first);
+
     expect(await children.launch(token, "ticket-663", selection)).toEqual(first);
     expect(allocations).toBe(1);
     expect(await children.reconcileOne()).toBe(true);

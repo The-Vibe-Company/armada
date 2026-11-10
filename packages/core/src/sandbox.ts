@@ -2,6 +2,7 @@ import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
 import type { Sql } from "./golden-store.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
+import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
@@ -16,6 +17,7 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  skills?: OrchestratorSkillReceipt[];
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
@@ -88,6 +90,7 @@ export interface SandboxPatch {
  * to its current organization owner/admin for interior. Lists use the separate SandboxListMetadata projection.
  */
 export interface SandboxStore {
+  recordSkills?(id: string, skills: OrchestratorSkillReceipt[]): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
   insert(input: {
@@ -188,6 +191,7 @@ export interface SandboxRow {
   deleted_at: string | Date | null;
   status_reason: string | null;
   model: string | null;
+  skills?: OrchestratorSkillReceipt[];
   reasoning_effort: string | null;
   repository_dir: string | null;
   visibility?: "private" | "org";
@@ -202,11 +206,18 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
+    async recordSkills(id, skills) {
+      const result = await sql.query(
+        "update public.sandboxes set skills=$2::text::jsonb where id=$1::uuid returning id",
+        [id, JSON.stringify(skills)],
+      );
+      if (result.rows.length !== 1) throw new Error("Skill receipts could not be recorded.");
+    },
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
@@ -320,6 +331,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     resourceProject: row.resource_project ?? null,
     model: row.model ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
+    skills: row.skills ?? [],
   };
 }
 

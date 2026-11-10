@@ -210,6 +210,10 @@ describe("launch database", () => {
         ).rejects.toThrow(/sandboxes_model_chk/);
       }
 
+      await expect(sandboxes.recordSkills!(crypto.randomUUID(), [])).rejects.toThrow(
+        "Skill receipts could not be recorded.",
+      );
+
       const cleaned = await cleanupSandboxes(boat.provider, sandboxes, {
         retentionDays: 7,
         now: new Date(Date.now() + 8 * 86_400_000),
