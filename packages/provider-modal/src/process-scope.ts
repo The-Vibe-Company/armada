@@ -21,14 +21,14 @@ const roots=["/home/user/.armada-runtime","/home/user/.codex","/home/user/.claud
 const inside=p=>p.startsWith("/home/user/.claude.json.")||roots.some(root=>p===root||p.startsWith(root+"/")||p.startsWith(root+" (deleted)"));
 function nameClass(name){return ["bun","bun.exe"].includes(name)?"bun":name==="node"?"node":name==="codex"?"codex":name==="claude"?"claude":["sshd","sshd-session","sshd-auth"].includes(name)?"ssh":"other";}
 function names(row){
-  let comm="unreadable",exe="unreadable",runner=false,launcher=false;
+  let comm="unreadable",exe="unreadable",exePath,runner=false,launcher=false;
   const main="/opt/armada/main.js",bun="/opt/armada/runtime-bun/bun",runuser=["/usr/sbin/runuser","-u","user","--",bun,main];
   const flock=["/usr/bin/flock","--nonblock","--conflict-exit-code","73","/run/armada-runtime.lock","/usr/bin/env","-i","PATH=/usr/local/bin:/usr/bin:/bin","HOME=/home/user",...runuser];
   try{comm=nameClass(readFileSync("/proc/"+row.pid+"/comm","utf8").trim());}catch(e){inspectError("proc_comm",e);}
-  try{exe=nameClass(readlinkSync("/proc/"+row.pid+"/exe").replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch(e){inspectError("proc_exe",e);}
+  try{exePath=readlinkSync("/proc/"+row.pid+"/exe");exe=nameClass(exePath.replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch(e){inspectError("proc_exe",e);}
   try{const args=readFileSync("/proc/"+row.pid+"/cmdline","utf8").split("\0");if(args.at(-1)==="")args.pop();
     runner=(comm==="bun"||exe==="bun")&&args.includes(main);
-    launcher=[runuser,flock].some(expected=>args.length===expected.length&&expected.every((arg,i)=>args[i]===arg));
+    launcher=[[runuser,"/usr/sbin/runuser"],[flock,"/usr/bin/flock"]].some(([expected,path])=>exePath===path&&args.length===expected.length&&expected.every((arg,i)=>args[i]===arg));
   }catch(e){inspectError("proc_cmdline",e);}
   return {comm,exe,runner,launcher,owned:runner||[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
 }

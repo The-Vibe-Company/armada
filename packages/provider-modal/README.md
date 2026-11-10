@@ -383,7 +383,7 @@ survive when they trace through a root-only chain to one of those controls and
 remain in that control's session. PID1 is never a descendant-trust anchor: unknown
 orphans and detached/adopted root writers do not become platform controls merely
 by reparenting. Verified kernel threads are outside the userspace writer set.
-Exact provider flock/runuser launcher argv forms may span their exec session;
+Exact provider flock/runuser executable paths and argv forms may span their exec session;
 raw argv is inspected only in memory and is never logged. This exception cannot
 cross a user ancestor or authorize arbitrary same-named executables.
 

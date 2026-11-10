@@ -5,8 +5,8 @@
 Legacy recovery was fixed in #755 and is confirmed stopped in production. This
 follow-up changes no recovery or database behavior.
 
-The remaining `privileged_writer / unproven` failure came from treating every
-new root process as an Armada writer. Platform controls and their same-session,
+The remaining `privileged_writer / unproven` failure exposed a scope bug: every
+new root process was treated as an Armada writer. Platform controls and their same-session,
 root-only descendants may legitimately survive. PID1, the scrub's own ancestors,
 pre-admission control identities, verified kernel threads and exact Armada
 launcher helpers are classified separately. User ancestry, a different session,
