@@ -178,6 +178,8 @@ The small #879 fix remains independently useful: a new sandbox must receive more
 than one hour of advertised remaining life, and `armada github refresh <sandbox>`
 repairs running legacy Boat workers through private stdin plus an ephemeral file.
 **The command is explicit recovery, not per-command automatic refresh.** PR #881
-also repairs legacy Boat credentials before each authorized next prompt; an
-already-running turn can still need the explicit command. Neither is instant
+also offers best-effort legacy Boat preparation before the next prompt only with
+`ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED=true` (default off until the coordinator
+verifies a real Boat image). The explicit command stays strict; an already-running
+turn can still need it. Neither is instant
 fan-out or a replacement for an on-demand runtime after proof.

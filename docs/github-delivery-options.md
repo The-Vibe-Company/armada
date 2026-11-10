@@ -4,7 +4,10 @@ Decision proposal for #879, 2026-11-10. **Recommend option 6: explicit server-si
 publish-by-bundle as the default managed delivery path.** Keep the minimal
 one-hour remaining-lifetime guard independently shippable. This document does not
 implement the proposal, enable the gated runtime, or authorize a deployment.
-The legacy explicit/next-prompt repair in PR #881 is a tactical bridge, not the recommendation.
+The legacy repair in PR #881 is a tactical bridge, not the recommendation. Explicit
+repair is strict; automatic preparation is best-effort and requires the separate
+default-off `ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED=true` server opt-in after
+the coordinator verifies a real Boat image.
 
 ## Separate authorship from authority
 
