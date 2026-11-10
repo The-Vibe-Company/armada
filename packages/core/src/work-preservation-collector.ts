@@ -25,11 +25,15 @@ function head(root) {
   return p.status===0?p.stdout.toString().trim():null;
 }
 const patches=[['index.patch',['diff','--no-ext-diff','--no-textconv','--cached','--binary']],['worktree.patch',['diff','--no-ext-diff','--no-textconv','--binary']]];
-function untracked(root) { return git(root,'ls-files','--others','--exclude-standard','-z').toString().split('\0').filter(Boolean); }
+function untracked(root) {
+  const raw=git(root,'ls-files','--others','--exclude-standard','-z'), decoded=raw.toString();
+  if(!Buffer.from(decoded).equals(raw)) fail('collector_failed');
+  return decoded.split('\0').filter(Boolean);
+}
 function file(root,name) {
   if(path.isAbsolute(name)||name.split('/').includes('..')) fail('collector_failed');
   const source=path.join(root,name),stat=fs.lstatSync(source);
-  if(stat.isSymbolicLink()) return {mode:stat.mode,link:fs.readlinkSync(source),data:Buffer.alloc(0)};
+  if(stat.isSymbolicLink()) return {mode:stat.mode,link:fs.readlinkSync(source,{encoding:'buffer'}),data:Buffer.alloc(0)};
   if(!stat.isFile()) fail('collector_failed');
   if(stat.size>LIMIT) fail('size_limit');
   const fd=fs.openSync(source,'r');
@@ -71,14 +75,14 @@ try {
       h.write('0000000\0',108,8); h.write('0000000\0',116,8);
       h.write(data.length.toString(8).padStart(11,'0')+'\0',124,12);
       h.write('00000000000\0',136,12); h.fill(32,148,156);
-      h.write(type,156,1); h.write(link,157,100); h.write('ustar\0',257,6); h.write('00',263,2);
+      h.write(type,156,1); Buffer.from(link).copy(h,157,0,100); h.write('ustar\0',257,6); h.write('00',263,2);
       h.write(h.reduce((a,b)=>a+b,0).toString(8).padStart(6,'0')+'\0 ',148,8);
       append(h); append(data); if(data.length%512) append(Buffer.alloc(512-data.length%512));
     }
     function add(name,data,mode,link) {
       // GNU long-name records preserve long UTF-8 paths and symlink targets.
       if(Buffer.byteLength(name)>100) header('././@LongLink',Buffer.from(name+'\0'),0o600,'L');
-      if(link!==undefined&&Buffer.byteLength(link)>100) header('././@LongLink',Buffer.from(link+'\0'),0o600,'K');
+      if(link!==undefined&&Buffer.byteLength(link)>100) header('././@LongLink',Buffer.concat([Buffer.from(link),Buffer.from([0])]),0o600,'K');
       header(name,data,mode,link===undefined?'0':'2',link);
     }
     const manifest=[];

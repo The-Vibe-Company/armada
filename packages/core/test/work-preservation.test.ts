@@ -93,6 +93,8 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   const longName = "long-" + "x".repeat(120);
   await writeFile(join(repo, longName), "long path\n");
   await symlink(longName, join(repo, "link"));
+  const rawTarget = Buffer.from([0xff]);
+  await symlink(rawTarget, join(repo, "raw-link"));
   const result = await preserveWork(provider, "sandbox");
   expect(result.status).toBe("preserved");
   if (result.status !== "preserved") throw new Error("Expected archive");
@@ -113,6 +115,7 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   expect(await readFile(join(recovery, "repo-0", "untracked", "new-file"), "utf8")).toBe("untracked\n");
   expect(await readFile(join(recovery, "repo-0", "untracked", longName), "utf8")).toBe("long path\n");
   expect(await readlink(join(recovery, "repo-0", "untracked", "link"))).toBe(longName);
+  expect(await readlink(join(recovery, "repo-0", "untracked", "raw-link"), { encoding: "buffer" })).toEqual(rawTarget);
   expect((await run(["git", "rev-parse", "HEAD"], repo)).trim()).toBe(head);
 });
 
