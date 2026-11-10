@@ -15,6 +15,8 @@ const ALICE = id(1);
 const BOB = id(2);
 const ACME = id(10);
 export const ORCHESTRATOR_IDS = { alice: id(160), bob: id(161) };
+/** The named model accounts the create form offers: real account ids, as the server sends them. */
+export const MODEL_ACCOUNT_IDS = { claude: id(180), codex: id(181) };
 
 type Orchestrator = Row & { id: string; ownerId: string; revision: number; state: string; continuity: string };
 type Event = Row & { id: string; orchestratorId: string };
@@ -54,7 +56,7 @@ function orchestrator(oid: string, owner: string, name: string, extra: Row = {})
       harness: "claude",
       model: "claude-opus-5-5",
       reasoningEffort: "high",
-      modelAccountId: "acct-claude",
+      modelAccountId: MODEL_ACCOUNT_IDS.claude,
       idleSeconds: 7200,
     },
     state: "ready",
