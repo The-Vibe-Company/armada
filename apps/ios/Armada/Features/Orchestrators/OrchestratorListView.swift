@@ -169,7 +169,9 @@ struct OrchestratorListView: View {
                             ProgressView()
                             Spacer()
                         }
-                        .task { await model.loadMore() }
+                        // Keyed by the row count: a page that lands only in a collapsed group adds nothing visible,
+                        // so the row never leaves the screen and must ask again after each page.
+                        .task(id: model.items.count) { await model.loadMore() }
                     }
                 }
             }
