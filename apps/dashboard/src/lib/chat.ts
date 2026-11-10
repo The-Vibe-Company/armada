@@ -28,6 +28,12 @@ export type Chat = {
  */
 export const STEER_RESTARTS_TURN: Readonly<Record<Harness, boolean>> = { claude: false, codex: true };
 
+/**
+ * The closed event types the server reads as a failed turn although the prompt says `finished` (`promptOutcome` in
+ * `@armada/core`): the agent hit its usage limit or its credential expired. The type is the reason the turn shows.
+ */
+const STOP_EVENTS = new Set(["usage_limit", "auth_expiry"]);
+
 /** Claude Code reports a tool's result under this name, with the id of the call it answers. */
 const RESULT_PLACEHOLDER = "tool_result";
 
@@ -57,7 +63,8 @@ export function eventsOf(events: readonly ChatEvent[], conversationId: string | 
  *   (legacy) stays its own message, except that streamed chunks are dropped once a final message of the same turn
  *   follows them;
  * - one tool activity per tool id, its input and result merged from later events;
- * - a failed or interrupted turn ends with its outcome.
+ * - a failed or interrupted turn ends with its outcome; a `finished` turn with a usage-limit or expired-credential
+ *   event failed, with that event's type as the reason.
  * The journal id stays the replay identity: the same events always give the same items and keys.
  */
 export function projectChat(events: readonly ChatEvent[]): Chat {
@@ -69,6 +76,8 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
   /** Legacy streamed chunks of each turn not yet followed by a final message. */
   const legacyChunks = new Map<string, Extract<ChatItem, { kind: "assistant" }>[]>();
   const superseded = new Set<string>();
+  /** The stop event type of each turn that has one, by `promptId`. */
+  const stops = new Map<string, string>();
 
   for (const event of events) {
     const turn: Turn = {
@@ -116,6 +125,7 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
         for (const call of event.tools) addTool(call, event, turn);
         break;
       case "other":
+        if (event.promptId && STOP_EVENTS.has(event.type)) stops.set(event.promptId, event.type);
         technical.push(event);
         break;
     }
@@ -177,6 +187,14 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
     if (tool.name === RESULT_PLACEHOLDER && call.name !== RESULT_PLACEHOLDER) tool.name = call.name;
     if (call.input !== undefined) tool.input = call.input;
     if (call.result !== undefined) tool.result = call.result;
+  }
+
+  for (const prompt of prompts.values()) {
+    const stop = prompt.promptId ? stops.get(prompt.promptId) : undefined;
+    if (stop && prompt.status === "finished") {
+      prompt.status = "failed";
+      prompt.reason = stop;
+    }
   }
 
   const shown = items.filter(
