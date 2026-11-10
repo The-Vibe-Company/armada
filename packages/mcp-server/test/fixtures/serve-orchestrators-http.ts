@@ -577,9 +577,19 @@ try {
     const sandboxId = launched.sandbox.id;
     assert(sandboxId, JSON.stringify(launched));
     // A live observation lease must be a closed retryable conflict, never a 503.
-    await sql.query("update sandboxes set reconcile_lease_until=now()+interval '1 minute' where id=$1", [sandboxId]);
+    // Own the token as well as its deadline: an already-running background
+    // observation must not be able to clear this simulated other replica's lease.
+    const observationLease = crypto.randomUUID();
+    await sql.query(
+      "update sandboxes set reconcile_lease=$2,reconcile_lease_until=now()+interval '1 minute' where id=$1",
+      [sandboxId, observationLease],
+    );
     await ordinary("send", { id: sandboxId, prompt: "hello" }, 409);
-    await sql.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
+    const released = await sql.query(
+      "update sandboxes set reconcile_lease=null,reconcile_lease_until=null where id=$1 and reconcile_lease=$2 returning id",
+      [sandboxId, observationLease],
+    );
+    assert.equal(released.rows.length, 1, "The conflicting send must preserve the observation owner's lease.");
     await ordinary("send", { id: sandboxId, prompt: "hello" });
     const stopped = await ordinary("stop", { id: sandboxId });
     assert.equal(stopped.status, "stopped");
