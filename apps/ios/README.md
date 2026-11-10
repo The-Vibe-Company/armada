@@ -84,6 +84,9 @@ with `altool`, waits for App Store Connect to process it, sets its What to Test
   lack of registered devices.
 - **Cleanup.** An `always()` step deletes the keychain, the key and certificate
   files under `$RUNNER_TEMP`, the installed profile and `Signing.xcconfig`.
+  The .p12 password reaches `security import -P` on the command line, as in
+  GitHub's signing guide (`security` takes it no other way); the hosted runner
+  is single-use, and the password is never printed.
 
 ### One-time setup (owner)
 

@@ -21,7 +21,7 @@ jobs:
     name: Archive, upload and distribute to TestFlight
     if: github.repository == 'The-Vibe-Company/armada' && github.ref == 'refs/heads/main'
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 120
     environment: testflight
     steps:
       - name: Check TestFlight configuration
