@@ -512,6 +512,16 @@ try {
         });
         const refusal = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 1200 }, 400);
         assert.equal(refusal.error.code, "extension_maximum");
+        assert.equal(
+          (
+            await sql.query<{ activity_lease_id: string | null }>(
+              "select activity_lease_id from sandboxes where id=$1",
+              [id],
+            )
+          ).rows[0]?.activity_lease_id,
+          null,
+          "A definite refusal must release activity ownership for immediate retry/stop",
+        );
         assert.equal(new Date((await row(id)).expires_at).toISOString(), acceptedDeadline);
         await nativeStore.lease(before.provider_sandbox_id, async (native, save) => {
           native.grantExpiresAt = originalGrant;
