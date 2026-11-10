@@ -296,11 +296,7 @@ function ScopedGoldenForm({
                 </label>
               </div>
               <p id={`${id}-visibility-hint`} className="text-xs text-muted-foreground">
-                {!isAdmin
-                  ? "Only an org admin creates org goldens."
-                  : chosenVisibility === "org"
-                    ? "Visible to every member. You can make it private later."
-                    : "Only you see it. You can share it with the org later."}
+                {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org goldens."}
               </p>
             </fieldset>
             {providers.length === 1 && providerChoice}
@@ -512,6 +508,12 @@ function ScopedGoldenForm({
     </form>
   );
 }
+
+/** What the chosen visibility means for an admin, who may change it later from the golden's panel. */
+const VISIBILITY_HINT: Record<"org" | "private", string> = {
+  org: "Visible to every member. You can make it private later.",
+  private: "Only you see it. You can share it with the org later.",
+};
 
 const CAPACITY_HINT: Record<CapacityState["kind"], (state: CapacityState) => string> = {
   available: (state) =>
