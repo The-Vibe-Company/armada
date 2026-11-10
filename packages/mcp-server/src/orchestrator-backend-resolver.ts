@@ -29,7 +29,14 @@ import { OrchestratorRuntimeError, type RuntimeIdentity } from "./orchestrator-r
 export interface OrchestratorNativeAdapter {
   readonly continuity?: "best_effort";
   assertPrerequisites(provider: Provider, golden: GoldenRecord, configuration: OrchestratorCreate): Promise<void>;
-  resumeWithoutText?(provider: Provider, identity: RuntimeIdentity, operationId: string): Promise<void>;
+  resumeWithoutText?(
+    provider: Provider,
+    identity: RuntimeIdentity,
+    operationId: string,
+  ): Promise<void | {
+    conversationContinued: boolean;
+    reason?: "conversation_metadata_missing" | "conversation_harness_mismatch";
+  }>;
   managed(provider: Provider, machine: ManagedMachine, selection: ManagedSelection): ManagedNativeBackend;
 }
 export interface NamedOrchestratorCredentials extends LaunchCredentialResolver {

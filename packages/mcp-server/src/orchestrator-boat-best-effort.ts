@@ -2,7 +2,6 @@ import type { Provider, Sql } from "@armada/core/server";
 import type { BoatProvider } from "@armada/provider-boat";
 import type { OrchestratorNativeAdapter } from "./orchestrator-backend-resolver.ts";
 import type { ManagedMachine } from "./orchestrator-managed-runtime.ts";
-import { BestEffortConversationUnavailable } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { mirrorStoppedHistory } from "./orchestrator-stop-history.ts";
 
@@ -111,16 +110,22 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
       const ordinary = boat(provider);
       if (!input.sql.transaction || !identity.sandboxId || !identity.providerSandboxId || identity.generation === null)
         throw new OrchestratorRuntimeError("conflict");
+      let conversationContinued = true;
+      let reason: "conversation_metadata_missing" | "conversation_harness_mismatch" | undefined;
       if (identity.conversationId) {
         const conversation = (await ordinary.conversations(identity.providerSandboxId)).find(
           (entry) => entry.id === identity.conversationId,
         );
+        // Boat names the Claude harness `claude-code`, whereas Armada persists `claude`.
+        const expectedHarness =
+          identity.configuration.harness === "claude" ? "claude-code" : identity.configuration.harness;
         if (
           !conversation ||
-          conversation.lastHarness !== identity.configuration.harness ||
-          conversation.lastModel !== identity.configuration.model
-        )
-          throw new BestEffortConversationUnavailable();
+          (conversation.lastHarness !== expectedHarness && conversation.lastHarness !== identity.configuration.harness)
+        ) {
+          conversationContinued = false;
+          reason = conversation ? "conversation_harness_mismatch" : "conversation_metadata_missing";
+        }
       }
       await ordinary.resumeBestEffort(identity.providerSandboxId);
       const active = await provider.get(identity.providerSandboxId);
@@ -153,7 +158,12 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
           ],
         );
         if (changed.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+        if (!conversationContinued)
+          await tx.query(`update public.orchestrator_runtime set conversation_id=null where orchestrator_id=$1`, [
+            identity.id,
+          ]);
       });
+      return { conversationContinued, ...(reason ? { reason } : {}) };
     },
   };
 }

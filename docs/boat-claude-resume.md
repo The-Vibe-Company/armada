@@ -33,6 +33,13 @@ checkpoint acknowledgement.
 
 ## Repair and limits
 
+The Boat prompt API identifies Claude as `claude-code`, while Armada's harness
+is `claude`. The old resume comparison used the Armada value against raw Boat
+metadata, rejecting that provider spelling. The adapter now accepts both
+spellings. It also no longer rejects a matching conversation on model alias
+spelling alone. This code-level mismatch explains a reachable Claude-only
+failure; the production metadata was not accessible in this sandbox.
+
 Boat best-effort activation must not treat a missing conversation-list entry as
 an inability to restart the machine. Likewise a model alias reported by Boat
 is not evidence of lost session files. Resume retains the conversation when

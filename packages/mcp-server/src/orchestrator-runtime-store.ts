@@ -602,6 +602,8 @@ export class OrchestratorRuntimeStore {
         `select id from public.orchestrator_operations where orchestrator_id=$1 and state in ('pending','uncertain')`,
         [input.id],
       );
+      if (["message", "steer"].includes(input.action) && identity.state !== "ready")
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       if (busy.rows.length || identity.revision !== input.expectedRevision)
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
       // Foundation owns reservation; reuse the surrounding locked transaction, no nested COMMIT.
@@ -1027,7 +1029,7 @@ export class OrchestratorRuntimeStore {
         continuity=case when $5::text is not null then $5 when $4 then 'unverified' else continuity end where orchestrator_id=$1`,
         [
           identity.id,
-          result.errorCode ?? null,
+          result.parentState === "blocked" ? (result.errorCode ?? null) : null,
           result.state === "succeeded" && ["message", "steer"].includes(operation.kind),
           !!result.conversationId && current.continuity === "not_started",
           result.continuity ?? null,

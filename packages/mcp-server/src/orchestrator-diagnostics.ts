@@ -73,6 +73,7 @@ const REASONS = [
   "unexpected_error",
   "publication_fence_rejected",
   "native_continuity_lost",
+  "boat_conversation_unavailable",
   "native_stop_unconfirmed",
   "stop_receipt_mismatch",
   "stop_receipt_missing",
@@ -381,11 +382,16 @@ export class OrchestratorDiagnostics {
     if (input.sandboxId && UUID.test(input.sandboxId)) this.sandboxId = input.sandboxId;
   }
   /** Closed observations only; acceptance is not proof of harness execution. */
-  observe(kind: "prompt_dispatch" | "prompt_status" | "events_poll", value: string): void {
+  observe(
+    kind: "prompt_dispatch" | "prompt_status" | "events_poll" | "resume_continuity" | "resume_fallback",
+    value: string,
+  ): void {
     const allowed = {
       prompt_dispatch: ["accepted", "not_confirmed"],
       prompt_status: ["queued", "running", "finished", "failed", "interrupted", "unknown", "unavailable"],
       events_poll: ["empty", "published", "fenced", "failed"],
+      resume_continuity: ["unverified", "previous_conversation_not_continued"],
+      resume_fallback: ["conversation_metadata_missing", "conversation_harness_mismatch"],
     };
     if (!Object.hasOwn(allowed, kind) || !allowed[kind].includes(value)) return;
     try {
