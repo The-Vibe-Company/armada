@@ -292,6 +292,7 @@ describe("tools", () => {
         "delete",
         "exec",
         "work_recovery",
+        "github_refresh",
         "golden_build_status",
         "golden_capabilities",
         "golden_create",
