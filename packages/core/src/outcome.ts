@@ -85,7 +85,12 @@ export async function readPromptEvents(
       limit: OUTCOME_PAGE_LIMIT,
     });
     all.unshift(...read.events);
-    const foundStart = read.events.some((event) => event.kind === "prompt" && event.promptId === request.promptId);
+    const foundStart = read.events.some(
+      (event) =>
+        event.kind === "prompt" &&
+        event.promptId === request.promptId &&
+        (provider.id === "boat" || event.status === "queued" || event.status === "running"),
+    );
     if (foundStart || !read.hasMore)
       return {
         events: dedupeEvents(all).filter((event) => event.promptId === request.promptId || !event.promptId),

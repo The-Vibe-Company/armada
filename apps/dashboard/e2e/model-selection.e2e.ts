@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { IDS, reset, signIn } from "./helpers";
+import { IDS, MOCK, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
@@ -58,4 +58,21 @@ test("unknown observed model is neutral, never a failure banner", async ({ page 
   const label = page.getByText("Model not verified: Model evidence is unavailable.", { exact: true });
   await expect(label).toBeVisible();
   await expect(label).not.toHaveClass(/text-destructive/);
+});
+
+test("status telemetry failure leaves the successfully read conversation visible", async ({ page }) => {
+  await fetch(`${MOCK}/__test/sandbox-lifecycle`, {
+    method: "POST",
+    body: JSON.stringify({ id: IDS.running, fields: { test_status_read_unavailable: true } }),
+  });
+  await fetch(`${MOCK}/__test/sandbox-events`, {
+    method: "POST",
+    body: JSON.stringify({
+      sandbox: IDS.running,
+      events: [{ id: "answer", at: 1, kind: "message", text: "The log read succeeded", partial: false, tools: [] }],
+    }),
+  });
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  await expect(page.getByRole("log", { name: "Messages" }).getByText("The log read succeeded")).toBeVisible();
+  await expect(page.getByText("Status unavailable", { exact: true })).toHaveCount(0);
 });

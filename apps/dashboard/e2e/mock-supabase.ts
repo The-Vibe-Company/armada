@@ -875,6 +875,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   switch (message.params?.name) {
     case "status":
+      if (target.test_status_read_unavailable) return text("Status unavailable", true);
       return text({ status: target.status, prompt: null });
     case "logs": {
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
