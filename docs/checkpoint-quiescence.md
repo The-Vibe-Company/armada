@@ -2,22 +2,32 @@
 
 ## Repair
 
-Modal/gVisor can permanently deny `/proc/1/ns/*`, even to root. The scrub no
-longer reads PID1 namespace links. The SDK-selected physical sandbox, generation,
-PID1 start identity and captured root control-process allowlist fence the scope;
-readable self namespace links remain supplementary identity evidence. Unreadable
-self links do not turn an idle sandbox into a conflict.
+Legacy recovery was fixed in #755 and is confirmed stopped in production. This
+follow-up changes no recovery or database behavior.
 
-Additional writers are frozen, killed and rescanned. Supported pidfds anchor
-signals. If gVisor denies/does not implement pidfds, the scrub rechecks process
-start identity immediately before signaling within the selected sandbox. An
-exited/zombie process is not a survivor; an actual surviving writer still refuses
-the checkpoint. Logs retain closed `processCategory` / `processFailure` and
-`processInspection` (primitive plus errno class), never command lines or secrets.
+The remaining `privileged_writer / unproven` failure came from treating every
+new root process as an Armada writer. Platform controls and their same-session,
+root-only descendants may legitimately survive. PID1, the scrub's own ancestors,
+pre-admission control identities, verified kernel threads and exact Armada
+launcher helpers are classified separately. User ancestry, a different session,
+a known Runner/harness, or positive managed-state FD/cwd evidence prevents a
+new root process from inheriting a platform-child exemption. Unknown root
+orphans remain writers, not a blanket root allowlist.
 
-Legacy recovery now clears `sandboxes.status_reason` when publishing `stopped`.
-The existing `sandboxes_status_reason_chk` permits a non-null reason only for
-`failed`; the old publication retained the failed reason and violated it.
+The private Runner still owns the journal and must terminate after its barrier;
+only its non-writing flock/runuser launcher helpers are control exceptions.
+A persistent root exec-service fixture reproduces the exact production label on
+main; the repaired checkpoint succeeds while its harmless root child remains.
+The same test refuses an unkillable root managed-state writer and a detached root
+writer. Both native and fallback signal modes are exercised with actual seccomp.
+
+Survivor logs include closed `processUidClass`, `processIsAncestor`, `processIsPid1`,
+`processCommClass`, `processExeClass`, `processRole`, `processStateClass`,
+`processManagedState` and `processSurvivorCount` alongside existing category,
+failure and inspection-primitive/errno fields. The traits describe the first
+survivor; count covers all remaining writers (capped at 4096). No raw process name,
+command line, executable path, PID or environment is logged. An opaque orphan may
+still refuse; these fields distinguish it from recognized platform control work.
 
 ## Deployment prerequisites
 
@@ -31,22 +41,21 @@ while developing this repair.
 Use an authenticated API-only CLI. Set `ORG`, `GOLDEN` (the Modal native golden
 UUID), and `MODEL_ACCOUNT` (the accessible Codex account UUID).
 
-### Retire the existing legacy parent
-
-Replay the **original** recovery key and revision, even though detail shows the
-recovery's later revision. This retries only the exact registered termination and
-publication; it never allocates a new sandbox:
+### Inspect the currently blocked parent
 
 ```sh
 : "${ORG:?Set the owning organization UUID}"
-armada orchestrator detail 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --json
-armada orchestrator recover 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --expected-revision 1 --idempotency-key recover-52b264fd-v1 --json
-armada orchestrator detail 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --json
+armada orchestrator list --org "$ORG" --json
+# Select the full UUID matching the affected 07cdaaa1 prefix from list output:
+: "${AFFECTED_ORCHESTRATOR:?Set the full affected orchestrator UUID}"
+armada orchestrator detail "$AFFECTED_ORCHESTRATOR" --org "$ORG" --json
+armada orchestrator events "$AFFECTED_ORCHESTRATOR" --org "$ORG" --all --json
 ```
 
-Expect the existing receipt to become `succeeded` and the parent `stopped`.
-Repeat the same recovery command to verify read-only replay if desired. Do not
-manually delete a Modal sandbox or modify SQL rows.
+Do not resume an uncertain stop or assume a new key retries it. Preserve its
+original key/revision for supported reconciliation. The fresh smoke below avoids
+mutating an already uncertain checkpoint. Do not rerun the completed legacy
+recovery as part of this follow-up, delete provider sandboxes or edit SQL rows.
 
 ### Fresh stop → resume → second stop smoke
 
@@ -89,9 +98,11 @@ bun test packages/mcp-server/test/orchestrator-create-recovery.test.ts
 ```
 
 The real Linux fixture starts the flock/runuser launcher, native Codex and two
-initialized stdio MCP servers. It proves PID1 namespace access is denied, denies
-pidfds using real seccomp (and separately denies numeric kill to prove native pidfds), then requires
-the real checkpoint scrub to succeed with no live writers. Removing CAP_KILL
-separately proves an actual survivor still refuses with closed diagnostics. The
-PGlite regression uses the real migrations and reproduces the exact legacy
-constraint violation before the repair, including same-key recovery/replay.
+initialized stdio MCP servers. A root control service starts before baseline
+capture and spawns a persistent root child afterwards. Seccomp makes signals to
+that child succeed without killing it, reproducing `privileged_writer/unproven`
+on main. The fixed ownership scope preserves the root control child while
+checkpointing and terminating actual managed processes. Additional cases prove
+root children with managed-state FDs and detached/root-session writers still
+refuse, with the closed diagnostic traits. PID1 namespace access is denied;
+pidfd-denied and numeric-kill-denied modes independently prove both signal paths.

@@ -377,23 +377,37 @@ restore clears and refreshes this baseline. Metadata is nonsensitive server SQL 
 not an auth/cache file or log. A missing legacy/populated baseline is NOT reconstructed
 after admission; snapshot fails closed and retains source.
 
-Checkpoint preparation preserves exact trusted control identities, PID1 and the
-verified current cleanup ancestry (including a verified outside-namespace parent0
-boundary used by SDK exec). It enumerates all additional root AND user processes,
-including setsid/double-fork orphans reparented to PID1, and freezes them before killing.
-Linux pidfds anchor signals when supported. gVisor can permanently deny namespace
-links and pidfds: PID1 namespace links are never required, and unreadable self links
-are supplementary rather than a refusal. Denied/unsupported pidfds fall back to
-in-sandbox numeric signals with PID/start identity revalidated immediately before
-each signal. A reused control PID is not trusted as the old control incarnation.
-Sweeps repeat until no additional live writer remains. Mismatched physical/generation
-or readable namespace evidence, invalid PID1 baseline identity, a positive uninspectable
-process entry or an actual surviving writer still refuse the save. Closed inspection
-primitive/errno labels accompany survivor diagnostics, never command lines or secrets.
-Only after quiescence are SSH keys/auth removed and,
-for golden purpose, managed history unlinked. FD/cwd checks remain defense-in-depth,
-not the writer fence. Current SDK cleanup commands operate under the lifecycle lease;
-management credentials never enter the VM.
+Checkpoint preparation preserves PID1, the scrub exec's verified ancestor chain,
+and exact pre-admission root control identities. Root control children may also
+survive when they trace through a root-only chain to one of those controls and
+remain in that control's session. PID1 is never a descendant-trust anchor: unknown
+orphans and detached/adopted root writers do not become platform controls merely
+by reparenting. Verified kernel threads are outside the userspace writer set.
+Exact provider flock/runuser launcher argv forms may span their exec session;
+raw argv is inspected only in memory and is never logged. This exception cannot
+cross a user ancestor or authorize arbitrary same-named executables.
+
+The private Armada Runner is different from its launcher: it retains the journal
+and can write managed state, so it must terminate after its checkpoint barrier.
+Harnesses, owned SSH processes, all additional user processes and unclassified
+root writers also remain in scope. A positive cwd/FD link into managed state
+vetoes a control-child exemption. Unreadable metadata is not itself a writer;
+opaque platform controls rely on their verified pre-admission provenance, not
+on an assertion that inspection proved them incapable of any filesystem write.
+
+Pidfds anchor signals when supported; denied/unsupported pidfds fall back to
+immediate PID/start revalidation in the SDK-selected physical sandbox. No PID1
+namespace link is required. Sweeps freeze/kill managed writers and repeat until
+no positive owned survivor remains. Unknown survivors still refuse the snapshot.
+Their diagnostics include closed UID, ancestor/PID1 booleans, exe/comm match
+classes, control/ownership role, state, managed-state evidence and bounded count
+(4096 means at least 4096). They never include PID, raw comm/exe/cmdline, paths or
+environment. Inspection denial reports only its primitive and errno class.
+
+Only after quiescence are SSH credentials removed and, for golden purpose,
+managed history unlinked. FD/cwd checks remain defense-in-depth; the lifecycle
+lease, sealed runtime admission and ownership scope prevent new managed work.
+Management credentials never enter the VM.
 
 `captureProcessBaseline` and `quiesceSandboxProcesses` are production helpers, using
 only public SDK exec and the pinned private Bun. `RunnerDistribution.captureProcessBaseline`

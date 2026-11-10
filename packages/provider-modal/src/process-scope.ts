@@ -11,6 +11,7 @@ import { dlopen,FFIType,read } from "bun:ffi";
 const inspections=new Set();
 const errnoClass=e=>({1:"EPERM",3:"ESRCH",13:"EACCES",22:"EINVAL",38:"ENOSYS",95:"EOPNOTSUPP"})[e]??"other";
 function denied(primitive,code){if(code!=="ESRCH")inspections.add(primitive+"_"+code);}
+function inspectError(primitive,e){if(!["ENOENT","ESRCH"].includes(e.code))denied(primitive,["EACCES","EPERM","ENOSYS","EOPNOTSUPP","EINVAL"].includes(e.code)?e.code:"other");}
 function category(row){
   let comm="";try{comm=readFileSync("/proc/"+row.pid+"/comm","utf8").trim();}catch{}
   return comm==="codex"?41:["bun","bun.exe","node"].includes(comm)?42:row.uid===0?43:44;
@@ -23,17 +24,17 @@ function names(row){
   let comm="unreadable",exe="unreadable",runner=false,launcher=false;
   const main="/opt/armada/main.js",bun="/opt/armada/runtime-bun/bun",runuser=["/usr/sbin/runuser","-u","user","--",bun,main];
   const flock=["/usr/bin/flock","--nonblock","--conflict-exit-code","73","/run/armada-runtime.lock","/usr/bin/env","-i","PATH=/usr/local/bin:/usr/bin:/bin","HOME=/home/user",...runuser];
-  try{comm=nameClass(readFileSync("/proc/"+row.pid+"/comm","utf8").trim());}catch{}
-  try{exe=nameClass(readlinkSync("/proc/"+row.pid+"/exe").replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch{}
+  try{comm=nameClass(readFileSync("/proc/"+row.pid+"/comm","utf8").trim());}catch(e){inspectError("proc_comm",e);}
+  try{exe=nameClass(readlinkSync("/proc/"+row.pid+"/exe").replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch(e){inspectError("proc_exe",e);}
   try{const args=readFileSync("/proc/"+row.pid+"/cmdline","utf8").split("\0");if(args.at(-1)==="")args.pop();
     runner=(comm==="bun"||exe==="bun")&&args.includes(main);
     launcher=[runuser,flock].some(expected=>args.length===expected.length&&expected.every((arg,i)=>args[i]===arg));
-  }catch{}
+  }catch(e){inspectError("proc_cmdline",e);}
   return {comm,exe,runner,launcher,owned:runner||[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
 }
 function managedState(row){
-  let unreadable=false;try{if(inside(readlinkSync("/proc/"+row.pid+"/cwd")))return "managed";}catch{unreadable=true;}
-  try{for(const fd of readdirSync("/proc/"+row.pid+"/fd")){try{if(inside(readlinkSync("/proc/"+row.pid+"/fd/"+fd)))return "managed";}catch(e){if(!["ENOENT","ESRCH"].includes(e.code))unreadable=true;}}}catch{unreadable=true;}
+  let unreadable=false;try{if(inside(readlinkSync("/proc/"+row.pid+"/cwd")))return "managed";}catch(e){inspectError("proc_cwd",e);unreadable=true;}
+  try{for(const fd of readdirSync("/proc/"+row.pid+"/fd")){try{if(inside(readlinkSync("/proc/"+row.pid+"/fd/"+fd)))return "managed";}catch(e){if(!["ENOENT","ESRCH"].includes(e.code)){inspectError("proc_fds",e);unreadable=true;}}}}catch(e){inspectError("proc_fds",e);unreadable=true;}
   return unreadable?"unreadable":"outside";
 }
 try {
@@ -201,7 +202,7 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
         inspection = values.findLast(
           (value: unknown) =>
             typeof value === "string" &&
-            /^(self_namespace|proc_stat|proc_status|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
+            /^(self_namespace|proc_stat|proc_status|proc_comm|proc_exe|proc_cmdline|proc_cwd|proc_fds|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
               value,
             ),
         );

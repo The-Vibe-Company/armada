@@ -372,7 +372,7 @@ function processFailure(error: unknown): Record<string, string | number | boolea
     const inspection = read("processInspection");
     if (
       typeof inspection === "string" &&
-      /^(self_namespace|proc_stat|proc_status|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
+      /^(self_namespace|proc_stat|proc_status|proc_comm|proc_exe|proc_cmdline|proc_cwd|proc_fds|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
         inspection,
       )
     )
