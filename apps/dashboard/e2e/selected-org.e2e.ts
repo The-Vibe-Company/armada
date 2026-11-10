@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { alert, IDS, LABELS, MOCK, signIn } from "./helpers";
+import { alert, goldenPanel, goldenRow, IDS, LABELS, MOCK, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
@@ -122,14 +122,14 @@ test("mutation targets cannot escape the selected org even when the viewer admin
   await signIn(page, "alice@example.com", "/environments");
   await page.getByLabel("Active organization").selectOption(ZENITH);
   await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
-  const golden = page.locator('[data-golden="zenith-golden"]');
+  const golden = await goldenPanel(page, "zenith-golden");
   await golden.locator('input[name="golden"]').evaluate((input) => {
     (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000020";
   });
   await golden.getByRole("button", { name: "Make private" }).click();
   await expect(alert(page)).toContainText("not available in this scope");
   await page.reload();
-  await page.getByRole("button", { name: "Launch from zenith-golden" }).click();
+  await goldenRow(page, "zenith-golden").getByRole("button", { name: "Launch from zenith-golden" }).click();
   const launch = page.getByRole("dialog");
   await launch.locator('input[name="org"]').evaluate((input) => {
     (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
