@@ -313,3 +313,30 @@ before a private cloud-only archival fallback. Already-published redacted SQL
 history remains readable. The permanent stop fence prevents activation, and
 withheld history is never upgraded on retry. Already-archived native-auth parents
 can likewise be retired without trying to reactivate them for SSH sampling.
+
+### Boat failed-resume / uncertain-message retirement (#785)
+
+The owner may also recover a Boat parent blocked after a failed resume followed
+by an uncertain message. This is **terminal retirement**, not message retry or
+conversation recovery: it fences activation, revokes delegated authority,
+archives the exact recorded provider sandbox/generation, and withholds the
+ambiguous unread native tail. Already mirrored history remains available.
+
+For the parent reported in #785 (revision 5), the operator may run the following
+**after the updated server is available**, setting `ORG_ID` to that parent's
+organization and using its owner's existing Armada login/token:
+
+```sh
+armada orchestrator recover 1fa43284-ee2f-4602-bead-21101278e879 \
+  --org "$ORG_ID" --expected-revision 5 \
+  --idempotency-key issue-785-retire-revision-5 --json
+armada orchestrator detail 1fa43284-ee2f-4602-bead-21101278e879 --org "$ORG_ID" --json
+```
+
+Check for a succeeded stop receipt and a stopped parent. If uncertain, retry the
+**same command, key and original revision**; never issue a fresh key to bypass
+uncertainty. If the revision has changed before the first attempt, inspect detail
+and events rather than guessing a new revision. The provider sandbox is resolved
+from fenced stored identity, never the abbreviated `b701bbd6` incident label.
+These commands are documentation only; this implementation session did not run
+them or touch production.

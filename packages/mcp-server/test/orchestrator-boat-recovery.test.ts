@@ -7,7 +7,7 @@ import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // Recovery's primary contract: owner-only retirement fences a later incarnation,
 // survives ambiguous archival, and replays without touching compute after success.
-test.each(["cloud_retry", "native_unavailable", "native_archived"] as const)(
+test.each(["cloud_retry", "native_unavailable", "native_archived", "legacy_resume_message"] as const)(
   "Boat retirement %s fences a later incarnation and unsafe output",
   async (mode) => {
     const { db, people: p } = await database();
@@ -64,15 +64,58 @@ test.each(["cloud_retry", "native_unavailable", "native_archived"] as const)(
       await sql.query(`update public.orchestrator_operations set state='succeeded' where id=$1`, [
         creation.operation.id,
       ]);
+      if (mode === "legacy_resume_message") {
+        const sent = await core.reserveOrchestratorOperation(sql, {
+          orchestratorId: creation.identity.id,
+          actorId: p.owner,
+          action: "message",
+          key: "sent",
+          digest: "1".repeat(64),
+          expectedRevision: 1,
+        });
+        await sql.query(`update public.orchestrator_operations set state='succeeded' where id=$1`, [sent.id]);
+      }
       const stop = await core.reserveOrchestratorOperation(sql, {
         orchestratorId: creation.identity.id,
         actorId: p.owner,
         action: "stop",
         key: "ambiguous-stop",
         digest: "0".repeat(64),
-        expectedRevision: 1,
+        expectedRevision: mode === "legacy_resume_message" ? 2 : 1,
       });
-      await sql.query(`update public.orchestrator_operations set state='uncertain' where id=$1`, [stop.id]);
+      let ambiguousId = stop.id;
+      if (mode === "legacy_resume_message") {
+        await sql.query(`update public.orchestrator_operations set state='succeeded' where id=$1`, [stop.id]);
+        const resumed = await core.reserveOrchestratorOperation(sql, {
+          orchestratorId: creation.identity.id,
+          actorId: p.owner,
+          action: "resume",
+          key: "failed-resume",
+          digest: "2".repeat(64),
+          expectedRevision: 3,
+        });
+        await sql.query(
+          `update public.orchestrator_operations set state='failed',error_code='boat_conversation_unavailable' where id=$1`,
+          [resumed.id],
+        );
+        const ambiguous = await core.reserveOrchestratorOperation(sql, {
+          orchestratorId: creation.identity.id,
+          actorId: p.owner,
+          action: "message",
+          key: "uncertain-message",
+          digest: "3".repeat(64),
+          expectedRevision: 4,
+        });
+        ambiguousId = ambiguous.id;
+        await sql.query(
+          `update public.orchestrator_runtime set continuity='lost',blocked_reason='runtime_uncertain' where orchestrator_id=$1`,
+          [creation.identity.id],
+        );
+      }
+      await sql.query(
+        `update public.orchestrator_operations set state='uncertain',error_code='runtime_uncertain' where id=$1`,
+        [ambiguousId],
+      );
       await sql.query(`update public.orchestrators set state='blocked' where id=$1`, [creation.identity.id]);
       if (mode !== "cloud_retry")
         await sql.query(
@@ -105,20 +148,61 @@ test.each(["cloud_retry", "native_unavailable", "native_archived"] as const)(
             }
           : {}),
         stopBestEffort: async () => {
+          if (mode === "legacy_resume_message") {
+            const fenced = (
+              await sql.query<{
+                runtime_result: { history?: string };
+                stop_requested_at: unknown;
+                authority_epoch: number;
+              }>(
+                `select p.runtime_result,s.stop_requested_at,o.authority_epoch from public.orchestrator_operations p join public.orchestrators o on o.id=p.orchestrator_id join public.sandboxes s on s.id=o.sandbox_id where p.orchestrator_id=$1 and p.idempotency_key='retire'`,
+                [creation.identity.id],
+              )
+            ).rows[0]!;
+            expect(fenced.runtime_result.history).toBe("withheld");
+            expect(fenced.stop_requested_at).not.toBeNull();
+            expect(Number(fenced.authority_epoch)).toBeGreaterThan(0);
+          }
           calls++;
-          if (fail || mode === "native_unavailable") throw Error("native SSH unavailable or archival ambiguous");
+          if ((fail && mode !== "legacy_resume_message") || mode === "native_unavailable")
+            throw Error("native SSH unavailable or archival ambiguous");
           stopped = true;
         },
       } as BoatProvider;
       const recover = createBoatOrchestratorRecovery(sql, { resolve: async () => provider });
-      const input = { ownerId: p.owner, orgId: p.org, id: creation.identity.id, expectedRevision: 2, key: "retire" };
+      const input = {
+        ownerId: p.owner,
+        orgId: p.org,
+        id: creation.identity.id,
+        expectedRevision: mode === "legacy_resume_message" ? 5 : 2,
+        key: "retire",
+      };
       await expect(recover({ ...input, ownerId: p.member })).rejects.toThrow();
       expect(calls).toBe(0);
+      if (mode === "legacy_resume_message") {
+        await expect(recover({ ...input, expectedRevision: 4 })).rejects.toThrow();
+        await sql.query(
+          `update public.orchestrator_operations set error_code='runtime_uncertain' where orchestrator_id=$1 and action='resume'`,
+          [creation.identity.id],
+        );
+        await expect(recover(input)).rejects.toThrow();
+        expect(calls).toBe(0);
+        await sql.query(
+          `update public.orchestrator_operations set error_code='boat_conversation_unavailable' where orchestrator_id=$1 and action='resume'`,
+          [creation.identity.id],
+        );
+      }
       expect((await recover(input)).state).toBe(mode !== "cloud_retry" ? "succeeded" : "uncertain");
       fail = false;
       expect((await recover(input)).state).toBe("succeeded");
       expect((await recover(input)).state).toBe("succeeded");
-      expect(calls).toBe(mode === "native_archived" ? 0 : mode === "native_unavailable" ? 1 : 2);
+      expect(calls).toBe(mode === "native_archived" ? 0 : mode === "cloud_retry" ? 2 : 1);
+      if (mode === "legacy_resume_message") {
+        expect(
+          (await sql.query(`select state,error_code from public.orchestrator_operations where id=$1`, [ambiguousId]))
+            .rows[0],
+        ).toMatchObject({ state: "failed", error_code: "message_recovered_terminated" });
+      }
       if (mode !== "cloud_retry") {
         const receipt = (
           await sql.query<{ runtime_result: { history?: string } }>(

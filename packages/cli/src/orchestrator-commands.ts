@@ -30,7 +30,8 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   All commands accept --json. Events with --json emit one JSON page per line,
   including the server cursor for reconnect. Reuse the original key and identical
   arguments after an uncertain mutation; inspect detail/events for completion.
-  Recover nonallocatingly terminates an exact uncertain first create or blocked first-incarnation stop;
+  Recover nonallocatingly terminates an exact uncertain first create or blocked stop;
+  Boat also permits retirement after a failed resume followed by an uncertain message.
   repeat its original key/arguments to retry only that exact termination.
   Completed recovery receipts replay read-only; recovery never forks.
   Resume restores native state without sending a prompt. The server decides
