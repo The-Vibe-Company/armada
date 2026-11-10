@@ -89,9 +89,16 @@ function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean
   if (method === "POST" && path.length === 2 && path[1] === "reconcile") return true;
   if (method === "GET" && path.length === 2 && path[1] === "capabilities") return true;
   if (!path[1] || !ORCHESTRATOR_ID.test(path[1])) return false;
-  return method === "GET"
-    ? path.length === 2 || (path.length === 3 && path[2] === "events")
-    : path.length === 3 && ["message", "steer", "stop", "resume"].includes(path[2] ?? "");
+  if (method === "GET")
+    return path.length === 2 || (path.length === 3 && ["events", "settings", "waits"].includes(path[2] ?? ""));
+  if (path.length === 3)
+    return ["message", "steer", "stop", "resume", "recover", "settings", "waits"].includes(path[2] ?? "");
+  return (
+    path.length === 5 &&
+    path[2] === "waits" &&
+    ORCHESTRATOR_ID.test(path[3] ?? "") &&
+    ["renew", "release"].includes(path[4] ?? "")
+  );
 }
 
 function fail(status: number, error: string): Response {

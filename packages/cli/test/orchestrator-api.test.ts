@@ -243,3 +243,26 @@ test("create forwards only an explicit canonical size, leaving absent size and c
     expect(h.requests).toHaveLength(0);
   }
 });
+
+test("unstructured HTTP failures identify the actual origin without relaying upstream text", async () => {
+  for (const body of ["private-upstream-html", JSON.stringify({ error: "private-upstream-diagnostic" })]) {
+    const h = harness(() => new Response(body, { status: 404 }));
+    const result = await h.invoke([
+      "recover",
+      "parent-1",
+      "--org",
+      "org-1",
+      "--expected-revision",
+      "1",
+      "--idempotency-key",
+      "same-key",
+      "--json",
+    ]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.err)).toEqual({
+      error: { code: "unavailable", message: "Armada server request failed (404) at https://armada.test." },
+    });
+    expect(result.err).not.toContain("private-upstream");
+    expect(result.err).not.toContain("test-armada-bearer");
+  }
+});

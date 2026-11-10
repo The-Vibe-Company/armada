@@ -137,7 +137,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         throw new ArmadaApiError(
           typeof code === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : "unavailable",
           response.status,
-          apiMessage(payload, `Armada server request failed (${response.status}).`),
+          apiMessage(payload, `Armada server request failed (${response.status}) at ${origin}.`),
         );
       }
       if (response.status === 403) throw new AuthError(apiMessage(payload, "Armada refused this request."), "conflict");

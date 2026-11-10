@@ -400,6 +400,8 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
       "orchestrators/capabilities",
       `orchestrators/${id}`,
       `orchestrators/${id}/events`,
+      `orchestrators/${id}/settings`,
+      `orchestrators/${id}/waits`,
     ]) {
       const query = "?orgId=org&cursor=opaque%2Fcursor%2Bvalue&limit=2";
       const count = received.length;
@@ -421,7 +423,19 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
         body: "",
       });
     }
-    for (const action of ["create", "message", "steer", "stop", "resume", "reconcile"]) {
+    for (const action of [
+      "create",
+      "message",
+      "steer",
+      "stop",
+      "resume",
+      "recover",
+      "reconcile",
+      "settings",
+      "waits",
+      `waits/${id}/renew`,
+      `waits/${id}/release`,
+    ]) {
       const path =
         action === "create"
           ? "orchestrators"
@@ -461,6 +475,10 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
       ["GET", "orchestrators/private"],
       ["POST", `orchestrators/${id}/callback`],
       ["POST", `orchestrators/${id}/resume/extra`],
+      ["GET", `orchestrators/${id}/recover`],
+      ["POST", `orchestrators/${id}/waits/not-a-uuid/renew`],
+      ["POST", `orchestrators/${id}/waits/${id}/unknown`],
+      ["GET", `orchestrators/${id}/waits/${id}/renew`],
       ["GET", "internal/runner/auth-state"],
     ]) {
       const response = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), {
