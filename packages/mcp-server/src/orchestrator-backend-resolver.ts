@@ -218,6 +218,7 @@ export function createOrchestratorBackendResolver(input: {
             provider: configuration.provider,
             harness: configuration.harness,
             model: configuration.model,
+            ...(configuration.connections === undefined ? {} : { connections: configuration.connections }),
             ...(configuration.reasoningEffort === undefined ? {} : { reasoningEffort: configuration.reasoningEffort }),
             ...(configuration.repo === undefined ? {} : { repo: configuration.repo }),
             ...(configuration.size === undefined ? {} : { size: configuration.size }),

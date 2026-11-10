@@ -19,6 +19,7 @@ import type { AuthIo } from "./auth-commands.ts";
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
          --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>]
+         [--connections <id,...> | --no-connections]
          [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
   capabilities
@@ -88,7 +89,14 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       "--idle-seconds",
       "--size",
       "--idempotency-key",
+      "--connections",
+      "--no-connections",
     );
+    const connections = single(args, "--connections");
+    if (args.options.has("--no-connections") && connections !== undefined)
+      usage("Use --connections or --no-connections, not both.");
+    if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
+      usage("--connections needs nonempty comma-separated IDs.");
     const provider = required(args, "--provider");
     const harness = required(args, "--agent");
     if (provider !== "boat" && provider !== "modal") usage("--provider must be boat or modal.");
@@ -102,6 +110,8 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       harness,
       model: required(args, "--model"),
       modelAccountId: required(args, "--model-account"),
+      ...(args.options.has("--no-connections") ? { connections: [] } : {}),
+      ...(connections === undefined ? {} : { connections: connections.split(",") }),
       // Actual #662 b6ca6e1 additive size field; shared #653 validator, no local policy.
       ...(single(args, "--size") === undefined ? {} : { size: parseMachineSize(single(args, "--size")) }),
     };

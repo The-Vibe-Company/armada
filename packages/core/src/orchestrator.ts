@@ -34,6 +34,8 @@ export interface OrchestratorCreate {
   reasoningEffort?: string;
   /** Opaque authorized model-account reference; not a credential or MCP connection ID. */
   modelAccountId: string;
+  /** Omit for launch defaults; [] explicitly disables user MCP connections. */
+  connections?: string[];
   idleSeconds?: number;
   maxActiveChildren?: number;
 }

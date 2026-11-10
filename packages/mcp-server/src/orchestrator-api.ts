@@ -75,10 +75,18 @@ export async function callOrchestrator(
       "modelAccountId",
       "idleSeconds",
       "maxActiveChildren",
+      "connections",
     ];
     if (
       Object.keys(args).some((key) => !allowed.includes(key)) ||
       args.version !== 1 ||
+      (args.connections !== undefined &&
+        (!Array.isArray(args.connections) ||
+          args.connections.length > 100 ||
+          args.connections.some(
+            (id) =>
+              typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+          ))) ||
       (args.size !== undefined && !(MACHINE_SIZES as readonly unknown[]).includes(args.size)) ||
       !["name", "goldenId", "model", "modelAccountId"].every(
         (key) => typeof args[key] === "string" && (args[key] as string).length > 0,
