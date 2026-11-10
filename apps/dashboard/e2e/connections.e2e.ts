@@ -102,6 +102,9 @@ for (const mobile of [false, true]) {
     await expect(page.getByRole("dialog").locator("[data-service]")).toHaveCount(0);
     await expect(dialog.getByRole("group", { name: /Who uses it/ })).toContainText("Cannot be changed later");
     if (!mobile) await expect(dialog.getByRole("button", { name: "Add and connect" })).toBeInViewport({ ratio: 1 });
+    // On a phone the form scrolls inside the dialog, but nothing overflows its width.
+    await expect(dialog.getByText("stdio command")).toBeInViewport({ ratio: 1 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobile ? 390 : 1280);
     await page.screenshot({
       path: `test-results/connections-add-${mobile ? "mobile" : "desktop"}.png`,
       animations: "disabled",
