@@ -145,9 +145,17 @@ final class SandboxConversationModel {
         }
     }
 
-    /// Called whenever the transcript changes: retires bubbles whose turn it now shows.
+    /// Called whenever the transcript changes: retires bubbles whose turn it now shows, and reads
+    /// the state at once when the transcript shows the working turn ended, so the working
+    /// indicator and the composer follow the finish without waiting for the next state read (#847).
     func streamChanged() {
         reconcilePending()
+        if let turn = state?.turn, state?.isWorking == true, feed.conversation.items.contains(where: { item in
+            guard item.promptID == turn.promptID, case .user(_, let status, _) = item.kind else { return false }
+            return !status.isActive
+        }) {
+            Task { _ = await loadState() }
+        }
     }
 
     private var fetch: ConversationFeed.Fetch {
