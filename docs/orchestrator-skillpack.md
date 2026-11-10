@@ -8,8 +8,11 @@ Read Armada's bootstrap/runtime/store/CLI/serve composition and Skillpack's `run
 - Skills are untrusted instructions: they can execute commands/read parent credentials and consume delegated launch authority. Armada still confines delegation to the owner/org, owned children, expiry and active-child limits; it cannot guarantee a method is benign. Pins prove identity, not safety.
 - Migration plan: publish The Vibe Company's armada-manager plus its coordinator-review references (#831) into Skillpack, validate both harnesses, then remove repository copies. Do not modify ship-pr-dev or armada-manager here. Dashboard/iOS pickers, defaults, private auth and removal/publication tracked separately.
 
-## Scope
-Closes #838. Implementation and verification pending.
+## Delivery
+Public catalog pins are implemented. Follow-ups: #840 (dashboard/iOS), #841
+(defaults and credential/origin design), #842 (publish and remove repository method).
+The reserved `armada-tools` slug is refused to keep package and launcher knowledge separate.
+Installation occurs on create, not on resume; disk continuity retains the installed pin.
 
 ## Real-provider verification
 Coordinator staging check (not performed here): use a golden with the released native Skillpack CLI; create with a public catalog `--skill org/slug@version` for Boat Claude/Codex and Modal Codex; inspect detail receipt and ask the first turn to identify/read the installed skill. Verify a missing release blocks create without a first turn. No deployment or production access in this PR.
