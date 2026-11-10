@@ -281,8 +281,9 @@ function CostCell({ cost }: { cost: SandboxCost | undefined }) {
   const figure = costFigure(cost);
   if (figure.kind !== "priced")
     return (
-      <span className="text-xs whitespace-normal text-muted-foreground" data-row-cost={figure.kind}>
-        {figure.text}
+      <span className="text-xs whitespace-nowrap text-muted-foreground" title={figure.text} data-row-cost={figure.kind}>
+        {/* The column stays narrow: the full words are its title, under the name on a phone and on the page. */}
+        {figure.kind === "none" ? "No usage yet" : figure.text}
       </span>
     );
   return (

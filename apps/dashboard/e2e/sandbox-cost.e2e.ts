@@ -11,7 +11,8 @@ test("a sandbox with usage shows its cost, one without says so", async ({ page }
   // (12,000 × $4 + 480,000 × $0.20 + 9,500 × $20 + 3,000 × $4 + 610,000 × $0.20 + 4,200 × $20) / 1M = $0.552.
   await expect(row(LABELS.running).locator("[data-row-cost=priced]")).toHaveText("$0.55");
   await expect(row(LABELS.running).locator("[data-row-cost=priced]")).toHaveAttribute("title", "API-equivalent cost");
-  await expect(row(LABELS.failed).locator("[data-row-cost=none]")).toHaveText("No usage recorded yet");
+  await expect(row(LABELS.failed).locator("[data-row-cost=none]")).toHaveText("No usage yet");
+  await expect(row(LABELS.failed).locator("[data-row-cost=none]")).toHaveAttribute("title", "No usage recorded yet");
   for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.setViewportSize({ width: 1280, height: 720 });
