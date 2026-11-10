@@ -1,5 +1,6 @@
-import { LogOutIcon, ShipIcon } from "lucide-react";
+import { LogOutIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { BrandMark } from "@/components/brand-mark";
 import { CommandMenu, CommandMenuTrigger } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
@@ -57,18 +58,6 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <CommandMenu />
       <main className="mx-auto w-full max-w-6xl min-w-0 flex-1 space-y-6 px-4 py-6 md:px-10 md:py-10">{children}</main>
     </div>
-  );
-}
-
-/** The mark: the landing's lime behind the ship, so the app and the public pages read as one product. */
-function BrandMark() {
-  return (
-    <span
-      aria-hidden="true"
-      className="flex size-7 items-center justify-center rounded-lg bg-brand text-brand-foreground shadow-xs ring-1 ring-black/5 ring-inset"
-    >
-      <ShipIcon className="size-4" strokeWidth={2.25} />
-    </span>
   );
 }
 
