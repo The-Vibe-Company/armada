@@ -5,7 +5,27 @@ import { memorySessionStore } from "../../cli/src/session.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
-import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
+
+// Successful ready-report fixtures now include actual completed response metadata.
+function finishMatched(boat: FakeBoat, promptId: string) {
+  const index = Number(promptId.split("_")[1]) - 1;
+  const model = boat.prompts[index]?.model;
+  if (!model) throw new Error("Fixture needs an explicit requested model");
+  boat
+    .sandbox("bx_1")
+    .events.push({
+      id: `response_${promptId}`,
+      at: index + 1,
+      kind: "message",
+      promptId,
+      model,
+      text: "done",
+      partial: false,
+      tools: [],
+    });
+  boat.finish("bx_1", promptId, "finished");
+}
 
 // The actual MCP/control API, migrations and provider event stream own this contract.
 // A field-copy unit test would not catch a missing route, stale-turn write or lifecycle clear.
@@ -20,7 +40,7 @@ test("explicit report validates the latest finished turn and persists through AP
     const id = launched.data.id;
     const report = (outcome: unknown, prompt_id = "prompt_1") => call(mcp, "report", { id, prompt_id, outcome });
     expect((await report({ state: "ready" })).isError).toBe(true); // still running
-    boat.finish("bx_1", "prompt_1", "finished");
+    finishMatched(boat, "prompt_1");
     expect((await report({ state: "blocked", reason: " " })).isError).toBe(true);
     expect((await report({ state: "ready", headSha: "not-a-sha" })).isError).toBe(true);
     expect((await report({ state: "ready" }, "old-prompt")).isError).toBe(true);
@@ -90,7 +110,7 @@ test("send and steer clear outcomes before admission and fence replacement recei
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "first" });
     const id = launched.data.id;
-    boat.finish("bx_1", "prompt_1", "finished");
+    finishMatched(boat, "prompt_1");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_1", outcome: { state: "ready" } })).isError).toBe(false);
     // Observe actual SQL state at the provider boundary, not just after completion.
     const prompt = boat.provider.prompt;
@@ -102,7 +122,7 @@ test("send and steer clear outcomes before admission and fence replacement recei
     expect((await call(mcp, "send", { id, prompt: "second" })).isError).toBe(false);
     expect(during).toEqual({ task_outcome: null, task_prompt_id: null });
     expect((await call(mcp, "status", { id })).data.taskOutcome).toBeNull();
-    boat.finish("bx_1", "prompt_2", "finished");
+    finishMatched(boat, "prompt_2");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_1", outcome: { state: "ready" } })).isError).toBe(true);
     expect(
       (
@@ -133,7 +153,8 @@ test("send and steer clear outcomes before admission and fence replacement recei
     );
     boat.finish("bx_1", "prompt_3", "finished");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_2", outcome: { state: "ready" } })).isError).toBe(true);
-    expect((await call(mcp, "report", { id, prompt_id: "prompt_3", outcome: { state: "ready" } })).isError).toBe(false);
+    // The restart has no recorded request provenance: it must not publish exact-model readiness.
+    expect((await call(mcp, "report", { id, prompt_id: "prompt_3", outcome: { state: "ready" } })).isError).toBe(true);
     boat.provider.prompt = async () => {
       throw new Error("Ambiguous provider admission");
     };
