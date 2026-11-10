@@ -13,27 +13,45 @@ export type Command = {
 };
 
 export const COMMANDS: readonly Command[] = [
-  { id: "launch", label: "Launch a sandbox", href: "/goldens", group: "Actions", keywords: ["new", "start", "run"] },
+  {
+    id: "launch",
+    label: "Launch a sandbox",
+    href: "/environments",
+    group: "Actions",
+    keywords: ["new", "start", "run"],
+  },
   {
     id: "add-account",
-    label: "Add an agent account",
-    href: "/credentials",
+    label: "Add a subscription",
+    href: "/harness",
     group: "Actions",
-    keywords: ["key", "api"],
+    keywords: ["claude", "codex", "chatgpt", "account", "api", "key"],
   },
   {
     id: "connect-provider",
     label: "Connect a sandbox provider",
     href: "/settings",
     group: "Actions",
-    keywords: ["boat", "modal", "hosting"],
+    keywords: ["boat", "modal", "hosting", "key"],
   },
   { id: "fleet", label: "Fleet", href: "/fleet", group: "Go to", keywords: ["board", "agents", "needs"] },
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   { id: "orchestrators", label: "Orchestrators", href: "/orchestrators", group: "Go to", keywords: ["workers"] },
-  { id: "goldens", label: "Goldens", href: "/goldens", group: "Go to", keywords: ["snapshots", "repositories"] },
-  { id: "connections", label: "Connections", href: "/connections", group: "Go to", keywords: ["mcp", "tools"] },
-  { id: "credentials", label: "Credentials", href: "/credentials", group: "Go to", keywords: ["keys", "accounts"] },
+  {
+    id: "environments",
+    label: "Environments",
+    href: "/environments",
+    group: "Go to",
+    keywords: ["goldens", "snapshots", "repositories"],
+  },
+  { id: "tools", label: "Tools", href: "/tools", group: "Go to", keywords: ["mcp", "connections"] },
+  {
+    id: "harness",
+    label: "Harness",
+    href: "/harness",
+    group: "Go to",
+    keywords: ["subscriptions", "accounts", "claude", "codex", "credentials"],
+  },
   { id: "orgs", label: "Organizations", href: "/orgs", group: "Go to", keywords: ["members", "roles", "team"] },
   { id: "settings", label: "Settings", href: "/settings", group: "Go to", keywords: ["providers", "github"] },
 ];

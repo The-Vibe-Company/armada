@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { signIn } from "./helpers";
+import { goldenPanel, signIn } from "./helpers";
 
 const MOCK = `http://127.0.0.1:${process.env.MOCK_PORT ?? "54399"}`;
 type State = {
@@ -16,14 +16,14 @@ async function reset(flags: Record<string, unknown>): Promise<void> {
 async function mockState(): Promise<State> {
   return (await (await fetch(`${MOCK}/__test/state`, { method: "POST", body: "{}" })).json()) as State;
 }
-const golden = (page: Page, provider: "boat" | "modal") =>
-  page.locator(`[data-golden-group="${provider}"] [data-golden="shared-golden"]`);
+/** The detail panel of `shared-golden` on one provider, opened from its row. */
+const golden = (page: Page, provider: "boat" | "modal") => goldenPanel(page, "shared-golden", provider);
 
 test("the launch shows the repository then golden default, keeps an override and sends it as size", async ({
   page,
 }) => {
   await reset({ sizePolicies: true, modalTwin: true, acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog");
   // The size starts on its default, summarized on the collapsed Advanced area where it is overridden.
@@ -73,7 +73,7 @@ test("the launch shows the repository then golden default, keeps an override and
   );
 
   // Modal, no defaults: the provider decides, nothing is invented and no size is sent.
-  await page.goto("/goldens");
+  await page.goto("/environments");
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   const modal = page.getByRole("dialog");
   await expect(modal.locator("[data-launch-summary]")).toContainText("Default machine");
@@ -102,8 +102,8 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
   page,
 }) => {
   await reset({ sizePolicies: true, modalTwin: true, acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
-  const card = golden(page, "modal");
+  await signIn(page, "alice@example.com", "/environments");
+  const card = await golden(page, "modal");
   await expect(card.locator("[data-size-summary]")).toHaveText("No defaults: Modal decides");
   await card.getByText("Machine size defaults").click();
   await card.getByLabel("Golden default").selectOption("small");
@@ -121,7 +121,7 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
   });
   expect(state.goldenCalls).toHaveLength(0);
   // The Boat golden of the same name keeps its own defaults.
-  await expect(golden(page, "boat").locator("[data-size-summary]")).toHaveText("Golden: Medium · api: Large");
+  await expect((await golden(page, "boat")).locator("[data-size-summary]")).toHaveText("Golden: Medium · api: Large");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "test-results/machine-size-defaults-mobile.png",
@@ -138,20 +138,20 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
 
 test("a member sees an org golden's defaults read-only; the owner edits their private golden's", async ({ page }) => {
   await reset({ sizePolicies: true });
-  await signIn(page, "bob@example.com", "/goldens");
-  const shared = page.locator('[data-golden="shared-golden"]');
+  await signIn(page, "bob@example.com", "/environments");
+  const shared = await goldenPanel(page, "shared-golden");
   await expect(shared.locator('[data-size-defaults="read-only"]')).toHaveText(
     "Size defaults: Golden: Medium · api: Large. Only an org admin changes an org golden's size defaults.",
   );
   await expect(shared.getByRole("button", { name: "Save size defaults" })).toHaveCount(0);
-  await expect(page.locator('[data-golden="bob-private"] [data-size-defaults="editable"]')).toBeVisible();
+  await expect((await goldenPanel(page, "bob-private")).locator('[data-size-defaults="editable"]')).toBeVisible();
 });
 
 test("a refused size says what can be changed, and an older server allocates nothing for a sized launch", async ({
   page,
 }) => {
   await reset({ sizePolicies: true, refuseSize: "xlarge" });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Task").fill("Profile the slow build");
@@ -185,7 +185,7 @@ test("a refused size says what can be changed, and an older server allocates not
   // fails before allocation and is never retried on the legacy route, whether a size was chosen or a default kept.
   await reset({ sizePolicies: true, olderServer: true });
   await page.context().clearCookies();
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   for (const choice of ["large", ""]) {
     await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
     const launch = page.getByRole("dialog");
@@ -203,8 +203,8 @@ test("a refused size says what can be changed, and an older server allocates not
   expect(older.sizedRefusals[0]).toMatchObject({ size: "large", sizePolicyVersion: 1 });
   expect(older.sizedRefusals[1]).not.toHaveProperty("size");
 
-  await page.goto("/goldens");
-  const card = page.locator('[data-golden="shared-golden"]');
+  await page.goto("/environments");
+  const card = await goldenPanel(page, "shared-golden");
   await card.getByText("Machine size defaults").click();
   await card.getByLabel("Golden default").selectOption("large");
   await card.getByRole("button", { name: "Save size defaults" }).click();
@@ -213,7 +213,7 @@ test("a refused size says what can be changed, and an older server allocates not
   // Before the migration: no size anywhere.
   await reset({});
   await page.context().clearCookies();
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await expect(page.locator("[data-size-defaults]")).toHaveCount(0);
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   await expect(page.getByRole("dialog").getByLabel("Machine size")).toHaveCount(0);

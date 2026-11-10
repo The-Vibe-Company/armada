@@ -8,7 +8,7 @@ import type {
   OrchestratorOperation,
   OrchestratorState,
 } from "@armada/core";
-import { boundEventEntries, coalesceEventMessages } from "@armada/core";
+import { boundEventEntries, coalesceEventMessages, truncateEvent } from "@armada/core";
 import { createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
@@ -399,6 +399,21 @@ export class OrchestratorRuntimeStore {
         }
         return merged;
       },
+      (event, originalBytes) =>
+        event.kind === "agent"
+          ? { ...event, event: truncateEvent(event.event, originalBytes) }
+          : {
+              id: event.id,
+              orchestratorId: event.orchestratorId,
+              at: event.at,
+              revision: event.revision,
+              kind: "agent",
+              event: truncateEvent(
+                { id: event.id, at: Date.parse(event.at), kind: "other", type: "oversized", data: null },
+                originalBytes,
+                event.kind,
+              ),
+            },
     );
     return { version: 1, ...page, cursor: page.cursor ?? (backward ? null : encode(after)) };
   }

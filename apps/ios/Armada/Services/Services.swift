@@ -8,7 +8,9 @@ import Foundation
 protocol OrchestratorService: Sendable {
     func list(orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorPage
     func detail(id: String) async throws(ServiceFailure) -> OrchestratorDetail
-    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage
+    /// One page of events after `cursor`; `backward` reads the latest page, or the one before an
+    /// older cursor (#812).
+    func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage
     func createOptions(orgID: String) async throws(ServiceFailure) -> CreateOptions
     /// Records a create command durably before anything is sent and returns its handle
     /// (ArmadaKit `prepareOrchestratorCreate`): its bytes and idempotency key are fixed here.
@@ -32,9 +34,24 @@ protocol OrchestratorService: Sendable {
     /// Reads owner detail to reconcile an exact known receipt without sending a mutation.
     /// An unknown outcome without a receipt is retried only by the person.
     func settle(handle: String) async
+    /// Follows an accepted create (ArmadaKit `followOrchestratorCreate`): reads the new
+    /// orchestrator's detail on ArmadaKit's polling schedule until its create settles. Sends nothing.
+    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement
+}
+
+/// How an accepted create ended.
+enum CreateSettlement: Equatable, Sendable {
+    case ready
+    /// A plain sentence: the create failed or the orchestrator needs attention.
+    case failed(String)
 }
 
 extension OrchestratorService {
+    /// Services that cannot follow a create report it as unavailable; the list's own refresh still settles it.
+    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement {
+        throw .unavailable("Following a create isn't available in this build.")
+    }
+
     func discardUncertain(handle: String) async throws(ServiceFailure) {
         throw .unavailable("Forgetting an unconfirmed request isn't available in this build.")
     }
@@ -46,8 +63,9 @@ protocol SandboxService: Sendable {
     /// `POST /api/v1/sandbox/detail`: interior state for the owner or a current admin. The server
     /// reauthorizes every call and may refuse (`.noAccess`).
     func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState
-    /// `POST /api/v1/logs/read`: one page of the conversation after an opaque cursor.
-    func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage
+    /// `POST /api/v1/logs/read`: one page of the conversation after an opaque cursor; `backward`
+    /// reads the latest page, or the one before an older cursor (#812).
+    func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage
     /// `POST /api/v1/sandbox/send`: sent exactly once. `.uncertain` means it may have been
     /// delivered; it is never resent automatically because the route has no idempotency key.
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance
@@ -110,7 +128,7 @@ struct UnavailableServices: OrchestratorService, SandboxService {
         throw .unavailable(reason)
     }
 
-    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         throw .unavailable(reason)
     }
 
@@ -148,7 +166,7 @@ struct UnavailableServices: OrchestratorService, SandboxService {
         throw .unavailable(reason)
     }
 
-    func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         throw .unavailable(reason)
     }
 

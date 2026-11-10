@@ -1,4 +1,11 @@
-import { ClockAlertIcon, GitPullRequestIcon, OctagonPauseIcon, RocketIcon } from "lucide-react";
+import {
+  CheckCircle2Icon,
+  ClockAlertIcon,
+  GitPullRequestIcon,
+  OctagonPauseIcon,
+  RocketIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BoardRefresh, FleetRowActions, FleetRowMessage } from "@/components/fleet-board";
@@ -9,12 +16,15 @@ import { Button } from "@/components/ui/button";
 import { readBoard } from "@/lib/data/fleet";
 import { requireViewer } from "@/lib/data/viewer";
 import {
-  type BoardStateKind,
+  ATTENTION_ORDER,
+  ATTENTION_TITLES,
+  type Attention,
+  attentionLabel,
   type BoardView,
+  elapsedText,
   type FleetRow,
-  needsOperator,
   parseBoardView,
-  sortBoard,
+  preview,
 } from "@/lib/fleet";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { createClient } from "@/lib/supabase/server";
@@ -24,9 +34,10 @@ export const metadata: Metadata = { title: "Fleet" };
 export const dynamic = "force-dynamic";
 
 /**
- * The fleet board (#743): the sandboxes the viewer may open, what each agent is doing, and what needs the operator
- * first. The Sandboxes list stays the inventory of every sandbox of the organization, filtered and paged; this page
- * reads each row's events, so it keeps to the recent ones the viewer can act on.
+ * The fleet board (#743, #801): by default only what needs a decision (work ready to merge, blocked agents,
+ * interrupted turns to resend, agents that stopped without an outcome, real failures and unfinished work about to
+ * expire), then a quiet strip of the agents still working. "All" adds the acknowledged rows and the idle agents. The
+ * Sandboxes list stays the inventory of every sandbox of the organization.
  */
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -35,42 +46,32 @@ export default async function FleetPage({ searchParams }: Props) {
   const viewer = await requireViewer();
   const now = new Date();
   const board = await readBoard(await createClient(), viewer, now);
-  const all = sortBoard(board.rows);
-  const needed = all.filter(needsOperator).length;
-  const rows = view === "needs-me" ? all.filter(needsOperator) : all;
+  const working = board.working.length;
 
   return (
     <>
       <PageHeader
         title="Fleet"
-        description="Every agent you can open, what it is doing, and what needs you first: failures, blocked agents, work ready to merge, finished turns, then sandboxes about to expire."
+        description="What needs a decision from you: work ready to merge, blocked agents, interrupted turns and real failures. Agents still at work are summarised below."
       >
         <BoardRefresh />
       </PageHeader>
 
-      {all.length > 0 && <BoardSegments view={view} needed={needed} total={all.length} />}
+      {board.all.length > 0 && <BoardSegments view={view} needed={board.needs.length} total={board.all.length} />}
 
-      {!board.configured && all.length > 0 && (
+      {!board.configured && board.all.length > 0 && (
         <p className="text-sm text-muted-foreground" role="status">
           The Armada server is not configured for this dashboard: states come from the sandbox status alone, and prompts
           cannot be sent from here.
         </p>
       )}
 
-      {rows.length === 0 && all.length > 0 ? (
-        <Empty title="Nothing needs you">
-          No agent is failed, blocked, ready to merge or about to expire.{" "}
-          <Link href="/fleet" className="underline">
-            Show every agent
-          </Link>
-          .
-        </Empty>
-      ) : rows.length === 0 ? (
+      {board.all.length === 0 ? (
         <Empty
           title="No agents on the board"
           action={
             <Button asChild>
-              <Link href="/goldens">
+              <Link href="/environments">
                 <LinkPendingIcon>
                   <RocketIcon />
                 </LinkPendingIcon>
@@ -79,35 +80,126 @@ export default async function FleetPage({ searchParams }: Props) {
             </Button>
           }
         >
-          The board shows the sandboxes you can open that are live, failed, or stopped in the last day. Every sandbox of
-          the organization is on the{" "}
+          The board shows live agents and the ended ones that still hold something for you. Every sandbox of the
+          organization is on the{" "}
           <Link href="/sandboxes" className="underline">
             Sandboxes
           </Link>{" "}
           page.
         </Empty>
-      ) : (
+      ) : view === "all" ? (
         <section aria-label="Agents" className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            {needed === 0 ? "Nothing needs you." : `${needed} ${needed === 1 ? "agent needs" : "agents need"} you.`}{" "}
-            {board.capped && (
-              <>
-                Only the most recent are shown; the rest are on the{" "}
-                <Link href="/sandboxes" className="underline">
-                  Sandboxes
-                </Link>{" "}
-                page.
-              </>
-            )}
-          </p>
+          <Capped capped={board.capped} />
           <ul className="space-y-3">
-            {rows.map((row) => (
+            {board.all.map((row) => (
               <BoardRow key={row.id} row={row} configured={board.configured} />
             ))}
           </ul>
         </section>
+      ) : (
+        <>
+          {board.needs.length === 0 ? (
+            <div
+              data-nothing-needed
+              className="flex items-center gap-3 rounded-xl border bg-card p-4 text-sm shadow-xs"
+              role="status"
+            >
+              <CheckCircle2Icon aria-hidden="true" className="size-5 shrink-0 text-success" />
+              <p>
+                <span className="font-medium">Nothing needs you.</span>{" "}
+                <span className="text-muted-foreground">
+                  {working} {working === 1 ? "agent" : "agents"} working.
+                </span>
+              </p>
+            </div>
+          ) : (
+            ATTENTION_ORDER.map((attention) => {
+              const rows = board.needs.filter((row) => row.attention === attention);
+              return rows.length ? (
+                <NeedsSection key={attention} attention={attention} rows={rows} configured={board.configured} />
+              ) : null;
+            })
+          )}
+          {working > 0 && <WorkingStrip rows={board.working} now={now} />}
+          <Capped capped={board.capped} />
+        </>
       )}
     </>
+  );
+}
+
+function Capped({ capped }: { capped: boolean }) {
+  if (!capped) return null;
+  return (
+    <p className="text-sm text-muted-foreground">
+      Only the most recent sandboxes are read; the rest are on the{" "}
+      <Link href="/sandboxes" className="underline">
+        Sandboxes
+      </Link>{" "}
+      page.
+    </p>
+  );
+}
+
+function NeedsSection({
+  attention,
+  rows,
+  configured,
+}: {
+  attention: Attention;
+  rows: FleetRow[];
+  configured: boolean;
+}) {
+  const id = `needs-${attention}`;
+  return (
+    <section aria-labelledby={id} data-needs={attention} className="space-y-3">
+      <h2 id={id} className="flex items-baseline gap-2 text-base font-semibold">
+        {ATTENTION_TITLES[attention]}{" "}
+        <span className="text-sm font-normal tabular-nums text-muted-foreground">{rows.length}</span>
+      </h2>
+      <ul className="space-y-3">
+        {rows.map((row) => (
+          <BoardRow key={row.id} row={row} configured={configured} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** One quiet line per live agent at work: what it is on, what it is doing, for how long. */
+function WorkingStrip({ rows, now }: { rows: FleetRow[]; now: Date }) {
+  return (
+    <section aria-labelledby="working" data-working className="space-y-2">
+      <h2 id="working" className="flex items-baseline gap-2 text-sm font-semibold text-muted-foreground">
+        Working <span className="font-normal tabular-nums">({rows.length})</span>
+      </h2>
+      <ul className="divide-y rounded-xl border bg-card text-sm shadow-xs">
+        {rows.map((row) => {
+          const doing = row.activity ?? (row.message ? preview(row.message, 120).text : row.state.label);
+          return (
+            <li
+              key={row.id}
+              data-working-row={row.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5"
+            >
+              <span
+                aria-hidden="true"
+                className="size-1.5 shrink-0 animate-pulse rounded-full bg-info motion-reduce:animate-none"
+              />
+              <Link href={`/sandboxes/${row.id}`} className="min-w-0 font-medium underline-offset-4 hover:underline">
+                {row.workItem?.label ?? <span className="font-mono">{row.name}</span>}
+              </Link>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground" title={doing}>
+                {doing}
+              </span>
+              <span className="text-xs tabular-nums text-muted-foreground" data-elapsed>
+                {elapsedText(row.since, now)}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -118,33 +210,60 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
     row.model,
     row.repository,
     row.mine ? null : "another member's",
+    row.replaced > 0 ? `replaces ${row.replaced} earlier ${row.replaced === 1 ? "run" : "runs"}` : null,
   ].filter((fact): fact is string => Boolean(fact));
+  const tone = row.dismissed ? null : row.attention;
   return (
     <li
       data-board-row={row.id}
       data-state={row.state.kind}
+      data-attention={row.attention ?? "none"}
+      data-dismissed={row.dismissed ? "" : undefined}
       className={cn(
-        "space-y-3 rounded-lg border bg-card p-4 text-card-foreground shadow-xs",
-        row.state.kind === "failed" && "border-destructive/40",
-        row.state.kind === "blocked" && "border-warning/40",
-        row.state.kind === "ready" && "border-success/40",
+        "space-y-3 rounded-xl border bg-card p-4 text-card-foreground shadow-xs",
+        tone === "failed" && "border-destructive/40",
+        tone === "blocked" && "border-warning/40",
+        tone === "ready" && "border-success/40",
+        row.dismissed && "opacity-75",
       )}
     >
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
         <div className="min-w-0 space-y-1">
-          <Link
-            href={`/sandboxes/${row.id}`}
-            className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm font-medium underline-offset-4 hover:underline"
-          >
-            <span className="truncate" title={row.name}>
-              {row.name}
-            </span>
-            <LinkPendingIcon />
-          </Link>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+            {row.workItem &&
+              (row.workItem.href ? (
+                <a
+                  href={row.workItem.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-work-item
+                  className="text-sm font-semibold underline-offset-4 hover:underline"
+                >
+                  {row.workItem.label}
+                </a>
+              ) : (
+                <span data-work-item className="text-sm font-semibold">
+                  {row.workItem.label}
+                </span>
+              ))}
+            <Link
+              href={`/sandboxes/${row.id}`}
+              className={cn(
+                "inline-flex max-w-full items-center gap-1.5 font-mono underline-offset-4 hover:underline",
+                row.workItem ? "text-xs text-muted-foreground" : "text-sm font-medium",
+              )}
+            >
+              <span className="truncate" title={row.name}>
+                {row.name}
+              </span>
+              <LinkPendingIcon />
+            </Link>
+          </div>
           <p className="text-xs break-words text-muted-foreground">{facts.join(" · ")}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <StateBadge kind={row.state.kind} label={row.state.label} />
+          {row.dismissed && <span className="text-xs text-muted-foreground">Dismissed</span>}
+          <StateBadge row={row} />
           {row.expiry && (
             <span
               data-expiry={row.expiry.urgent ? "urgent" : "normal"}
@@ -184,6 +303,12 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
         </div>
       )}
 
+      {row.state.kind === "interrupted" && (
+        <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-interruption>
+          {row.state.interruption ?? "The turn was interrupted. Sending the same prompt again picks the work up."}
+        </p>
+      )}
+
       <FleetRowMessage message={row.message} eventsRead={row.eventsRead} />
 
       <FleetRowActions
@@ -192,16 +317,20 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
         status={row.status}
         configured={configured}
         busy={row.state.kind === "working"}
+        attention={row.attention}
+        resend={row.resend}
+        ackKey={row.ackKey}
+        dismissed={row.dismissed}
       />
     </li>
   );
 }
 
-/** All agents, or only those that need the operator; a link each, so the choice lives in the URL. */
+/** What needs the operator, or every agent; a link each, so the choice lives in the URL. */
 function BoardSegments({ view, needed, total }: { view: BoardView; needed: number; total: number }) {
   const segments: { view: BoardView; href: string; label: string; count: number }[] = [
-    { view: "all", href: "/fleet", label: "All", count: total },
-    { view: "needs-me", href: "/fleet?view=needs-me", label: "Needs me", count: needed },
+    { view: "needs-you", href: "/fleet", label: "Needs you", count: needed },
+    { view: "all", href: "/fleet?view=all", label: "All", count: total },
   ];
   return (
     <nav aria-label="Board view" className="inline-flex w-fit rounded-lg border bg-muted/40 p-0.5 text-sm">
@@ -223,34 +352,33 @@ function BoardSegments({ view, needed, total }: { view: BoardView; needed: numbe
   );
 }
 
-const STATE_TONES: Record<BoardStateKind, string> = {
+const ATTENTION_TONES: Record<Attention, string> = {
   failed: "border-destructive/40 bg-destructive/10 text-destructive",
   blocked: "border-warning/40 bg-warning/10 text-warning",
   ready: "border-success/40 bg-success/15 text-success",
-  finished: "border-success/40 bg-success/10 text-success",
-  interrupted: "border-warning/40 bg-warning/10 text-warning",
-  idle: "border-warning/40 bg-warning/10 text-warning",
-  working: "text-foreground",
-  stopped: "text-muted-foreground",
+  interrupted: "text-foreground",
+  unconcluded: "text-foreground",
+  expiring: "border-warning/40 bg-warning/10 text-warning",
 };
 
-function StateBadge({ kind, label }: { kind: BoardStateKind; label: string }) {
+/** What the row needs, or, when it needs nothing, the state it is in. */
+function StateBadge({ row }: { row: FleetRow }) {
+  const working = row.state.kind === "working";
+  const label = row.attention ? attentionLabel(row.attention, row.status) : row.state.label;
   return (
     <span
-      data-board-state={kind}
+      data-board-state={row.state.kind}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap",
-        STATE_TONES[kind],
+        row.attention ? ATTENTION_TONES[row.attention] : working ? "text-foreground" : "text-muted-foreground",
       )}
     >
-      {kind === "working" && (
-        <span
-          aria-hidden="true"
-          className="size-1.5 animate-pulse rounded-full bg-success motion-reduce:animate-none"
-        />
+      {working && (
+        <span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-info motion-reduce:animate-none" />
       )}
-      {kind === "ready" && <GitPullRequestIcon aria-hidden="true" className="size-3" />}
-      {kind === "blocked" && <OctagonPauseIcon aria-hidden="true" className="size-3" />}
+      {row.attention === "ready" && <GitPullRequestIcon aria-hidden="true" className="size-3" />}
+      {row.attention === "blocked" && <OctagonPauseIcon aria-hidden="true" className="size-3" />}
+      {row.attention === "interrupted" && <RotateCcwIcon aria-hidden="true" className="size-3" />}
       {label}
     </span>
   );

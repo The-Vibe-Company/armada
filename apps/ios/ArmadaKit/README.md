@@ -134,6 +134,33 @@ refusal and every other failure unconfirmed; the app then shows the prompt as
 not confirmed and lets the transcript show whether it arrived. Stop is safe to
 repeat. Unknown `other` events without `data` keep their page and cursor.
 
+## Opening a conversation fast (#813)
+
+`ConversationLoader` is the loading order both conversation screens use, over
+any event type and fetch, against the #812 paging contract (`logs/read` and the
+orchestrator events route with `direction: backward`):
+
+1. a `ConversationCache` snapshot from earlier in the session is shown before
+   any request;
+2. otherwise the latest page is read backward from the end and shown, so the
+   first paint is one read and shows the newest messages;
+3. the stream is followed forward from that page's `cursor` (the live
+   frontier), back to back while the server reports more, otherwise after the
+   poll delay;
+4. older pages are read only when asked (`loadOlder`, on scroll-up) from
+   `olderCursor` and prepended. They never move the frontier, and an event
+   already shown is replaced in place, so history and live follow stitch
+   without gap or duplicate.
+
+Reads are not coalesced: #812 coalesces a page's fragments into a snapshot of
+that page's text only, which would replace the earlier part of a message that
+spans pages. A page whose single event exceeds the default 256 KiB budget is
+refused (400); the app reads it again once with `largestEventPageBytes`. A
+`logs/read` server without backward reads answers with its first page and no
+`olderCursor`; it is then followed forward at once. The orchestrator events
+route of such a server refuses `direction`, so the app needs a server with #812. The clock is injected; tests
+use a recording one.
+
 ## Launching a sandbox (#750)
 
 `launchCatalog()` reads `launch/options` (the server's harness, model, effort,
@@ -164,17 +191,27 @@ offered: `/api/v1` has no delete route for a sandbox.
 
 ## Orchestrators on the phone (#751)
 
-Create sources use the CLI's routes for the selected organization: `goldens()`
-(`POST golden/list`) and `modelAccounts()` (`POST creds/list`, named, active,
-unexpired accounts; ids, names and kinds only). Provider and harness ids are open
-values (`ArmadaProvider`, `ArmadaHarness`), never a closed list in the app.
+Create sources are the New sandbox form's reads for the selected organization
+(#750, #815): `launchGoldens()` (`POST golden/list`, `LaunchGolden`) and
+`launchAccounts()` (`POST creds/list`, `LaunchAccount`; ids, names and kinds
+only). Provider and harness ids are open values (`ArmadaProvider`,
+`ArmadaHarness`), never a closed list in the app.
 
 `OrchestratorCapabilities` decodes the server's `pairs` (provider × harness,
-`enabled`, `reason`) and `harnesses` (suggested models and efforts, the credential
-kinds that run each harness), additive to the capabilities route since #751.
-`OrchestratorCreateCatalog` offers only ready goldens, enabled pairs (a disabled
-pair keeps its reason as a sentence), the server's models and the accounts whose
-kind runs the harness, and validates a `Draft` into the exact `OrchestratorCreate`.
+`enabled`, `reason`, `continuity`) and `harnesses` (suggested models and efforts,
+the credential kinds that run each harness), additive to the capabilities route
+since #751. `OrchestratorCreateCatalog` offers only ready goldens, enabled pairs
+with their continuity in plain words ("Resume guaranteed" for `native`, "Resume
+not guaranteed" for `best_effort`; a disabled pair keeps its reason as a
+sentence), the server's models and the usable (active, unexpired) accounts whose
+kind runs the harness, the person's before the org's. The account is preselected
+as the server resolves it and chosen only when there are several; it validates a
+`Draft` into the exact `OrchestratorCreate`.
+
+`followOrchestratorCreate(_ UUID, sleep:)` follows an accepted create: it reads
+the new orchestrator's detail on `OrchestratorPolling`'s schedule (backing off
+after a failed read), records the create receipt, sends nothing, and returns
+`OrchestratorCreateProgress` `.ready` or `.failed`. `sleep` is the injected clock.
 
 `OrchestratorControls` derives what may be done from state, continuity and open
 operations (the dashboard's rule): nothing new while any operation is open;

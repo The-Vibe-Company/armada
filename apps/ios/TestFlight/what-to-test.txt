@@ -11,15 +11,36 @@ Check that a refused launch keeps every field and explains why, and that stop an
 sending a new prompt (which resumes a stopped sandbox) work from the conversation.
 Orchestrators tab: each row shows its state (starting, ready, needs attention with a
 plain reason, stopped), name, agent, model, provider and last activity.
-New Orchestrator: only provider and agent pairs the server enables can be chosen; a
+Orchestrators and Sandboxes tabs: rows are grouped by status, each group a section with
+its count: Needs Attention, Active, In Transition, Stopped, then Other (failed, deleted
+or unknown); newest created first inside a group. Stopped starts collapsed when other
+rows are listed; tap its header to open it. Pull to refresh or wait for a refresh: rows
+stay still unless their status changes. Only loaded rows are ordered: scrolling to the
+bottom loads the next page, whose rows join their groups.
+New Orchestrator (+ on the Orchestrators tab): the form opens with your goldens, not
+"Not available yet" (unless the server has orchestrators turned off). Pick a name and
+a golden (its provider is shown); only provider and agent pairs the server enables
+can be chosen, each saying "Resume guaranteed" or "Resume not guaranteed"; a
 disabled pair is listed with the server's reason. Models, efforts and accounts come
-from the server. After Create the orchestrator shows as starting and nothing can be
-sent until the server confirms it is ready.
+from the server, the same lists as New Sandbox; the account is a choice only when
+you have several. The idle stop is under More Options. After Create you land on the
+orchestrator in "starting" and nothing can be sent until the server confirms it is
+ready. Turn on Airplane Mode while a create is sending: it shows as not confirmed with
+Retry, which repeats the same request; offline before Create, the form explains the
+failure and keeps every field. A refused create keeps every field and explains why.
+Not rendered on a device or simulator before this build: the New Orchestrator form
+(resume wording, single-account row) and following a create until it is ready were
+checked by ArmadaKit tests and a compile only.
 Conversation: send and steer, the event stream updating live, Details listing the
 workers it launched with a link to each worker's sandbox.
 Actions menu: Stop, Resume and Recover each ask for confirmation. Turn on Airplane
 Mode during an action: it shows as not confirmed with Retry, which repeats the same
 request; Recover is offered when the orchestrator needs attention.
+Opening a conversation (sandbox or orchestrator): the screen, its name and status and the
+composer appear at once, and the latest messages follow within about a second, even for a long
+conversation. Scroll up: earlier messages load above without moving what you were reading.
+Typing is never blocked while messages load. Go back and open the same conversation again: it shows immediately
+and only what is new is read. Switching organization or signing out forgets it.
 Check iPhone and iPad, light and dark appearance.
 Check loading, empty, permission-denied, offline and retry states.
 Check readability, keyboard/composer behavior and accessibility on iPhone and iPad.

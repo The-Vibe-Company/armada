@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { alert, IDS, LABELS, MOCK, signIn } from "./helpers";
+import { alert, goldenPanel, goldenRow, IDS, LABELS, MOCK, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
@@ -73,14 +73,13 @@ for (const mobile of [false, true]) {
     ).toHaveCount(0);
     await page.reload();
     await expect(select).toHaveValue(ZENITH);
-    await page.goto("/goldens");
+    await page.goto("/environments");
     await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
     await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
-    await page.goto("/credentials");
+    await page.goto("/settings");
     await expect(page.locator('[data-credentials="user"]')).toBeVisible();
-    // The org line names the selected org only; its model accounts and providers follow it.
-    await expect(page.locator("[data-org-hosting]")).toContainText("Boat and Modal for Zenith");
-    await expect(page.locator("[data-org-hosting]")).not.toContainText("Acme");
+    // The providers card names the selected org only; the personal keys below it are the viewer's own.
+    await expect(page.getByRole("heading", { name: "Sandbox providers for Zenith" })).toBeVisible();
     await page.screenshot({ path: `test-results/organization-${mobile ? "mobile" : "desktop"}.png`, fullPage: true });
     await page.goto("/sandboxes?golden=00000000-0000-4000-8000-000000000023");
     await select.selectOption(ACME);
@@ -119,17 +118,17 @@ test("forged and removed preferences fall back; forged switch is refused server-
 test("mutation targets cannot escape the selected org even when the viewer administers the other org", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByLabel("Active organization").selectOption(ZENITH);
   await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
-  const golden = page.locator('[data-golden="zenith-golden"]');
+  const golden = await goldenPanel(page, "zenith-golden");
   await golden.locator('input[name="golden"]').evaluate((input) => {
     (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000020";
   });
   await golden.getByRole("button", { name: "Make private" }).click();
   await expect(alert(page)).toContainText("not available in this scope");
   await page.reload();
-  await page.getByRole("button", { name: "Launch from zenith-golden" }).click();
+  await goldenRow(page, "zenith-golden").getByRole("button", { name: "Launch from zenith-golden" }).click();
   const launch = page.getByRole("dialog");
   await launch.locator('input[name="org"]').evaluate((input) => {
     (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
@@ -139,11 +138,11 @@ test("mutation targets cannot escape the selected org even when the viewer admin
   });
   await launch.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(launch.getByRole("alert")).toContainText("Switch to that organization first");
-  await page.goto("/credentials");
+  await page.goto("/settings");
   // The generic one-value form of the personal section (its Modal token form is separate).
   const personal = page
     .locator('[data-credentials="user"] form')
-    .filter({ has: page.getByRole("button", { name: "Save credential" }) });
+    .filter({ has: page.getByRole("button", { name: "Save key" }) });
   await personal.locator('input[name="scope"]').evaluate((input) => {
     (input as HTMLInputElement).value = "org";
   });
@@ -151,7 +150,7 @@ test("mutation targets cannot escape the selected org even when the viewer admin
     (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
   });
   await personal.getByLabel("Value", { exact: true }).fill("throwaway-test-value");
-  await personal.getByRole("button", { name: "Save credential" }).click();
+  await personal.getByRole("button", { name: "Save key" }).click();
   await expect(alert(page)).toContainText("Switch to that organization first");
 });
 

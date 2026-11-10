@@ -137,7 +137,7 @@ export function RemoveMember({ org, orgName, user, email, self }: Omit<Member, "
         <AlertDialogHeader>
           <AlertDialogTitle>{self ? `Leave ${orgName}?` : `Remove ${email} from ${orgName}?`}</AlertDialogTitle>
           <AlertDialogDescription>
-            {self ? "You lose" : "They lose"} access to its goldens, sandboxes and credentials at once. Only an admin
+            {self ? "You lose" : "They lose"} access to its goldens, sandboxes and subscriptions at once. Only an admin
             can invite {self ? "you" : "them"} back.
           </AlertDialogDescription>
         </AlertDialogHeader>

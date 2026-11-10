@@ -553,7 +553,7 @@ function matches(row: Row, params: URLSearchParams): boolean {
     if (op === "is" && operand === "null" && row[key] !== null && row[key] !== undefined) return false;
     if (op === "not" && operand === "is.null" && (row[key] === null || row[key] === undefined)) return false;
     if (op === "gte" && !atLeast(row[key], operand)) return false;
-    if (key === "or" && !orGte(row, expression)) return false;
+    if (key === "or" && !orAny(row, expression)) return false;
   }
   return true;
 }
@@ -563,13 +563,14 @@ function atLeast(value: unknown, operand: string): boolean {
   return typeof value === "string" && Date.parse(value) >= Date.parse(operand);
 }
 
-/** `or=(a.gte.x,b.gte.y)`: the only `or` the dashboard sends, any timestamp at or after its bound. */
-function orGte(row: Row, expression: string): boolean {
+/** `or=(a.gte.x,b.not.is.null)`: the dashboard's `or` terms, a timestamp at or after its bound or a column set. */
+function orAny(row: Row, expression: string): boolean {
   return expression
     .slice(1, -1)
     .split(",")
     .some((term) => {
       const [column = "", op, ...rest] = term.split(".");
+      if (op === "not" && rest.join(".") === "is.null") return row[column] !== null && row[column] !== undefined;
       return op === "gte" && atLeast(row[column], rest.join("."));
     });
 }
@@ -1954,6 +1955,79 @@ function control(url: URL, body: Row): Response {
         }),
       );
     }
+    if (body.large) {
+      // A realistic Acme for the #808 screens and its filter: ten environments and a dozen tools in every state.
+      const repos = (...names: string[]) => ({
+        repos: names.map((name) => ({ url: `https://github.com/acme/${name}.git`, branch: "main", dir: name })),
+        init: ["bun install"],
+      });
+      const more: [string, string, string, string | null, string[], "boat" | "modal"][] = [
+        ["web-frontend", "org", ALICE, "snap-web", ["web", "design-system"], "boat"],
+        ["api-backend", "org", ALICE, "snap-api", ["api", "proto"], "boat"],
+        ["data-pipeline", "org", BOB, "snap-data", ["pipeline"], "boat"],
+        ["mobile-app", "private", ALICE, null, ["mobile"], "boat"],
+        ["docs-site", "org", ALICE, "snap-docs", ["docs"], "boat"],
+        ["infra-terraform", "private", ALICE, "snap-infra", ["infra", "modules"], "boat"],
+        ["ml-research", "org", ALICE, null, ["research"], "modal"],
+      ];
+      more.forEach(([name, visibility, owner, snapshot, names, provider], index) => {
+        const row = { ...golden(id(140 + index), name, visibility, owner, snapshot), config: repos(...names) };
+        state.goldens.push(provider === "modal" ? { ...row, provider, boat_snapshot_id: null } : row);
+      });
+      const tools: [string, "personal" | "org", Row][] = [
+        [
+          "GitHub Issues",
+          "org",
+          {
+            url: "https://mcp.github.test/mcp",
+            authType: "oauth",
+            status: "connected",
+            accountLabel: "acme-bot",
+            toolCount: 34,
+          },
+        ],
+        [
+          "Postgres Prod",
+          "org",
+          { url: "https://db.acme.test/mcp", authType: "bearer", status: "connected", toolCount: 6 },
+        ],
+        [
+          "Figma",
+          "personal",
+          {
+            url: "https://mcp.figma.test/mcp",
+            authType: "oauth",
+            status: "connected",
+            accountLabel: "alice@acme.test",
+            toolCount: 9,
+          },
+        ],
+        [
+          "Datadog",
+          "org",
+          {
+            url: "https://mcp.datadog.test/mcp",
+            authType: "oauth",
+            status: "needs_reconnect",
+            lastError: "The grant expired.",
+          },
+        ],
+        [
+          "Browser",
+          "personal",
+          {
+            transport: "stdio",
+            command: "npx",
+            args: ["-y", "@playwright/mcp@0.0.41"],
+            authType: "none",
+            status: "connected",
+          },
+        ],
+        ["Old Wiki", "org", { url: "https://wiki.acme.test/mcp", authType: "none", status: "disabled" }],
+      ];
+      for (const [index, [name, scope, fields]] of tools.entries())
+        state.connections.push(mcpConnection(id(170 + index), name, ACME, scope, ALICE, fields));
+    }
     if (body.sizePolicies) {
       // The server has #653's column: every golden reads `size_policy`; the Boat org golden has defaults.
       for (const row of state.goldens) row.size_policy = null;
@@ -2126,6 +2200,26 @@ function control(url: URL, body: Row): Response {
     const row = state.sandboxes.find((item) => item.id === body.id);
     if (!row) return json({ message: "no sandbox" }, 404);
     Object.assign(row, body.fields as Row);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/add-sandboxes") {
+    // Extra Acme sandboxes for a busy board (#801): each row's fields over Alice's running sandbox's defaults.
+    for (const fields of (body.rows as Row[]) ?? []) {
+      state.sandboxes.push({
+        ...sandbox(
+          String(fields.id),
+          String(fields.provider_sandbox_id ?? fields.id),
+          id(20),
+          ALICE,
+          "claude",
+          "ready",
+          new Date().toISOString(),
+        ),
+        ...fields,
+      });
+      if (Array.isArray(fields.events)) state.events.set(String(fields.id), fields.events as Row[]);
+      delete state.sandboxes.at(-1)?.events;
+    }
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-connect") {

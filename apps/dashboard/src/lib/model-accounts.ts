@@ -1,5 +1,5 @@
 /**
- * Named model accounts as the dashboard sees them: the safe DTO of the control API (#603) and the rules the Credentials page and the launch dialog apply to them. These are narrow app
+ * Named model accounts as the dashboard sees them: the safe DTO of the control API (#603) and the rules the Harness page and the launch dialog apply to them. These are narrow app
  * interfaces matching the published contract, so the dashboard compiles on its own; no DTO carries a token, a
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
@@ -228,6 +228,34 @@ export function kindNote(account: Pick<ModelAccount, "kind" | "name">): string |
   return account.name.toLowerCase() === label.toLowerCase() ? null : label;
 }
 
+/** The Harness page (#805): the coding harnesses and their subscriptions. It was `/credentials`, which redirects. */
+export const HARNESS_PATH = "/harness";
+
+/** The harness sections of the Harness page and the add dialog, in this order. */
+export const HARNESS_ORDER: readonly Harness[] = ["claude", "codex"];
+
+export type Billing = KindInfo["billing"];
+
+/** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
+export function kindFor(harness: Harness, billing: Billing = "subscription"): AccountKind {
+  const kind = ACCOUNT_KINDS.find(
+    (value) => KIND_INFO[value].harness === harness && KIND_INFO[value].billing === billing,
+  );
+  if (!kind) throw new Error(`no ${billing} kind for ${harness}`);
+  return kind;
+}
+
+/** The kinds the add dialog offers for one billing, one per harness in `HARNESS_ORDER`. */
+export function addChoices(billing: Billing): AccountKind[] {
+  return HARNESS_ORDER.map((harness) => kindFor(harness, billing));
+}
+
+/** The same harness's other way in: "use an API key instead" and back to its subscription. */
+export function otherBilling(kind: AccountKind): AccountKind {
+  const info = KIND_INFO[kind];
+  return kindFor(info.harness, info.billing === "subscription" ? "api" : "subscription");
+}
+
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {
   return accounts.filter((account) => KIND_INFO[account.kind].harness === harness);
 }
@@ -237,6 +265,36 @@ export function accountProblem(account: Pick<ModelAccount, "status" | "expiresAt
   if (account.status !== "active") return STATUS_INFO[account.status].label.toLowerCase();
   if (account.expiresAt !== null && Date.parse(account.expiresAt) <= now) return "expired";
   return null;
+}
+
+export type AccountState = {
+  /** The state in plain words, as the row's state cell says it. */
+  label: string;
+  tone: "ok" | "warn" | "error";
+  /** The account cannot run now: its row leads the list and offers Reconnect. */
+  needsAction: boolean;
+};
+
+/** What an account's row says about it: ready to launch, or why not. */
+export function accountState(account: Pick<ModelAccount, "status" | "expiresAt">, now: number): AccountState {
+  const problem = accountProblem(account, now);
+  if (problem === null) return { label: "Ready", tone: "ok", needsAction: false };
+  if (account.status === "unknown") return { label: STATUS_INFO.unknown.label, tone: "warn", needsAction: true };
+  return { label: problem.charAt(0).toUpperCase() + problem.slice(1), tone: "error", needsAction: true };
+}
+
+/**
+ * The order of one harness's list (#805, the Build skeleton of #808): accounts that need action first, then the
+ * default, then yours before the org's, then by name.
+ */
+export function orderAccounts(accounts: readonly ModelAccount[], now: number): ModelAccount[] {
+  return [...accounts].sort(
+    (a, b) =>
+      Number(accountProblem(b, now) !== null) - Number(accountProblem(a, now) !== null) ||
+      Number(b.isDefault) - Number(a.isDefault) ||
+      (a.scope === b.scope ? 0 : a.scope === "user" ? -1 : 1) ||
+      a.name.localeCompare(b.name),
+  );
 }
 
 export function isUsable(account: ModelAccount, now: number): boolean {

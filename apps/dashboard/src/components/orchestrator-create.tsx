@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { HARNESS_PATH } from "@/lib/model-accounts";
 import { idleChoices, type ModelAccount } from "@/lib/orchestrators";
 
 export type CreateGolden = {
@@ -159,7 +160,7 @@ export function CreateOrchestrator({
                   {accounts.ok ? (
                     <>
                       An orchestrator runs on a named {HARNESS_LABELS[harness]} account.{" "}
-                      <Link href="/credentials" className="font-medium underline underline-offset-4">
+                      <Link href={HARNESS_PATH} className="font-medium underline underline-offset-4">
                         Add one
                       </Link>
                     </>

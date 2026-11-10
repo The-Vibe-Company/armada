@@ -43,8 +43,8 @@ function isResult(value: object): value is ActionResult {
 }
 
 function refresh() {
-  revalidatePath("/connections");
-  revalidatePath("/goldens");
+  revalidatePath("/tools");
+  revalidatePath("/environments");
 }
 
 /** What happened, from the connection the server returned: never a success the server did not report. */

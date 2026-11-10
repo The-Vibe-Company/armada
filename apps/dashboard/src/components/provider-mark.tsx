@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
  * The provider's own mark, traced from its official icon (boat.dev/icon.svg, modal.com/assets/favicon.svg) with
  * solid fills so a table of them repeats no gradient id. Decorative: the name always sits beside it.
  */
-function ProviderMark({ provider }: { provider: SandboxProviderId }) {
+export function ProviderMark({ provider }: { provider: SandboxProviderId }) {
   if (provider === "boat")
     return (
       <svg viewBox="0 0 498 463" aria-hidden="true" className="size-3.5 shrink-0" data-provider-mark>

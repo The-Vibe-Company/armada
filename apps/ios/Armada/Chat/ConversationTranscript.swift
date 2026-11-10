@@ -20,7 +20,8 @@ struct PendingBubble: Identifiable, Hashable {
 
 /// The conversation surface shared by orchestrators and sandboxes, with Companion's transcript
 /// behavior: initial placement at the bottom, following the tail only while the reader is near it,
-/// a jump-to-latest control otherwise, and interactive keyboard dismissal.
+/// a jump-to-latest control otherwise, and interactive keyboard dismissal. The latest messages are
+/// read first; reaching the top reads older history (`onLoadOlder`) and keeps the reader's place.
 struct ConversationTranscript: View {
     let items: [ConversationItem]
     let documents: [String: MarkdownDocument]
@@ -29,9 +30,16 @@ struct ConversationTranscript: View {
     let emptyMessage: String
     var onRetryPending: ((PendingBubble) -> Void)?
     var onDismissPending: ((PendingBubble) -> Void)?
+    /// Older history exists above the first item.
+    var hasOlder = false
+    /// Changes after every older page read: the top row then asks for the next one if still shown.
+    var olderPagesRead = 0
+    var onLoadOlder: (() -> Void)?
 
     @State private var toolRoute: ToolRoute?
     @State private var isNearBottom = true
+    /// The first item shown when older history was requested, kept at the top once it arrives.
+    @State private var olderAnchor: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct ToolRoute: Identifiable {
@@ -43,9 +51,20 @@ struct ConversationTranscript: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if items.isEmpty && pending.isEmpty {
+                    if items.isEmpty && pending.isEmpty && !hasOlder {
                         ContentUnavailableView(emptyTitle, systemImage: "bubble.left.and.text.bubble.right", description: Text(emptyMessage))
                             .padding(.top, 60)
+                    }
+                    if hasOlder, let onLoadOlder {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .accessibilityLabel("Loading earlier messages")
+                            // A new row after each page read, so a row still in view reads the next one.
+                            .id("older-\(olderPagesRead)")
+                            .onAppear {
+                                olderAnchor = items.first?.id
+                                onLoadOlder()
+                            }
                     }
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         row(item)
@@ -73,6 +92,12 @@ struct ConversationTranscript: View {
                 geometry.contentSize.height - geometry.visibleRect.maxY < 120
             } action: { _, nearBottom in
                 isNearBottom = nearBottom
+            }
+            .onChange(of: items.first?.id) { _, _ in
+                // Older messages were added above: keep the message the reader was at in place.
+                guard let anchor = olderAnchor else { return }
+                olderAnchor = nil
+                proxy.scrollTo(anchor, anchor: .top)
             }
             .onChange(of: items.last) { _, _ in
                 guard isNearBottom else { return }

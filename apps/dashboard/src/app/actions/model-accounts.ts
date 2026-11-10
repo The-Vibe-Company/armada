@@ -13,6 +13,7 @@ import {
   type AccountScope,
   checkAccountName,
   checkDefaultChoice,
+  HARNESS_PATH,
   KIND_INFO,
 } from "@/lib/model-accounts";
 
@@ -66,8 +67,8 @@ function secret(kind: AccountKind, raw: unknown): { ok: true; value: string } | 
 }
 
 function refresh() {
-  revalidatePath("/credentials");
-  revalidatePath("/goldens");
+  revalidatePath(HARNESS_PATH);
+  revalidatePath("/environments");
 }
 
 /** Adds a named account from a pasted token, key or auth.json, and makes it the default when asked. */

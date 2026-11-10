@@ -1,6 +1,6 @@
 ---
 name: armada-manager
-description: Coordinate parallel Armada coding sessions through focused issues, in-session review, CI, authorized merges and resource cleanup. Use when managing several Armada workers or recovering an existing fleet of sandbox sessions.
+description: Coordinate parallel Armada coding sessions through focused issues, coordinator-launched independent review, CI, authorized merges and resource cleanup. Use when managing several Armada workers or recovering an existing fleet of sandbox sessions.
 ---
 
 # Armada Manager
@@ -17,7 +17,7 @@ Inspect existing sessions before allocating compute. Record each owned role's is
 
 Cut independent fixes into separate issues and PRs, with closing references, targeting main unless the repository or user specifies another base; group only when the user requests it. Assign shared contracts to one producer and give consumers its actual versioned types or source, not a guessed DTO. Dependent UI can progress against that contract while the producer works.
 
-Delegate implementation **and delivery** for each workstream: scoped files, completion criteria, original session, review, tests, CI repair and hand-back. For a larger fleet, a lane owner can supervise several workers. Choose one integrator for serial merges and deployment; routine ready hand-backs go directly to that integrator. Keep only unresolved product choices or genuinely cross-cutting conflicts with the root coordinator.
+Delegate implementation **and delivery** for each workstream: scoped files, completion criteria, original session, author self-check, tests, CI repair and hand-back. For a larger fleet, a lane owner can supervise several workers. Choose one integrator for serial merges and deployment; routine ready hand-backs go directly to that integrator. Keep only unresolved product choices or genuinely cross-cutting conflicts with the root coordinator.
 
 Use one dedicated agent and sandbox per ticket and PR, with the user's requested harness/model routing and the instance's capabilities. Resume that agent for corrections on its own ticket; do not assign another ticket to it or keep it open for a future assignment. Read [work-orders.md](references/work-orders.md) when preparing a handoff or resuming an unfamiliar fleet.
 
@@ -31,7 +31,7 @@ Drive the dependency frontier, not an issue-at-a-time queue. Repair known blocke
 
 ## Close delivery with evidence
 
-Run the repository's `ship-pr-dev` workflow **inside the worker's original Armada session**. Its `review-code-dev` and `capture-learning-tools` dependencies must be discoverable there. Install missing packages through the supported installer or repository sources before claiming the workflow ran. Read [delivery.md](references/delivery.md) for review, source freshness, merge and release gates.
+Run the repository's `ship-pr-dev` workflow **inside the worker's original Armada session**. The skill is unchanged: the worker completes its own independent review gate and ends with READY TO MERGE or BLOCKED, without needing Armada launch authority. After a READY TO MERGE receipt, the coordinator may launch an additional separate reviewer using [reviewer.md](references/reviewer.md), through its CLI or an orchestrator parent scoped launch tool, and always stops it. The capture-learning-tools dependency must be discoverable in the worker. Install missing packages through the supported installer or repository sources before claiming the workflow ran. Read [delivery.md](references/delivery.md) for review, source freshness, merge and release gates.
 
 When the user's request includes automatic merges, the integrator completes them after the agreed gates; it does not wait for an extra root acknowledgment. Product rejection supersedes an earlier approval. Required visual or functional findings remain blockers until fixed or explicitly accepted by the user.
 

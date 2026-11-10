@@ -40,3 +40,28 @@ remain. Concurrent modification of the destination during installation is not su
 Installing instructions does not execute their scripts or install their external
 tools. Review the pinned source before letting an agent follow it. The review
 dependency's portable bootstrap may download its pinned OCR binary when later used.
+
+## Delivery review rollout
+
+The repository's `.agents/skills` is the installer's source of truth; local
+`.claude/skills` links to it, while installs copy both roots. A companion-skills
+checkout in a golden is not selected by this installer. Audit that checkout and
+existing installed packages for stale instructions rather than patching an
+unrelated upstream repository.
+
+Orchestrator bootstrap installs the four packages at the public full commit in
+`ARMADA_ORCHESTRATOR_SKILL_REVISION`. After reviewing a skill change, the operator
+must explicitly update that pin and rebuild/audit affected goldens. Installing
+does not update existing destinations; preserve and inspect old copies before
+reinstallation. This is a rollout prerequisite, not permission to deploy.
+
+Delivery stays owned by the worker: implementation, ship-pr-dev's unchanged
+independent review gate, PR and green latest-head CI. It ends with READY TO MERGE
+or BLOCKED and needs no Armada launch identity. The coordinator may then launch
+an additional separate reviewer using its existing CLI or an orchestrator parent's
+scoped launch tool, never a worker credential.
+See armada-manager/references/reviewer.md for launch commands, the minimal
+issue/PR/review prompt, GitHub approval/request-changes, two-round budget,
+corrections to the original worker and mandatory stop receipts.
+The coordinator merges only an approved unchanged head with green CI and any
+required Real-provider verification section. The worker's READY TO MERGE receipt alone does not authorize the coordinator to merge.
