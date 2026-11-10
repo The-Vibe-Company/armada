@@ -1,6 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { constants, createCipheriv, createHash, pbkdf2Sync, publicEncrypt, randomBytes } from "node:crypto";
-import { decryptSecret } from "@armada/core/server";
+import { decryptSecret, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { bunLikeSql, database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -88,6 +88,53 @@ test("recovery receipts retain encrypted versions and only current interior owne
         sha256: createHash("sha256").update(Buffer.from(archive, "base64")).digest("hex"),
       });
     };
+    // SQL receipts and logs must retain the failing boundary, not provider text.
+    const log = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const [method, stage, reason] of [
+        ["get", "observe", "observe_failed"],
+        ["quiesce", "quiesce", "quiesce_failed"],
+        ["exec", "collect_exec", "collect_exec_exec_failed"],
+      ] as const) {
+        const refusal = new ProviderError({
+          provider: "boat",
+          code: "unavailable",
+          status: 502,
+          retryable: true,
+          message: "PRIVATE_MESSAGE",
+          providerCode: "PRIVATE_CODE",
+          details: { secret: "PRIVATE_BODY" },
+        });
+        await preserveBeforeStop(
+          sql,
+          {
+            ...provider,
+            [method]: async () => {
+              throw refusal;
+            },
+          },
+          id,
+          "bx_recovery",
+        );
+        const closedReason = `${reason}_provider_unavailable_http_502`;
+        const note = (await owner.get(id))?.preservationNote;
+        expect(note).toContain(`(${closedReason})`);
+        expect(note).not.toContain("PRIVATE");
+        const line = String(log.mock.calls.at(-1)?.[0]);
+        expect(JSON.parse(line)).toMatchObject({
+          event: "work_preservation_failed",
+          sandboxId: id,
+          stage,
+          reason: closedReason,
+          errorClass: "provider_unavailable",
+          providerStatus: 502,
+        });
+        expect(line).not.toContain("PRIVATE");
+      }
+    } finally {
+      log.mockRestore();
+    }
+
     // Idle reviewers need no harness call, artifact, or warning, even on a retry.
     await db.query("update sandboxes set preservation_note='old failure' where id=$1", [id]);
     boat.setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
@@ -122,7 +169,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
     boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
     expect((await owner.get(id))?.preservationNote).toBe(
-      "unpushed work could not be preserved (collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (capture_collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
@@ -212,7 +259,7 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
     expect(row?.preservation_note).toBe(
-      "unpushed work could not be preserved (timeout). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (deadline_timeout). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(interrupts).toBe(0);
     expect(execs).toBe(0);

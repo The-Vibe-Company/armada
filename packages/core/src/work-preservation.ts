@@ -1,5 +1,5 @@
 import { constants, createDecipheriv, createHash, generateKeyPairSync, pbkdf2Sync, privateDecrypt } from "node:crypto";
-import type { Provider } from "./provider.ts";
+import { type Provider, ProviderError } from "./provider.ts";
 import { RECOVERY_BUN, RECOVERY_COLLECTOR } from "./work-preservation-collector.ts";
 
 const FAILURE_REASONS = [
@@ -19,10 +19,46 @@ const FAILURE_REASONS = [
 ] as const;
 type CaptureFailure = (typeof FAILURE_REASONS)[number];
 
+// Never serialize providerCode, message, cause, details, or an arbitrary error name.
+const ERROR_CLASSES = [
+  "unauthorized",
+  "payment_required",
+  "forbidden",
+  "not_found",
+  "invalid_request",
+  "provider_not_configured",
+  "no_running_turn",
+  "sandbox_not_ready",
+  "conflict",
+  "rate_limited",
+  "unavailable",
+  "unknown",
+] as const;
+export function workPreservationError(error: unknown): { errorClass: string; providerStatus: number | null } {
+  if (error instanceof ProviderError)
+    return {
+      errorClass: ERROR_CLASSES.some((code) => code === error.code) ? `provider_${error.code}` : "provider_unknown",
+      providerStatus:
+        typeof error.status === "number" && Number.isInteger(error.status) && error.status >= 100 && error.status <= 599
+          ? error.status
+          : null,
+    };
+  return {
+    errorClass:
+      error instanceof Error && error.name === "TimeoutError"
+        ? "timeout"
+        : error instanceof Error && error.name === "AbortError"
+          ? "aborted"
+          : "unexpected",
+    providerStatus: null,
+  };
+}
+type CaptureDiagnostic = ReturnType<typeof workPreservationError> & { stage: "collect_exec" | "chunk_exec" };
+
 export type WorkPreservation =
   | { status: "clean" }
   | { status: "preserved"; archive: string }
-  | { status: "failed"; reason: CaptureFailure };
+  | { status: "failed"; reason: CaptureFailure; diagnostic?: CaptureDiagnostic };
 
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024;
 
@@ -47,7 +83,10 @@ ARMADA_RECOVERY`;
 }
 
 class CaptureError extends Error {
-  constructor(readonly reason: CaptureFailure) {
+  constructor(
+    readonly reason: CaptureFailure,
+    readonly diagnostic?: CaptureDiagnostic,
+  ) {
     super(reason);
   }
 }
@@ -79,11 +118,11 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   let stage: CaptureFailure = "exec_failed";
-  async function execute(request: Parameters<Provider["exec"]>[0]) {
+  async function execute(request: Parameters<Provider["exec"]>[0], stage: CaptureDiagnostic["stage"] = "collect_exec") {
     try {
       return await provider.exec(request);
-    } catch {
-      throw new CaptureError("exec_failed");
+    } catch (error) {
+      throw new CaptureError("exec_failed", { stage, ...workPreservationError(error) });
     }
   }
   async function collect(): Promise<WorkPreservation> {
@@ -129,7 +168,7 @@ try { const n=fs.readSync(fd,data,0,data.length,${index * CHUNK_BYTES}); console
 finally { fs.closeSync(fd); }`,
             );
             const output = checkedOutput(
-              await execute({ sandboxId, command, timeoutSeconds: 2, onlyIfRunning: true }),
+              await execute({ sandboxId, command, timeoutSeconds: 2, onlyIfRunning: true }, "chunk_exec"),
             ).trim();
             if (output.length > 44_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(output)) throw new Error();
             const decoded = Buffer.from(output, "base64");
@@ -169,7 +208,11 @@ finally { fs.closeSync(fd); }`,
       }),
     ]);
   } catch (error) {
-    return { status: "failed", reason: error instanceof CaptureError ? error.reason : stage };
+    return {
+      status: "failed",
+      reason: error instanceof CaptureError ? error.reason : stage,
+      ...(error instanceof CaptureError && error.diagnostic ? { diagnostic: error.diagnostic } : {}),
+    };
   } finally {
     expired = true;
     clearTimeout(timer);

@@ -559,7 +559,7 @@ try {
     assert.equal(stopped.status_reason, "expired");
     assert.equal(
       stopped.preservation_note,
-      "unpushed work could not be preserved (missing_bun). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (capture_missing_bun). Resume the sandbox and push or copy any local work before stopping again.",
     );
     const operations = effects
       .slice(expirationStart)

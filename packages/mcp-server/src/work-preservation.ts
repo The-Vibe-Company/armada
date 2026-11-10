@@ -1,5 +1,15 @@
-import { decryptSecret, encryptSecret, type Provider, preserveWork, type Sql } from "@armada/core/server";
+import {
+  decryptSecret,
+  encryptSecret,
+  type Provider,
+  preserveWork,
+  type Sql,
+  workPreservationError,
+} from "@armada/core/server";
 
+function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
+  return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass}_${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
+}
 function failureNote(reason: string): string {
   return `unpushed work could not be preserved (${reason}). Resume the sandbox and push or copy any local work before stopping again.`;
 }
@@ -15,10 +25,18 @@ export async function preserveBeforeStop(sql: Sql, provider: Provider, id: strin
         timer = setTimeout(() => {
           expired = true;
           console.warn(
-            JSON.stringify({ event: "work_preservation_failed", sandboxId: id, stage: "deadline", reason: "timeout" }),
+            JSON.stringify({
+              event: "work_preservation_failed",
+              sandboxId: id,
+              stage: "deadline",
+              reason: "deadline_timeout",
+            }),
           );
           void sql
-            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, failureNote("timeout")])
+            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
+              id,
+              failureNote("deadline_timeout"),
+            ])
             .catch(() => {});
           resolve();
         }, 20_000);
@@ -36,8 +54,9 @@ async function captureAndStore(
   providerId: string,
   expired: () => boolean,
 ): Promise<void> {
-  let reason = "observe_failed";
+  let reason = "failed";
   let stage = "observe";
+  let diagnostic: ReturnType<typeof workPreservationError> | undefined;
   let note: string;
   try {
     // Exec may implicitly resume retained compute. Never activate a machine known stopped.
@@ -47,16 +66,16 @@ async function captureAndStore(
     // Native runtimes acknowledge interrupt only after active turns settle.
     // The stop activity lease prevents new Armada turns during capture.
     stage = "quiesce";
-    reason = "quiesce_failed";
+    reason = "failed";
     await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
     if (expired()) return;
     stage = "capture";
-    reason = "capture_failed";
+    reason = "failed";
     const result = await preserveWork(provider, providerId);
     if (expired()) return;
     if (result.status === "preserved") {
       stage = "storage";
-      reason = "storage";
+      reason = "failed";
       const encrypted = await encryptSecret(result.archive);
       if (expired()) return;
       const recoveryId = crypto.randomUUID();
@@ -67,7 +86,7 @@ async function captureAndStore(
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
     } else if (result.status === "clean") {
       stage = "storage";
-      reason = "storage";
+      reason = "failed";
       // Clear stale warnings, but retain the latest recovery receipt if one exists.
       await sql.query(
         `update public.sandboxes set preservation_note=(
@@ -79,20 +98,33 @@ async function captureAndStore(
       return;
     } else {
       reason = result.reason;
+      if (result.diagnostic) {
+        stage = result.diagnostic.stage;
+        diagnostic = result.diagnostic;
+      }
+      reason = closedFailure(stage, reason, diagnostic);
       note = failureNote(reason);
     }
-  } catch {
+  } catch (error) {
+    diagnostic = workPreservationError(error);
+    reason = closedFailure(stage, reason, diagnostic);
     note = failureNote(reason);
   }
   if (expired()) return;
   if (!note.startsWith("unpushed work preserved"))
-    console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, stage, reason }));
+    console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, stage, reason, ...diagnostic }));
   try {
     await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
-  } catch {
+  } catch (error) {
     if (!expired() && note.startsWith("unpushed work preserved"))
       console.warn(
-        JSON.stringify({ event: "work_preservation_failed", sandboxId: id, stage: "receipt", reason: "storage" }),
+        JSON.stringify({
+          event: "work_preservation_failed",
+          sandboxId: id,
+          stage: "receipt",
+          reason: closedFailure("receipt", "storage", workPreservationError(error)),
+          ...workPreservationError(error),
+        }),
       );
   }
 }
