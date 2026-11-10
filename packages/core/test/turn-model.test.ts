@@ -106,3 +106,15 @@ test("tool results do not invalidate a verified assistant response", () => {
     }),
   ).toMatchObject({ observedModel: "chosen", modelSelectionReason: null });
 });
+
+test("truncated response markers cannot turn a partial match into verified execution", () => {
+  expect(
+    turnModelEvidence(
+      [
+        message("chosen"),
+        { id: "truncated", at: 2, kind: "other", promptId: "turn", type: "event_truncated", data: {} },
+      ],
+      { promptId: "turn", requestedModel: "chosen", complete: true },
+    ),
+  ).toMatchObject({ modelSelectionReason: "model_selection_unverified" });
+});

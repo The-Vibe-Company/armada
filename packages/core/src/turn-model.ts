@@ -32,8 +32,15 @@ export function turnModelEvidence(
   const models = new Set(responses.flatMap((event) => (event.kind === "message" && event.model ? [event.model] : [])));
   const observedModel = models.size === 1 ? ([...models][0] ?? null) : null;
   const mismatch = request.requestedModel !== null && [...models].some((model) => model !== request.requestedModel);
+  const truncated = events.some(
+    (event) =>
+      event.kind === "other" &&
+      (event.type === "event_truncated" || event.type === "context_truncated") &&
+      (!event.promptId || event.promptId === request.promptId),
+  );
   const verified =
     request.complete &&
+    !truncated &&
     request.requestedModel !== null &&
     responses.length > 0 &&
     responses.every((event) => event.kind === "message" && event.model === request.requestedModel);
