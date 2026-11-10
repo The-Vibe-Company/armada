@@ -4,22 +4,22 @@
     {
       "id": 1,
       "prompt": "Ship this branch as a PR against main. It should be clean enough for a human to merge, and do not merge it yourself.",
-      "expected_output": "Prepare ignored run/context artifacts, inspect the ticket and scope, implement and run fresh local checks plus an explicitly named author self-check. Commit with Commitizen, push normally, create/update the PR, finish every visible non-skipped latest-SHA CI check, and run report-only learning. Mark ready for coordinator review and return PR URL/evidence ending READY FOR REVIEW: PR #<n> head <full SHA>. Do not launch a reviewer or claim independent approval; the coordinator owns that gate."
+      "expected_output": "The skill prepares an ignored ship-pr-dev run directory, collects branch context, creates a tiered agent-budget.json, runs relevant local checks, runs review-code-dev as the single independent gate, fixes confirmed blockers with evidence-based reassessment at retry checkpoints, commits with commitzen, pushes normally, creates or updates a PR, waits deterministically until every visible non-skipped PR CI item is green on the latest pushed commit, runs capture-learning-tools report-only, and only then returns the PR URL plus latest commit, verification, CI, review, and artifact summaries."
     },
     {
       "id": 2,
       "prompt": "Clean this up locally before PR, but don't push yet. I want to know whether it's merge-ready.",
-      "expected_output": "Run local cleanup, verification and author self-check, preserve the no-push instruction, record artifacts and report-only learning. Report locally prepared, remote CI and coordinator independent review unverified. No push, reviewer launch, READY FOR REVIEW receipt or merge-ready claim."
+      "expected_output": "The skill runs local cleanup, verification, and review-code-dev, records artifacts, avoids push/PR creation, and completes the report-only learning pass and returns a locally prepared handoff with remote CI unverified; it does not claim merge readiness."
     },
     {
       "id": 3,
       "prompt": "Update the existing PR with the fixes from review feedback and make sure everything is green before handing it back.",
-      "expected_output": "Read review findings and current head, apply scoped fixes in the original worker session, rerun affected verification and author self-check, commit/push and finish latest-SHA CI. Run report-only learning and end READY FOR REVIEW: PR #<n> head <full SHA>. Independent re-review is pending coordinator; never launch a reviewer or approve the worker's own changes."
+      "expected_output": "The skill reads the current PR or branch context, applies scoped fixes only, reruns relevant checks, reruns review-code-dev when source changed, pushes normal commits, updates the PR body, waits until every visible non-skipped CI check/check suite on the latest commit is final green, investigates logs for failures, runs the report-only capture-learning-tools pass after green CI, and reports any unresolved human decisions."
     },
     {
       "id": 4,
       "prompt": "Make a PR for this auth and data export change. Be paranoid about tests and review because it touches permissions.",
-      "expected_output": "Run security/data/export-relevant verification and a full-diff author self-check. Fix confirmed findings; inadequate permission tests block worker completion. With local checks and latest-SHA CI green, return READY FOR REVIEW with full SHA and flag security focus for the coordinator, without claiming or launching independent review."
+      "expected_output": "The skill passes deep focus to the review-code-dev v2 Alibaba gate, runs security/data/export-relevant verification, fixes P0/P1/P2 findings, records skipped checks with reasons, and blocks handoff if permission behavior lacks adequate tests or review evidence."
     },
     {
       "id": 5,
@@ -29,37 +29,37 @@
     {
       "id": 6,
       "prompt": "Ship this frontend branch. It changes React pages, Tailwind styles, and form submit behavior, so I want the visual and UX pass to be strict.",
-      "expected_output": "Detect frontend changes; author self-check covers accessibility/responsive/state behavior and repository-required rendered/interaction checks. Fix findings, rerun affected verification, disclose unavailable optional screenshots, finish latest-SHA CI and return READY FOR REVIEW with full SHA. Independent frontend review belongs to the coordinator; launch no reviewer."
+      "expected_output": "The skill detects a frontend diff and passes frontend/accessibility/responsive/state lenses into one review-code-dev gate instead of running a standalone frontend pass plus another full review. It fixes blockers, reruns affected verification and only the failed lens when appropriate, then waits for latest-SHA CI before calling the PR ready."
     },
     {
       "id": 7,
       "prompt": "The PR is open but CI is red. Please get it to ready-to-merge without merging.",
-      "expected_output": "Read failing latest-SHA CI logs, identify first causal error, fix in scope, validate, self-check, commit/push and wait for all visible non-skipped latest-head CI green. Run report-only learning and end READY FOR REVIEW with full SHA, not ready-to-merge. Do not launch a reviewer, bypass hooks or disable checks; report genuine missing input rather than repeating ineffective fixes."
+      "expected_output": "The skill finds the PR and latest pushed SHA, reads failing CI logs, identifies the first causal error, fixes within scope, runs corresponding local validation, commits and pushes targeted fixes, loops until every visible non-skipped CI check/check suite is green on the latest SHA or a concrete external dependency or user decision prevents further progress; three attempts trigger reassessment, not an automatic stop, runs capture-learning-tools after green CI, and never disables checks or bypasses hooks."
     },
     {
       "id": 8,
       "prompt": "Ship this PR, and before you hand it back only mention process improvements if there is something concrete worth doing next time.",
-      "expected_output": "Complete normal worker delivery, author self-check and latest-SHA green CI, then run capture-learning-tools report-only. Record concrete recurring recommendations or NONE; it cannot edit, stage, commit, push or alter CI. Return evidence and end READY FOR REVIEW with full SHA, with independent review pending coordinator."
+      "expected_output": "The skill runs the normal ship loop, waits until every visible non-skipped latest-SHA CI check/check suite is green, then invokes capture-learning-tools in report-only mode with the ship artifacts and writes RUN_DIR/learning-loop.md before handing back. It does not let the learning pass edit files, stage, commit, push, change CI, or reopen the ship loop unless it surfaces a concrete readiness-gate violation with evidence. If the learning pass finds actionable recurring improvements and the PR or local handoff is otherwise good to go, the final response appends 'Good to go. To improve next time, I can:' with up to 3 specific optional follow-ups. If it finds none, the final handoff stays unchanged."
     },
     {
       "id": 9,
       "prompt": "I am running Ship PR from Codex. Optimize the credits but keep the review serious.",
-      "expected_output": "Keep implementation and Git ownership in the worker, use bounded helpers only when useful, do not override configured models without authorization and do not waste agents on polling. Author self-check is not independent review. No reviewer subagent or Armada launch/auth; finish verified green-CI delivery with READY FOR REVIEW and full SHA for the coordinator."
+      "expected_output": "The coordinator keeps architecture, Git, PR, CI, and final acceptance. Every bounded Codex worker requests gpt-5.6-luna with max effort and fresh self-contained context (fork_turns none when exposed), records requested/effective routing without inventing usage, avoids an automatic external Codex CLI second review, and respects the one-writer plus one-isolated-primary and zero-review-subagent caps."
     },
     {
       "id": 10,
       "prompt": "Run Ship PR from OpenCode and use subagents where useful, but keep my configured model.",
-      "expected_output": "Preserve the user's configured model for useful bounded implementation helpers, retain Git ownership and deterministic CI waiting. Use an author self-check, not an independent reviewer subagent. End READY FOR REVIEW with full SHA after local checks and latest-SHA CI green; coordinator alone launches independent review."
+      "expected_output": "OpenCode delegations omit model and effort overrides so workers inherit the user's default. The skill still applies the dispatch test, tier caps, single-writer rule, same-worker resume, one review-code-dev gate, and deterministic CI waiting."
     },
     {
       "id": 11,
       "prompt": "Ship this one-line README typo fix. Don't waste agents on it.",
-      "expected_output": "Keep trivial implementation inline; no implementation worker, reviewer launch or specialist board. Perform author self-check and relevant verification, use normal Git/PR safety, finish latest-SHA CI, run report-only learning and end READY FOR REVIEW with full SHA. Coordinator handles independent review."
+      "expected_output": "The skill classifies the change as trivial, keeps implementation inline, launches no implementation worker or specialist board, uses one small isolated primary review, records the zero-implementation-worker budget and phase timing, targets 10 minutes with a reassessment point around 15 minutes, continues if more work is genuinely required, and preserves normal Git, PR, and latest-SHA CI safety."
     },
     {
       "id": 12,
       "prompt": "Ship this normal backend fix from Claude Code and optimize credits.",
-      "expected_output": "Keep implementation scoped and credit-aware, use a bounded helper only when useful and permitted, retain Git ownership and deterministic checks in the delivery session. No worker-dispatched independent reviewer. Author self-check plus green latest-SHA CI leads to READY FOR REVIEW with full SHA; coordinator handles reviewer routing."
+      "expected_output": "Bounded Claude workers request claude-sonnet-5 and high effort when the adapter supports it, without passing full conversation history. The standard tier uses at most one writer and one isolated primary reviewer, with no review subagents, resumes the same worker for follow-up, and leaves deterministic verification and CI polling to the coordinator."
     },
     {
       "id": 13,
@@ -69,7 +69,7 @@
     {
       "id": 14,
       "prompt": "Get this existing PR ready for review without merging. Three distinct corrections to the integration check have already been pushed. The third fixed the setup failure and exposed a deterministic UTC parsing bug in the same changed module. The logs identify the exact assertion; the fix is in scope, a disposable local fixture reproduces it, credentials work, and the user set no attempt budget. The check is red on the latest SHA. Decide and describe the next actions and the eventual handoff; do not actually operate a repository.",
-      "expected_output": "Record new causal evidence, apply the scoped UTC fix, run affected checks and author self-check, normally commit/push, refresh CI inventory and finish latest-SHA green CI plus report-only learning. End READY FOR REVIEW with full SHA for coordinator re-review. Do not stop merely because three CI corrections occurred, bypass checks, merge or launch a reviewer."
+      "expected_output": "Reassess and record the new causal evidence, apply the scoped UTC fix, run affected checks, normally commit/push, refresh CI inventory and relevant review evidence, and finish with latest-SHA green CI and report-only learning. Do not stop merely because three corrections occurred, bypass checks, or merge."
     },
     {
       "id": 15,
@@ -79,57 +79,52 @@
     {
       "id": 16,
       "prompt": "Prepare this branch locally for PR; do not push. Three local fix cycles were necessary and the scoped implementation is now complete. Relevant verification and quick independent review pass for the current source, with no findings. Remote CI is green only for an older commit. The report-only learning pass remains to run. Decide and describe the remaining actions and final readiness claim; do not operate a repository.",
-      "expected_output": "Complete report-only learning and deliver a locally prepared handoff. No push, remote mutation or reviewer launch. Current remote CI is unverified because it belongs to an older SHA; do not claim READY FOR REVIEW or merge readiness based on stale evidence."
+      "expected_output": "Complete report-only learning and deliver a locally prepared handoff. No push, remote mutation, automatic stop for three cycles, or merge-ready claim. Explain that current remote CI is unverified because it belongs to an older SHA."
     },
     {
       "id": 17,
       "prompt": "Ship using the new Alibaba review. The installed review-code-dev is 1.3.2.",
-      "expected_output": "Independent review and its review-code-dev v2 setup belong to the coordinator. Worker may use compatible OCR tooling for its author self-check but must not claim v2 or independent review from an old install. Report the actual optional-tool limitation or update only via authorized workflow; do not request Armada auth or launch a reviewer. Worker completion still requires self-check, verification and latest-SHA CI."
+      "expected_output": "Detect incompatible dependency before review. Update via the authorized package workflow or report the version blocker; never invoke removed legacy modes/scripts or claim v2 was used."
     },
     {
       "id": 18,
       "prompt": "Review found zero issues, but OCR skipped the changed migration and one preview command failed. Ship it.",
-      "expected_output": "Do not label failed preparation or incomplete coverage as a passed self-check or independent review. Inspect the changed migration directly, resolve tooling failure or state the limitation and complete full-diff author self-check plus verification. Do not approve or merge. Coordinator independent review remains separate; worker never launches it."
+      "expected_output": "Do not treat failed preparation or incomplete coverage as a pass. Resolve OCR failure, reconcile the migration against full Git scope, complete the review, then continue only when gates pass."
     },
     {
       "id": 19,
       "prompt": "Alibaba reports one high and one medium issue; CI is green.",
-      "expected_output": "Fix confirmed high and medium findings in the original worker session by default; unresolved high blocks worker handoff, medium needs explicit human risk acceptance. Preserve severity, refresh verification/self-check and latest-SHA CI, then return READY FOR REVIEW with the new full SHA for coordinator re-review. Green CI alone is not independent approval."
+      "expected_output": "High blocks readiness; fix both by default. Medium can remain only with explicit human acceptance recorded. Preserve original severity with P1/P2 mapping for state consumers."
     },
     {
       "id": 20,
       "prompt": "The branch has committed changes plus pending tracked and new files before commit. Review it once.",
-      "expected_output": "Author self-check covers the full intended candidate: committed plus pending tracked/new files, excluding unrelated work explicitly. After commit/hooks refresh changed content evidence and verify final head. Push, finish CI and return READY FOR REVIEW with full SHA. No reviewer is launched; coordinator reviews the pushed frozen diff independently."
+      "expected_output": "Prepare branch and workspace preview/rule evidence for one reviewer, cover the complete intended candidate and exclude unrelated changes explicitly. Do not review only HEAD or only the workspace. Reconcile scope and source fingerprint after commit/hooks."
     },
     {
       "id": 21,
       "prompt": "Ship on a fresh Linux machine without an OCR API key.",
-      "expected_output": "Worker needs no OCR API key or Armada credentials. Use direct author self-check; optional OCR portable bootstrap needs no LLM endpoint and cannot count as independent review. No host reviewer or sandbox launch. Finish verified green-CI delivery with READY FOR REVIEW and full SHA; coordinator prepares the independent reviewer tooling."
+      "expected_output": "Use review-code-dev v2 portable bootstrap in the coordinator, no LLM configuration or keys, and one isolated host reviewer. Bootstrap failure blocks the gate; no removed native fallback."
     },
     {
       "id": 22,
       "prompt": "The review passed, but a pre-commit formatter changed a source file.",
-      "expected_output": "Mark affected self-check/verification stale and refresh it after formatter changes. Push final content, finish latest-SHA CI and return READY FOR REVIEW with full SHA. Any prior coordinator approval does not cover a changed head; request coordinator re-review, never launch it from the worker."
+      "expected_output": "Mark affected review/verification stale and refresh evidence for changed content before push or readiness; only metadata-only commits may carry forward identical source evidence."
     },
     {
       "id": 23,
       "prompt": "The same agent has implemented an approved plan-pr plan. Finish the PR. The original Linear ticket's newest comment narrows one criterion, the plan records approval, and tests plus one UI screenshot already exist.",
-      "expected_output": "Read original ticket/comments and approved plan, reconcile superseding scope with approval, inspect existing work/evidence without restarting. Refresh stale checks/UI proof and author self-check against criteria, finish PR/latest-SHA CI and return READY FOR REVIEW with full SHA. Do not send an author criteria narrative to a reviewer; coordinator independently launches with ticket/diff instructions."
+      "expected_output": "Read the original ticket and relevant comments alongside the approved plan, reconcile the newer comment with the approval record, inspect completed work and evidence without restarting implementation, refresh only stale checks and UI proof, pass an explicit criterion-to-implementation-to-evidence map to the single review-code-dev gate, then ship through normal PR and latest-SHA CI gates. Ask for a human decision only if the comment materially conflicts with the approved scope."
     },
     {
       "id": 24,
       "prompt": "Ship this ordinary branch as a PR. There is no plan-pr document or approval artifact.",
-      "expected_output": "Use user request and repository context as the goal, without demanding or inventing a plan artifact. Preserve scoped implementation, author self-check, local verification, commits/PR and latest-SHA CI. Run report-only learning and return READY FOR REVIEW with full SHA; no worker-launched independent review."
+      "expected_output": "Run the existing standalone Ship PR workflow using the user's request and repository context as the goal, without demanding or inventing an approved plan. Preserve normal verification, single independent review, commit, PR and latest-SHA CI gates."
     },
     {
       "id": 25,
       "prompt": "Ship a UI change from an approved plan. Repo instructions say not to launch the app locally, no PR screenshot attachment mechanism is available, and no existing CI or critical-path gate requires a rendered check.",
       "expected_output": "Respect the repo's launch instruction, use available nonvisual checks, record visual verification and shareable screenshots as unavailable, state the limitation in the PR and handoff without machine-local links, and do not create a new universal screenshot blocker. Continue to enforce any actual repository, CI or frontend critical-path gate that applies."
-    },
-    {
-      "id": 26,
-      "prompt": "Ship a fix to sandbox stop/resume, a provider adapter or agent runtime. Local mocks pass, but the worker has no staging access or Armada identity. Can it hand off without a live provider run?",
-      "expected_output": "Require a Real-provider verification PR section with actual live commands/results OR the exact deployed check the coordinator must run; do not present mocks as live proof. Do not provision worker Armada credentials, launch reviewers or deploy to fill the section. With named deployed check, fresh local verification/author self-check and latest-SHA green CI, return READY FOR REVIEW: PR #<n> head <full SHA>, independent review pending coordinator."
     }
   ]
 }
