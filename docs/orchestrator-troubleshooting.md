@@ -222,3 +222,10 @@ running. Do not mistake that pending receipt for successful preparation. Explici
 owner recovery can abort a never-conversed registered pending first create, fence
 late original callbacks, and settle it only after exact termination proof. Do not
 use a fresh create key to get around a pending receipt.
+
+## Boat best-effort lifecycle (#763)
+
+Boat parents use ordinary archival, not Modal native checkpoints. Their continuity
+must remain `unverified` after resume. The owner lifecycle regression must boot
+`startServer` without substituting the orchestrator factory and drive the CLI;
+backend-only fakes cannot validate the provider hooks installed by production.
