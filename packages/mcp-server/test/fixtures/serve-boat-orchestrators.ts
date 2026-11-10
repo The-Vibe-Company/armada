@@ -6,6 +6,7 @@ import * as core from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
@@ -135,7 +136,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       type: "command.finished",
       success: true,
       exitCode: 0,
-      stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${"a".repeat(40)}/.agents/skills\n`,
+      stdout: catalogLock(JSON.stringify(body).includes("claude-code") ? "claude-code" : "codex"),
       stderr: "",
       timedOut: false,
     });
@@ -290,6 +291,8 @@ try {
     const create = await cli([
       "create",
       `Boat ${harness}`,
+      "--skill",
+      catalogReference,
       "--org",
       orgId,
       "--golden",
@@ -313,6 +316,8 @@ try {
     }
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
+    assert.equal(detail.orchestrator.configuration.skill, catalogReference);
+    assert.deepEqual(detail.orchestrator.skillReceipt, catalogReceipt);
     let revision = detail.orchestrator.revision;
     const act = async (action: string, text?: string, expected = 0) => {
       const result = await cli(

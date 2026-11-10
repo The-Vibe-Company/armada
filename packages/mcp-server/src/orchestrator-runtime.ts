@@ -557,6 +557,13 @@ export class OrchestratorRuntime {
       sandboxId: identity.providerSandboxId,
       projectDir: backend.projectDir,
       skillRevision: identity.skillRevision,
+      skill: identity.configuration.skill,
+      harness: identity.configuration.harness,
+      expectedReceipt: identity.skillReceipt,
+      recordReceipt: async (receipt) => {
+        await validate?.();
+        await this.options.store.recordSkillReceipt(identity, receipt);
+      },
       configureAuthority: async () => {
         await validate?.();
         await this.configureAuthority(backend, identity, diagnostics);
@@ -680,6 +687,7 @@ function wireOrchestrator(identity: RuntimeIdentity): Orchestrator {
     lastActivityAt: identity.lastActivityAt,
     idleDeadline: identity.idleDeadline,
     skillRevision: identity.skillRevision,
+    skillReceipt: identity.skillReceipt ?? null,
     blockedReason: identity.blockedReason,
   };
 }

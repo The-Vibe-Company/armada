@@ -10,6 +10,7 @@ import { ArmadaApiError, createArmadaApiClient } from "../../../cli/src/armada-a
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
+import { catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
@@ -436,6 +437,8 @@ try {
     [
       "create",
       "actual-managed-create",
+      "--skill",
+      catalogReference,
       "--org",
       orgId,
       "--golden",
@@ -461,6 +464,8 @@ try {
     assert(!logs.join("\n").includes(secret), "Sensitive value in server logs.");
   assert.equal(initialized.operation.state, "succeeded", `${JSON.stringify(initialized.operation)} ${logs.join("\n")}`);
   assert.equal(initialized.detail.orchestrator.state, "ready");
+  assert.equal(initialized.detail.orchestrator.configuration.skill, catalogReference);
+  assert.deepEqual(initialized.detail.orchestrator.skillReceipt, catalogReceipt);
   assert.equal(effects.allocationAttempts, 1);
   assert.equal(effects.allocations, 1);
   assert.equal(effects.modelCalls, 0);

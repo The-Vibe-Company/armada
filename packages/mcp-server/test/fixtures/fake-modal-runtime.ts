@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { Machine } from "@armada/provider-modal";
+import { catalogLock } from "./skillpack-catalog.ts";
 
 type Grant = { token: string; generation: string; sandboxId: string };
 type Vm = {
@@ -73,8 +74,8 @@ export function fakeModalRuntime(input: {
             ? preservationFailure === "output_invalid"
               ? "not-json"
               : JSON.stringify({ status: "failed", reason: preservationFailure })
-            : packet.input?.command?.includes("skill install --project")
-              ? `Source: https://github.com/The-Vibe-Company/armada/tree/${input.skillRevision}/.agents/skills\n`
+            : packet.input?.command?.startsWith("skillpack install")
+              ? catalogLock("codex")
               : "",
           stderr: "",
           timedOut: !!capturing && preservationFailure === "timeout",
