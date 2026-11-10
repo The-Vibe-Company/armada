@@ -37,8 +37,9 @@ public struct ConversationSnapshot<Event: Identifiable & Equatable & Sendable>: 
 
 /// The last known state of the conversations opened recently, in memory only, so returning to one
 /// shows it at once. Bounded by `capacity` (least recently used first out). The app keys entries
-/// by resource id and empties the cache when the session or the organization changes; a refused
-/// read removes its entry, so a conversation is never shown from memory after access ends.
+/// by resource id and empties the cache when the session or the organization changes. A snapshot
+/// is shown before the server rechecks access, so the first refusal removes its entry and hides
+/// the conversation.
 @MainActor
 public final class ConversationCache<Event: Identifiable & Equatable & Sendable> {
     private var entries: [String: ConversationSnapshot<Event>] = [:]
@@ -99,6 +100,9 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     public private(set) var hasShown = false
     /// The last read reached the server's end of the stream.
     public private(set) var isCaughtUp = false
+    /// A catch-up read failed (for example it outlasted the timeout): this loader reads ordinary
+    /// pages only from then on, so a history too long for one response never loops on it.
+    public private(set) var catchUpFailed = false
 
     private let key: String
     private let cache: ConversationCache<Event>?
@@ -126,16 +130,23 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     ) async throws(Failure) {
         var read = ConversationRead.page
         while !Task.isCancelled {
-            let advanced = try await apply(fetch(snapshot.cursor, read), show: show)
+            let page: ConversationPage<Event>
+            do throws(Failure) {
+                page = try await fetch(snapshot.cursor, read)
+            } catch {
+                if read == .catchUp { catchUpFailed = true }
+                throw error
+            }
+            let advanced = await apply(page, show: show)
             guard !isCaughtUp, advanced else { return }
-            read = .catchUp
+            read = nextRead
         }
     }
 
     /// Shows the cached snapshot, catches up, then polls until the calling task is cancelled or
     /// `onFailure` stops it. `pollDelay` is read after every read that reached the end; after a
-    /// failure `onFailure` returns the backoff, or nil to stop. A catch-up read is never retried
-    /// as such: after a failure the next read is an ordinary page.
+    /// failure `onFailure` returns the backoff, or nil to stop. After a failed catch-up read, every
+    /// later read of this loader is an ordinary page (`catchUpFailed`).
     public func run<C: Clock, Failure: Error>(
         clock: C,
         fetch: (_ cursor: String?, _ read: ConversationRead) async throws(Failure) -> ConversationPage<Event>,
@@ -155,13 +166,14 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
                 failures = 0
                 onRead()
                 if !isCaughtUp, advanced {
-                    read = .catchUp
+                    read = nextRead
                     continue
                 }
                 read = .page
                 try? await clock.sleep(for: pollDelay())
             } catch {
                 guard !Task.isCancelled else { return }
+                if read == .catchUp { catchUpFailed = true }
                 failures += 1
                 read = .page
                 guard let backoff = onFailure(error, failures) else { return }
@@ -169,6 +181,9 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
             }
         }
     }
+
+    /// The read after one that reported more: a catch-up, unless one already failed.
+    private var nextRead: ConversationRead { catchUpFailed ? .page : .catchUp }
 
     /// Forgets this conversation in memory (for example after a refused read).
     public func forget() {

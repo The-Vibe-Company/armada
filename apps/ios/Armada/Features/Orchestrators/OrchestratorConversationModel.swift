@@ -154,8 +154,7 @@ final class OrchestratorConversationModel {
         if case .stopped(let failure) = feed.connection {
             switch failure {
             case .noAccess:
-                feed.forget()
-                phase = .noAccess
+                refuseAccess()
             case .unavailable(let reason): phase = .unavailable(reason)
             case .rejected(let reason): notice = ("The conversation stopped updating: \(reason)", true)
             case .signedOut, .staleRevision, .uncertain, .offline: break
@@ -281,7 +280,7 @@ final class OrchestratorConversationModel {
                 await load()
             case .noAccess:
                 refusedHandles.insert(handle)
-                phase = .noAccess
+                refuseAccess()
             case .rejected(let reason):
                 refusedHandles.insert(handle)
                 removeBubble(bubbleID, restoreDraft: true)
@@ -357,7 +356,7 @@ final class OrchestratorConversationModel {
             case .noAccess:
                 refusedHandles.insert(handle)
                 finishLifecycle()
-                phase = .noAccess
+                refuseAccess()
             case .rejected(let reason):
                 refusedHandles.insert(handle)
                 finishLifecycle()
@@ -413,6 +412,12 @@ final class OrchestratorConversationModel {
         return "\(receipt.kind.label) failed.\(reason)"
     }
 
+    /// The server refused this conversation: it is no longer shown, nor kept in memory.
+    private func refuseAccess() {
+        feed.forget()
+        phase = .noAccess
+    }
+
     private func handleReadFailure(_ error: ServiceFailure) {
         // Leaving the screen cancels the read; that is not a failure to show.
         if Task.isCancelled { return }
@@ -422,8 +427,7 @@ final class OrchestratorConversationModel {
         case .unavailable(let reason):
             phase = .unavailable(reason)
         case .noAccess:
-            feed.forget()
-            phase = .noAccess
+            refuseAccess()
         default:
             if detail == nil && !feed.hasLoaded {
                 phase = .failed(error.message)

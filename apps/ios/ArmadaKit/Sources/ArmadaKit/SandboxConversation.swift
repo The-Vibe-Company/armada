@@ -128,12 +128,17 @@ extension ArmadaClient {
     /// One page of events after `cursor` (from the start when nil), in server order. With `all`, the
     /// server reads on from `cursor` for as many pages as one response allows (`armada logs --all`)
     /// and returns them together with the cursor after the last one; `hasMore` stays true when even
-    /// that was not the end.
+    /// that was not the end. The server reads those pages one after another before answering, so
+    /// such a read may stay silent for longer than an ordinary one (`catchUpTimeout`).
     public func sandboxEvents(id: String, cursor: String? = nil, all: Bool = false) async throws -> SandboxEventPage {
         struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let all: Bool? }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
-        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor, all: all ? true : nil))
+        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor, all: all ? true : nil),
+                              timeout: all ? Self.catchUpTimeout : nil)
     }
+
+    /// How long a `logs/read` with `all` may stay silent: the server reads up to 100 provider pages.
+    public static let catchUpTimeout: TimeInterval = 120
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
     /// `SandboxMutationFailure.classify` and never resent by this client.

@@ -189,6 +189,7 @@ final class AppModel {
         do {
             loaded = try await client.organizations()
         } catch ArmadaError.signedOut {
+            resetSessionState()
             phase = .signedOut
             return
         } catch {

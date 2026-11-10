@@ -179,7 +179,7 @@ final class SandboxConversationModel {
                 case .signedOut:
                     onSignedOut()
                 case .noAccess:
-                    phase = .noAccess
+                    refuseAccess()
                 case .uncertain, .offline:
                     setStatus(.unconfirmed, for: bubbleID)
                 case .rejected(let reason), .unavailable(let reason):
@@ -211,7 +211,7 @@ final class SandboxConversationModel {
             } catch {
                 switch error {
                 case .signedOut: onSignedOut()
-                case .noAccess: phase = .noAccess
+                case .noAccess: refuseAccess()
                 case .uncertain, .offline:
                     notice = ("Armada did not confirm the stop. Its latest state is shown; you can stop again.", true)
                 case .rejected(let reason), .unavailable(let reason):
@@ -252,6 +252,12 @@ final class SandboxConversationModel {
         }
     }
 
+    /// The server refused this conversation: it is no longer shown, nor kept in memory.
+    private func refuseAccess() {
+        feed.forget()
+        phase = .noAccess
+    }
+
     private func handleReadFailure(_ error: ServiceFailure) {
         // Leaving the screen cancels the read; that is not a failure to show.
         if Task.isCancelled { return }
@@ -259,8 +265,7 @@ final class SandboxConversationModel {
         case .signedOut:
             onSignedOut()
         case .noAccess:
-            feed.forget()
-            phase = .noAccess
+            refuseAccess()
         case .unavailable(let reason):
             phase = .unavailable(reason)
         default:

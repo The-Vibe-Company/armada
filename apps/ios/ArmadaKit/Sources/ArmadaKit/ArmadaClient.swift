@@ -151,19 +151,19 @@ public actor ArmadaClient {
         }
     }
     func post<Response: Decodable & Sendable, Body: Encodable & Sendable>(
-        _ route: String, _ body: Body, authenticated: Bool = true
+        _ route: String, _ body: Body, authenticated: Bool = true, timeout: TimeInterval? = nil
     ) async throws -> Response {
         let fence = generation
         let token = authenticated ? try await authority() : nil
         try Task.checkCancellation()
-        let result: Response = try await wire(route, body, token: token)
+        let result: Response = try await wire(route, body, token: token, timeout: timeout)
         if authenticated, generation != fence { throw CancellationError() }
         return result
     }
     private func wire<Response: Decodable & Sendable, Body: Encodable & Sendable>(
-        _ route: String, _ body: Body, token: String?
+        _ route: String, _ body: Body, token: String?, timeout: TimeInterval? = nil
     ) async throws -> Response {
-        return try await request(route, method: "POST", body: JSONEncoder().encode(body), token: token)
+        return try await request(route, method: "POST", body: JSONEncoder().encode(body), token: token, timeout: timeout)
     }
     func authenticatedRequest<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data? = nil, key: String? = nil
@@ -193,14 +193,15 @@ public actor ArmadaClient {
         "missing_credential", "unauthorized",
     ]
     private func request<Response: Decodable & Sendable>(
-        _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
+        _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> Response {
         var components = URLComponents(url: origin.appendingPathComponent("api/v1/" + route), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { components.queryItems = query }
         guard let url = components.url else { throw ArmadaError.invalidResponse }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = route == SandboxLaunchRequest.route ? SandboxLaunchRequest.timeout : 30
+        request.timeoutInterval = timeout ?? (route == SandboxLaunchRequest.route ? SandboxLaunchRequest.timeout : 30)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }

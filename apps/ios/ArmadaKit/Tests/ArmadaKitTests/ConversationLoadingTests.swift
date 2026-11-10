@@ -117,7 +117,7 @@ private func run(_ loader: ConversationLoader<Entry>, _ script: Script, backoff:
 }
 
 @MainActor
-@Test func aFailedCatchUpBacksOffOnTheClockAndContinuesWithOrdinaryPages() async {
+@Test func aFailedCatchUpBacksOffOnTheClockAndIsNeverTriedAgain() async {
     let log = Log()
     let script = Script([
         page(["e1"], cursor: "c1", hasMore: true),
@@ -129,8 +129,9 @@ private func run(_ loader: ConversationLoader<Entry>, _ script: Script, backoff:
     #expect(log.all == [
         "read start page", "show e1",
         "read c1 catchUp", "sleep 1s",
+        // A history too long for one response (a timeout) must not loop on catch-up reads.
         "read c1 page", "show e1,e2",
-        "read c2 catchUp", "show e1,e2,e3",
+        "read c2 page", "show e1,e2,e3",
         "sleep 2s", "read c3 page", "sleep 1s", "read c3 page",
     ])
 }

@@ -168,4 +168,6 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     // An ordinary page never asks for more; the catch-up read does, from the opaque cursor.
     #expect(bodies[0] == ["id": sandboxID, "org": "org-a"])
     #expect(bodies[1] == ["id": sandboxID, "org": "org-a", "cursor": "c1", "all": true])
+    // The server reads many pages before it answers: only that read may stay silent longer.
+    #expect(requests.map(\.timeoutInterval) == [30, ArmadaClient.catchUpTimeout])
 }
