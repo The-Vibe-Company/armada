@@ -1,6 +1,14 @@
 import { GoldenError } from "@armada/core";
 
-const BOOLEAN = new Set(["--private", "--json", "--all", "--follow", "--no-browser", "--no-connections"]);
+const BOOLEAN = new Set([
+  "--private",
+  "--json",
+  "--all",
+  "--follow",
+  "--no-browser",
+  "--no-connections",
+  "--confirm-provider-payment-refused",
+]);
 const VALUE = new Set([
   "--since",
   "--id",

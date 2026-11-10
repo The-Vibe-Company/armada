@@ -96,6 +96,8 @@ Usage:
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
+  armada golden build-reconcile <job-id> --confirm-provider-payment-refused
+                                         Settle a legacy build only after verifying its payment refusal
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -501,6 +503,28 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         body: JSON.stringify({ id: oneName(args.positionals), visibility, org: single(args, "--org") }),
       });
       io.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
+    case "build-reconcile": {
+      const jobId = oneName(args.positionals);
+      if (!flag(args, "--confirm-provider-payment-refused"))
+        throw new GoldenError(
+          "invalid_config",
+          "Verify the original build log proves payment_required with no allocation, then pass --confirm-provider-payment-refused. An absent builder ID alone is not proof.",
+        );
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const result = await client.request<GoldenBuildStatus>("/api/v1/golden/build/reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId, confirmation: "provider_payment_required" }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      io.out(JSON.stringify(result) + "\n");
       return 0;
     }
     case "build-status": {

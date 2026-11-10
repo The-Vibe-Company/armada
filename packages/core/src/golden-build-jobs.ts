@@ -253,6 +253,60 @@ export class GoldenBuildJobs {
     // Do not decrypt payload for status: even service-side readers need no arbitrary setup text.
     return this.dto(job);
   }
+  /** Operator attestation for legacy jobs which predate persisted refusal reasons.
+   * Missing builder metadata alone is NEVER proof that allocation was refused. */
+  async reconcilePaymentRefusal(
+    userId: string,
+    id: string,
+    allowedOrgs?: readonly string[],
+  ): Promise<GoldenBuildStatus> {
+    await this.status(userId, id, undefined, undefined, allowedOrgs);
+    return this.transaction(async (sql) => {
+      const job = (await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [id])).rows[0];
+      if (!job) throw new GoldenError("not_found", "No such build.");
+      const member = (
+        await sql.query<{ role: string }>("select role from public.members where org_id=$1 and user_id=$2 for share", [
+          job.org_id,
+          userId,
+        ])
+      ).rows[0];
+      if (!member || (job.visibility === "private" && job.owner_id !== userId))
+        throw new GoldenError("not_found", "No such build.");
+      if (job.owner_id !== userId && member.role !== "admin")
+        throw new GoldenError(
+          "forbidden",
+          "Only the build owner or an organization administrator can confirm a provider refusal.",
+        );
+      if (
+        job.provider !== "boat" ||
+        job.phase !== "builder" ||
+        job.builder_id !== null ||
+        job.snapshot !== null ||
+        job.golden_id !== null
+      )
+        throw new GoldenError(
+          "conflict",
+          "Only a refused Boat create with no builder, snapshot or golden can be reconciled.",
+        );
+      if (job.state === "failed" && job.failure_reason === "provider_payment_required") return this.dto(job);
+      if (job.state !== "recovery_required" || job.failure_reason !== null)
+        throw new GoldenError(
+          "conflict",
+          "Only an abandoned legacy build with no recorded failure reason can be reconciled.",
+        );
+      if (job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
+      await sql.query(
+        "update public.golden_build_jobs set state='failed',error_code='build_failed',failure_reason='provider_payment_required',lease_until=null,updated_at=now() where id=$1",
+        [id],
+      );
+      return this.dto({
+        ...job,
+        state: "failed",
+        error_code: "build_failed",
+        failure_reason: "provider_payment_required",
+      });
+    });
+  }
   private dto(job: Job, name?: string): GoldenBuildStatus {
     return {
       jobId: job.id,

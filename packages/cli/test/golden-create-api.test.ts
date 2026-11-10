@@ -219,3 +219,44 @@ for (const state of ["succeeded", "queued"] as const) {
     expect(output).not.toContain(token);
   });
 }
+
+test("legacy build reconciliation requires explicit refusal confirmation and uses only the control API", async () => {
+  const requests: Request[] = [];
+  const jobId = crypto.randomUUID();
+  let output = "";
+  const deps = {
+    auth: {
+      out: () => undefined,
+      err: () => undefined,
+      env: { ARMADA_TOKEN: token },
+      now: () => new Date(),
+      open: () => undefined,
+      fetch: async (input: string | URL | Request, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(String(input), init);
+        requests.push(request);
+        return Response.json({
+          jobId,
+          state: "failed",
+          phase: "builder",
+          errorCode: "build_failed",
+          failureReason: "provider_payment_required",
+          result: null,
+        });
+      },
+      session: memorySessionStore(),
+    },
+  };
+  const io = {
+    out: (text: string) => {
+      output += text;
+    },
+    err: () => undefined,
+  };
+  expect(await run(["golden", "build-reconcile", jobId], io, deps)).toBe(2);
+  expect(requests).toHaveLength(0);
+  expect(await run(["golden", "build-reconcile", jobId, "--confirm-provider-payment-refused"], io, deps)).toBe(0);
+  expect(requests).toHaveLength(1);
+  expect(new URL(requests[0]!.url).pathname).toBe("/api/v1/golden/build/reconcile");
+  expect(await requests[0]!.json()).toEqual({ jobId, confirmation: "provider_payment_required" });
+  expect(JSON.parse(output).failureReason).toBe("provider_payment_required");
+});

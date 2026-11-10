@@ -424,3 +424,82 @@ test("billing refusal fails without recovery, exposes a closed reason and frees 
     await s.close();
   }
 });
+
+test("owner-confirmed legacy payment refusal frees the stranded slot and permits a new build", async () => {
+  const s = await fixture();
+  try {
+    const token = await s.token(s.people.admin);
+    const body = {
+      name: "legacy-billing",
+      org: s.people.org,
+      repos: ["acme/web"],
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const job = (await (await s.http(token, "golden/create", body)).json()) as GoldenBuildStatus;
+    // Historical worker lost the closed refusal reason, but the operator has its original log.
+    await s.db.query(
+      "update golden_build_jobs set state='recovery_required',phase='builder',fence=$2,error_code='build_failed' where id=$1",
+      [job.jobId, crypto.randomUUID()],
+    );
+    const blocked = await s.http(token, "golden/create", { ...body, idempotencyKey: crypto.randomUUID() });
+    expect(blocked.status).toBe(409);
+    const request = { jobId: job.jobId, confirmation: "provider_payment_required" };
+    const response = await s.http(token, "golden/build/reconcile", request);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      state: "failed",
+      failureReason: "provider_payment_required",
+      result: null,
+    });
+    expect((await s.db.query("select 1 from golden_backend_slots")).rows).toEqual([]);
+    expect(s.allocations()).toBe(0);
+    const replay = await s.http(token, "golden/build/reconcile", request);
+    expect(replay.status).toBe(200);
+    expect((await s.http(token, "golden/create", { ...body, idempotencyKey: crypto.randomUUID() })).status).toBe(202);
+  } finally {
+    await s.close();
+  }
+});
+
+test("legacy refusal reconciliation requires confirmation, mutation authority and an unallocated Boat create", async () => {
+  const s = await fixture();
+  try {
+    const token = await s.token(s.people.admin);
+    const job = (await (
+      await s.http(token, "golden/create", {
+        name: "guarded-legacy",
+        org: s.people.org,
+        repos: ["acme/web"],
+        idempotencyKey: crypto.randomUUID(),
+      })
+    ).json()) as GoldenBuildStatus;
+    await s.db.query(
+      "update golden_build_jobs set state='recovery_required',phase='builder',fence=$2,error_code='build_failed' where id=$1",
+      [job.jobId, crypto.randomUUID()],
+    );
+    const request = { jobId: job.jobId, confirmation: "provider_payment_required" };
+    expect((await s.http(token, "golden/build/reconcile", { jobId: job.jobId })).status).toBe(400);
+    expect((await s.http(await s.token(s.people.member), "golden/build/reconcile", request)).status).toBe(403);
+    expect(
+      (await s.http(await s.token(s.people.admin, s.people.otherOrg), "golden/build/reconcile", request)).status,
+    ).toBe(404);
+    for (const patch of [
+      "state='queued'",
+      "builder_id='known-builder'",
+      "phase='snapshot'",
+      "snapshot='known-snapshot'",
+      "failure_reason='skillpack_integrity_failed'",
+    ]) {
+      await s.db.query("update golden_build_jobs set " + patch + " where id=$1", [job.jobId]);
+      expect((await s.http(token, "golden/build/reconcile", request)).status).toBe(409);
+      await s.db.query(
+        "update golden_build_jobs set state='recovery_required',builder_id=null,phase='builder',snapshot=null,failure_reason=null where id=$1",
+        [job.jobId],
+      );
+    }
+    expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(1);
+    expect((await s.builds.status(s.people.admin, job.jobId)).state).toBe("recovery_required");
+  } finally {
+    await s.close();
+  }
+});
