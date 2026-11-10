@@ -177,7 +177,7 @@ export interface Provider {
 
   /** Queues work for a harness. Without `conversationId` it opens a new conversation. */
   prompt(request: PromptRequest): Promise<PromptReceipt>;
-  getPrompt(request: { sandboxId: string; promptId: string }): Promise<PromptState>;
+  getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState>;
   /** Gives a running turn a new message without stopping it. Refused with `no_running_turn` when nothing runs. */
   steer(request: SteerRequest): Promise<SteerReceipt>;
   /** Stops the running turn of one conversation, or of every conversation when none is named. */

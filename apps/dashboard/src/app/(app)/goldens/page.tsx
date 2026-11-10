@@ -15,6 +15,7 @@ import { redirect } from "next/navigation";
 import { Fragment } from "react";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
 import { GoldenForm } from "@/components/golden-form";
 import { type LaunchConnections, LaunchDialog } from "@/components/launch-dialog";
@@ -482,7 +483,7 @@ function Section({
     <section className="space-y-3" aria-labelledby={`${id}-title`}>
       <SectionHeader id={`${id}-title`} title={title} description={description} />
       {goldens.length === 0 ? (
-        <p className="rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">{empty}</p>
+        <p className="rounded-xl border border-dashed bg-card/50 px-4 py-4 text-sm text-muted-foreground">{empty}</p>
       ) : (
         // One group per provider: a golden lives on one provider for good, and a name may exist on each.
         GOLDEN_PROVIDERS.map((provider) => {
@@ -525,12 +526,12 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
       data-golden={golden.name}
       data-golden-provider={golden.provider}
       aria-labelledby={titleId}
-      className="rounded-lg border bg-card shadow-xs"
+      className="overflow-hidden rounded-xl border bg-card shadow-xs"
     >
       <div className="flex flex-col gap-3 p-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <h4 id={titleId} className="font-semibold">
+            <h4 id={titleId} className="font-semibold tracking-tight">
               {golden.name}
             </h4>
             <Badge variant={golden.visibility === "private" ? "secondary" : "outline"} className="gap-1">
@@ -546,11 +547,14 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
           </div>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
             <dt className="text-muted-foreground">Snapshot</dt>
-            <dd className="min-w-0 truncate">
+            <dd className="flex min-w-0 items-center gap-1">
               {golden.provider_snapshot_id ? (
-                <span className="font-mono text-xs" title={`${golden.provider} snapshot`}>
-                  {golden.provider}: {golden.provider_snapshot_id}
-                </span>
+                <>
+                  <span className="truncate font-mono text-xs" title={`${golden.provider} snapshot`}>
+                    {golden.provider}: {golden.provider_snapshot_id}
+                  </span>
+                  <CopyButton value={golden.provider_snapshot_id} label={`Copy the snapshot of ${golden.name}`} />
+                </>
               ) : (
                 <span className="text-muted-foreground">Not snapshotted</span>
               )}
@@ -604,7 +608,7 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
         </div>
       </div>
       <div className="space-y-2 border-t px-4 py-3">
-        <h5 className="text-sm font-medium">Repositories</h5>
+        <h5 className="text-xs font-medium text-muted-foreground">Repositories</h5>
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repository recorded in this golden.</p>
         ) : (

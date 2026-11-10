@@ -1,7 +1,7 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { SquareIcon } from "lucide-react";
+import { Loader2Icon, SquareIcon } from "lucide-react";
 import { useActionState } from "react";
 import { stopSandbox } from "@/app/actions/sandboxes";
 import {
@@ -21,16 +21,35 @@ const CAN_STOP: readonly SandboxStatus[] = ["starting", "ready", "running"];
 
 /** Messages go through the conversation's composer; the header keeps the machine's own action. */
 export function SandboxActions({ sandboxId, status }: { sandboxId: string; status: SandboxStatus }) {
-  return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} /> : null;
+  return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} compact /> : null;
 }
 
-export function StopButton({ sandboxId, size }: { sandboxId: string; size?: "sm" }) {
+/**
+ * Stops a sandbox after asking. `compact` is the sandbox header's: the quieter outline, and on a phone the icon alone
+ * (the word stays its name) so the header keeps to one row. Elsewhere (the fleet board, the account choice) it is the
+ * solid, labelled button.
+ */
+export function StopButton({
+  sandboxId,
+  size,
+  compact = false,
+}: {
+  sandboxId: string;
+  size?: "sm";
+  compact?: boolean;
+}) {
   const [state, action, pending] = useActionState(stopSandbox, null);
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="destructive" size={size} disabled={pending}>
-          <SquareIcon /> Stop
+        <Button
+          variant={compact ? "destructive-outline" : "destructive"}
+          size={size}
+          disabled={pending}
+          className={compact ? "max-sm:px-2.5" : undefined}
+        >
+          {pending ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+          <span className={compact ? "max-sm:sr-only" : undefined}>Stop</span>
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -45,7 +64,9 @@ export function StopButton({ sandboxId, size }: { sandboxId: string; size?: "sm"
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <form action={action}>
             <input type="hidden" name="sandbox" value={sandboxId} />
-            <AlertDialogAction type="submit">Stop sandbox</AlertDialogAction>
+            <AlertDialogAction type="submit" variant="destructive">
+              Stop sandbox
+            </AlertDialogAction>
           </form>
         </AlertDialogFooter>
       </AlertDialogContent>

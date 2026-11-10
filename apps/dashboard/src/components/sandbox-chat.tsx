@@ -9,7 +9,6 @@ import {
   CircleSlashIcon,
   CircleStopIcon,
   Loader2Icon,
-  RadioIcon,
   SlidersHorizontalIcon,
   XIcon,
 } from "lucide-react";
@@ -29,12 +28,15 @@ import {
 } from "react";
 import { interruptSandbox, sendToSandbox, steerSandbox } from "@/app/actions/sandboxes";
 import { Markdown } from "@/components/markdown";
+import { ModKey } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
-import { StatusBadge } from "@/components/status-badge";
+import { StatusBadge, StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Kbd } from "@/components/ui/kbd";
 import { NativeSelect } from "@/components/ui/native-select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
 import {
@@ -170,15 +172,19 @@ export function SandboxChat(props: Props) {
       <Card data-fit="card" className="gap-0 overflow-hidden py-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
-            <h2 className="text-base leading-none font-semibold">Conversation</h2>
+            <h2 className="text-sm leading-none font-semibold">Conversation</h2>
             {conversations.length > 1 && (
               <ConversationPicker conversations={conversations} selected={selected} onChange={(id) => setChosen(id)} />
             )}
           </div>
           <div className="flex items-center gap-3 text-sm">
             {live && isActiveStatus(status) && (
-              <span className="flex items-center gap-1 text-success" data-testid="live-indicator">
-                <RadioIcon className="size-4 motion-safe:animate-pulse" /> Live
+              <span
+                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
+                data-testid="live-indicator"
+                title="New messages appear as they arrive"
+              >
+                <StatusDot tone="success" pulse /> Live
               </span>
             )}
             <StatusBadge status={status} />
@@ -374,9 +380,23 @@ export function Transcript({
         className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
       >
         {items.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            {loaded && poll.configured && !poll.error ? "No messages yet." : poll.configured ? "Loading…" : ""}
-          </p>
+          loaded || !poll.configured || poll.error ? (
+            <p className="text-sm text-muted-foreground">
+              {loaded && poll.configured && !poll.error ? "No messages yet." : ""}
+            </p>
+          ) : (
+            // The shape of a conversation while it loads: nothing jumps when the messages arrive.
+            <div className="mx-auto flex max-w-3xl flex-col gap-5" data-testid="history-loading">
+              <span className="sr-only">Loading…</span>
+              <Skeleton className="h-10 w-2/5 self-end rounded-2xl" />
+              <div className="space-y-2">
+                <Skeleton className="h-3.5 w-11/12" />
+                <Skeleton className="h-3.5 w-4/5" />
+                <Skeleton className="h-3.5 w-3/5" />
+              </div>
+              <Skeleton className="h-9 w-full rounded-lg" />
+            </div>
+          )
         ) : (
           <ol className="mx-auto flex max-w-3xl flex-col gap-5">
             {groups.map((group) =>
@@ -391,8 +411,8 @@ export function Transcript({
               ),
             )}
             {running && !streaming && (
-              <li className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="agent-working">
-                <Loader2Icon className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+              <li className="flex items-center gap-2.5 text-sm text-muted-foreground" data-testid="agent-working">
+                <StatusDot tone="info" pulse className="mx-1" />
                 Working
               </li>
             )}
@@ -411,7 +431,7 @@ export function Transcript({
           size="sm"
           variant="secondary"
           onClick={jump}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border shadow-sm"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border shadow-lg animate-in fade-in-0 slide-in-from-bottom-1"
         >
           <ArrowDownIcon />
           {unseen ? "New messages" : "Jump to latest"}
@@ -448,10 +468,10 @@ function ChatEntry({ item }: { item: ChatItem }) {
       return (
         <div className="flex flex-col items-end gap-1">
           <div
-            className="max-w-[min(85%,36rem)] rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap text-secondary-foreground"
+            className="max-w-[min(85%,36rem)] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap text-primary-foreground shadow-xs"
             title={title}
           >
-            {item.text || <span className="text-muted-foreground">(empty prompt)</span>}
+            {item.text || <span className="opacity-75">(empty prompt)</span>}
           </div>
           {item.status === "queued" && <span className="text-xs text-muted-foreground">Queued</span>}
         </div>
@@ -460,7 +480,7 @@ function ChatEntry({ item }: { item: ChatItem }) {
       return (
         <div className="flex flex-col items-end gap-1">
           <div
-            className="max-w-[min(85%,36rem)] rounded-2xl rounded-br-sm border border-dashed px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            className="max-w-[min(85%,36rem)] rounded-2xl rounded-br-md border border-dashed border-foreground/25 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
             title={title}
           >
             {item.text}
@@ -724,7 +744,7 @@ function Composer({
       noValidate
       onSubmit={onSubmit}
       onChange={readOverride}
-      className="space-y-3 border-t bg-muted/30 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6"
+      className="space-y-3 border-t bg-muted/40 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6"
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
@@ -746,7 +766,7 @@ function Composer({
               ? "Send a message to resume the sandbox"
               : "What should the agent do next?"
         }
-        className="max-h-60 min-h-14 resize-y bg-background sm:min-h-20"
+        className="max-h-60 min-h-14 resize-y bg-card shadow-xs sm:min-h-20 dark:bg-card"
       />
       <div id={`${fieldId}-model`} hidden={!showModel}>
         <ModelFields
@@ -836,6 +856,7 @@ function Composer({
               ) : (
                 "Steer"
               )}
+              {primary === "steer" && <SendShortcut />}
             </Button>
           )}
           <Button
@@ -856,10 +877,26 @@ function Composer({
             ) : (
               "Send"
             )}
+            {primary === "send" && <SendShortcut />}
           </Button>
         </div>
       </div>
     </form>
+  );
+}
+
+/** The shortcut the highlighted button answers to, on the button itself; hidden from its accessible name. */
+function SendShortcut() {
+  return (
+    <Kbd
+      aria-hidden="true"
+      className="-mr-1 ml-0.5 border-transparent bg-primary-foreground/15 text-primary-foreground/80 shadow-none max-sm:hidden"
+    >
+      <span>
+        <ModKey />
+      </span>
+      <span>↵</span>
+    </Kbd>
   );
 }
 

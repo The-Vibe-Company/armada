@@ -742,7 +742,7 @@ test.each(["completed", "superseded", "wrong-operation"])(
   async (outcome) => {
     const stop = { id: "stop-owned", status: "pending" };
     const boat = fakeBoat(
-      { status: 202, body: { ok: true, sandbox: sandbox({ state: "archiving", stop }) } },
+      { status: 202, body: { ok: true, id: ID, stop } },
       { body: { ok: true, id: ID, stop } },
       {
         body: {
@@ -766,3 +766,50 @@ test.each(["completed", "superseded", "wrong-operation"])(
     ]);
   },
 );
+
+// Terminal retirement must remain cloud-only when native-auth preservation is
+// unavailable; the managed owner must persist its activation/output fences first.
+test("terminal Boat archival does not require the failing guest preservation hook", async () => {
+  let captures = 0;
+  const requests: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    beforeStop: async () => {
+      captures++;
+      throw Error("native SSH unavailable");
+    },
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
+      return Response.json(
+        { ok: true, id: ID, stop: { id: "retirement-stop", status: "completed" } },
+        { status: init?.method === "POST" ? 202 : 200 },
+      );
+    }) as typeof fetch,
+  });
+  await expect(provider.stopBestEffort(ID)).rejects.toThrow("native SSH unavailable");
+  expect(requests).toEqual([]);
+  await provider.retireBestEffort?.(ID);
+  expect(captures).toBe(1);
+  expect(requests).toEqual([`POST /api/v1/sandboxes/${ID}/stop`, `GET /api/v1/sandboxes/${ID}/stops/retirement-stop`]);
+});
+
+test("prompt status cancellation reaches HTTP and suppresses late native capture", async () => {
+  const controller = new AbortController();
+  let propagated = false,
+    captures = 0;
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    afterPrompt: async () => {
+      captures++;
+    },
+    fetch: (async (_input: unknown, init?: RequestInit) => {
+      controller.abort();
+      propagated = init?.signal?.aborted === true;
+      return Response.json({ ok: true, promptRun: { promptId: "p", status: "finished", done: true } });
+    }) as typeof fetch,
+  });
+  await expect(provider.getPrompt({ sandboxId: ID, promptId: "p", signal: controller.signal })).rejects.toThrow();
+  expect(propagated).toBe(true);
+  expect(captures).toBe(0);
+});

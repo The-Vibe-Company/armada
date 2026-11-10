@@ -1,3 +1,4 @@
+import { API_FAILURE_STATUS, type ApiFailureCode } from "@armada/core";
 export class ToolApiError extends Error {
   constructor(
     readonly code: string,
@@ -6,6 +7,7 @@ export class ToolApiError extends Error {
     super(message);
   }
   get status(): number {
+    if (Object.hasOwn(API_FAILURE_STATUS, this.code)) return API_FAILURE_STATUS[this.code as ApiFailureCode];
     if (this.code === "unknown") return 502;
     if (this.code === "not_found") return 404;
     if (this.code === "forbidden") return 403;

@@ -369,7 +369,7 @@ export async function resolveCredentials(
       (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
     ) {
       throw new VaultError(
-        "unavailable",
+        "credential_refused",
         "The selected credential is incompatible, expired, revoked or changed. No fallback was used.",
       );
     }

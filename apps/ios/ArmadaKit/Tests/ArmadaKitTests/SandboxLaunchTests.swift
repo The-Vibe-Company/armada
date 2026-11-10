@@ -273,7 +273,16 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
         Issue.record("Expected a refusal"); return
     }
     #expect(notConnected.title == "Provider not connected")
-    // `unavailable` is shared by a refused account and a provider outage during the fork: unproven.
+    guard case .refused(let refused) = classify(422, #"{"error":{"code":"credential_refused"}}"#) else {
+        Issue.record("Credential refusal must be actionable"); return
+    }
+    #expect(refused.title == "Account credential refused")
+    #expect(refused.hint.contains("owner"))
+    #expect(refused.hint.contains("reconnect"))
+    for code in ["provider_unavailable", "dependency_unavailable", "outcome_unknown"] {
+        #expect(classify(503, "{\"error\":{\"code\":\"\(code)\"}}") == .unconfirmed)
+    }
+    // Legacy unknown failures remain unproven.
     #expect(classify(503, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmed)
     // After the fork: a sandbox may exist, and its raw output is never shown.
     guard case .failedAfterStart(let setup) = classify(400, #"{"error":{"code":"init_failed","message":"npm ci exited 1: secret-looking output"}}"#) else {
