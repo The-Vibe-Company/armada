@@ -1,5 +1,5 @@
 import { HARNESSES, type SandboxListMetadata } from "@armada/core";
-import { LockIcon, RocketIcon } from "lucide-react";
+import { BoxesIcon, ListFilterIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -68,12 +68,14 @@ export default async function SandboxesPage({ searchParams }: Props) {
 
   return (
     <>
-      <PageHeader title="Sandboxes">{launchAction}</PageHeader>
+      <PageHeader title="Sandboxes" meta={total > 0 ? countLabel(total, filtered) : undefined}>
+        {launchAction}
+      </PageHeader>
 
       <form
         key={filtersToSearch(filters)}
         method="get"
-        className="grid grid-cols-2 gap-2 lg:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
+        className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:[&_[data-slot=native-select-wrapper]]:w-44"
         aria-label="Filters"
       >
         <NativeSelect name="status" defaultValue={filters.status ?? ""} aria-label="Status">
@@ -103,8 +105,9 @@ export default async function SandboxesPage({ searchParams }: Props) {
               </option>
             ))}
         </NativeSelect>
-        <div className="col-span-2 flex gap-2 lg:col-span-1">
-          <Button type="submit" variant="secondary">
+        <div className="col-span-2 flex gap-2">
+          <Button type="submit" variant="outline">
+            <ListFilterIcon />
             Filter
           </Button>
           {filtered && (
@@ -117,25 +120,35 @@ export default async function SandboxesPage({ searchParams }: Props) {
 
       {rows.length === 0 ? (
         total > 0 ? (
-          <Empty title="This page is past the last one">
+          <Empty title="This page is past the last one" icon={<SearchXIcon />}>
             <Link href={`/sandboxes${filtersToSearch({ ...filters, page: 1 })}`} className="underline">
               Go to the first page
             </Link>
           </Empty>
         ) : filtered ? (
-          <Empty title="No sandbox matches these filters">Try clearing a filter.</Empty>
+          <Empty
+            title="No sandbox matches these filters"
+            icon={<SearchXIcon />}
+            action={
+              <Button variant="outline" asChild>
+                <Link href="/sandboxes">Clear filters</Link>
+              </Button>
+            }
+          >
+            Nothing in this organization has that combination of status, harness and owner.
+          </Empty>
         ) : (
-          <Empty title="No sandboxes yet" action={launchAction}>
+          <Empty title="No sandboxes yet" action={launchAction} icon={<BoxesIcon />}>
             A sandbox starts from a golden. Pick one on the Goldens page, or run{" "}
             <code className="font-mono text-xs">armada launch &lt;golden&gt;</code> or launch from an orchestrator over
             MCP.
           </Empty>
         )
       ) : (
-        <div className="overflow-hidden rounded-lg border">
+        <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
           <Table>
             <TableHeader>
-              <TableRow className="bg-muted/40 hover:bg-muted/40">
+              <TableRow className="bg-muted/50 hover:bg-muted/50">
                 <TableHead>Sandbox</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="hidden sm:table-cell">Provider</TableHead>
@@ -147,7 +160,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
             </TableHeader>
             <TableBody>
               {rows.map((sandbox) => (
-                <TableRow key={sandbox.id}>
+                <TableRow key={sandbox.id} className="relative">
                   <TableCell className="w-full max-w-0 min-w-40">
                     <SandboxName sandbox={sandbox} />
                     <p className="flex items-center gap-1 text-xs text-muted-foreground sm:hidden">
@@ -176,7 +189,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
                   <TableCell className="hidden md:table-cell">
                     {displayUser(directory, sandbox.ownerId, viewer.id)}
                   </TableCell>
-                  <TableCell className="hidden text-muted-foreground lg:table-cell">
+                  {/* Above the row's link, so the exact time stays reachable by pointer and keyboard. */}
+                  <TableCell className="relative z-10 hidden text-muted-foreground lg:table-cell">
                     <CreatedAt iso={sandbox.createdAt} now={now.getTime()} />
                   </TableCell>
                 </TableRow>
@@ -219,7 +233,8 @@ function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
     return (
       <Link
         href={`/sandboxes/${sandbox.id}`}
-        className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm font-medium underline-offset-4 hover:underline"
+        // The link covers its whole row (the row is the target), and its focus ring is drawn around the row.
+        className="inline-flex max-w-full items-center gap-1.5 font-mono text-[13px] font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
       >
         <span className="truncate" title={sandboxName(sandbox)}>
           {sandboxName(sandbox)}
@@ -256,6 +271,12 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
       </p>
     );
   return null;
+}
+
+/** "3 sandboxes", or with filters "1 sandbox matches" / "3 sandboxes match". */
+function countLabel(total: number, filtered: boolean): string {
+  const noun = total === 1 ? "sandbox" : "sandboxes";
+  return filtered ? `${total} ${noun} ${total === 1 ? "matches" : "match"}` : `${total} ${noun}`;
 }
 
 function capitalize(value: string): string {
