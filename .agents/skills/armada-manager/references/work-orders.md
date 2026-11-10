@@ -16,13 +16,13 @@ Own issue <id> in <repo>, branch <branch>, isolated worktree <path>.
 Implement <observable result>; preserve <specific existing behavior>.
 Your scope is <files/module>; <owner> owns <shared contract/files>.
 Consume <producer revision>; independent work can proceed before it merges.
-Complete ship-pr-dev here, fix findings and latest-head CI, then hand READY
-with exact head, review/evidence paths and deployment prerequisites to <integrator>.
+Complete ship-pr-dev here, fix findings and latest-head CI, then hand READY FOR REVIEW
+with exact head, self-check/evidence paths and deployment prerequisites to <integrator>.
 Keep compute warm through review, CI and integration. Report completion so the
 coordinator can verify the role is terminal before stopping it.
 ```
 
-For a resume, read the ledger and actual branch/PR/runtime state before sending instructions. Preserve uncommitted work and the original reviewer identity. An apparent missing result may be an in-flight command, stale ledger entry, queued continuation or transport failure; inspect that boundary before replacing the worker.
+For a resume, read the ledger and actual branch/PR/runtime state before sending instructions. Preserve uncommitted work and coordinator reviewer receipts; the coordinator launches any new round on changed source. An apparent missing result may be an in-flight command, stale ledger entry, queued continuation or transport failure; inspect that boundary before replacing the worker.
 
 The ledger need not be a new system. A small local file containing current facts and artifact pointers is enough. Update on phase, source, ownership, deadline or outcome changes. Separate candidate evidence from final shipping evidence. Never infer ownership from a familiar resource name.
 
