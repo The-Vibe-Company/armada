@@ -28,7 +28,8 @@ export async function mirrorStoppedHistory(
     const page = await provider.events({
       sandboxId: machine.providerSandboxId,
       conversationId,
-      limit: 500,
+      // Match the ordinary Boat poll page size; larger requests can be refused.
+      limit: 200,
       ...(cursor ? { cursor } : {}),
     });
     for (const event of page.events) {
