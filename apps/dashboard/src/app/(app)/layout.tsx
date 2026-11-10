@@ -6,13 +6,14 @@ import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { Toaster } from "@/components/ui/toast";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
 /**
  * The signed-in shell: the organization in scope and the navigation on the left (on top on a phone), the page on
- * the right. The public pages do not use this layout, and it adds no global styles.
+ * the right, toasts over both. The public pages do not use this layout, and it adds no global styles.
  */
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const viewer = await requireViewer();
@@ -56,6 +57,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </aside>
       <CommandMenu />
+      <Toaster />
       <main className="mx-auto w-full max-w-6xl min-w-0 flex-1 space-y-6 px-4 py-6 md:px-10 md:py-10">{children}</main>
     </div>
   );
