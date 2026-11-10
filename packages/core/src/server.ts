@@ -43,6 +43,7 @@ export {
   type OrchestratorAuthorityTransport,
 } from "./orchestrator-authority.ts";
 export { reserveOrchestratorOperation } from "./orchestrator-operations.ts";
+export { installPrivateSkill, PRIVATE_SKILL_PATTERN, PrivateSkillError } from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export * from "./skillpack.ts";

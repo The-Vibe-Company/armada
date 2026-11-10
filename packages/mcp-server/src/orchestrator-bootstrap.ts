@@ -1,5 +1,5 @@
 import { ORCHESTRATOR_SKILL_PATTERN, type OrchestratorSkillReceipt, type Provider } from "@armada/core";
-import { parseSkillReceipt, skillInstallCommand } from "@armada/core/server";
+import { installPrivateSkill, PrivateSkillError, parseSkillReceipt, skillInstallCommand } from "@armada/core/server";
 import type { OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 
 const toolReference = `---
@@ -30,6 +30,7 @@ export async function bootstrapOrchestrator(
     skillRevision: string;
     skill?: string | undefined;
     harness?: "claude" | "codex";
+    skillpackKey?: () => Promise<string | null>;
     recordReceipt?: (receipt: OrchestratorSkillReceipt | null) => Promise<void>;
     configureAuthority: () => Promise<void>;
     diagnostics?: OrchestratorDiagnostics;
@@ -42,7 +43,7 @@ export async function bootstrapOrchestrator(
     (skill !== undefined &&
       (skill.length > 256 ||
         !ORCHESTRATOR_SKILL_PATTERN.test(skill) ||
-        skill.split("/")[1]?.startsWith("armada-tools@")))
+        skill.split("/").at(-1)?.startsWith("armada-tools@")))
   ) {
     request.diagnostics?.captureReason("skill_configuration_invalid");
     throw new Error("orchestrator_invalid_bootstrap");
@@ -54,11 +55,21 @@ export async function bootstrapOrchestrator(
   let receipt: OrchestratorSkillReceipt | null = null;
   let validatingReceipt = false;
   try {
+    const privateSkill = skill !== undefined && !skill.includes("/");
+    if (privateSkill)
+      receipt = await installPrivateSkill(provider, {
+        sandboxId,
+        projectDir,
+        reference: skill,
+        harness: request.harness ?? "codex",
+        key: (await request.skillpackKey?.()) ?? null,
+      });
+    const publicSkill = skill && !privateSkill;
     const result = await provider.exec({
       sandboxId,
       cwd: projectDir,
       timeoutSeconds: 300,
-      command: skill
+      command: publicSkill
         ? `${skillInstallCommand(skill, projectDir, request.harness ?? "codex")} >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
         : referenceCommand,
     });
@@ -76,13 +87,15 @@ export async function bootstrapOrchestrator(
       );
       throw new Error("install_failed");
     }
-    if (skill) {
+    if (publicSkill) {
       validatingReceipt = true;
       receipt = parseSkillReceipt(result.stdout, skill, request.harness ?? "codex");
     }
   } catch (error) {
-    if (validatingReceipt) request.diagnostics?.captureReason("skill_provenance_missing");
+    if (error instanceof PrivateSkillError) request.diagnostics?.captureReason(error.reason);
+    else if (validatingReceipt) request.diagnostics?.captureReason("skill_provenance_missing");
     else request.diagnostics?.capture(error);
+    if (error instanceof PrivateSkillError) throw error;
     throw new Error("orchestrator_skill_bootstrap_failed");
   }
   await request.recordReceipt?.(receipt);

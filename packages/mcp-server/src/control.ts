@@ -663,6 +663,12 @@ async function dispatch(
   if (toolName) {
     if (
       route === "sandbox/extend" &&
+      Number.isSafeInteger(body.ttl_seconds) &&
+      Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS
+    )
+      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
+    if (
+      route === "sandbox/extend" &&
       (!Number.isSafeInteger(body.ttl_seconds) ||
         Number(body.ttl_seconds) < 1 ||
         Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)

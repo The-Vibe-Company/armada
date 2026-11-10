@@ -4,6 +4,13 @@ import assert from "node:assert/strict";
 import { createServiceToken, createSqlAuthStore } from "@armada/auth";
 import * as core from "@armada/core/server";
 import { createSqlModalStore, type Machine, type Scope } from "@armada/provider-modal";
+
+// Load the Next.js boundary only in this isolated runtime. Statically importing it
+// into the server TS project also loads browser ambient types into native harnesses.
+const proxyPath = new URL("../../../../apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts", import.meta.url)
+  .pathname;
+const { forwardControl } = await import(proxyPath);
+
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 
@@ -178,6 +185,10 @@ const nativeFetch = globalThis.fetch;
 const realFetch = nativeFetch.bind(globalThis);
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.origin === "https://supabase.invalid") {
+    const token = new Headers(init?.headers).get("authorization")?.slice(7);
+    return Response.json({ id: token === "fixture.personal.owner" ? ownerId : adminId });
+  }
   if (url.hostname === "127.0.0.1") return realFetch(input, init);
   if (url.origin === modal.tunnelOrigin) {
     const physicalId = url.pathname.slice(1);
@@ -315,11 +326,16 @@ let server = await start();
 async function request<T = unknown>(action: string, body: object, expected = 200, userId = ownerId): Promise<T> {
   // The real background observer can briefly own a row. Retry only the closed admission conflict.
   for (let attempt = 0; attempt < 20; attempt++) {
-    const response = await fakeFetch(`http://127.0.0.1:${server.port}/api/v1/sandbox/${action}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${tokens.get(userId)}`, "content-type": "application/json" },
-      body: JSON.stringify({ ...body, org: orgId }),
-    });
+    process.env.ARMADA_MCP_URL = `http://127.0.0.1:${server.port}/mcp`;
+    const response = await forwardControl(
+      new Request(`https://dashboard.test/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.get(userId)}`, "content-type": "application/json" },
+        body: JSON.stringify({ ...body, org: orgId }),
+      }),
+      ["sandbox", action],
+      fakeFetch,
+    );
     const result = (await response.json()) as T & { error?: { code?: string } };
     if (expected !== 409 && response.status === 409 && result.error?.code === "sandbox_not_ready") continue;
     assert.equal(
@@ -384,6 +400,12 @@ const scenarios: {
   conversation: string | null;
 }[] = [];
 try {
+  const missing = await request<{ error: { code: string } }>(
+    "extend",
+    { id: crypto.randomUUID(), ttl_seconds: 600 },
+    404,
+  );
+  assert.equal(missing.error.code, "extension_not_found");
   for (const provider of ["boat", "modal"] as const) {
     for (const active of [false, true]) {
       const launch = await request<{ sandbox: { id: string } }>("launch", {
@@ -391,6 +413,7 @@ try {
         provider,
         harness: "codex",
         credentialId: modelId,
+        repo: "fixture",
         connections: [],
         ttlSeconds: 120,
       });
@@ -409,14 +432,23 @@ try {
         );
       const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
       const deniedBefore = effects.length;
-      await request("extend", { id, ttl_seconds: 600 }, 404, memberId);
+      const denied = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 600 }, 403, memberId);
+      assert.equal(denied.error.code, "extension_not_allowed");
       assert.equal(effects.length, deniedBefore, "Denied member must not mutate provider state");
+      let conversation: string | null = null;
+      if (active)
+        conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
+          .conversationId;
+      await request("extend", { id, ttl_seconds: 500 }, 200, active ? adminId : ownerId);
+      const serviceToken = tokens.get(active ? adminId : ownerId)!;
+      tokens.set(active ? adminId : ownerId, active ? "fixture.personal.admin" : "fixture.personal.owner");
       const extended = await request<{ id: string; ttlSeconds: number; expiresAt: string }>(
         "extend",
         { id, ttl_seconds: 600 },
         200,
         active ? adminId : ownerId,
       );
+      tokens.set(active ? adminId : ownerId, serviceToken);
       if (unusedLease) {
         const renewed = (
           await sql.query<{ expires_at: Date }>("select expires_at from mcp_leases where id=$1", [unusedLease])
@@ -444,20 +476,23 @@ try {
           900,
         );
       const acceptedDeadline = new Date((await row(id)).expires_at).toISOString();
-      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101])
-        await request("extend", { id, ttl_seconds }, 400);
+      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101]) {
+        const refusal = await request<{ error: { code: string } }>(
+          "extend",
+          { id, ttl_seconds },
+          ttl_seconds === 1 ? 409 : 400,
+        );
+        if (ttl_seconds > 0)
+          assert.equal(refusal.error.code, ttl_seconds === 1 ? "extension_state" : "extension_maximum");
+      }
       assert.equal(
         new Date((await row(id)).expires_at).toISOString(),
         acceptedDeadline,
         "Invalid/non-extending TTL must not publish",
       );
-      let conversation: string | null = null;
-      if (active)
-        conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
-          .conversationId;
       if (provider === "boat") {
         shortBoatConfirmation = true;
-        await request("extend", { id, ttl_seconds: 900 }, 400);
+        await request("extend", { id, ttl_seconds: 900 }, 409);
         shortBoatConfirmation = false;
         const shortened = await row(id);
         assert(
@@ -481,7 +516,18 @@ try {
           native.grantExpiresAt = Date.now() + 900_000;
           await save(native);
         });
-        await request("extend", { id, ttl_seconds: 1200 }, 400);
+        const refusal = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 1200 }, 400);
+        assert.equal(refusal.error.code, "extension_maximum");
+        assert.equal(
+          (
+            await sql.query<{ activity_lease_id: string | null }>(
+              "select activity_lease_id from sandboxes where id=$1",
+              [id],
+            )
+          ).rows[0]?.activity_lease_id,
+          null,
+          "A definite refusal must release activity ownership for immediate retry/stop",
+        );
         assert.equal(new Date((await row(id)).expires_at).toISOString(), acceptedDeadline);
         await nativeStore.lease(before.provider_sandbox_id, async (native, save) => {
           native.grantExpiresAt = originalGrant;
@@ -527,7 +573,7 @@ try {
       assert.equal(native.phase, "stopped");
       assert(native.recoveryImageId, "Expiry must retain the verified disk checkpoint");
     } else assert.equal(boats.get(scenario.nativeId)?.state, "archived");
-    await request("extend", { id: scenario.id, ttl_seconds: 1200 }, 400);
+    await request("extend", { id: scenario.id, ttl_seconds: 1200 }, 409);
     // Model an expiry stop still being confirmed when its owner explicitly retries stop.
     await sql.query("update sandboxes set status='stopping',stopped_at=null where id=$1", [scenario.id]);
     await request("stop", { id: scenario.id });

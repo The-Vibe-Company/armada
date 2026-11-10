@@ -37,9 +37,11 @@ export async function checkSandboxSkillLaunch(input: {
   const stopped = await request("stop", { id });
   assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
   const allocations = input.allocations();
-  const invalid = await request("launch", { ...input.body, skills: ["example/notes"], prompt: "Must not run" });
-  assert(invalid.status >= 400, JSON.stringify(invalid.body));
-  assert.equal(input.allocations(), allocations, "Invalid pins must fail before allocation");
+  for (const invalidPin of ["example/notes", "notes@1.0.0"]) {
+    const invalid = await request("launch", { ...input.body, skills: [invalidPin], prompt: "Must not run" });
+    assert(invalid.status >= 400, JSON.stringify(invalid.body));
+    assert.equal(input.allocations(), allocations, "Invalid or private pins must fail before public launch allocation");
+  }
   const before = await sql.query<{ id: string }>("select id from sandboxes where org_id=$1", [orgId]);
   const prompts = input.prompts();
   const stops = input.stops();

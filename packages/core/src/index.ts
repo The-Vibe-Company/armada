@@ -26,6 +26,7 @@ export {
   resolveCredential,
   resolveCredentials,
   resolveModalTokens,
+  resolveSkillpackCredential,
   toHarnessCredentials,
 } from "./credentials.ts";
 export {

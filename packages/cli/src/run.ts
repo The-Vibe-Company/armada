@@ -192,7 +192,7 @@ Usage:
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]
   armada creds rm <kind> [--org <name>]
-                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal
+                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal, skillpack
 
 Every command after 'armada login' acts as the user who signed in. golden commands take --org <name>
 when you belong to more than one org.
