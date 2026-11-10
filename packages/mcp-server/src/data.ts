@@ -235,15 +235,15 @@ export function createSqlData(sql: Sql): DataSource {
       activityOwnership: true,
       async recordTurnModel(id, promptId, requestedModel) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        await createSqlSandboxStore(sql).recordTurnModel!(id, promptId, requestedModel);
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        return createSqlSandboxStore(sql).readTurnModel!(id, promptId);
+        return createSqlSandboxStore(sql, { turnModels: true }).readTurnModel!(id, promptId);
       },
       async recordTurnModelEvidence(id, promptId, evidence) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        await createSqlSandboxStore(sql).recordTurnModelEvidence!(id, promptId, evidence);
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
       },
       async insert(input) {
         if (!orgIds.includes(input.orgId) || input.ownerId !== caller.userId) {
