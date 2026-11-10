@@ -1,6 +1,6 @@
 /** Operator-only CLI smoke; never invoked by verify or CI. Allocates real compute.
  * ARMADA_TOKEN stays in the subprocess environment, never argv or the receipt.
- * Usage: bun scripts/orchestrator-smoke.ts https://origin org golden modal codex model account [repo]
+ * Usage: bun scripts/orchestrator-smoke.ts https://origin org golden boat|modal claude|codex model account [repo]
  */
 import type {
   OrchestratorDetail,
@@ -25,14 +25,14 @@ async function main() {
     !address ||
     !org ||
     !golden ||
-    provider !== "modal" ||
+    !["boat", "modal"].includes(provider) ||
     !harness ||
     !model ||
     !account ||
-    harness !== "codex" ||
+    !["claude", "codex"].includes(harness) ||
     extra.length
   )
-    fail("usage_origin_org_golden_modal_codex_model_account_optional_repo");
+    fail("usage_origin_org_golden_provider_harness_model_account_optional_repo");
   const origin = new URL(address);
   if (
     origin.protocol !== "https:" ||
@@ -181,9 +181,9 @@ async function main() {
     !before.conversationId ||
     resumed.conversationId !== before.conversationId ||
     resumed.sandboxId !== before.sandboxId ||
-    resumed.continuity !== "native"
+    resumed.continuity !== (provider === "boat" ? "unverified" : "native")
   )
-    fail("native_continuity_not_verified");
+    fail(provider === "boat" ? "unexpected_continuity_or_identity" : "native_continuity_not_verified");
   await settle(await mutate("stop"), "stopped");
   step = "complete";
 }

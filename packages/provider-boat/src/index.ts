@@ -8,6 +8,7 @@ export {
 } from "./native-cwd.ts";
 export {
   BOAT_CAPABILITIES,
+  type BoatProvider,
   type BoatProviderOptions,
   createBoatProvider,
   DEFAULT_BASE_URL,

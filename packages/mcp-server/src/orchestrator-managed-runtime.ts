@@ -34,6 +34,7 @@ export interface ManagedSelection {
   operationId?: string;
 }
 export interface ManagedNativeBackend {
+  readonly continuity?: "best_effort";
   provider: Provider;
   mcpUrl: string;
   observe(machine: ManagedMachine, signal?: AbortSignal): Promise<ManagedObservation>;
@@ -271,7 +272,10 @@ export function createManagedOrchestratorRuntime(options: {
         if (drained.acknowledged !== true) throw new OrchestratorRuntimeError("unavailable");
         diagnostics.stage("native_observation");
         const observed = observation(machine, await readNative(() => backend.observe(machine, signal)));
-        if (observed.state !== "quiescent") throw new OrchestratorRuntimeError("conflict");
+        if (backend.continuity === "best_effort" && backend.provider.id !== "boat")
+          throw new OrchestratorRuntimeError("conflict");
+        if (backend.continuity !== "best_effort" && observed.state !== "quiescent")
+          throw new OrchestratorRuntimeError("conflict");
         diagnostics.stage("stop_revalidation");
         const afterDrain = await bound(machine, operationId);
         if (afterDrain.revision !== claim.revision || !["stopping", "blocked"].includes(afterDrain.state))

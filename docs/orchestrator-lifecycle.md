@@ -1,11 +1,15 @@
 # Orchestrator lifecycle (#663)
 
-Status: production composition is opt-in for **Modal × Codex** under #717.
+Status: production composition is opt-in for **Modal × Codex** (native) and
+**Boat × Claude/Codex** (best-effort, #752).
 See [enable steps and approved operator postflight](orchestrator-runtime.md#enable-modal--codex-operator-only-default-off).
 `ARMADA_ORCHESTRATOR_PAIRS=modal:codex` selects the real authority/runtime/private
 transport and lifecycle/child workers. With it unset, ordinary workers and the
-legacy disabled response remain unchanged. Boat × Claude/Codex and Modal × Claude
-remain unavailable. Delegated waits remain denied, not a basic-flow prerequisite.
+legacy disabled response remain unchanged. Boat pairs may be selected as `boat:claude,boat:codex`; Modal × Claude
+remains unavailable. Boat capabilities report `best_effort` (“resume not guaranteed”)
+and stored continuity stays `unverified`. Ordinary provider stop/resume preserves
+disk/conversation where possible, without a native checkpoint claim; an unavailable
+conversation fails closed. Modal native guarantees are not weakened. Delegated waits remain denied, not a basic-flow prerequisite.
 No implementation-session production call or live-conformance success is claimed.
 
 ## Actual dependencies and ownership
