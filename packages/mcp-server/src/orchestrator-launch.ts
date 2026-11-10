@@ -95,7 +95,7 @@ export async function launchOrchestratorParent(input: {
           ],
         );
         if (live.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
-        await createSqlSandboxStore(tx).update(id, patch);
+        await createSqlSandboxStore(tx, { turnModels: true }).update(id, patch);
       });
     },
     insert: async (record: Parameters<LaunchStores["sandboxes"]["insert"]>[0]) =>
@@ -115,7 +115,7 @@ export async function launchOrchestratorParent(input: {
             credentialId: input.account.credentialId,
             credentialVersion: input.account.credentialVersion,
           };
-          const saved = await createSqlSandboxStore(tx).insert(selectedRecord);
+          const saved = await createSqlSandboxStore(tx, { turnModels: true }).insert(selectedRecord);
           if (
             Reflect.get(saved, "credentialId") !== input.account.credentialId ||
             Reflect.get(saved, "credentialVersion") !== input.account.credentialVersion

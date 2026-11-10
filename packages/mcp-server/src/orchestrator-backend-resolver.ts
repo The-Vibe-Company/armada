@@ -225,7 +225,7 @@ export function createOrchestratorBackendResolver(input: {
           },
           stores: {
             goldens: scopedGoldens,
-            sandboxes: createSqlSandboxStore(input.sql),
+            sandboxes: createSqlSandboxStore(input.sql, { turnModels: true }),
             credentials: input.credentials,
             ...(input.connections ? { connections: input.connections } : {}),
           },

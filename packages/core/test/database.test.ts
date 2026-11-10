@@ -105,6 +105,7 @@ describe("database", () => {
         "organization_invitations",
         "orgs",
         "resource_observations",
+        "sandbox_turn_models",
         "sandbox_work_recovery",
         "sandboxes",
         "service_tokens",

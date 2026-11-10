@@ -87,6 +87,7 @@ export async function startServer(
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
     githubRuntimeEnabled: config.githubRuntimeEnabled,
+    githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
     github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,

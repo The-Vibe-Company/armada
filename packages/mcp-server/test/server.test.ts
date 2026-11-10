@@ -4,6 +4,7 @@ import { createSqlVaultStore, mutateCredentialAccount } from "@armada/core/serve
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { readStatus } from "../src/turns.ts";
 import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
@@ -293,6 +294,7 @@ describe("tools", () => {
         "extend",
         "exec",
         "work_recovery",
+        "github_refresh",
         "golden_build_status",
         "golden_capabilities",
         "golden_create",
@@ -471,6 +473,7 @@ describe("tools", () => {
     expect(first.data.github).toEqual({
       status: "connected",
       login: "octocat",
+      tokenExpiresAt: expect.any(String),
       message: expect.stringContaining("gh"),
     });
     expect(boat.forks[0]?.env).toEqual({
@@ -648,7 +651,30 @@ describe("tools", () => {
       data: { message: "Claude usage limit reached" },
       promptId: "prompt_1",
     });
+    boat.sandbox("bx_1").events.push({
+      id: "matched-response",
+      at: 4,
+      kind: "message",
+      promptId: "prompt_1",
+      model: boat.prompts[0]!.model!,
+      text: "response",
+      partial: false,
+      tools: [],
+    });
     boat.finish("bx_1", "prompt_1", "finished");
+    const originalEvents = boat.provider.events;
+    let unavailable = true;
+    boat.provider.events = async (request) => {
+      if (unavailable) {
+        unavailable = false;
+        throw new Error("temporary evidence failure");
+      }
+      return originalEvents(request);
+    };
+    expect((await call(mcp, "status", { id: launched.data.id })).data.prompt).toMatchObject({
+      state: "finished",
+      modelSelectionReason: "model_selection_unverified",
+    });
     const status = await call(mcp, "status", { id: launched.data.id });
     expect(status.data).toMatchObject({
       status: "ready",
@@ -705,6 +731,248 @@ describe("tools", () => {
     expect(outsider.text).toContain("not a member");
   });
 
+  test("Codex without response models and legacy turns stay finished with neutral evidence", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "work" });
+    boat.finish("bx_1", "prompt_1", "finished");
+    const store = createSqlData(db)({
+      userId: people.member,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    const saved = await store.get(String(launched.data.id));
+    if (!saved) throw new Error("Missing launched sandbox");
+    for (const provider of ["boat", "modal"] as const) {
+      const read = await readStatus(
+        { ...boat.provider, id: provider },
+        store,
+        { ...saved, provider },
+        { now: new Date() },
+      );
+      expect(read.prompt).toMatchObject({
+        state: "finished",
+        reason: null,
+        observedModel: null,
+        modelSelectionReason: "model_selection_unverified",
+      });
+    }
+    // Modal appends terminal prompt transitions; they are not the start of a turn.
+    const modalEvents = boat.sandbox("bx_1").events;
+    modalEvents.push({
+      id: "early-root",
+      at: 2,
+      kind: "message",
+      promptId: "prompt_1",
+      model: saved.model!,
+      text: "root",
+      partial: false,
+      tools: [],
+    });
+    for (let i = 0; i < 201; i++)
+      modalEvents.push({
+        id: `tool_${i}`,
+        at: 3 + i,
+        kind: "message",
+        promptId: "prompt_1",
+        responseKind: "tool_result",
+        text: "",
+        partial: false,
+        tools: [],
+      });
+    modalEvents.push(
+      {
+        id: "late-root",
+        at: 205,
+        kind: "message",
+        promptId: "prompt_1",
+        model: "different-model",
+        text: "root",
+        partial: false,
+        tools: [],
+      },
+      { id: "terminal", at: 206, kind: "prompt", promptId: "prompt_1", status: "finished", text: "work" },
+    );
+    const mixed = await readStatus(
+      { ...boat.provider, id: "modal" },
+      store,
+      { ...saved, provider: "modal" },
+      { now: new Date() },
+    );
+    expect(mixed.prompt).toMatchObject({
+      state: "finished",
+      reason: null,
+      observedModel: null,
+      modelSelectionReason: "model_selection_unverified",
+    });
+    modalEvents.splice(1);
+    await db.query("delete from sandbox_turn_models where sandbox_id=$1", [launched.data.id]);
+    boat.sandbox("bx_1").events.push({
+      id: "legacy-response",
+      at: 2,
+      kind: "message",
+      promptId: "prompt_1",
+      model: "other-model",
+      text: "done",
+      partial: false,
+      tools: [],
+    });
+    const legacy = await call(mcp, "status", { id: launched.data.id });
+    expect(legacy.data.prompt).toMatchObject({
+      state: "finished",
+      reason: null,
+      requestedModel: null,
+      observedModel: "other-model",
+      modelSelectionReason: "model_selection_unverified",
+    });
+  });
+
+  test("running status reads no history; transient terminal gaps retry and long history does not hide the turn", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "claude",
+      model: "chosen",
+      prompt: "work",
+    });
+    const original = boat.provider.events;
+    let reads = 0;
+    boat.provider.events = async (request) => {
+      reads++;
+      return original(request);
+    };
+    await call(mcp, "status", { id: launched.data.id });
+    await call(mcp, "status", { id: launched.data.id });
+    expect(reads).toBe(0);
+    const state = boat.sandbox("bx_1");
+    state.events.unshift(
+      ...Array.from({ length: 10200 }, (_, i) => ({
+        id: `old_${i}`,
+        at: 0,
+        kind: "other" as const,
+        type: "old",
+        data: {},
+        promptId: "old",
+      })),
+    );
+    state.events.push({
+      id: "response",
+      at: 2,
+      kind: "message",
+      promptId: "prompt_1",
+      model: "chosen",
+      text: "done",
+      partial: false,
+      tools: [],
+    });
+    boat.finish("bx_1", "prompt_1", "finished");
+    let failures = 2;
+    boat.provider.events = async (request) => {
+      if (failures-- > 0) throw new Error("temporary");
+      return original(request);
+    };
+    const missing = await call(mcp, "status", { id: launched.data.id });
+    expect(missing.data.prompt).toMatchObject({
+      state: "finished",
+      reason: null,
+      modelSelectionReason: "model_selection_unverified",
+    });
+    const recovered = await call(mcp, "status", { id: launched.data.id });
+    expect(recovered.data.prompt).toMatchObject({
+      state: "finished",
+      observedModel: "chosen",
+      modelSelectionReason: null,
+    });
+  });
+
+  test("failed model record inserts do not fail an accepted launch or send", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    await db.exec(
+      `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
+    );
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    expect(launched.isError).toBe(false);
+    expect(boat.stops).toHaveLength(0);
+    const sent = await call(mcp, "send", { id: launched.data.id, prompt: "next" });
+    expect(sent.isError).toBe(false);
+    expect(boat.prompts).toHaveLength(2);
+    const status = await call(mcp, "status", { id: launched.data.id });
+    expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+  });
+
+  test("turn model provenance survives send overrides and provider history retention", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "claude",
+      model: "claude-fable-5-2",
+      prompt: "probe",
+    });
+    expect(launched.isError).toBe(false);
+    const id = launched.data.id;
+    // Coordinator's 12:35Z capture: first main response was Sonnet, no fallback notice.
+    boat.sandbox("bx_1").events.push({
+      id: "observed",
+      at: 2,
+      kind: "message",
+      promptId: "prompt_1",
+      model: "claude-sonnet-5",
+      text: "claude-sonnet-5",
+      partial: false,
+      tools: [],
+    });
+    boat.finish("bx_1", "prompt_1", "finished");
+    const status = await call(mcp, "status", { id });
+    expect(status.data.prompt).toMatchObject({
+      state: "failed",
+      requestedModel: "claude-fable-5-2",
+      observedModel: "claude-sonnet-5",
+      reason: "model_selection_mismatch",
+    });
+    expect(status.data.prompt).toMatchObject({
+      modelSelectionMessage: expect.stringContaining("Do not retry automatically"),
+    });
+    const sent = await call(mcp, "send", { id, prompt: "override", model: "claude-sonnet-5" });
+    expect(sent.isError).toBe(false);
+    boat.sandbox("bx_1").events.push({
+      id: "override",
+      at: 4,
+      kind: "message",
+      promptId: "prompt_2",
+      model: "claude-sonnet-5",
+      text: "ok",
+      partial: false,
+      tools: [],
+    });
+    boat.finish("bx_1", "prompt_2", "finished");
+    const waited = await call(mcp, "wait", { id, timeout_seconds: 1 });
+    expect(waited.data).toMatchObject({
+      model: "claude-fable-5-2",
+      prompt: {
+        state: "finished",
+        requestedModel: "claude-sonnet-5",
+        observedModel: "claude-sonnet-5",
+        modelSelectionReason: null,
+      },
+    });
+    boat.sandbox("bx_1").events.length = 0;
+    boat.sandbox("bx_1").prompts.delete("prompt_1");
+    const historical = await call(mcp, "status", { id, prompt_id: "prompt_1" });
+    expect(historical.data.prompt).toMatchObject({
+      state: "failed",
+      requestedModel: "claude-fable-5-2",
+      observedModel: "claude-sonnet-5",
+    });
+    const persisted = await db.query(
+      "select requested_model, evidence from sandbox_turn_models where sandbox_id=$1 order by prompt_id",
+      [id],
+    );
+    expect(persisted.rows).toHaveLength(2);
+  });
+
   test("wait returns once the turn ends, and timedOut when it does not", async () => {
     const { token, client, people, boat, clock } = await start();
     const mcp = await client(await token(people.member));
@@ -716,7 +984,12 @@ describe("tools", () => {
 
     boat.finish("bx_1", "prompt_1", "finished");
     const done = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
-    expect(done.data).toMatchObject({ timedOut: false, settled: true, status: "ready", prompt: { state: "finished" } });
+    expect(done.data).toMatchObject({
+      timedOut: false,
+      settled: true,
+      status: "ready",
+      prompt: { state: "finished", reason: null, modelSelectionReason: "model_selection_unverified" },
+    });
   });
 
   test("logs pass the cursor through and keep one body per event id, the newest", async () => {

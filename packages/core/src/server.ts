@@ -60,5 +60,6 @@ export {
   sshPrivateAuthState,
   sshStdinCheckout,
 } from "./ssh-executor.ts";
+export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
 export { preserveWork, type WorkPreservation } from "./work-preservation.ts";

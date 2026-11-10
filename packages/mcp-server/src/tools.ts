@@ -128,7 +128,7 @@ const effortInput = z.string().min(1).optional().describe("The reasoning effort;
 const modelOutput = {
   credentialId: z.string().nullable().optional(),
   credentialVersion: z.number().int().nullable().optional(),
-  model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
+  model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
   reasoningEffort: z.string().nullable(),
 };
 
@@ -230,6 +230,10 @@ const prompt = z.object({
   conversationId: z.string().nullable(),
   state: z.enum(["running", "finished", "interrupted", "failed"]),
   reason: z.string().nullable(),
+  requestedModel: z.string().nullable().optional(),
+  observedModel: z.string().nullable().optional(),
+  modelSelectionReason: z.enum(["model_selection_mismatch", "model_selection_unverified"]).nullable().optional(),
+  modelSelectionMessage: z.string().nullable().optional(),
 });
 
 const skillReceipts = z
@@ -412,6 +416,34 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       now: context.now(),
     });
   };
+
+  tool(
+    "github_refresh",
+    {
+      title: "Repair sandbox GitHub access",
+      description:
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+      input: { id },
+      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+    },
+    async (args) => {
+      const { sandbox: found, provider } = await live(args.id);
+      if (found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      const machine = await provider.get(found.providerSandboxId);
+      if (!["ready", "running"].includes(machine.state))
+        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
+      if (!context.launchCredentials.refreshGitHub)
+        throw new ToolError("unavailable", "GitHub repair is not configured.");
+      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
+      const result = await context.launchCredentials.refreshGitHub(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        provider,
+        found.providerSandboxId,
+      );
+      return { id: found.id, status: "connected" as const, login: result.login };
+    },
+  );
 
   tool(
     "golden_list",
@@ -747,6 +779,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .object({
               status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
               login: z.string().nullable(),
+              tokenExpiresAt: z.string().nullable(),
               message: z.string().nullable(),
             })
             .describe(
@@ -808,6 +841,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           github: {
             status: result.github.status,
             login: result.github.login ?? null,
+            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
             message: result.github.message ?? null,
           },
         };
@@ -1092,6 +1126,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             })
             .catch(unknownMutationOutcome);
           acknowledged = true;
+          try {
+            await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          } catch {
+            try {
+              (context.logError ?? console.error)(
+                "armada: turn model request record unavailable; accepted prompt continues.",
+              );
+            } catch {
+              /* Logging must not change accepted work. */
+            }
+          }
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];

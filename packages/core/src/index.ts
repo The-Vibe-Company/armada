@@ -185,7 +185,13 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export * from "./orchestrator.ts";
-export { dedupeEvents, type PromptOutcome, promptOutcome, turnInterruptionReason } from "./outcome.ts";
+export {
+  dedupeEvents,
+  type PromptOutcome,
+  promptOutcome,
+  readPromptEvents,
+  turnInterruptionReason,
+} from "./outcome.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
@@ -296,6 +302,7 @@ export {
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
+export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,
   addMember,
