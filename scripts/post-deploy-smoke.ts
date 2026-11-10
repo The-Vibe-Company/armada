@@ -6,13 +6,13 @@
  * --orchestrator, which runs the lifecycle for every selected case (only enabled
  * provider/harness pairs work). No defaults, provider credentials or DB access.
  */
+
+import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
 import type {
   OrchestratorDetail,
   OrchestratorEventPage,
   OrchestratorOperation,
 } from "../packages/core/src/orchestrator.ts";
-
-import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
 
 type Code =
   | ApiFailureCode
@@ -36,7 +36,7 @@ type Code =
   | "operation_failed"
   | "continuity_failed";
 const API_CODES = new Set<Code>([
-  ...Object.keys(API_FAILURE_STATUS) as ApiFailureCode[],
+  ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
   "unauthorized",
   "forbidden",
@@ -182,17 +182,22 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
     let sandboxId: string | undefined;
     let stopped = false;
+    let stopRequested = false;
+    let preservationNote: string | undefined;
     async function stopSandbox() {
-      let preservationNote: string | undefined;
-      try {
-        const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
-        preservationNote = receipt.preservationNote;
-      } catch (error) {
-        // The stop may already be in flight. Observe it; never replay an unknown mutation.
-        if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+      if (!stopRequested) {
+        try {
+          const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
+          preservationNote = receipt.preservationNote;
+        } catch (error) {
+          // The stop may already be in flight. Observe it; never replay an unknown mutation.
+          if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+        }
+        stopRequested = true;
       }
       await poll(
-        () => sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
+        () =>
+          sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
         (status) => {
           if (status.status !== "stopped" && status.status !== "failed") return false;
           if (status.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
@@ -203,7 +208,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
               note?.includes("checkpoint_failed_disk_not_retained"),
             )
           )
-            io.out(JSON.stringify({ case: index, step: "stop_warning", warning: "checkpoint_failed_disk_not_retained" }));
+            io.out(
+              JSON.stringify({ case: index, step: "stop_warning", warning: "checkpoint_failed_disk_not_retained" }),
+            );
           return true;
         },
       );
