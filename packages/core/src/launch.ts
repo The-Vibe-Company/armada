@@ -335,7 +335,7 @@ export async function launchSandbox(
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
           : { status: github.status, message: github.message };
-      await setup(provider, ready.id, golden, secrets, progress);
+      await setup(provider, ready.id, record.id, golden, secrets, progress);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
@@ -459,13 +459,17 @@ function finish(
 async function setup(
   provider: Provider,
   sandboxId: string,
+  armadaSandboxId: string,
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, repo.dir);
+    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
+      dir: repo.dir,
+      sandboxId: armadaSandboxId,
+    });
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
@@ -518,7 +522,7 @@ async function run(
   spec: ShellCommand,
   label: string,
   secrets: readonly string[],
-  repository?: string,
+  repository?: { dir: string; sandboxId: string },
 ): Promise<void> {
   const result = await provider.exec({
     sandboxId,
@@ -538,8 +542,8 @@ async function run(
     // Inspect stderr before diagnostic-tail truncation; never bypass Git's ownership guard.
     if (repository !== undefined && result.stderr.includes("detected dubious ownership in repository"))
       throw new LaunchError(
-        "repository_ownership_mismatch",
-        `Cannot update repository '${repository}' in sandbox ${sandboxId}: checkout ownership does not match the user running sandbox commands. Report this golden and sandbox ID to its administrator to check command-user and checkout UIDs for the selected machine size before retrying.`,
+        "init_failed",
+        `Cannot update repository '${repository.dir}' in sandbox ${repository.sandboxId}: checkout ownership does not match the user running sandbox commands. Report this golden and sandbox ID to its administrator to check command-user and checkout UIDs before retrying.`,
         { cause: failure, safeReason: "repository_ownership_mismatch" },
       );
     throw failure;

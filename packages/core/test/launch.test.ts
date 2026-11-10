@@ -436,11 +436,14 @@ describe("launch", () => {
     }).catch((error: unknown) => error as LaunchError);
     expect(failure).toBeInstanceOf(LaunchError);
     const error = failure as LaunchError;
-    expect(error.code).toBe("repository_ownership_mismatch");
+    expect(error.code).toBe("init_failed");
     expect(error.safeReason).toBe("repository_ownership_mismatch");
     expect(error.cause).toBeInstanceOf(LaunchError);
     expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
-    expect(error.message).toContain("bx_1");
+    expect(error.sandboxId).toBeString();
+    expect(error.message).toContain(`sandbox ${error.sandboxId}:`);
+    expect(error.message).not.toContain("bx_1");
+    expect(error.message).not.toContain("selected machine size");
     expect(error.message).toContain("checkout ownership");
     expect(error.message).toContain("Report this golden and sandbox ID");
     expect(error.message).not.toContain("rebuild");
