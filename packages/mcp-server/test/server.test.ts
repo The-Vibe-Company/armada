@@ -649,7 +649,30 @@ describe("tools", () => {
       data: { message: "Claude usage limit reached" },
       promptId: "prompt_1",
     });
+    boat.sandbox("bx_1").events.push({
+      id: "matched-response",
+      at: 4,
+      kind: "message",
+      promptId: "prompt_1",
+      model: boat.prompts[0]!.model!,
+      text: "response",
+      partial: false,
+      tools: [],
+    });
     boat.finish("bx_1", "prompt_1", "finished");
+    const originalEvents = boat.provider.events;
+    let unavailable = true;
+    boat.provider.events = async (request) => {
+      if (unavailable) {
+        unavailable = false;
+        throw new Error("temporary evidence failure");
+      }
+      return originalEvents(request);
+    };
+    expect((await call(mcp, "status", { id: launched.data.id })).data.prompt).toMatchObject({
+      state: "finished",
+      modelSelectionReason: "model_selection_unverified",
+    });
     const status = await call(mcp, "status", { id: launched.data.id });
     expect(status.data).toMatchObject({
       status: "ready",

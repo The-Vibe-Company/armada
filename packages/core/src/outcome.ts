@@ -1,4 +1,4 @@
-import type { AgentEvent, Provider } from "./provider.ts";
+import type { AgentEvent, PromptState, Provider } from "./provider.ts";
 
 /** Event types boat sends when a turn ends "finished" but the agent could not work. */
 const FAILURE_EVENTS = new Set(["usage_limit", "auth_expiry"]);
@@ -47,10 +47,14 @@ export function dedupeEvents(events: readonly AgentEvent[]): AgentEvent[] {
 export async function promptOutcome(
   provider: Provider,
   request: { sandboxId: string; promptId: string; conversationId?: string },
+  observation?: { state: PromptState; events: readonly AgentEvent[] },
 ): Promise<PromptOutcome> {
-  const state = await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId });
+  const state =
+    observation?.state ?? (await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId }));
   if (state.status === "interrupted" || state.status === "failed") {
-    const reason = (await promptEvents(provider, request)).find((event) => event.kind === "prompt" && event.reason);
+    const reason = (observation?.events ?? (await promptEvents(provider, request)))
+      .filter((event) => event.promptId === request.promptId)
+      .find((event) => event.kind === "prompt" && event.reason);
     const message = reason?.kind === "prompt" ? reason.reason : undefined;
     const interruption = turnInterruptionReason(message);
     if (interruption) return { state: "interrupted", reason: interruption };
@@ -61,9 +65,9 @@ export async function promptOutcome(
     };
   }
   if (state.status !== "finished") return { state: "running" };
-  const stop = (await promptEvents(provider, request)).find(
-    (event) => event.kind === "other" && FAILURE_EVENTS.has(event.type),
-  );
+  const stop = (observation?.events ?? (await promptEvents(provider, request)))
+    .filter((event) => event.promptId === request.promptId)
+    .find((event) => event.kind === "other" && FAILURE_EVENTS.has(event.type));
   if (stop?.kind === "other") return { state: "failed", reason: failureReason(stop.type, stop.data) };
   return { state: "finished" };
 }

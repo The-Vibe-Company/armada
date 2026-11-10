@@ -113,54 +113,62 @@ export async function readStatus(
       recorded?.requestedModel && cached && cached.modelSelectionReason !== "model_selection_unverified"
         ? cached
         : null;
-    const outcome =
-      retained?.terminalOutcome ??
-      (await promptOutcome(provider, {
-        sandboxId: sandbox.providerSandboxId,
-        promptId: target.promptId,
-        ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-      }));
+    const request = {
+      sandboxId: sandbox.providerSandboxId,
+      promptId: target.promptId,
+      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+    };
+    let outcome: PromptOutcome;
     let evidence: TurnModelEvidence;
     // Terminal observations survive provider history retention. Never substitute the sandbox default.
-    if (retained)
+    if (retained?.terminalOutcome) {
+      outcome = retained.terminalOutcome;
       evidence = {
         requestedModel: retained.requestedModel,
         observedModel: retained.observedModel,
         modelSelectionReason: retained.modelSelectionReason,
         modelSelectionMessage: retained.modelSelectionMessage,
       };
-    else if (outcome.state === "running") {
-      evidence = {
-        requestedModel: recorded?.requestedModel ?? null,
-        observedModel: null,
-        modelSelectionReason: null,
-        modelSelectionMessage: null,
-      };
     } else {
-      let events: AgentEvent[] = [];
-      let complete = false;
-      try {
-        const read = await readPromptEvents(provider, {
-          sandboxId: sandbox.providerSandboxId,
-          promptId: target.promptId,
-          ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-        });
-        events = read.events;
-        complete = read.complete;
-      } catch {
-        /* Missing history cannot prove exact-model execution. */
-      }
-      evidence = turnModelEvidence(events, {
-        promptId: target.promptId,
-        requestedModel: recorded?.requestedModel ?? null,
-        complete,
-      });
-      // Unknown observations can be retried; telemetry persistence cannot change the outcome.
-      if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+      const state = await provider.getPrompt(request);
+      if (state.status === "running" || state.status === "queued") {
+        outcome = { state: "running" };
+        evidence = {
+          requestedModel: recorded?.requestedModel ?? null,
+          observedModel: null,
+          modelSelectionReason: null,
+          modelSelectionMessage: null,
+        };
+      } else {
+        let events: AgentEvent[] = [];
+        let complete = false;
         try {
-          await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, { ...evidence, terminalOutcome: outcome });
+          const read = await readPromptEvents(provider, {
+            sandboxId: sandbox.providerSandboxId,
+            promptId: target.promptId,
+            ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+          });
+          events = read.events;
+          complete = read.complete;
         } catch {
-          /* Next read can retry telemetry storage. */
+          /* Missing history cannot prove exact-model execution. */
+        }
+        outcome = await promptOutcome(provider, request, { state, events });
+        evidence = turnModelEvidence(events, {
+          promptId: target.promptId,
+          requestedModel: recorded?.requestedModel ?? null,
+          complete,
+        });
+        // Unknown observations can be retried; telemetry persistence cannot change the outcome.
+        if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+          try {
+            await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
+              ...evidence,
+              terminalOutcome: outcome,
+            });
+          } catch {
+            /* Next read can retry telemetry storage. */
+          }
         }
       }
     }
