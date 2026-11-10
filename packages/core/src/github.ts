@@ -3,8 +3,8 @@ import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
 
 /**
  * GitHub user-to-server access for a launch. The person authorizes the Armada GitHub App once (the
- * dashboard's "Connect GitHub"); Armada keeps the expiring refresh token as ciphertext. At launch the
- * refresh token is exchanged for a fresh user access token (8 hours), which goes into the sandbox as
+ * dashboard's "Connect GitHub"); Armada keeps the expiring refresh token as ciphertext. Launches share a validated, cached
+ * user access token (up to 8 hours), which goes into the sandbox as
  * `GH_TOKEN` and `GITHUB_TOKEN`, so `git` and `gh` there act as that person. No personal access tokens.
  */
 
@@ -320,7 +320,7 @@ export interface GitHubResolveDeps {
 }
 
 /**
- * Turns the person's stored refresh token into a fresh user access token for one launch.
+ * Resolves a shared, validated user access token; refreshes only when missing, rejected or near expiry.
  *
  * The user's connection is the only source: no connection is `not_connected`, a refused refresh token
  * marks the connection revoked, and a GitHub outage is `unavailable`. Rotation is safe: the new refresh

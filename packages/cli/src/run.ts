@@ -963,7 +963,8 @@ function launchText(result: LaunchResult): string {
 
 function githubLine(result: LaunchResult): string {
   const { github } = result;
-  if (github.status === "connected") return `GitHub: git and gh act as ${github.login} (token valid for 8 hours).`;
+  if (github.status === "connected")
+    return `GitHub: git and gh act as ${github.login} (shared token; expires within 8 hours).`;
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 

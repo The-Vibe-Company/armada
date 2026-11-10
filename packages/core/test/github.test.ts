@@ -138,17 +138,55 @@ describe("GitHub access at launch", () => {
     expect(world.github.tokenRequests).toHaveLength(1);
   });
 
-  test("three concurrent launches serialize one refresh and share the cached access token", async () => {
+  test("twelve concurrent and sequential launches retain access until a genuine rotation", async () => {
     const world = await setup({ refresh: REFRESH_1 });
-    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
-    const access = await Promise.all([
-      resolveGitHubAccess(world.deps, USER),
-      resolveGitHubAccess(world.deps, USER),
-      resolveGitHubAccess(world.deps, USER),
-    ]);
-    expect(access.map((item) => item.status)).toEqual(["connected", "connected", "connected"]);
+    let current = "";
+    let refreshCount = 0;
+    const upstream = world.deps.fetch!;
+    // GitHub documents that refresh invalidates BOTH the old access and refresh token.
+    world.deps.fetch = (async (input, init) => {
+      if (String(input).includes("/login/oauth/access_token")) {
+        if (current) world.github.invalidAccess.add(current);
+        refreshCount++;
+        current = refreshCount === 1 ? ACCESS_1 : ACCESS_2;
+        world.github.refreshes.push({
+          access_token: current,
+          refresh_token: refreshCount === 1 ? REFRESH_2 : REFRESH_3,
+          expires_in: 28_800,
+        });
+      }
+      return upstream(input, init);
+    }) as typeof fetch;
+    const tokens: string[] = [];
+    const retain = (access: Awaited<ReturnType<typeof resolveGitHubAccess>>) => {
+      expect(access.status).toBe("connected");
+      if (access.status === "connected") tokens.push(access.token);
+    };
+    for (const access of await Promise.all(Array.from({ length: 12 }, () => resolveGitHubAccess(world.deps, USER))))
+      retain(access);
+    for (let i = 0; i < 12; i++) retain(await resolveGitHubAccess(world.deps, USER));
+    for (const token of tokens)
+      expect(
+        (
+          await upstream("https://api.github.com/user", {
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).status,
+      ).toBe(200);
+    expect(refreshCount).toBe(1);
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
-    expect(world.rows.get(USER)?.revokedAt).toBeNull();
+
+    world.deps.now = () => new Date(NOW.getTime() + 8 * 60 * 60 * 1000);
+    const renewed = await resolveGitHubAccess(world.deps, USER);
+    expect(renewed).toMatchObject({ status: "connected", token: ACCESS_2 });
+    expect(
+      (
+        await upstream("https://api.github.com/user", {
+          headers: { authorization: `Bearer ${tokens[0]}` },
+        })
+      ).status,
+    ).toBe(401);
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
   });
 
   test("uses a sealed cached access token until its expiry margin, then refreshes", async () => {
