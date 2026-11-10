@@ -1,7 +1,7 @@
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import {
-  ACCOUNT_KINDS,
   type AccountScope,
+  accountsFromList,
   type AccountUsage,
   type AuthCapabilities,
   type ModelAccount,
@@ -10,10 +10,6 @@ import {
   parseUsage,
   unreadableUsage,
 } from "./model-accounts.ts";
-
-function isModelKind(kind: unknown): boolean {
-  return (ACCOUNT_KINDS as readonly unknown[]).includes(kind);
-}
 
 /**
  * The control API for named model accounts (#603), as the signed-in viewer: `creds/list` lists them, and
@@ -47,35 +43,6 @@ export type SetAccountRequest = Omit<AccountTarget, "id"> & {
 const FEATURE = "named model accounts";
 /** What `controlPost` says for a route this server does not know. */
 const NOT_OFFERED = "This Armada server does not offer account usage yet.";
-
-/**
- * `creds/list {org}`'s `{user: [...], orgs: [{id, credentials: [...]}]}`, reduced to the model accounts of the
- * viewer and of that one org. A row without the account fields (a hosting key, an older server) is not an account
- * and is left out; scope comes from where the row sits, never from the row itself.
- */
-export function accountsFromList(
-  payload: Record<string, unknown>,
-  org: string,
-): { accounts: ModelAccount[]; legacy: boolean } {
-  let legacy = false;
-  const rows = (items: unknown, scope: AccountScope) =>
-    (Array.isArray(items) ? items : [])
-      .map((item) => {
-        if (typeof item !== "object" || item === null) return null;
-        const account = parseAccount({ ...item, scope });
-        // A model credential without an id is a row from a server older than named accounts.
-        if (!account && isModelKind((item as { kind?: unknown }).kind) && !("id" in item)) legacy = true;
-        return account;
-      })
-      .filter((row): row is ModelAccount => row !== null);
-  const orgs = Array.isArray(payload.orgs) ? payload.orgs : [];
-  const mine = orgs.find((item) => typeof item === "object" && item !== null && (item as { id?: unknown }).id === org);
-  const accounts = [
-    ...rows(payload.user, "user"),
-    ...rows((mine as { credentials?: unknown } | undefined)?.credentials, "org"),
-  ];
-  return { accounts, legacy };
-}
 
 export function createAccountControl(options: ArmadaApiOptions) {
   const post = (route: string, body: object) => controlPost(options, `/api/v1/${route}`, body, FEATURE);

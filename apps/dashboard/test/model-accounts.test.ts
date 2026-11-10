@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { accountsFromList, createAccountControl } from "../src/lib/account-control.ts";
+import { createAccountControl } from "../src/lib/account-control.ts";
 import {
+  accountsFromList,
   type AccountUsage,
   checkAccountChoice,
   checkDefaultChoice,
