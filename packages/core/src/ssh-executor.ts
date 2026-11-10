@@ -347,7 +347,7 @@ function command(
       pending = (lines.pop() ?? "").slice(-256);
       for (const line of lines) {
         const match =
-          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
+          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|skillpack|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
             line,
           );
         if (match) {

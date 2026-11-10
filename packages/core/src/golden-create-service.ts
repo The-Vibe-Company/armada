@@ -455,6 +455,20 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     'if [ "$(/usr/local/bin/claude --version 2>/dev/null || true)" != "2.1.322 (Claude Code)" ]; then sudo -n npm install --global --prefix /usr/local @anthropic-ai/claude-code@2.1.322; fi',
     '[ "$(/usr/local/bin/claude --version)" = "2.1.322 (Claude Code)" ] || { printf "%s\\n" "Claude Code at /usr/local/bin/claude does not match the managed pin." >&2; exit 96; }',
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
+    // The release installer embeds the Linux x64/arm64 archive hashes. Pin the
+    // installer itself too: never execute mutable bootstrap code or trust a
+    // checksum fetched alongside an otherwise untrusted download.
+    "armada_phase=skillpack",
+    "(",
+    "  skillpack_tmp=$(mktemp -d)",
+    "  trap 'rm -rf -- \"$skillpack_tmp\"' EXIT",
+    "  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 https://github.com/The-Vibe-Company/skillpack/releases/download/runtime-v0.3.5/install.sh -o \"$skillpack_tmp/install.sh\"",
+    "  printf '%s  %s\\n' 8910925ff024eaac513d1419bcea6be7a1080f787fad368b3848c7ac94c9c02e \"$skillpack_tmp/install.sh\" | sha256sum --check --status",
+    '  SKILLPACK_INSTALL_SOURCE_ONLY=0 SKILLPACK_VERSION=0.3.5 SKILLPACK_RELEASE_BASE_URL=https://github.com/The-Vibe-Company/skillpack/releases/download/runtime-v0.3.5 SKILLPACK_HOME=/home/user/.config/skillpack sh "$skillpack_tmp/install.sh"',
+    '  [ "$(/home/user/.local/bin/skillpack --version)" = "skillpack 0.3.5" ]',
+    "  sudo -n ln -sf /home/user/.local/bin/skillpack /usr/local/bin/skillpack",
+    '  [ "$(/usr/local/bin/skillpack --version)" = "skillpack 0.3.5" ]',
+    ")",
   ].join("\n");
 }
 
