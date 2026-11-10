@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { goldenPanel, goldenRow, LABELS, MOCK, openCreate, reset, signIn } from "./helpers";
+import { createDialog, goldenPanel, goldenRow, LABELS, MOCK, openCreate, reset, signIn } from "./helpers";
 
 type GoldenCall = { route: string; body: Record<string, unknown>; authorized: boolean };
 type ToolCall = { name: string; args: Record<string, unknown> };
@@ -92,11 +92,43 @@ test("an admin builds a multi-repo golden: one locked request, a clear result, n
   await expect(card).toContainText("/home/user/app");
   await expect(page.locator('[data-capacity-provider="boat"][data-capacity="full"]')).toContainText("1 of 1");
   // Boat is now full: New says so and offers to rebuild the existing environment instead.
+  await page.keyboard.press("Escape");
+  await expect(card).toBeHidden();
   await page.getByRole("button", { name: "New", exact: true }).click();
   const full = page.locator("[data-boat-full]");
   await expect(full).toContainText("Every Boat slot is used");
   await full.getByRole("button", { name: "Rebuild nova-web" }).click();
+  // The dialog closes onto the environment's panel, which keeps the focus.
+  await expect(createDialog(page)).toBeHidden();
   await expect(card).toBeVisible();
+  await expect(page).toHaveURL(/[?&]item=/);
+  await expect(page.getByRole("heading", { name: "nova-web", level: 2 })).toBeFocused();
+});
+
+test("closing the dialog leaves the build running: New follows it and the list shows the golden once built", async ({
+  page,
+}) => {
+  await post("/__test/reset", { novaOrg: true });
+  await post("/__test/golden-gate", { hold: true });
+  // Poll timers run on a controlled clock, advanced explicitly below instead of waiting.
+  await page.clock.install();
+  await signIn(page, "carol@example.com", "/environments");
+  const form = await openCreate(page);
+  await form.getByLabel("Name").fill("nova-web");
+  await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
+  await form.getByRole("button", { name: "Build golden" }).click();
+  await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
+  await page.keyboard.press("Escape");
+  await expect(createDialog(page)).toBeHidden();
+  const follower = page.locator("[data-create-build]");
+  await expect(follower).toContainText("Building");
+
+  await post("/__test/golden-release");
+  await page.clock.runFor(2_500);
+  await expect(follower).toHaveText("Built nova-web");
+  await expect(goldenRow(page, "nova-web")).toBeVisible();
+  // Only status reads: the build was sent once.
+  expect((await mockState()).goldenCalls).toHaveLength(1);
 });
 
 test("a refused build shows the server's reason, keeps the form and is not retried", async ({ page }) => {
@@ -578,7 +610,7 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   await post("/__test/golden-release");
   await page.clock.runFor(2_500);
   // The create dialog stays open over the re-rendered list, which now holds Zenith's golden.
-  await expect(page.locator('[data-golden="zenith-golden"]')).toBeAttached();
+  await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
   expect(page.url()).toBe(tracked);
   await openCreate(page);
   // Zenith's create form starts clean: no Acme job, unlocked, nothing to recover.

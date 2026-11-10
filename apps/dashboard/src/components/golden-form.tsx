@@ -253,7 +253,7 @@ function ScopedGoldenForm({
           <div
             className={cn(
               "grid gap-4 sm:grid-cols-2",
-              providers.length === 1 && "md:grid-cols-[minmax(0,1fr)_auto_auto] md:gap-x-6",
+              providers.length === 1 && "lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:gap-x-6",
             )}
           >
             <div className="space-y-2">

@@ -84,12 +84,12 @@ for (const mobile of [false, true]) {
       animations: "disabled",
     });
     // On a laptop the whole form reads without scrolling; on a phone the dialog scrolls inside itself.
+    const scrolls = await createDialog(page).evaluate((dialog) => dialog.scrollHeight > dialog.clientHeight);
+    expect(scrolls).toBe(mobile);
     if (!mobile) {
       await expect(form.getByLabel("Name")).toBeInViewport({ ratio: 1 });
       await expect(form.getByRole("button", { name: "Build golden" })).toBeInViewport({ ratio: 1 });
-    } else {
-      await form.getByRole("button", { name: "Build golden" }).scrollIntoViewIfNeeded();
-      await expect(form.getByRole("button", { name: "Build golden" })).toBeInViewport({ ratio: 1 });
+      await expect(form.getByRole("button", { name: "Recover admission by key" })).toBeInViewport({ ratio: 1 });
     }
     await page.keyboard.press("Escape");
     await expect(createDialog(page)).toBeHidden();

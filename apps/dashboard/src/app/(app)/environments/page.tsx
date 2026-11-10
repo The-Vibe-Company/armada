@@ -170,7 +170,7 @@ export default async function GoldensPage({ searchParams }: Props) {
   // A build the page tracks reopens the dialog, which follows it.
   const create =
     selected && capacities && (canStart || createTracked) ? (
-      <GoldenCreateDialog initialOpen={createTracked}>
+      <GoldenCreateDialog orgId={selected.org.id} initialOpen={createTracked}>
         <CreatePanel
           org={selected}
           providers={connected ?? []}
@@ -394,7 +394,7 @@ function CreatePanel({
               <ul className="flex flex-wrap gap-2">
                 {rebuildable.map((row) => (
                   <li key={row.key}>
-                    {/* Closes the dialog, then opens the environment's panel on its rebuild form. */}
+                    {/* Closes the dialog and opens the environment's panel, where it is rebuilt. */}
                     <DialogClose asChild>
                       <span>
                         <SelectItem item={row.key} variant="outline" size="sm" className="h-7">
