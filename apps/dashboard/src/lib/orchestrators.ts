@@ -19,6 +19,7 @@ import {
   resolveModelChoice,
 } from "@armada/core";
 import { parseEventPage } from "./events.ts";
+import { accountsFromList, isUsable, KIND_INFO } from "./model-accounts.ts";
 
 /**
  * The dashboard's reading of the orchestrator v1 wire contract (`@armada/core` `orchestrator.ts`, #647). Everything
@@ -459,36 +460,21 @@ export function timeUntil(iso: string, now: number): string | null {
 /** Named model accounts, as `creds/list` reports them once the server has them (#603). */
 export type ModelAccount = { id: string; name: string; harness: Harness; scope: "user" | "org"; isDefault: boolean };
 
-const ACCOUNT_HARNESS: Readonly<Record<string, Harness>> = {
-  claude_oauth: "claude",
-  anthropic: "claude",
-  openai: "codex",
-  codex_auth: "codex",
-};
-
 /**
- * The model accounts the viewer may name for `orgId`: theirs and the org's, each with an id (only named accounts have
- * one), usable now (not revoked or expired at `now`). Only ids and names are read; a credential value never is.
+ * The model accounts the viewer may name for `orgId`: theirs and the org's, read by the one account parser
+ * (`accountsFromList`), usable now (not revoked or expired at `now`). Only ids and names are kept; a credential value
+ * never is.
  */
 export function parseModelAccounts(value: unknown, orgId: string, now: number): ModelAccount[] {
-  if (!isRecord(value)) return [];
-  const accounts: ModelAccount[] = [];
-  const read = (rows: unknown, scope: "user" | "org") => {
-    if (!Array.isArray(rows)) return;
-    for (const row of rows) {
-      if (!isRecord(row) || !str(row.id) || typeof row.kind !== "string") continue;
-      const harness = ACCOUNT_HARNESS[row.kind];
-      if (!harness) continue;
-      if (row.status !== undefined && row.status !== "active") continue;
-      if (str(row.expiresAt) && Date.parse(row.expiresAt) <= now) continue;
-      const label = str(row.name) ? row.name.trim().slice(0, 120) : row.kind;
-      accounts.push({ id: row.id, name: label, harness, scope, isDefault: row.isDefault === true });
-    }
-  };
-  read(value.user, "user");
-  if (Array.isArray(value.orgs))
-    for (const org of value.orgs) if (isRecord(org) && org.id === orgId) read(org.credentials, "org");
-  return accounts;
+  return accountsFromList(value, orgId)
+    .accounts.filter((account) => isUsable(account, now))
+    .map((account) => ({
+      id: account.id,
+      name: account.name,
+      harness: KIND_INFO[account.kind].harness,
+      scope: account.scope,
+      isDefault: account.isDefault,
+    }));
 }
 
 export type CreateFields = {
