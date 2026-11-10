@@ -1,9 +1,10 @@
 "use client";
 
 import { CircleAlertIcon, CircleCheckIcon, Loader2Icon } from "lucide-react";
-import { type ComponentProps, type ReactNode, useActionState, useEffect, useRef } from "react";
+import { type ComponentProps, type ReactNode, useActionState, useCallback, useEffect, useRef } from "react";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +19,11 @@ type Props = {
   footerClassName?: string;
   /** Move focus to a failure, so a person who submitted from a long form lands on what to fix. */
   focusError?: boolean;
+  /**
+   * Confirm a success with this toast title instead of the inline line, for a form the success moves or removes (a
+   * golden shared into another list). A failure stays inline: the form is still there to retry.
+   */
+  successToast?: string;
 };
 
 /** A form bound to a server action, with its result shown under the fields. */
@@ -29,8 +35,20 @@ export function ActionForm({
   footer,
   footerClassName,
   focusError = false,
+  successToast,
 }: Props) {
-  const [state, formAction] = useActionState(action, null);
+  const toast = useToast();
+  // Raised by the action, not by an effect on its state: the refresh that follows may unmount this form.
+  const run = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const next = await action(previous, data);
+      if (next.ok && successToast !== undefined) toast({ tone: "success", title: successToast });
+      return next;
+    },
+    [action, successToast, toast],
+  );
+  // Without a toast the server action is bound directly, so the form still submits before hydration.
+  const [state, formAction] = useActionState(successToast === undefined ? action : run, null);
   const form = useRef<HTMLFormElement>(null);
   const message = useRef<HTMLParagraphElement>(null);
 
@@ -42,7 +60,7 @@ export function ActionForm({
     if (focusError && state && !state.ok) message.current?.focus();
   }, [state, focusError]);
 
-  const result = state && (
+  const result = state && !(state.ok && successToast !== undefined) && (
     <p
       ref={message}
       tabIndex={focusError && !state.ok ? -1 : undefined}

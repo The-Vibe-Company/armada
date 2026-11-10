@@ -17,3 +17,8 @@ test("provider error codes map to the same messages, and unknown reasons have no
   expect(describeFailure("segfault")).toBeNull();
   expect(describeFailure(null)).toBeNull();
 });
+
+test("recoverable interruption codes offer manual resend advice", () => {
+  expect(describeFailure("interrupted_by_provider_move")?.hint).toContain("Send the prompt again");
+  expect(describeFailure("interrupted_by_harness_exit")?.hint).toContain("fresh agent process");
+});

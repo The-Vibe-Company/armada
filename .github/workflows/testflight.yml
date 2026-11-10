@@ -1,0 +1,68 @@
+name: TestFlight
+
+# Publishes the iOS app to the TestFlight group "Armada Internal" (apps/ios/README.md, "TestFlight from CI").
+# Never runs on pull requests or forks; the testflight environment holds the secrets and only admits main.
+on:
+  push:
+    branches: [main]
+    paths: ['apps/ios/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Uploads are never cancelled half way; a newer push waits for the running one.
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    name: Archive, upload and distribute to TestFlight
+    if: github.repository == 'The-Vibe-Company/armada' && github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 120
+    environment: testflight
+    steps:
+      - name: Check TestFlight configuration
+        id: config
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        run: |
+          if [[ -z "$APP_STORE_CONNECT_API_KEY_ID" || -z "$APP_STORE_CONNECT_API_ISSUER_ID" ||
+                -z "$APP_STORE_CONNECT_API_PRIVATE_KEY" || -z "$IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64" ||
+                -z "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" ]]; then
+            echo "::notice::TestFlight is not configured; set secrets APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID, APP_STORE_CONNECT_API_PRIVATE_KEY, IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 and IOS_DISTRIBUTION_CERTIFICATE_PASSWORD in the testflight environment. Nothing built or uploaded."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.config.outputs.enabled == 'true'
+        with:
+          persist-credentials: false
+      - name: Install project generator
+        if: steps.config.outputs.enabled == 'true'
+        run: brew install xcodegen
+      - uses: ./.github/actions/setup-bun
+        if: steps.config.outputs.enabled == 'true'
+      - name: Test ArmadaKit and compile both app variants
+        if: steps.config.outputs.enabled == 'true'
+        run: apps/ios/scripts/verify.sh
+      - name: Archive, upload and distribute
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        # Builds 1-3 of 1.0.0 were uploaded by hand; run numbers only grow (a re-run keeps its number).
+        run: BUILD_NUMBER=$((1000 + GITHUB_RUN_NUMBER)) scripts/testflight/testflight.sh publish
+      - name: Delete keychain, profile and key files
+        if: always() && steps.config.outputs.enabled == 'true'
+        run: scripts/testflight/testflight.sh cleanup

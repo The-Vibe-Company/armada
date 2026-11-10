@@ -1,4 +1,10 @@
-import { type AgentEvent, PROMPT_STATUSES, type PromptStatus, type ToolCall } from "@armada/core";
+import {
+  type AgentEvent,
+  PROMPT_STATUSES,
+  type PromptStatus,
+  type ToolCall,
+  turnInterruptionReason,
+} from "@armada/core";
 import type { SandboxEvent } from "@boatdev/sdk";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,6 +67,9 @@ export function normalizeEvent(event: SandboxEvent): AgentEvent {
       const status = promptStatus(data.status);
       if (status === undefined) break;
       const reason = str(data.error) ?? str(data.reason);
+      const interruption = status === "failed" || status === "interrupted" ? turnInterruptionReason(reason) : undefined;
+      if (interruption)
+        return { ...base, kind: "prompt", text: str(data.prompt) ?? "", status: "interrupted", reason: interruption };
       return { ...base, kind: "prompt", text: str(data.prompt) ?? "", status, ...(reason ? { reason } : {}) };
     }
     case "response": {

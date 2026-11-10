@@ -25,7 +25,7 @@ import type {
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";
-import { MACHINE_SIZE_CATALOG, ProviderError, parseMachineSize } from "@armada/core";
+import { buildEventPage, eventPageOptions, MACHINE_SIZE_CATALOG, ProviderError, parseMachineSize } from "@armada/core";
 import {
   BoatApi,
   Configuration,
@@ -575,29 +575,44 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
 
     async events(request: EventsRequest): Promise<EventPage> {
       request.signal?.throwIfAborted();
+      const { limit, backward } = eventPageOptions(request, "boat");
       const response = await call(() =>
         api.events(
           {
             sandboxId: request.sandboxId,
-            sort: "asc",
+            sort: backward ? "desc" : "asc",
             ...(request.cursor ? { cursor: request.cursor } : {}),
             ...(request.conversationId ? { conversation: request.conversationId } : {}),
-            ...(request.limit ? { limit: request.limit } : {}),
+            limit,
           },
           request.signal ? { signal: request.signal } : undefined,
         ),
       );
       request.signal?.throwIfAborted();
       const raw = response.events ?? [];
-      const last = raw.at(-1);
-      const cursor = (last && eventCursor(last)) ?? response.pageInfo?.nextCursor ?? request.cursor;
-      return {
-        events: options.sanitizeEvents
-          ? await options.sanitizeEvents(provider, request.sandboxId, raw.map(normalizeEvent))
-          : raw.map(normalizeEvent),
-        ...(cursor ? { cursor } : {}),
-        hasMore: response.pageInfo?.hasMore === true,
-      };
+      const normalized = options.sanitizeEvents
+        ? await options.sanitizeEvents(provider, request.sandboxId, raw.map(normalizeEvent))
+        : raw.map(normalizeEvent);
+      const page = buildEventPage(
+        raw.map((event, index) => ({
+          cursor: eventCursor(event) ?? response.pageInfo?.nextCursor ?? request.cursor ?? "",
+          event: normalized[index]!,
+        })),
+        request,
+        response.pageInfo?.hasMore === true,
+        "boat",
+      );
+      if ((backward || page.hasMore) && raw.some((event) => !eventCursor(event))) {
+        throw new ProviderError({
+          provider: "boat",
+          code: "invalid_request",
+          retryable: false,
+          message: "Boat events lack a stable pagination boundary.",
+        });
+      }
+      // Boat can advance an empty forward page over filtered journal records.
+      if (!raw.length && !backward && response.pageInfo?.nextCursor) page.cursor = response.pageInfo.nextCursor;
+      return page;
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {

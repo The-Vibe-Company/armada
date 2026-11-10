@@ -154,3 +154,13 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     #expect(!EventStream.merge([Entry(id: "next", body: "x")], into: &events))
     #expect(events.count == 3)
 }
+
+@Test func closedInterruptionReasonsOfferManualResendWithoutBlockingAdmission() throws {
+    for reason in ["interrupted_by_provider_move", "interrupted_by_harness_exit", "future_reason"] {
+        let json = detail(status: "ready", settled: true, prompt: "interrupted")
+            .replacingOccurrences(of: #""reason":null"#, with: #""reason":"\#(reason)""#)
+        let read = try JSONDecoder().decode(SandboxDetail.self, from: Data(json.utf8))
+        #expect(read.admission == .open)
+        #expect((read.prompt?.resendHint != nil) == (reason != "future_reason"))
+    }
+}

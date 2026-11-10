@@ -130,6 +130,7 @@ export type OrchestratorEvent = {
   | { kind: "child"; sandboxId: string; operationId: string }
 );
 export interface OrchestratorEventPage {
+  olderCursor?: string;
   version: typeof ORCHESTRATOR_CONTRACT_VERSION;
   events: OrchestratorEvent[];
   cursor: string | null;

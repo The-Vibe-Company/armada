@@ -932,8 +932,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         conversation_id: conversationId,
         limit: z.number().int().min(1).max(500).optional(),
         all: z.boolean().optional().describe("Read all available pages, bounded at 100 pages."),
+        direction: z.enum(["forward", "backward"]).optional(),
+        maxBytes: z.number().int().min(256).max(1048576).optional(),
+        coalesce: z.boolean().optional(),
       },
-      output: { events: z.array(event), cursor: z.string().nullable(), hasMore: z.boolean() },
+      output: {
+        events: z.array(event),
+        cursor: z.string().nullable(),
+        olderCursor: z.string().optional(),
+        hasMore: z.boolean(),
+      },
       readOnly: true,
     },
     async (args) => {
@@ -943,6 +951,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
         ...(args.all ? { all: true } : {}),
+        ...(args.direction ? { direction: args.direction } : {}),
+        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
+        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
       });
       return { ...page, events: page.events.map((item) => ({ ...item })) };
     },
@@ -1526,18 +1537,37 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
 async function readLogs(
   provider: Provider,
   sandboxId: string,
-  args: { since_cursor?: string; conversation_id?: string; limit?: number; all?: boolean },
-): Promise<{ events: Awaited<ReturnType<Provider["events"]>>["events"]; cursor: string | null; hasMore: boolean }> {
+  args: {
+    since_cursor?: string;
+    conversation_id?: string;
+    limit?: number;
+    all?: boolean;
+    direction?: "forward" | "backward";
+    maxBytes?: number;
+    coalesce?: boolean;
+  },
+): Promise<{
+  events: Awaited<ReturnType<Provider["events"]>>["events"];
+  cursor: string | null;
+  olderCursor?: string;
+  hasMore: boolean;
+}> {
+  if (args.direction === "backward" && args.all) throw new Error("Backward reads cannot drain all pages.");
+  let olderCursor: string | undefined;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   let cursor = args.since_cursor;
   let hasMore = false;
   for (let pageNumber = 0; pageNumber < (args.all ? MAX_LOG_PAGES : 1); pageNumber += 1) {
     const page = await provider.events({
       sandboxId,
+      ...(args.direction ? { direction: args.direction } : {}),
+      ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
+      ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
       ...(cursor ? { cursor } : {}),
       ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
       ...(args.limit ? { limit: args.limit } : {}),
     });
+    olderCursor = page.olderCursor;
     events.push(...page.events);
     hasMore = page.hasMore;
     const next = page.cursor ?? cursor;
@@ -1547,7 +1577,12 @@ async function readLogs(
     }
     cursor = next;
   }
-  return { events: dedupe(events).filter((event) => !isPrivateModelEvent(event)), cursor: cursor ?? null, hasMore };
+  return {
+    ...(olderCursor ? { olderCursor } : {}),
+    events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
+    cursor: cursor ?? null,
+    hasMore,
+  };
 }
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
