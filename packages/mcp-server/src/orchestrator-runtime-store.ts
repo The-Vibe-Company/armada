@@ -7,6 +7,7 @@ import type {
   OrchestratorEventPage,
   OrchestratorOperation,
   OrchestratorState,
+  PromptStatus,
 } from "@armada/core";
 import { boundEventEntries, coalesceEventMessages, truncateEvent } from "@armada/core";
 import { createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
@@ -1121,11 +1122,51 @@ export class OrchestratorRuntimeStore {
     ).rows[0];
     return row ? { operationId: row.id, promptId: row.prompt_id } : null;
   }
-  async finishPromptObservation(operationId: string): Promise<void> {
-    await this.sql.query(
-      `update public.orchestrator_operations set runtime_result=jsonb_set(runtime_result,'{done}','true') where id=$1 and runtime_result->>'kind'='prompt_receipt'`,
-      [operationId],
-    );
+  /** The provider reported the turn done. Boat updates a prompt event in place, which the
+   * insert-only mirror never sees again, so the final status is published here as one prompt
+   * event of the same turn (#847); readers keep the latest status per prompt. Fenced like
+   * `appendEvents`: a fenced identity publishes nothing and the turn is observed again. */
+  async finishPromptObservation(
+    identity: RuntimeIdentity,
+    pending: { operationId: string; promptId: string },
+    status: PromptStatus,
+  ): Promise<void> {
+    await this.transaction(async (tx) => {
+      const current = await this.read(identity.ownerId, identity.orgId, identity.id, tx, true);
+      if (
+        current.revision !== identity.revision ||
+        current.generation !== identity.generation ||
+        current.conversationId !== identity.conversationId ||
+        !identity.conversationId
+      )
+        return;
+      const upstreamId = `armada:prompt-done:${pending.promptId}`;
+      const event: AgentEvent = {
+        id: upstreamId,
+        at: Date.now(),
+        conversationId: identity.conversationId,
+        promptId: pending.promptId,
+        kind: "prompt",
+        text: "",
+        status,
+      };
+      await tx.query(
+        `insert into public.orchestrator_runtime_events(orchestrator_id,revision,generation,conversation_id,upstream_id,event)
+        select $1,$2,$3,$4,$5,$6::jsonb where not exists (select 1 from public.orchestrator_runtime_events where orchestrator_id=$1 and conversation_id=$4 and upstream_id=$5) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing`,
+        [
+          identity.id,
+          identity.revision,
+          identity.generation,
+          identity.conversationId,
+          upstreamId,
+          JSON.stringify({ kind: "agent", event }),
+        ],
+      );
+      await tx.query(
+        `update public.orchestrator_operations set runtime_result=jsonb_set(runtime_result,'{done}','true') where id=$1 and runtime_result->>'kind'='prompt_receipt'`,
+        [pending.operationId],
+      );
+    });
   }
 
   /** Publication checks logical revision AND physical generation under the owner/member lock. */

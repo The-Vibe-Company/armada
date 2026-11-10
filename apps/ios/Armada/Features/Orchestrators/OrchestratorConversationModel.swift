@@ -29,6 +29,8 @@ final class OrchestratorConversationModel {
     private(set) var lifecycle: LifecycleStatus?
     private(set) var isDiscardingCommand = false
     private(set) var notice: (text: String, isError: Bool)?
+    /// Turns the server confirmed ended though the stream still lists them (#847).
+    private(set) var turns = ArmadaKit.TurnActivity()
     var draft = ""
     let feed: ConversationFeed
 
@@ -57,9 +59,17 @@ final class OrchestratorConversationModel {
 
     var summary: OrchestratorSummary? { detail?.summary }
 
+    /// A turn is queued or running: the stream says so and the server has not since refused a
+    /// steer because none runs. Drives the working indicator and the steer choice.
+    var agentWorking: Bool {
+        var current = turns
+        current.streamReported(feed.conversation.activeTurns)
+        return current.isWorking
+    }
+
     /// What the server's state allows now (ArmadaKit `OrchestratorControls`, the dashboard's rule).
     var controls: ArmadaKit.OrchestratorControls? {
-        detail?.controls(agentWorking: feed.conversation.running)
+        detail?.controls(agentWorking: agentWorking)
     }
 
     /// Why the composer cannot send now, or nil when it can. Creation is asynchronous: nothing is
@@ -198,6 +208,7 @@ final class OrchestratorConversationModel {
     /// Called whenever the stream changes: drops local bubbles the conversation now shows and
     /// refreshes detail when an event carries a newer revision.
     func streamChanged() async {
+        turns.streamReported(feed.conversation.activeTurns)
         let before = pending.count
         reconcilePending()
         if let summary, feed.latestRevision > summary.revision || pending.count < before {
@@ -207,25 +218,46 @@ final class OrchestratorConversationModel {
 
     // MARK: Sending
 
+    /// Sends one entry as one intent (#847). A steer is decided on the conversation as read now,
+    /// not as the screen last showed it: the turn may have ended while the person typed. If the
+    /// server still refuses the steer because no turn runs, the same text goes as a new message.
     func send(_ text: String, intent: ComposerIntent) {
         guard let summary, composerUnavailableReason == nil else { return }
-        let action: OrchestratorAction = intent == .steer ? .steer(text) : .message(text)
-        let bubbleID = UUID().uuidString
+        // Fenced by the revision the person saw: a change meanwhile hands the draft back.
         let revision = summary.revision
+        let bubbleID = UUID().uuidString
         pending.append(PendingBubble(id: bubbleID, text: text, intent: intent, sentAt: .now, status: .sending))
         draft = ""
         notice = nil
         Task {
-            do throws(ServiceFailure) {
-                handles[bubbleID] = try await service.prepareMutation(action, orchestratorID: orchestratorID, expectedRevision: revision)
-            } catch {
-                if error == .signedOut { onSignedOut() }
-                removeBubble(bubbleID, restoreDraft: true)
-                notice = (error.message, true)
-                await recoverOpenCommand()
-                return
+            var chosen = intent
+            if intent == .steer {
+                // A failed read leaves what is known; the server refuses a steer that reaches no turn.
+                try? await feed.refresh(fetch)
+                turns.streamReported(feed.conversation.activeTurns)
+                if ArmadaKit.FollowUp.intent(requested: .steer, turnRunning: agentWorking) == .message {
+                    chosen = .message
+                    setIntent(.message, for: bubbleID)
+                }
             }
+            guard await prepare(bubbleID, text: text, intent: chosen, revision: revision) else { return }
             await submit(bubbleID)
+        }
+    }
+
+    /// Saves the command for a bubble. On failure the bubble is removed and its text handed back.
+    private func prepare(_ bubbleID: String, text: String, intent: ComposerIntent, revision: Int) async -> Bool {
+        do throws(ServiceFailure) {
+            handles[bubbleID] = try await service.prepareMutation(
+                intent == .steer ? .steer(text) : .message(text), orchestratorID: orchestratorID, expectedRevision: revision
+            )
+            return true
+        } catch {
+            if error == .signedOut { onSignedOut() }
+            removeBubble(bubbleID, restoreDraft: true)
+            notice = (error.message, true)
+            await recoverOpenCommand()
+            return false
         }
     }
 
@@ -269,9 +301,20 @@ final class OrchestratorConversationModel {
     }
 
     private func submit(_ bubbleID: String) async {
-        guard let handle = handles[bubbleID] else { return }
+        guard let first = handles[bubbleID], let bubble = pending.first(where: { $0.id == bubbleID }) else { return }
         do throws(ServiceFailure) {
-            let receipt = try await service.submit(handle: handle)
+            let receipt = try await ArmadaKit.FollowUp.deliver(
+                as: bubble.intent == .steer ? .steer : .message,
+                send: { () async throws(ServiceFailure) -> OperationSummary in try await service.submit(handle: first) },
+                refusedForNoRunningTurn: { receipt in
+                    ArmadaKit.FollowUp.refusedForNoRunningTurn(
+                        kind: receipt.kind.rawValue, state: receipt.state.rawValue, errorCode: receipt.errorCode
+                    )
+                },
+                sendAsMessage: { () async throws(ServiceFailure) -> OperationSummary in
+                    try await resendAsMessage(bubbleID, text: bubble.text, refused: first)
+                }
+            ).receipt
             if receipt.state == .failed {
                 removeBubble(bubbleID, restoreDraft: true)
                 notice = (Self.failedMessage(receipt), true)
@@ -280,6 +323,7 @@ final class OrchestratorConversationModel {
             }
             await load()
         } catch {
+            let handle = handles[bubbleID] ?? first
             switch error {
             case .signedOut:
                 onSignedOut()
@@ -304,6 +348,30 @@ final class OrchestratorConversationModel {
                 notice = (reason, true)
             }
         }
+    }
+
+    /// The steer reached no turn, so nothing was delivered: the turn ended. The same text is
+    /// saved and sent once as a new message at the orchestrator's current revision.
+    private func resendAsMessage(_ bubbleID: String, text: String, refused: String) async throws(ServiceFailure) -> OperationSummary {
+        turns.streamReported(feed.conversation.activeTurns)
+        turns.noTurnRuns()
+        setIntent(.message, for: bubbleID)
+        await service.discard(handle: refused)
+        handles[bubbleID] = nil
+        await load()
+        let handle: String
+        do throws(ServiceFailure) {
+            guard let revision = summary?.revision else { throw .offline }
+            handle = try await service.prepareMutation(.message(text), orchestratorID: orchestratorID, expectedRevision: revision)
+        } catch {
+            // Nothing was sent: never an unconfirmed bubble. The text goes back to the draft.
+            switch error {
+            case .signedOut, .noAccess, .staleRevision: throw error
+            default: throw .rejected("Your message was not sent. \(error.message)")
+            }
+        }
+        handles[bubbleID] = handle
+        return try await service.submit(handle: handle)
     }
 
     // MARK: Lifecycle
@@ -390,6 +458,11 @@ final class OrchestratorConversationModel {
     private func setStatus(_ status: PendingBubble.Status, for id: String) {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         pending[index].status = status
+    }
+
+    private func setIntent(_ intent: ComposerIntent, for id: String) {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
+        pending[index].intent = intent
     }
 
     private func removeBubble(_ id: String, restoreDraft: Bool) {

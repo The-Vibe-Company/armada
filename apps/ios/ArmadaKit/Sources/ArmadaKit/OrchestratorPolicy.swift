@@ -82,7 +82,11 @@ public struct OrchestratorControls: Sendable, Equatable {
                              canResume: Bool, phase: Phase) -> String? {
         if canMessage { return nil }
         if continuity == "lost" { return "The saved conversation was lost. Start a new orchestrator to continue." }
-        if let open, open.uncertain { return "Armada is settling the last \(open.kind); nothing is repeated meanwhile." }
+        if let open, open.uncertain {
+            // Never a dead end (#847): say what the person can do while Armada settles it.
+            return "Armada couldn't confirm the last \(open.kind) and is still checking; nothing is repeated meanwhile. "
+                + "Come back later, or start a new orchestrator to keep working now."
+        }
         if let open { return open.kind == "create" ? "Starting. You can write once it is ready." : "Waiting for the \(open.kind) to finish." }
         switch phase {
         case .creating: return "Starting. You can write once it is ready."

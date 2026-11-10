@@ -287,7 +287,7 @@ export class OrchestratorRuntime {
             });
             signal?.throwIfAborted();
             diagnostics.observe("prompt_status", status.status);
-            if (status.done) await this.options.store.finishPromptObservation(pending.operationId);
+            if (status.done) await this.options.store.finishPromptObservation(identity, pending, status.status);
           } catch {
             diagnostics.observe("prompt_status", "unavailable");
           }
