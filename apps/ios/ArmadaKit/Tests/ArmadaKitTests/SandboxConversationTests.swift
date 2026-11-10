@@ -155,21 +155,20 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     #expect(events.count == 3)
 }
 
-@Test func aCatchUpReadAsksTheServerForTheRestOfTheHistoryInOneResponse() async throws {
+@Test func theLatestPageIsReadBackwardAndOlderPagesFromItsOlderCursor() async throws {
     let (client, transport) = try await signedIn([
-        .init(status: 200, body: #"{"events":[],"cursor":"c1","hasMore":true,"settled":true}"#),
-        .init(status: 200, body: #"{"events":[],"cursor":"c9","hasMore":false,"settled":true}"#)
+        .init(status: 200, body: #"{"events":[],"cursor":"frontier","olderCursor":"o9","hasMore":true,"settled":true}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"o9-next","olderCursor":"o1","hasMore":false,"settled":true}"#)
     ])
-    let first = try await client.sandboxEvents(id: sandboxID)
-    let rest = try await client.sandboxEvents(id: sandboxID, cursor: first.cursor, all: true)
-    #expect(rest.cursor == "c9")
+    let latest = try await client.sandboxEvents(id: sandboxID, backward: true)
+    #expect(latest.cursor == "frontier")
+    #expect(latest.olderCursor == "o9")
+    let older = try await client.sandboxEvents(id: sandboxID, cursor: latest.olderCursor, backward: true)
+    #expect(older.olderCursor == "o1")
+    #expect(!older.hasMore)
     let requests = Array(await transport.requests.dropFirst(2))
-    let bodies = try requests.map { try JSONSerialization.jsonObject(with: $0.httpBody ?? Data()) as? NSDictionary }
-    // An ordinary page never asks for more; the catch-up read does, from the opaque cursor.
-    #expect(bodies[0] == ["id": sandboxID, "org": "org-a"])
-    #expect(bodies[1] == ["id": sandboxID, "org": "org-a", "cursor": "c1", "all": true])
-    // The server reads many pages before it answers: only that read may stay silent longer.
-    #expect(requests.map(\.timeoutInterval) == [30, ArmadaClient.catchUpTimeout])
+    #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "direction": "backward"])
+    #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a", "cursor": "o9", "direction": "backward"])
 }
 
 @Test func closedInterruptionReasonsOfferManualResendWithoutBlockingAdmission() throws {

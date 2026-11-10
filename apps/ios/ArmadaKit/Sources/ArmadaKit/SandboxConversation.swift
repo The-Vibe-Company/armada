@@ -63,10 +63,12 @@ public enum SandboxPromptAdmission: Sendable, Equatable {
 }
 
 /// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada logs`).
-/// The cursor is opaque and passed back unchanged; an event read twice keeps its id.
+/// Cursors are opaque and passed back unchanged; an event read twice keeps its id. `olderCursor`
+/// (backward reads only) continues before the oldest event of the page.
 public struct SandboxEventPage: Decodable, Sendable {
     public let events: [AgentEvent]
     public let cursor: String?
+    public let olderCursor: String?
     public let hasMore: Bool
 }
 
@@ -135,20 +137,16 @@ extension ArmadaClient {
         return result
     }
 
-    /// One page of events after `cursor` (from the start when nil), in server order. With `all`, the
-    /// server reads on from `cursor` for as many pages as one response allows (`armada logs --all`)
-    /// and returns them together with the cursor after the last one; `hasMore` stays true when even
-    /// that was not the end. The server reads those pages one after another before answering, so
-    /// such a read may stay silent for longer than an ordinary one (`catchUpTimeout`).
-    public func sandboxEvents(id: String, cursor: String? = nil, all: Bool = false) async throws -> SandboxEventPage {
-        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let all: Bool? }
+    /// One page of events in chronological order. Forward (the default) reads after `cursor`, from
+    /// the start when nil. Backward reads the latest page when `cursor` is nil, otherwise the page
+    /// before it (`olderCursor` of an earlier backward read); its `hasMore` means older events exist
+    /// and its `cursor` is the forward frontier to follow from (#812).
+    public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false) async throws -> SandboxEventPage {
+        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String? }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
-        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor, all: all ? true : nil),
-                              timeout: all ? Self.catchUpTimeout : nil)
+        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor,
+                                                direction: backward ? "backward" : nil))
     }
-
-    /// How long a `logs/read` with `all` may stay silent: the server reads up to 100 provider pages.
-    public static let catchUpTimeout: TimeInterval = 120
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
     /// `SandboxMutationFailure.classify` and never resent by this client.
