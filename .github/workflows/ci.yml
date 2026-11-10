@@ -41,7 +41,9 @@ jobs:
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - name: Real checkpoint process boundary
-        run: sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
+        run: |
+          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
+          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
       - run: bun run typecheck
       - name: Apply migrations to disposable PostgreSQL
         env:

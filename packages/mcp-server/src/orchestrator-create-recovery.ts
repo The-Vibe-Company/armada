@@ -492,7 +492,7 @@ export function createOrchestratorCreateRecovery(
           throw new OrchestratorRuntimeError("conflict");
         if (b)
           await tx.query(
-            `update public.sandboxes set status='stopped',stopped_at=coalesce(stopped_at,now()),last_observed_at=now() where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3`,
+            `update public.sandboxes set status='stopped',status_reason=null,stopped_at=coalesce(stopped_at,now()),last_observed_at=now() where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3`,
             [b.sandboxId, b.sqlGeneration, b.providerSandboxId],
           );
         await tx.query(`update public.orchestrator_operations set state='failed',error_code=$2 where id=$1`, [

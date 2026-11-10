@@ -371,7 +371,7 @@ an explicit clean-history marker. Generic exec/resume never unseals a golden.
 ### Privileged process quiescence (root build descendants)
 
 Before any user SSH/init/model/bootstrap work, owned composition captures root control
-PID/start identities plus PID/mount namespace identity through the SDK and commits it
+PID/start identities plus readable self PID/mount namespace evidence through the SDK and commits it
 to `Machine.processBaseline`, scoped to exact physicalId/generation. Every physical
 restore clears and refreshes this baseline. Metadata is nonsensitive server SQL only,
 not an auth/cache file or log. A missing legacy/populated baseline is NOT reconstructed
@@ -381,10 +381,16 @@ Checkpoint preparation preserves exact trusted control identities, PID1 and the
 verified current cleanup ancestry (including a verified outside-namespace parent0
 boundary used by SDK exec). It enumerates all additional root AND user processes,
 including setsid/double-fork orphans reparented to PID1, and freezes them before killing.
-Linux pidfds are opened and identity revalidated before signaling, so PID reuse cannot
-redirect a signal. Sweeps repeat until no additional live writer remains. Changed
-control identities, mismatched physical/namespace identity, unsupported pidfds or
-unprovable quiescence all refuse the save. Only then are SSH keys/auth removed and,
+Linux pidfds anchor signals when supported. gVisor can permanently deny namespace
+links and pidfds: PID1 namespace links are never required, and unreadable self links
+are supplementary rather than a refusal. Denied/unsupported pidfds fall back to
+in-sandbox numeric signals with PID/start identity revalidated immediately before
+each signal. A reused control PID is not trusted as the old control incarnation.
+Sweeps repeat until no additional live writer remains. Mismatched physical/generation
+or readable namespace evidence, invalid PID1 baseline identity, a positive uninspectable
+process entry or an actual surviving writer still refuse the save. Closed inspection
+primitive/errno labels accompany survivor diagnostics, never command lines or secrets.
+Only after quiescence are SSH keys/auth removed and,
 for golden purpose, managed history unlinked. FD/cwd checks remain defense-in-depth,
 not the writer fence. Current SDK cleanup commands operate under the lifecycle lease;
 management credentials never enter the VM.
@@ -396,8 +402,11 @@ pre-admission capture contract. `test/process-scope-conformance.ts` is an opt-in
 Linux/Docker test of those exact helpers, with real sudo/setsid root orphans sleeping
 before reopening files, golden/recovery cleanup, preserved PID1 and namespace rejection.
 It does not run the quiescer against the worker/host PID namespace. Root's existing
-real Modal matrix remains separate evidence; pidfd support must also be confirmed on
-that OS and fails closed if unavailable.
+real Modal matrix remains separate evidence. The mandatory Linux
+`test/checkpoint-process-conformance.ts` additionally proves checkpoint preparation
+with unreadable PID1 namespaces and real seccomp-denied pidfds. Its native-pidfd mode
+denies numeric kill, so fallback cannot silently satisfy the native proof. Actual
+signal permission denial must still retain a positive survivor and refuse.
 
 ### Clean golden purpose versus recovery
 

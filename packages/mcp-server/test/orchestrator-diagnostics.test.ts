@@ -251,6 +251,25 @@ test.each([
   expect(lines.join("")).not.toContain("private-");
 });
 
+test("process inspection diagnostics project only a primitive and errno class", () => {
+  const lines: string[] = [];
+  for (const inspection of ["kill_EPERM", "private-path-or-command"]) {
+    new OrchestratorDiagnostics((line) => lines.push(line), "stop").report(
+      "uncertain",
+      new ProviderError({
+        provider: "modal",
+        code: "conflict",
+        retryable: false,
+        message: "private-path-or-command",
+        details: { processCategory: "runtime_or_mcp", processFailure: "pidfd_signal", processInspection: inspection },
+      }),
+    );
+  }
+  expect(JSON.parse(lines[0]!).processInspection).toBe("kill_EPERM");
+  expect(JSON.parse(lines[1]!)).not.toHaveProperty("processInspection");
+  expect(lines.join("")).not.toContain("private-path-or-command");
+});
+
 test("publication preserves native Bun SQLSTATE and database identifiers, never SQL detail", () => {
   const lines: string[] = [];
   const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "recover");
