@@ -314,7 +314,12 @@ export function createSqlData(sql: Sql): DataSource {
           set("activity_lease_id", patch.activityToken, "::uuid");
           sets.push("activity_until = now() + interval '2 minutes'");
         }
-        if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
+        if (patch.rearmDeadline)
+          sets.push(
+            "expires_at = now() + s.effective_ttl_seconds * interval '1 second'",
+            // A confirmed resume starts a new capture opportunity. Keep successful recovery receipts.
+            "preservation_note = case when preservation_note like 'unpushed work could not be preserved%' then null else preservation_note end",
+          );
         if (patch.stopRequested !== undefined)
           set("stop_requested_at", patch.stopRequested ? new Date().toISOString() : null, "::timestamptz");
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");

@@ -1365,7 +1365,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Stop a sandbox",
       description:
-        "Removes the machine and keeps its disk and conversations. A later send resumes it. Use it when the " +
+        "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
+        "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
         "agent is done, so the sandbox stops costing.",
       input: { id },
       output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
