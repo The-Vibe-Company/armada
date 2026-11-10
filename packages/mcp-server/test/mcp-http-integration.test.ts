@@ -28,7 +28,12 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
       sql: db,
       // Dependencies are present as in production, but off must never acquire/install.
       github: {
-        store: createSqlVaultStore(db),
+        store: {
+          ...createSqlVaultStore(db),
+          async getGitHubConnection(): Promise<never> {
+            throw Error("Default-off automatic legacy preparation must not read connections");
+          },
+        },
         get app(): never {
           throw Error("Managed GitHub runtime must remain off");
         },

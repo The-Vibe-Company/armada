@@ -293,6 +293,7 @@ describe("tools", () => {
         "extend",
         "exec",
         "work_recovery",
+        "github_refresh",
         "golden_build_status",
         "golden_capabilities",
         "golden_create",
@@ -471,6 +472,7 @@ describe("tools", () => {
     expect(first.data.github).toEqual({
       status: "connected",
       login: "octocat",
+      tokenExpiresAt: expect.any(String),
       message: expect.stringContaining("gh"),
     });
     expect(boat.forks[0]?.env).toEqual({
