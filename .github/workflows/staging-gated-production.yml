@@ -15,9 +15,10 @@ permissions:
   contents: read
 
 # Lock staging deployment and smoke together. A newer merge cannot
-# replace staging under an active smoke. GitHub may replace pending runs.
+# replace staging under an active smoke or evict an already queued release.
 concurrency:
   group: staging-gated-production
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -83,6 +84,14 @@ jobs:
             exit 1
           }
           echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
+      # Match production: deploy tooling comes from the executing workflow,
+      # while git archive and all application sources stay on RELEASE_SHA.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          persist-credentials: false
+          sparse-checkout: scripts/release
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
           version: 2.75.0
@@ -92,7 +101,7 @@ jobs:
       - name: Install pinned deployment clients
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
       - name: Migrate then deploy pinned server and dashboard
-        run: bash scripts/release/deploy-production.sh
+        run: bash .release-tools/scripts/release/deploy-production.sh
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Smoke pinned staging

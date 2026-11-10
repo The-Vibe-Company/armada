@@ -237,11 +237,18 @@ use environment-specific settings.
   authorize production. Ordinary main merges never enter production or publish npm.
 - Release re-smokes rather than trusting a historical check name, mutable branch,
   latest deployment or cached attestation. This also covers tags created by
-  GITHUB_TOKEN (which do not trigger separate push workflows) and commits whose
-  ordinary staging run was replaced in GitHub's pending queue.
+  GITHUB_TOKEN (which do not trigger separate push workflows). A release commit
+  may be smoked twice (ordinary push, then release call): this deliberately buys
+  fresh, direct dependency evidence rather than an attestation lookup.
 - One non-cancelling lock serializes all staging deploy/smoke runs, including
-  release calls. Close merges cannot replace staging during a release smoke.
-  Release's existing release-production lock serializes releases through npm;
+  release calls. Both this lock and release-production use **queue: max**:
+  [GitHub queues existing waiters in FIFO order instead of replacing them](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+  A main push cannot evict a release already waiting for staging, nor interrupt
+  an active smoke. GitHub permits 100 pending entries per group; at capacity it
+  rejects new arrivals, not existing waiters. Monitor/drain the queue before
+  release if saturated; retry a rejected run after capacity is available.
+  No cancellation or skipped staging run ever authorizes production.
+  Release's release-production lock serializes releases through npm;
   production shares the migration lock. Later main runs may update staging after
   the release smoke completes, but production uploads only the already-smoked SHA.
   A tagged recovery deliberately re-deploys that release SHA to staging; dispatch
@@ -252,7 +259,11 @@ use environment-specific settings.
   freeze/drain merges before cutting the intended release. Never repair/remove
   migration history just to force an older release through smoke.
 - Missing configuration fails closed in opted-in mode; failed staging visibly blocks
-  production and npm. Manual smoke remains diagnostic only. Independent staging
+  production and npm. Manual smoke remains diagnostic only and uses the separate
+  post-deploy-smoke-staging lock, so it can overlap a gated staging deployment.
+  Run diagnostics only after the pinned staging run completes and while no next
+  deployment is queued (freeze merges if needed); never treat their result as
+  release evidence. Independent staging
   migrations/deployment-event smoke and standalone production migration applies
   are disabled in gate mode; history/repair/preview remain operator tools.
 
@@ -306,8 +317,13 @@ failing staging smoke (e.g. invalid staging golden): release staging must be red
 production and npm skipped, production IDs/history unchanged. Restore the case;
 recover that same validated tag, verify green and compare full SHA in staging and
 production Railway messages, Vercel githubCommitSha metadata and release Actions.
-Make two close main merges including a release: no production source may differ
-from its release's successful staging-call SHA. Owner performs these deployed
+Exercise the review's cancellation scenario explicitly: keep the release-commit
+push smoke active, let Release finish check/binary and queue its staging call,
+then merge another main change. Verify the pending release call is retained,
+the new push queues behind it, and the release reaches production/npm only after
+its own smoke succeeds. No production source may differ from that successful
+staging-call SHA. Also verify a failed/cancelled staging call blocks both stages.
+Owner performs these deployed
 checks; local lint/tests cannot prove platform settings. Never intentionally fail
 production. Use a forward hotfix release if a newer stable tag supersedes recovery.
 

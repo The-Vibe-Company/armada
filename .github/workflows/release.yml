@@ -23,6 +23,7 @@ permissions:
 
 concurrency:
   group: ${{ vars.RELEASE_SYNCED_DEPLOYS == 'true' && 'release-production' || format('release-{0}', github.ref) }}
+  queue: max
   cancel-in-progress: false
 
 jobs:

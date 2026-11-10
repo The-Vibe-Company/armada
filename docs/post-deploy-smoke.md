@@ -8,6 +8,9 @@
 > Independent automatic migration applies and deployment-event smoke below are disabled.
 > Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
 > blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
+> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
+> smoke to finish and ensure no next deployment is queued before running it.
+> It can otherwise observe staging mid-deploy and never authorizes a release.
 > With both variables absent/false, legacy behavior below is unchanged.
 
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only

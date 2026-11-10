@@ -102,5 +102,5 @@ test("missing deployment configuration fails before any production mutation", ()
   const result = deploy("", "VERCEL_TOKEN");
   expect(result.code).not.toBe(0);
   expect(result.calls).toBe("");
-  expect(result.error).toContain("Missing production environment secret/configuration: VERCEL_TOKEN");
+  expect(result.error).toContain("Missing deployment environment secret/configuration: VERCEL_TOKEN");
 });
