@@ -133,17 +133,17 @@ Extend an accessible running or idle sandbox as its owner or an org admin. The n
 
 Claude Code also offers **Claude Fable 5.2** (`claude-fable-5-2`) at `low`, `medium`, `high`, `xhigh` or `max` effort. Defaults stay unchanged. Use the full ID, not the moving `fable` alias.
 
-**Runtime prerequisite:** [Anthropic requires Claude Code 2.1.321+](https://code.claude.com/docs/en/model-config#work-with-fable). Armada currently pins Claude Code 2.1.319 and Agent SDK 0.3.319. Before production use, upgrade the Claude Code executable to at least 2.1.321 in the Boat golden and rebuild/snapshot it. The managed runtime also needs its Claude Code pin upgraded in `packages/agent-runtime/{package.json,build.ts}`, `scripts/{prepare-runtime.ts,validate-runtime-native.ts}`, and Modal distribution/manifest checks, with regenerated runtime artifacts (and a compatible SDK verified). This catalogue-only change does not perform that runtime rollout.
+**Runtime:** [Anthropic requires Claude Code 2.1.321+](https://code.claude.com/docs/en/model-config#work-with-fable). Armada now pins Claude Code 2.1.322 and Agent SDK 0.3.322. Boat goldens must also contain a sufficiently recent executable; the version alone does not prove that the requested model ran.
 
-Fable is offered to API-key accounts and eligible subscription accounts using `claude_oauth`, subject to Anthropic entitlement, organization restrictions and usage credits; see [availability](https://www.anthropic.com/claude-fable-and-mythos-5-2#availability). Selection does not grant access. Armada preserves existing provider/harness failures for unavailable models or accounts, without substituting another model. Malformed IDs are rejected locally; other well-formed IDs remain provider-validated, not a new closed allowlist.
+Fable is offered to API-key accounts and eligible subscription accounts using `claude_oauth`, subject to Anthropic entitlement, organization restrictions and usage credits; see [availability](https://www.anthropic.com/claude-fable-and-mythos-5-2#availability). Selection does not grant access. **Known production limitation (2026-11-10):** a Boat launch requesting `claude-fable-5-2` on Claude Code 2.1.322 with organization subscription OAuth finished successfully, but its message event reported `claude-sonnet-5` and its answer named Sonnet. Armada's status model currently reports the stored **requested selection**, not verified execution. A separate model-honesty follow-up is required. Use message-event model metadata as evidence; do not treat launch acceptance, a finished turn, or the status model as proof that Fable answered. A closed refusal for this substitution is not implemented by this catalogue change. Malformed IDs are rejected locally; other well-formed IDs remain provider-validated, not a new closed allowlist.
 
 The shared catalogue feeds CLI help, MCP tool descriptions, dashboard sandbox/turn and orchestrator pickers, launch-options, and orchestrator capabilities (including Boat × Claude). iOS reads both server catalogues: no iOS release is needed. MCP clients need refreshed tool discovery; the server and dashboard need rebuilding, and CLI help needs a new binary (existing CLI versions already forward `--model`).
 
-Production check (coordinator, after the runtime upgrade):
+Production check (coordinator, with an upgraded golden):
 ```sh
 armada launch <golden> --agent claude --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
 ```
-Inspect the returned turn/model metadata as well as the answer; also create a Boat × Claude orchestrator with that model. An account without access must retain the existing failed-turn refusal, not silently launch another model.
+Inspect the returned turn/model metadata as well as the answer; also create a Boat × Claude orchestrator with that model. Record both requested and message-event model IDs. The known subscription substitution remains an open follow-up; do not claim entitlement refusal or exact-model fidelity until it is fixed.
 
 ## Bring your MCP servers
 
