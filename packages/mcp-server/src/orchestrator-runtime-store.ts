@@ -1124,7 +1124,9 @@ export class OrchestratorRuntimeStore {
         continuity=case when $5::text is not null then $5 when $4 then 'unverified' else continuity end where orchestrator_id=$1`,
         [
           identity.id,
-          result.state === "failed" || result.parentState === "blocked" ? (result.errorCode ?? null) : null,
+          (operation.kind === "create" && result.state === "failed") || result.parentState === "blocked"
+            ? (result.errorCode ?? null)
+            : null,
           result.state === "succeeded" && ["message", "steer"].includes(operation.kind),
           !!result.conversationId && current.continuity === "not_started",
           result.continuity ?? null,
