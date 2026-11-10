@@ -227,6 +227,6 @@ test("a viewport too short to fit falls back to a scrolling page where nothing i
 
 test("other dashboard pages keep scrolling the document", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   expect((await overflow(page)).vertical).toBeGreaterThan(0);
 });

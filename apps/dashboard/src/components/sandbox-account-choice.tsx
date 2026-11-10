@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { type AccountOption, bindableStatus } from "@/lib/account-recovery";
 import type { ActionResult } from "@/lib/action";
 import type { AccountChoices } from "@/lib/data/account-recovery";
+import { HARNESS_PATH } from "@/lib/model-accounts";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -96,8 +97,8 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
       ) : accounts.length === 0 ? (
         <p className="text-sm">
           No {harnessLabel} account you can use.{" "}
-          <Link href="/credentials" className="font-medium underline underline-offset-4">
-            Add one in Credentials
+          <Link href={HARNESS_PATH} className="font-medium underline underline-offset-4">
+            Add one in Harness
           </Link>
         </p>
       ) : (

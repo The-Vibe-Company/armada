@@ -89,9 +89,9 @@ describe("boardState", () => {
     ).toBe("The provider lost the machine.");
     // The reason the server recorded on the sandbox explains a launch failure, with its fix.
     expect(boardState("failed", null, { statusReason: "auth_expiry", lifecycleError: "later" }).failure).toEqual({
-      title: "Credential expired",
+      title: "Account expired",
       hint: expect.any(String),
-      fix: { href: "/credentials", label: "Replace the credential" },
+      fix: { href: "/harness", label: "Reconnect the account" },
     });
     expect(boardState("failed", null).failure?.title).toBe("Sandbox failed");
   });

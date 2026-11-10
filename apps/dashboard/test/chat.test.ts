@@ -114,7 +114,7 @@ describe("chat projection", () => {
     expect(projectChat([prompt("a", "running")]).running).toBe(true);
   });
 
-  test("a finished turn with an expired-credential event fails and points to the credentials page", () => {
+  test("a finished turn with an expired-credential event fails and points to the Harness page", () => {
     const chat = projectChat([
       prompt("a", "running"),
       { id: "x", at: 2, kind: "other", type: "auth_expiry", data: { message: "OAuth token expired" }, ...turn },
@@ -123,8 +123,8 @@ describe("chat projection", () => {
     expect(view(chat.items)).toEqual(["user:Fix the test", "outcome:failed"]);
     const outcome = chat.items.at(-1);
     expect(describeFailure(outcome?.kind === "outcome" ? outcome.reason : null)).toMatchObject({
-      title: "Credential expired",
-      fix: { href: "/credentials" },
+      title: "Account expired",
+      fix: { href: "/harness" },
     });
   });
 

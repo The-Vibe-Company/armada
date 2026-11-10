@@ -5,11 +5,13 @@ import Link from "next/link";
 import { disconnectGitHub } from "@/app/actions/github";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { PageHeader } from "@/components/page-header";
+import { PersonalProviderKeys } from "@/components/personal-provider-keys";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
 import { ConnectionBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { listCredentials } from "@/lib/data/credentials";
 import { getGitHubConnection } from "@/lib/data/github";
 import { type ProviderSetup, readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -28,10 +30,10 @@ export const metadata: Metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ github?: string }> }) {
-  await requireViewer();
+  const viewer = await requireViewer();
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [connection, params, setup, admins] = await Promise.all([
+  const [connection, params, setup, admins, credentials] = await Promise.all([
     getGitHubConnection(supabase),
     searchParams,
     selected ? readProviderSetup(selected.org.id) : null,
@@ -41,7 +43,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           .rpc("org_members", { target_org: selected.org.id })
           .then(({ data }) => (data ?? []).filter((member) => member.role === "admin").map((member) => member.email))
       : [],
+    listCredentials(supabase),
   ]);
+  const personalKeys = credentials.filter((item) => item.scope === "user" && item.owner_id === viewer.id);
   const configured = githubAppFromEnv(process.env) !== null;
   const installUrl = githubInstallUrl(process.env.GITHUB_APP_SLUG);
   const result = isGitHubResult(params.github) ? GITHUB_RESULT_MESSAGES[params.github] : null;
@@ -58,6 +62,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       )}
 
       <SandboxProviders selected={selected} setup={setup} admins={admins} />
+      <PersonalProviderKeys owner={viewer.id} rows={personalKeys} />
 
       <Card data-settings="github">
         <CardHeader>
@@ -211,8 +216,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
 /**
  * The active organization's sandbox providers (#598), as the server reports them on every visit. Admins connect,
- * replace and disconnect each one; members see the status and whom to ask. Personal hosting keys stay in Credentials
- * and never connect a provider for the organization.
+ * replace and disconnect each one; members see the status and whom to ask. The viewer's personal provider keys sit
+ * right below (`PersonalProviderKeys`, #805) and never connect a provider for the organization.
  */
 function SandboxProviders({
   selected,
@@ -292,11 +297,6 @@ function SandboxProviders({
                 .
               </p>
             )}
-            <p className="text-xs text-muted-foreground">
-              <Link className="underline underline-offset-4" href="/credentials">
-                Personal keys in Credentials
-              </Link>
-            </p>
           </>
         )}
       </CardContent>
