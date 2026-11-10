@@ -53,6 +53,7 @@ const STAGES = [
   "stop_revalidation",
   "epoch_scrub",
   "native_checkpoint",
+  "ordinary_stop",
   "stop_validation",
   "stop_receipt_publication",
   "stop_reconcile",

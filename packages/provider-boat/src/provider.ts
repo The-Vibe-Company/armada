@@ -370,8 +370,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     async stopBestEffort(sandboxId: string): Promise<void> {
       await options.beforeStop?.(provider, sandboxId);
       const signal = AbortSignal.timeout(150_000);
-      const response = await call(() => api.stop({ sandboxId }, { signal }));
-      const stopId = response.sandbox?.stop?.id;
+      // The generated SandboxActionResponse omits the documented top-level stop.
+      // Read the raw acceptance so the exact operation fence is not discarded.
+      const response = await call(async () => {
+        const accepted = await api.stopRaw({ sandboxId }, { signal });
+        return (await accepted.raw.json()) as { id?: string; stop?: { id?: string }; sandbox?: { stop?: { id?: string } } };
+      });
+      if (response.id !== sandboxId) throw unexpectedAnswer("stop operation");
+      const stopId = response.stop?.id ?? response.sandbox?.stop?.id;
       if (!stopId) throw unexpectedAnswer("stop operation");
       for (let attempt = 0; attempt < 120; attempt++) {
         signal.throwIfAborted();

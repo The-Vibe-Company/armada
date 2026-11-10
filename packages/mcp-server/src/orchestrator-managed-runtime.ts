@@ -290,7 +290,7 @@ export function createManagedOrchestratorRuntime(options: {
         });
         await options.authority.scrubBeforeCheckpoint(machine.orchestratorId, transport);
         signal?.throwIfAborted();
-        diagnostics.stage("native_checkpoint");
+        diagnostics.stage(backend.continuity === "best_effort" ? "ordinary_stop" : "native_checkpoint");
         value = receipt(machine, operationId, await backend.checkpointAndStop(machine, operationId, signal));
       } catch (error) {
         diagnostics.report("uncertain", error);

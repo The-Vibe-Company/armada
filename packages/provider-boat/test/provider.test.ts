@@ -742,7 +742,7 @@ test.each(["completed", "superseded", "wrong-operation"])(
   async (outcome) => {
     const stop = { id: "stop-owned", status: "pending" };
     const boat = fakeBoat(
-      { status: 202, body: { ok: true, sandbox: sandbox({ state: "archiving", stop }) } },
+      { status: 202, body: { ok: true, id: ID, stop } },
       { body: { ok: true, id: ID, stop } },
       {
         body: {
