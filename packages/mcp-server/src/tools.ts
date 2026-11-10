@@ -1368,7 +1368,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Removes the machine and keeps its disk and conversations. A later send resumes it. Use it when the " +
         "agent is done, so the sandbox stops costing.",
       input: { id },
-      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES) },
+      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
       destructive: true,
     },
     async (args) => {
@@ -1382,12 +1382,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
           let terminal = false;
           let stoppedAt: Date | undefined;
+          let preservationNote: string | undefined;
           try {
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);
             terminal = observed.state === "stopped";
             stoppedAt = observed.stoppedAt;
+            preservationNote = observed.stopNote;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
             terminal = true;
@@ -1395,7 +1397,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           signal.throwIfAborted();
           const status: SandboxStatus = found.status === "failed" ? "failed" : terminal ? "stopped" : "stopping";
           return {
-            result: { id: found.id, status },
+            result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {
               status,
               stopRequested: !terminal,

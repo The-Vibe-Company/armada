@@ -171,6 +171,10 @@ test("the stop deadline publishes timeout and fences a late active provider obse
     const boat = fakeBoat();
     let release: ((info: Awaited<ReturnType<typeof boat.provider.get>>) => void) | undefined;
     let expire: (() => void) | undefined;
+    let observed!: () => void;
+    const observation = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
     let interrupts = 0;
     let execs = 0;
     const provider = {
@@ -178,6 +182,7 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       get: () =>
         new Promise<Awaited<ReturnType<typeof boat.provider.get>>>((resolve) => {
           release = resolve;
+          observed();
         }),
       async interrupt() {
         interrupts++;
@@ -202,6 +207,7 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       return originalTimeout(callback, ms, ...args);
     }) as typeof setTimeout;
     const stopped = preserveBeforeStop(sql, provider, id, "bx_late_recovery");
+    await observation;
     if (!expire || !release) throw new Error("Expected pending provider observation and deadline");
     expire();
     await stopped;

@@ -2,19 +2,6 @@ import { decryptSecret, encryptSecret, type Provider, preserveWork, type Sql } f
 
 /** Never return command output or SDK errors: archives may contain credentials. */
 export async function preserveBeforeStop(sql: Sql, provider: Provider, id: string, providerId: string): Promise<void> {
-  // A failed best-effort capture is a durable receipt, not work to repeat on every
-  // reconciler pass. A later lifecycle generation may capture again after resume.
-  const prior = (
-    await sql.query<{ preservation_note: string | null; stop_requested_at: unknown; status: string }>(
-      "select preservation_note,stop_requested_at,status::text as status from public.sandboxes where id=$1::uuid",
-      [id],
-    )
-  ).rows[0];
-  if (
-    prior?.preservation_note?.startsWith("unpushed work could not be preserved") &&
-    (prior.stop_requested_at || prior.status === "stopping")
-  )
-    return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   try {
@@ -49,6 +36,19 @@ async function captureAndStore(
   let reason = "unavailable";
   let note: string;
   try {
+    // A failed best-effort capture is a durable receipt, not work to repeat on every
+    // reconciler pass. A later lifecycle generation may capture again after resume.
+    const prior = (
+      await sql.query<{ preservation_note: string | null; stop_requested_at: unknown; status: string }>(
+        "select preservation_note,stop_requested_at,status::text as status from public.sandboxes where id=$1::uuid",
+        [id],
+      )
+    ).rows[0];
+    if (
+      prior?.preservation_note?.startsWith("unpushed work could not be preserved") &&
+      (prior.stop_requested_at || prior.status === "stopping")
+    )
+      return;
     // Exec may implicitly resume retained compute. Never activate a machine known stopped.
     const current = await provider.get(providerId);
     if (expired()) return;
