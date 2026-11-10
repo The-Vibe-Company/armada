@@ -275,6 +275,7 @@ export function fakeModalRuntime(input: {
       running = value;
     },
     lastPromptServers: () => lastPromptServers,
+    hasEpoch: (sandboxId: string) => [...byId.values()].some((vm) => vm.tags.armada_sandbox === sandboxId && vm.epoch),
     providerReads: () => providerReads,
     close: () => kernel.stop(true),
   };

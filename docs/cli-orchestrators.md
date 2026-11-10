@@ -48,6 +48,9 @@ Creation accepts `--connections ID1,ID2` or `--no-connections` (mutually exclusi
 Omitting both uses ordinary launch defaults at creation. Each connection must be
 connected and usable by the owner in this organization; private parent visibility
 does not authorize another member's personal connections.
+An inaccessible selection is refused synchronously with `404 not_found`, before
+reserving an asynchronous create or allocating a provider sandbox. The launcher
+rechecks grants before binding them.
 
 ```sh
 armada orchestrator create reviews --org ORG --golden GOLDEN --provider boat \
@@ -78,6 +81,13 @@ conversation is recreated:
   forwarding the next user message. Unsupported controls or connection errors
   fail closed; no user message is forwarded. Fresh non-stream processes read the
   updated user configuration at startup.
+  This Python bridge is installed only for managed parents, with an interpreter
+  precheck; ordinary Claude repository/cwd preparation keeps its direct native
+  wrapper. Unchanged configuration passes native mid-turn steer messages through
+  without attempting an MCP refresh. A private durable installation receipt
+  includes the physical boot, MCP generation and generated wrapper hash, so
+  unchanged messages do not reinstall the wrapper. Generic GitHub preparation
+  preserves the managed installation under the same root-owned installer lock.
 - **Modal × Codex:** the runtime takes the new configuration snapshot for the
   next fresh app-server and resumes the existing native thread. The private epoch
   accepts external refresh only when quiescent and preserves its internal server.

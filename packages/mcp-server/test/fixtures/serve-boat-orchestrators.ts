@@ -15,6 +15,7 @@ const sqlModule = await import("../../src/sql.ts");
 mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
 const boots = new Map<string, string>();
 const sshCalls: string[] = [];
+const authorityInstalled = new Set<string>();
 const mcpServers = new Map<string, string[]>();
 let lastPromptServers: string[] = [];
 let running = false;
@@ -27,6 +28,8 @@ mock.module("@armada/core/server", () => ({
   sshOrchestratorReceipt: async (_provider: unknown, input: { sandboxId: string; token: string }) => {
     const payload = JSON.parse(input.token);
     sshCalls.push(payload.op ?? "bridge");
+    if (payload.op === "install") authorityInstalled.add(input.sandboxId);
+    if (payload.op === "scrub") authorityInstalled.delete(input.sandboxId);
     return {
       physicalGeneration: boots.get(input.sandboxId),
       acknowledged: true,
@@ -96,6 +99,7 @@ type Machine = {
   }[];
 };
 const machines = new Map<string, Machine>();
+const managedWrapperInstalls = new Map<string, number>();
 let prompts = 0,
   stops = 0,
   failStop = false;
@@ -134,7 +138,9 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   assert(machine, `Unknown Boat sandbox ${path}`);
   const suffix = match[2];
   if (!suffix) return json({ sandbox: machine });
-  if (suffix === "/commands")
+  if (suffix === "/commands") {
+    if (body.command.includes("python3 -c 'import json,os,signal,stat,subprocess,threading,uuid'"))
+      managedWrapperInstalls.set(machine.id, (managedWrapperInstalls.get(machine.id) ?? 0) + 1);
     return json({
       type: "command.finished",
       success: true,
@@ -146,6 +152,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       stderr: "",
       timedOut: false,
     });
+  }
   if (suffix === "/prompt") {
     prompts++;
     lastPromptServers = mcpServers.get(machine.id) ?? [];
@@ -218,6 +225,11 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
         ? [{ id: machine.conversation, running, lastHarness: machine.harness, lastModel: machine.model }]
         : [],
     });
+  if (suffix === "/steer") {
+    assert.equal(machine.harness, "claude");
+    assert(running, "The acceptance steer must reach a running Claude turn");
+    return json({ conversationId: machine.conversation, promptId: `steer-${prompts}`, mode: "native" });
+  }
   if (suffix === "/interrupt") return json({});
   if (suffix === "/stop") {
     stops++;
@@ -296,9 +308,7 @@ try {
   const selected = await connectionFixture(sql, key, ownerId, orgId);
   for (const harness of ["codex", "claude"] as const) {
     const model = core.resolveModelChoice(harness, {}).model;
-    const create = await cli([
-      "create",
-      `Boat ${harness}`,
+    const selectors = [
       "--org",
       orgId,
       "--golden",
@@ -311,6 +321,44 @@ try {
       model,
       "--model-account",
       models.get(harness)!,
+    ];
+    const allocationsBeforeRefusal = machines.size;
+    const refused = await realFetch(`${origin}/api/v1/orchestrators`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.token}`,
+        "content-type": "application/json",
+        "idempotency-key": `forbidden-create-${harness}`,
+      },
+      body: JSON.stringify({
+        version: 1,
+        orgId,
+        name: `Forbidden ${harness}`,
+        goldenId: golden.id,
+        provider: "boat",
+        harness,
+        model,
+        modelAccountId: models.get(harness),
+        connections: [selected.forbidden.id],
+      }),
+    });
+    assert.equal(refused.status, 404);
+    assert.equal(((await refused.json()) as { error: { code: string } }).error.code, "not_found");
+    assert.equal(machines.size, allocationsBeforeRefusal, "Forbidden create must not allocate or enqueue a parent");
+    assert.equal(
+      (
+        await sql.query(
+          "select orchestrator_id from public.orchestrator_runtime_create_keys where owner_id=$1 and org_id=$2 and idempotency_key=$3",
+          [ownerId, orgId, `forbidden-create-${harness}`],
+        )
+      ).rows.length,
+      0,
+      "Denied selection must not reserve an async create",
+    );
+    const create = await cli([
+      "create",
+      `Boat ${harness}`,
+      ...selectors,
       "--idempotency-key",
       `create-${harness}`,
       "--connections",
@@ -324,6 +372,25 @@ try {
     }
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
+    const empty = await cli([
+      "create",
+      `Boat empty ${harness}`,
+      ...selectors,
+      "--no-connections",
+      "--idempotency-key",
+      `empty-create-${harness}`,
+    ]);
+    let emptyDetail: core.OrchestratorDetail = await cli(["detail", empty.orchestratorId, "--org", orgId]);
+    for (let attempt = 0; attempt < 150 && emptyDetail.orchestrator.state === "creating"; attempt++)
+      emptyDetail = await cli(["detail", empty.orchestratorId, "--org", orgId]);
+    assert.equal(emptyDetail.orchestrator.state, "ready", JSON.stringify(emptyDetail));
+    assert.deepEqual(emptyDetail.connections, []);
+    const emptyNative = (
+      await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+        emptyDetail.orchestrator.sandboxId,
+      ])
+    ).rows[0]!.provider_sandbox_id;
+    assert(authorityInstalled.has(emptyNative), "Explicit none must retain the internal orchestrator server");
     let revision = await exerciseConnections({
       detail,
       selected,
@@ -345,6 +412,17 @@ try {
       sawPrompt: (ids) =>
         assert.deepEqual(lastPromptServers, ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
     });
+    const parentNativeId = (
+      await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+        detail.orchestrator.sandboxId,
+      ])
+    ).rows[0]!.provider_sandbox_id;
+    if (harness === "claude")
+      assert.equal(
+        managedWrapperInstalls.get(parentNativeId),
+        3,
+        "Only create and changed MCP generations reinstall the managed wrapper",
+      );
     const act = async (action: string, text?: string, expected = 0) => {
       const result = await cli(
         [
@@ -365,6 +443,12 @@ try {
     };
     const readsBeforeSend = eventReads;
     await act("send", "hello");
+    if (harness === "claude")
+      assert.equal(
+        managedWrapperInstalls.get(parentNativeId),
+        3,
+        "Unchanged messages must not reinstall the native wrapper",
+      );
     // No owner events request yet: only the production background consumer can
     // pull this page and publish its cursor/activity. Await I/O, never a sleep.
     if (eventReads === readsBeforeSend)
@@ -425,6 +509,12 @@ try {
     assert.equal(detail.orchestrator.state, "ready");
     assert.equal(detail.orchestrator.continuity, "unverified", JSON.stringify(detail));
     await act("send", "continue");
+    if (harness === "claude")
+      assert.equal(
+        managedWrapperInstalls.get(parentNativeId),
+        4,
+        "A fresh physical boot must reinstall before continuing the same conversation",
+      );
     const continued: core.OrchestratorEventPage = await cli([
       "events",
       id,

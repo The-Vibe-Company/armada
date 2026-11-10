@@ -69,6 +69,8 @@ export interface OrchestratorRuntimeBackend {
 }
 
 export interface OrchestratorRuntimeOptions {
+  /** Owner authorization before async create admission; launch revalidates it. */
+  validateConnections?(configuration: OrchestratorCreate, ownerId: string): Promise<void>;
   diagnosticLog?: OrchestratorDiagnosticLog;
   enabledPairs?: readonly OrchestratorPair[];
   recoverCreate?: (
@@ -305,6 +307,7 @@ export class OrchestratorRuntime {
       });
       if (prior) return this.recorded(prior, diagnostics);
       diagnostics.stage("reservation");
+      await this.options.validateConnections?.(configuration, ownerId);
       const reservation = await this.options.store.create({
         ownerId,
         configuration,

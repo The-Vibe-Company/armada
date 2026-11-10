@@ -208,6 +208,20 @@ export function createProductionOrchestrators(input: {
   return createOrchestratorServices(sql, {
     scopedMcpUrl: input.scopedMcpUrl,
     runtime: {
+      validateConnections: async (configuration, ownerId) => {
+        const member = (
+          await sql.query<{ role: "admin" | "member" }>(
+            "select role from public.members where org_id=$1 and user_id=$2",
+            [configuration.orgId, ownerId],
+          )
+        ).rows[0];
+        if (!member) throw new OrchestratorRuntimeError("not_found");
+        const actor = { userId: ownerId, orgId: configuration.orgId, role: member.role };
+        const connections = input.managedConnections ?? input.connections;
+        const ids = configuration.connections ?? (await connections?.defaults?.(actor, "private")) ?? [];
+        if (ids.length && !connections) throw new OrchestratorRuntimeError("invalid_request");
+        await connections?.validate(actor, ids, "private");
+      },
       authority,
       reserveOperation: reserveOrchestratorOperation,
       skillRevision: input.skillRevision,

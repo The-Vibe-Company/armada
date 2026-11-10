@@ -85,6 +85,19 @@ export async function exerciseConnections(input: {
   input.sawPrompt([first.id]);
   const conversation = (await request(`${root}?orgId=${orgId}`)).value.orchestrator.conversationId;
   input.running(true);
+  if (
+    input.detail.orchestrator.configuration.provider === "boat" &&
+    input.detail.orchestrator.configuration.harness === "claude"
+  ) {
+    const steered = await request(
+      `${root}/steer`,
+      { orgId, expectedRevision: revision, text: "Steer the active turn" },
+      "connections-native-steer",
+    );
+    assert.equal(steered.status, 202, JSON.stringify(steered));
+    assert.equal(steered.value.state, "succeeded", JSON.stringify(steered));
+    revision = steered.value.revision;
+  }
   const busy = await change("add", [second.id], "connections-running");
   assert.equal(busy.status, 409, JSON.stringify(busy));
   assert.equal(busy.value.error.code, "conflict");

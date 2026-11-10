@@ -83,8 +83,8 @@ try:
         if isinstance(message,dict) and message.get("type")=="user":
             current=fresh()
             if current is not None:
-                if active: raise ValueError("turn_running")
                 if current!=last:
+                    if active: raise ValueError("turn_running")
                     for name in known-set(current):
                         control({"subtype":"mcp_toggle","serverName":name,"enabled":False})
                     control({"subtype":"mcp_set_servers","servers":current})

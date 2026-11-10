@@ -431,6 +431,32 @@ try {
   // Actual async CREATE through serve+proxy, with actual default-zero managed
   // MCP preparation. The external allocation cannot finish before admission.
   const selected = await connectionFixture(sql, key, ownerId, orgId);
+  const forbiddenCreate = await socketFetch(`${origin}/api/v1/orchestrators`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token.token}`,
+      "content-type": "application/json",
+      "idempotency-key": "forbidden-parent-create",
+    },
+    body: JSON.stringify({
+      ...configuration,
+      name: "Forbidden connection parent",
+      connections: [selected.forbidden.id],
+    }),
+  });
+  assert.equal(forbiddenCreate.status, 404);
+  assert.equal(((await forbiddenCreate.json()) as { error: { code: string } }).error.code, "not_found");
+  assert.equal(effects.allocationAttempts, 0, "Forbidden connection selection must be refused before async admission");
+  assert.equal(
+    (
+      await sql.query(
+        "select orchestrator_id from public.orchestrator_runtime_create_keys where owner_id=$1 and org_id=$2 and idempotency_key='forbidden-parent-create'",
+        [ownerId, orgId],
+      )
+    ).rows.length,
+    0,
+    "Denied selection must not reserve an async create",
+  );
   fake.expectConnections(1);
   const admitted = await cli(
     [
@@ -524,6 +550,37 @@ try {
   assert(childReceipt.result.sandboxId);
   assert.equal(effects.allocations, 2);
   assert.equal(effects.epochInstalls, 1, "Child must not install a parent epoch.");
+  const explicitNone = await cli(
+    [
+      "create",
+      "explicit-none-parent",
+      "--org",
+      orgId,
+      "--golden",
+      golden.id,
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-6.1-sol",
+      "--model-account",
+      modelId,
+      "--no-connections",
+      "--idempotency-key",
+      "explicit-none-parent",
+    ],
+    202,
+  );
+  const emptyInitialized = await waitForOperation(explicitNone.orchestratorId, explicitNone.id);
+  assert.equal(emptyInitialized.operation.state, "succeeded", JSON.stringify(emptyInitialized));
+  assert.deepEqual(emptyInitialized.detail.connections, []);
+  const emptyProviderId = (
+    await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+      emptyInitialized.detail.orchestrator.sandboxId,
+    ])
+  ).rows[0]!.provider_sandbox_id;
+  assert(fake.hasEpoch(emptyProviderId), "Explicit none must retain internal orchestration authority");
   for (const secret of [token.token, modalId, modalSecret, modelSecret, key, ...fake.privateTokens])
     assert(!logs.join("\n").includes(secret));
   // Ordinary stop survives collector failure notes and transport/receipt failures.
