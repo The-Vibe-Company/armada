@@ -257,6 +257,8 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    If the native process cannot be unambiguously identified, record identity as
    unverified and fail the continuity check; a second successful turn alone is
    not proof. Never use `ps ... args`, `/proc/*/environ`, or credential commands.
+   Before the next step, admit the bounded delayed/marker-wait native remote
+   operation described in step 4; it must be running before SQL expiry is forced.
 3. In the **same trusted staging psql session**, substitute the smoke user's UUID
    only (not a token). Preserve the temporary table for the final comparison:
 
@@ -265,7 +267,8 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    \prompt 'Dedicated staging smoke user UUID: ' smoke_user
    begin;
    create temporary table smoke_github_before on commit preserve rows as
-     select user_id, access_token_enc, refresh_token_enc
+     select user_id, sha256(access_token_enc) as access_digest,
+            sha256(refresh_token_enc) as refresh_digest
      from public.github_connections
      where user_id = :'smoke_user'::uuid and revoked_at is null
        and access_token_enc is not null;
@@ -294,8 +297,8 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
 5. Back in that psql session, emit **booleans only**:
 
    ```sql
-   select c.access_token_enc is distinct from b.access_token_enc as access_rotated,
-          c.refresh_token_enc is distinct from b.refresh_token_enc as refresh_rotated,
+   select sha256(c.access_token_enc) is distinct from b.access_digest as access_rotated,
+          sha256(c.refresh_token_enc) is distinct from b.refresh_digest as refresh_rotated,
           c.access_expires_at > now() + interval '5 minutes' as expiry_advanced,
           c.revoked_at is null as still_connected
    from public.github_connections c join smoke_github_before b using (user_id);
