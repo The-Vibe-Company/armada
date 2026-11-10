@@ -152,3 +152,55 @@ recovery; it does not provide uninterrupted output during a total redactor outag
 Diagnostics expose only fixed stage/reason labels, never exception text, socket paths,
 credential responses or environment values. A missing socket reports `socket_missing`;
 permission errors, refused connections and timeouts have distinct labels.
+
+### Automated first slice (#822)
+
+Run `bun scripts/post-deploy-smoke.ts --github-runtime` from a trusted checkout.
+This **staging-only, billable** mode shares the API transport, deadlines and cleanup
+of [post-deploy smoke](post-deploy-smoke.md). It does not enable the server gate.
+In addition to that page's `ARMADA_URL`, `ARMADA_TOKEN`, `ARMADA_SMOKE` and
+`ARMADA_SMOKE_CASES`, set:
+
+- Railway staging server: `ARMADA_GITHUB_RUNTIME_ENABLED=true` on every replica;
+  restart with the reviewed runtime artifacts. Never change production for this test.
+- Operator shell: `ARMADA_SMOKE_GITHUB_GATE=true` (an assertion, not remote detection).
+- `ARMADA_SMOKE_SERVER_REVISION` and `ARMADA_SMOKE_RUNTIME_REVISION`: the deployed
+  full 40-character lowercase Git SHAs, obtained from deployment/build records.
+  Evidence labels these **operator asserted**, not server-attested.
+- Each case: `disposableRepository` set to the exact credential-free HTTPS origin
+  URL, e.g. `https://github.com/your-org/disposable-runtime-smoke.git`. Use a
+  dedicated, disposable repository and smoke identity with push permission. The
+  persisted golden must authorize this repository and its checkout must already
+  have this exact origin. Include all four Boat/Modal × Claude/Codex pairs.
+
+The mode checks origin equality before asking the first native turn to run local
+Git, remote Git and a push of existing HEAD to a UUID scratch branch. It checks a
+private run-specific numeric receipt via exec, runs both read commands via exec,
+then repeats both in a second native turn. No commit or checkout is changed.
+Finally it attempts scratch deletion before stopping the sandbox, even on failure.
+A failed/ambiguous push or cleanup requires inspecting the reported scratch branch
+in the disposable repository; never blindly repeat an ambiguous launch. Failed
+receipt checks expose only a closed error, never guest output. A native agent is
+not a trusted attestor: these receipts prove the requested command sequence's
+results, not cryptographic session or process identity.
+
+**A zero script exit means only this automated slice passed.** Each case emits
+`enablement.complete=false`: it is not permission to enable production. The
+public API has no operation for forcing cached GitHub user access expiry, no
+private broker lifecycle/fault control, and no native process identity attestation.
+GitHub connection revocation fences the capability and requires reconnect; it is
+not a safe simulation of access expiry. Do not revoke credentials, manipulate the
+private socket, or copy tokens into the guest to manufacture renewal evidence.
+
+The operator must still record the gate-off stock baseline (checklist step 1),
+actual token expiry/renewal in the same VM/native session (step 4), broker
+stop/stall/restart plus local-Git usability and harness survival/recovery (step 5),
+and the exact identity/exit-status evidence missing from this slice. Follow-up
+#825 tracks the smallest guarded non-production controls and automated continuity
+evidence. Until then these remain manual checklist steps and block enablement.
+
+Rollout order: staging gate on → automated slice **and all manual checks** green
+for every provider/harness pair → coordinator enables production → authorized
+read-only Git verification → rollback by turning the gate off on every replica
+and retiring affected workers as described above. A partial or failed smoke blocks
+this rollout. This script never deploys, applies migrations, or changes a gate.
