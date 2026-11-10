@@ -546,7 +546,11 @@ test("GitHub runtime slice requires staging assertions and disposable repository
     { ARMADA_SMOKE_CASES: valid.ARMADA_SMOKE_CASES.replaceAll("https://github.com/", "https://secret@github.com/") },
   ]) {
     const fake = fixture();
-    expect(await postDeploySmoke({ ...valid, ...overrides }, ["--github-runtime"], fake.io)).toBe(false);
+    const io = {
+      ...fake.io,
+      fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(valid.ARMADA_URL, env.ARMADA_URL), init),
+    };
+    expect(await postDeploySmoke({ ...valid, ...overrides }, ["--github-runtime"], io)).toBe(false);
     expect(fake.calls).toHaveLength(0);
   }
 });
