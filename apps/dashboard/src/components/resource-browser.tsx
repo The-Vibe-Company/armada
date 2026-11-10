@@ -258,7 +258,7 @@ function Row({ row, selected, onSelect }: { row: ResourceRow; selected: boolean;
       {...row.attrs}
       data-selected={selected || undefined}
       className={cn(
-        "relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset @2xl:grid-cols-[minmax(0,1.4fr)_9.5rem_minmax(0,1fr)_auto]",
+        "relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1.4fr)_10rem_minmax(0,1fr)_auto]",
         selected && "bg-accent/70 shadow-[inset_3px_0_0_var(--color-primary)] hover:bg-accent/70",
       )}
     >
@@ -281,9 +281,9 @@ function Row({ row, selected, onSelect }: { row: ResourceRow; selected: boolean;
           <div className="truncate text-xs text-muted-foreground">{row.meta}</div>
         </div>
       </div>
-      <div className="col-start-1 row-start-2 min-w-0 @2xl:col-start-auto @2xl:row-start-auto">{row.state}</div>
-      <div className="hidden min-w-0 truncate text-sm text-muted-foreground @2xl:block">{row.fact}</div>
-      <div className="relative z-10 col-start-2 row-span-2 row-start-1 flex justify-end @2xl:col-start-auto @2xl:row-span-1 @2xl:row-start-auto">
+      <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
+      <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
+      <div className="relative z-10 col-start-2 row-span-2 row-start-1 flex justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
         {row.action}
       </div>
     </li>
