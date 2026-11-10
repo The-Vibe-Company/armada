@@ -43,5 +43,9 @@ exec /bin/rm -rf -- /home/user/.armada-runtime /home/user/.claude /home/user/.cl
     { timeoutMs: 30_000, workdir: "/home/user", env: {}, secrets: [], stdout: "ignore", stderr: "ignore" },
   );
   if ((await process.wait()) !== 0)
-    throw refusal("conflict", "Golden runtime history cleanup could not verify quiescence; source retained.");
+    throw refusal(
+      "conflict",
+      "Golden runtime history cleanup could not verify quiescence; source retained.",
+      "managed_state_busy",
+    );
 }

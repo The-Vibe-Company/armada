@@ -1,6 +1,16 @@
 import { ProviderError, type ProviderErrorCode } from "@armada/core";
-export function refusal(code: ProviderErrorCode, message: string): ProviderError {
-  return new ProviderError({ provider: "modal", code, message, retryable: code === "unavailable" });
+export function refusal(
+  code: ProviderErrorCode,
+  message: string,
+  modalFailure?: "process_quiescence_failed" | "process_baseline_missing" | "ssh_cleanup_failed" | "managed_state_busy",
+): ProviderError {
+  return new ProviderError({
+    provider: "modal",
+    code,
+    message,
+    retryable: code === "unavailable",
+    ...(modalFailure ? { details: { modalFailure } } : {}),
+  });
 }
 export function modalError(error: unknown): ProviderError {
   if (error instanceof ProviderError) return error;
@@ -16,10 +26,20 @@ export function modalError(error: unknown): ProviderError {
     SandboxTimeoutError: "unavailable",
   };
   // Do not copy upstream messages, causes or request bodies: they may contain credentials.
-  return refusal(
-    codes[name] ?? "unknown",
-    "Modal operation failed; consult the durable lifecycle phase before retrying.",
-  );
+  let status: number | undefined;
+  // nice-grpc ClientError exposes numeric gRPC status (0..16), not an HTTP status.
+  if (error instanceof Error && error.name === "ClientError") {
+    const code = Reflect.get(error, "code");
+    if (Number.isInteger(code) && code >= 0 && code <= 16) status = code;
+  }
+  return new ProviderError({
+    provider: "modal",
+    code: codes[name] ?? "unknown",
+    retryable: codes[name] === "unavailable",
+    message: "Modal operation failed; consult the durable lifecycle phase before retrying.",
+    ...(status === undefined ? {} : { status }),
+    details: { modalFailure: Object.hasOwn(codes, name) ? name : status === undefined ? "unknown" : "grpc" },
+  });
 }
 
 /** Retains only sanitized operation metadata and explicit resource provenance, never an upstream cause. */
@@ -34,7 +54,7 @@ export class ModalOperationError extends ProviderError {
       retryable: safe.retryable,
       ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
       ...(safe.status !== undefined ? { status: safe.status } : {}),
-      details: { resourceReceipt: receipt },
+      details: { ...safe.details, resourceReceipt: receipt },
     });
     this.receipt = receipt;
   }
@@ -64,6 +84,8 @@ export async function lifecycleStep<T>(
       code: safe.code,
       message: "Modal lifecycle step failed; source retained for reconciliation.",
       retryable: safe.retryable,
+      ...(safe.details ? { details: safe.details } : {}),
+      ...(safe.status === undefined ? {} : { status: safe.status }),
       providerCode: code,
     });
   }

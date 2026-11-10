@@ -652,3 +652,37 @@ test.each([false, true])(
   },
   20_000,
 );
+
+// The pre-#729 producer persisted only request/stage, with a string SQL generation and no native one.
+test("same-key recovery publishes a legacy dispatched receipt with null native generation", async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.register("active", true);
+    await f.sql.query("update orchestrator_operations set runtime_result=null where id=$1", [f.create.operation.id]);
+    await f.sql.query("update sandboxes set orchestrator_native_generation=null where id=$1", [saved.id]);
+    f.pendingTermination(true);
+    const first = await f.recover(f.input);
+    expect(first.state).toBe("uncertain");
+    const receipt = (
+      await f.sql.query<{
+        runtime_result: { request: { originalSandbox: { sqlGeneration: unknown; nativeGeneration: unknown } } };
+      }>("select runtime_result from orchestrator_operations where id=$1", [first.id])
+    ).rows[0]!.runtime_result;
+    expect(Object.keys(receipt).sort()).toEqual(["kind", "request", "stage", "version"]);
+    expect(receipt.request.originalSandbox.sqlGeneration).toBe("1");
+    expect(receipt.request.originalSandbox.nativeGeneration).toBeNull();
+    f.pendingTermination(false);
+    f.confirmTerminated();
+    expect(await f.recover(f.input)).toMatchObject({ id: first.id, state: "succeeded" });
+    expect(await f.store.read(f.p.owner, f.p.org, f.input.id)).toMatchObject({
+      state: "stopped",
+      continuity: "unverified",
+    });
+    expect(
+      (await f.sql.query("select state from orchestrator_operations where id=$1", [f.create.operation.id])).rows,
+    ).toEqual([{ state: "failed" }]);
+    expect(f.stats().allocations).toBe(0);
+  } finally {
+    await f.db.close();
+  }
+}, 20_000);

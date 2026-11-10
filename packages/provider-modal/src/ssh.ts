@@ -23,7 +23,8 @@ done
     ],
     { timeoutMs: 30_000, env: {}, secrets: [] },
   );
-  if ((await process.wait()) !== 0) throw refusal("conflict", "SSH could not be quiesced before snapshot.");
+  if ((await process.wait()) !== 0)
+    throw refusal("conflict", "SSH could not be quiesced before snapshot.", "ssh_cleanup_failed");
 }
 export function createSshPreparation(): SshPreparation {
   return {

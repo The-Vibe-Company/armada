@@ -82,7 +82,11 @@ upstream bodies or credentials. See [404 diagnosis](orchestrator-troubleshooting
 
 Create returns a durable pending receipt promptly; provider validation and
 preparation run in the server worker. Keep its ID/key and poll detail/events until
-ready or a terminal failure. Selection failures may arrive as failed preallocation
+**both** parent `state=ready` and its create operation `state=succeeded`, or a
+terminal failure. Parent `ready` alone is not admission completion: initialization
+may publish it before the create operation releases its busy fence. Sending or
+stopping in that interval can return `conflict`; continue polling detail/events
+rather than issuing a new create. Selection failures may arrive as failed preallocation
 receipts rather than a synchronous create HTTP error. Replaying the same key and
 payload discovers the same operation and never forks it again. Recovery also
 supports a never-conversed registered pending first create; it is explicit abort,

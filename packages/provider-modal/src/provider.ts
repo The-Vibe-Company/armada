@@ -246,6 +246,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         retryable: safe.retryable,
         ...(safe.status === undefined ? {} : { status: safe.status }),
         providerCode: `modal_boot_${stage}`,
+        ...(safe.details ? { details: safe.details } : {}),
         message: "Modal bootstrap failed; inspect the durable lifecycle receipt.",
       });
     }
