@@ -17,8 +17,8 @@ native/model credentials remain separately managed and are also sensitive.
 
 | What Armada can enforce through its own service | What it cannot guarantee / owner risk |
 | --- | --- |
-| No secret-value read API or user-JWT ciphertext access; personal-secret sandbox interiors restricted to launching owner | Someone controlling the receiving agent can read its secret. Provider-key holders, OS admins and a compromised control server bypass Armada's access policy |
-| Known-value filtering at Modal's server ingest and every Boat read before Armada storage/DTOs | Filtering is not leak prevention. Encoded or transformed agent output can evade it. Boat may already have raw transcripts; raw application-secret delivery there stays disabled until retention/deletion gates pass |
+| No secret-value read API or user-JWT ciphertext access; personal-secret sandbox interiors restricted to launching owner | Someone controlling the receiving agent can read its secret. Org admins/environment publishers can bake in code that reads a delivered secret, without opening the sandbox. Provider-key holders, OS admins and a compromised control server also bypass the route policy |
+| Known-value filtering at Modal ingest, every Boat read and all non-event text writes; owner-only interior-derived metadata hidden from non-owner DTO/JWT access | Filtering is not leak prevention. Encoded or transformed agent output can evade it. Boat may already have raw transcripts; raw application-secret delivery there stays disabled until retention/deletion gates pass |
 | Revoke blocks new admissions; delete removes the active vault entry | Deletion does **not** erase retained redaction copies (up to 30 days online), backups, provider records or delivered copies. Upstream rotation is needed after exposure |
 | No automatic ungranted secret binding/inheritance into child sandboxes; reject known parent secrets in managed child prompts | A parent can leak values through encoded prompts, commits, files or network. Delegation isolation is not information-flow isolation |
 | First routine release permits brokered application access only, with fresh runtime authority and execution-user approval | Unattended agents are not as safe as watched launches: injected content can misuse allowed broker actions or data; no claim of human supervision or perfect containment |
@@ -125,6 +125,8 @@ alone does not break templates, pause routines or require republication. Missing
 ineligible or provider-remapped goldens still fail closed. Retries keep the frozen
 snapshot; if no longer available, report unavailable rather than substituting another.
 Environment publishers remain trusted: following a golden allows new code in later runs.
+Org admins publishing that code can read personal secrets it receives; owner-only
+interior routes do not prevent this. See the explicit B1 downgrade below.
 Show the resolved snapshot and rebuild provenance in run history; strict snapshot-pinned
 templates are a possible later opt-in, not the default here. A manifest records revision
 ID/hash, provider/golden/snapshot IDs, exact selected connection/grant versions,
@@ -237,10 +239,38 @@ and are denied; owner succeeds; admin stop/delete succeeds without output. Repea
 hydration races and service restart, and on both providers in staging. Update
 SANDBOX_VISIBLE usage, shared interior authorization, RLS and column grants where
 needed; changing only the new vault endpoint is insufficient. This restriction protects
-against an admin **using Armada**, not one holding a Boat/Modal management key or OS
-access. Those actors can bypass it and read a member's delivered secret. If that trust
-is unacceptable, do not inject personal secrets into that organization's provider
-account; use brokered operations instead.
+against direct interior-route access only. **It does not keep a personal secret
+confidential from org admins/environment publishers of the golden.** They control
+code that runs at hydration: a PATH shim, shell startup, git hook or preload can
+read and transmit the value without opening the sandbox. Following the current
+eligible snapshot means an admin rebuild can affect the next launch without a new
+owner action. Scanning, provenance and owner-only routes do not prevent this.
+Provider-key holders and OS administrators can also bypass the route policy.
+
+R2-B1 chooses the review's **downgrade option (b)**, not a claim of publisher
+isolation. A personal vault entry is API-private; delivering it into an org
+environment entrusts that environment's publishers with its value. This is also
+true when the admin uses only Armada's normal golden publication path. Do not
+advertise personal-secret confidentiality from org admins. At personal-secret
+attachment/launch, disclose this trust and the effect of following rebuilds.
+
+Recommend an owner-controlled private golden, or an explicit owner-accepted org
+snapshot pinned by ID and publisher with rebuild requiring re-acceptance, if
+publisher isolation is required. That restricted profile needs its own policy and
+review before it can be advertised; this proposal's default still follows current
+eligible snapshots. Repository/dependency authors and accepted publishers remain
+trusted even in such a profile. If these trusts are unacceptable, use broker-only
+application access, not raw injection.
+
+Named proof B1-publisher-risk-probe (slice 2): in disposable staging on Boat/Modal,
+publish an org golden containing a harmless harness PATH shim that records a
+synthetic personal canary to an owner-visible test sink. Deny admin interior calls,
+rebuild, and show that the next admitted raw-secret launch can nevertheless expose
+the canary through the shim. Assert the launch warning/owner summary states this
+risk. This is a **demonstration of a residual risk**, not a proof that secrets
+cannot leak, and requires no production secrets. For Boat, use only the isolated
+provider-conformance harness while raw delivery is gated off. B1-owner-interior
+remains the negative route test; neither test establishes publisher secrecy.
 
 ### B2: server-controlled filtering, not provider transcript confidentiality
 
@@ -274,6 +304,70 @@ disables raw delivery, not the test. Exact/escaped known-value filtering cannot 
 deliberate encodings or exfiltration; even Armada's filtered rows are not guaranteed
 devoid of secret-derived content. The owner must not treat logs as safe for public
 sharing. No raw SDK/request bodies in server logging or errors.
+
+### R2-S1: non-event writes and metadata are also untrusted channels
+
+Filtering only events misses metadata. Today report_task_outcome can persist
+blocked.reason and prUrl in sandboxes.task_outcome; the list query exposes that
+object to admins and the applied task-outcome migration grants authenticated
+column reads. A personal-secret agent can send a canary through that path without
+using event ingest. Existing lifecycle_error and preservation_note grants have
+the same class of risk. These are **current gaps**, not covered protections.
+
+Before any raw-secret admission, inventory and route all server-state text writes
+through a trusted server-side known-value filter, using the sandbox/parent's
+authorized redaction context and strict field schemas. Apply it before DB writes,
+outbox/cache writes and successful mutation responses, not only read-time DTOs.
+Reject known-value contamination when filtering would invalidate an identifier,
+URL, structured task result or credential candidate; never persist a raw fallback.
+Missing context fails closed for tainted workloads. Record only safe error codes,
+not the rejected text. This is exact/escaped known-value defense, not a proof
+against encoded secrets or covert channels.
+
+Required initial write/sink inventory (expand it during implementation; an
+unclassified new agent/caller-text field must not be enabled):
+
+| State / write path | Required treatment and non-owner visibility |
+| --- | --- |
+| task_outcome.blocked.reason, ready.prUrl and other caller-supplied outcome fields; report_task_outcome | Filter/reject at the service-owned writer, validate URL/identifier schemas; entire task_outcome/task_prompt_id treated as interior on owner-only machines, including mutation echoes and list DTOs |
+| lifecycle_error, status/outcome reasons, preservation_note | Safe enumerated code/generated note wherever possible; filter any remaining text before write; raw notes/reasons interior, not administrative list text |
+| usage_turns/turn usage details, provider usage/error payloads and usage records | Strict allowlist of finite bounded numeric metrics and enums; no arbitrary JSON/string payloads; detailed usage interior, admin list gets only server-observed bounded aggregates if explicitly authorized |
+| orchestrator runtime/child-operation journal, receipt, failure, prompt/task, request/result and notification/outbox fields | Parent context filter at each durable writer before dispatch and replay; hide content-derived fields from non-owner projections; retry/journal path cannot bypass it |
+| routine occurrence outcome/reason, stored task/prompt/revision text, launch metadata and user-defined labels | Same filter/validation before persistence and response; owner-only-machine-derived text is interior even if routine or template metadata is org-visible |
+| credentials/native-auth write-back, including publishNativeAuth | Not ordinary metadata: existing account-bound encrypted credential storage, identity/schema validation and no public text echoes. Reject recognized unrelated application-secret contamination rather than redacting a credential into invalid auth; do not use write-back to publish arbitrary agent text to another identity |
+
+For a personal-secret owner-only sandbox, omit all interior-derived fields above
+from admin/non-owner sandbox and orchestrator lists (null or absent, never an
+encoded copy). Stop/delete returns only typed IDs/status, not notes or outcomes.
+Use generated labels and allowlisted lifecycle status for administrative views.
+Metadata is **not claimed secret-free**: filtered unknown/encoded text may still
+carry a value, and even numbers can be covert channels. Do not expose workload
+content as a management convenience.
+
+A DTO fix alone cannot secure direct PostgREST queries. Add a **new** migration:
+revoke authenticated direct sensitive-column grants (and any table-level grant
+that supersedes them); explicitly narrow security-definer list functions to the
+safe projection; expose interior through owner-aware functions/rows, with current
+membership and the durable owner-only flag checked server-side. Ordinary column
+grants are not conditional per sandbox, so do not pretend they hide tainted rows.
+Review service-role selectors, RPCs, dashboard data and iOS/CLI/MCP/control paths
+against the same rule. Non-owner raw writes are not allowed to bypass the writer.
+
+Named test B2-state-write-canary / R2-S1-metadata: inject a personal canary via
+report_task_outcome.blocked.reason and prUrl, lifecycle errors, preservation notes,
+usage payloads, outcome reasons and orchestrator journal/request/result fields.
+Inspect actual rows and mutation echoes, then fetch admin/peer list, detail, RPC
+and direct user-JWT column queries: no exact/escaped known canary stored/returned,
+and no interior-derived fields visible to non-owners. Owner reads the sanitized
+result; admin stop/delete still works without notes. Test service-role writes,
+retry/replay, missing context, unauthorized direct writes and restart. Include
+both fake-provider integration and disposable Boat/Modal staging checks. Extend
+B1-owner-interior and B2-hostile-ingest coverage with this non-event path; tests
+must exercise the actual report_task_outcome endpoint, not just a filter helper.
+
+There is no general cross-sandbox information-flow guarantee: any agent-writable
+server state later delivered elsewhere—including outcomes, commits and native-auth
+write-back via publishNativeAuth—is a potential channel, not only child prompts.
 
 ### S2: child delegation is not a secrecy boundary
 
@@ -423,7 +517,7 @@ Surface order within each stage remains API/MCP → CLI → dashboard → iOS.
 | Order / issue | Small scope and acceptance criteria | New migrations needed | Real-provider staging check |
 | --- | --- | --- | --- |
 | 1. Readable variables and write-only vault ingress | Smallest useful slice: shared API/MCP metadata and secure writes, variable reads, secret set/rotate/revoke/delete; no sandbox delivery | readable_variables, application_secrets with server-only value_enc, version metadata, audit, revocation epochs, upload-reference hashes/expiry; explicit RLS/column grants | Disposable staging write/read/rotate/delete, cross-org denial; no secret response or provider traffic |
-| 2. Secret runtime safety gates | Taint-before-delivery, confidential transport, final-start hydration, redaction/replay, snapshot eligibility, preservation/recovery/resume/fork denial and revoke cleanup; provider capability stays disabled until proven | launch secret-version bindings, taint and owner-only interior/RLS policy, golden provenance/connect invalidation, lifecycle epochs/leases, cleanup state, audited 30-day encrypted redaction context | Boat + Modal disposable canary harness: argv/journals/files/output, stop/expiry/revoke/restart/fork; B1-owner-interior, B2-hostile-ingest/B2-boat-read and S1-context-expiry; no archive, stale admission or connected snapshot; Boat raw delivery disabled without provider retention/deletion proof. No user-facing raw delivery yet |
+| 2. Secret runtime safety gates | Taint-before-delivery, confidential transport, final-start hydration, redaction/replay, snapshot eligibility, preservation/recovery/resume/fork denial and revoke cleanup; provider capability stays disabled until proven | launch secret-version bindings, taint and owner-only interior/RLS policy, golden provenance/connect invalidation, lifecycle epochs/leases, cleanup state, audited 30-day encrypted redaction context; revoke sensitive direct/table grants and narrow list RPCs for interior-derived fields | Boat + Modal disposable canary harness: argv/journals/files/output, stop/expiry/revoke/restart/fork; B1-owner-interior, B1-publisher-risk-probe, B2-hostile-ingest/B2-boat-read, B2-state-write-canary/R2-S1-metadata and S1-context-expiry; no archive, stale admission or connected snapshot; Boat raw delivery disabled without provider retention/deletion proof. No user-facing raw delivery yet |
 | 3. Variable/secret management surfaces | CLI stdin/file only, dashboard replacement not reveal, iOS safe metadata first; no local cache or analytics values | None; separately reviewed server mutation functions only if needed | Real CLI/browser/device staging writes and invalid requests; inspect network/log/crash payloads for canaries |
 | 4. Template presets and readable bindings | Immutable environment/tools/model revisions, shared API/MCP launch, explicit readable values, durable request claim before fork; missing references fail closed | templates/revisions, revision bindings, launch_requests/immutable manifests/results, actor/org key uniqueness and digest; explicit RLS/grants and revision CAS | Boat + Modal presets with two Notion workspaces; lost response, duplicate key, changed body and unknown provider outcome prove no duplicate allocation; S4-rebuild-admission proves snapshot selection/race and provenance |
 | 5. Secret/tool template grants and child authority | Admin-approved org-secret/template binding and actor/group use grants, server-held remote MCP auth; opt-in raw delivery only after slice 2; fresh child admission | connection/grant-version bindings, template-use/delegation grants; explicit RLS/grants | Sentry allow/deny; unapproved member/personal template rejected; revoked child gateway denied; S2-child-prompt canary blocked on every managed child path; canary template launches repeat slice 2 checks |
@@ -675,7 +769,11 @@ staging check; no routine code or migrations are added in this PR.
    the first opt-in release, with launch warning; otherwise defer raw-secret delivery.
 5. Should every org member use every shared secret? Recommend admin-approved
    per-template grants, least-privilege upstream tokens and membership rechecks;
-   private resources remain owner-only even from admins.
+   personal vault metadata has owner-only API access, but personal secrets delivered
+   into an org environment are readable by its admins/environment publishers.
+   Recommend an owner-controlled private golden, or a separately designed explicit
+   owner acceptance of a pinned org snapshot/publisher with rebuild re-acceptance.
+   Neither is a guarantee against malicious dependencies or repository code.
 6. Should rotation automatically update old templates? Recommend no: fail closed,
    publish refreshed bindings, stop affected raw-secret runs and rotate upstream.
 7. Is 90-day metadata audit retention suitable, and what backup retention is required?
@@ -686,7 +784,9 @@ staging check; no routine code or migrations are added in this PR.
    persist the resolved binding. No silent fallback.
 9. Approve following the golden's current eligible snapshot at each new admission?
    Recommend yes; rebuilds should not require template republication or pause routines.
-   Every run/retry freezes its resolved snapshot; publishers can change later-run code.
+   Every run/retry freezes its resolved snapshot; publishers can change later-run code
+   and read any personal secret delivered to it. Recommend owner-controlled or
+   explicitly accepted/pinned publisher policy if that trust is not acceptable.
 10. Approve 30-day online encrypted redaction-value retention after delivery, including
     deleted/retired secrets, plus a bounded backup policy? Recommend only with explicit
     disclosure; “delete” is denial and active-entry removal, not immediate erasure.
