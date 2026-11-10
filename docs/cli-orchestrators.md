@@ -166,3 +166,26 @@ receipts rather than a synchronous create HTTP error. Replaying the same key and
 payload discovers the same operation and never forks it again. Recovery also
 supports a never-conversed registered pending first create; it is explicit abort,
 not permission to resume initialization or adopt a newer generation.
+
+### Optional Skillpack method
+
+Create accepts `--skill example/notes@1.0.0` (API/MCP create: `skill`). This first
+slice requires one exact public catalog pin. Install the released native
+`skillpack` CLI in the golden beforehand; Armada does not download an installer.
+Both Claude Code and Codex receive project-local discovery files before the first
+turn. Detail includes `configuration.skill` and `skillReceipt` (origin, UUID,
+version, checksum). Missing CLI/releases, conflicts and invalid receipts block
+preparation without starting a turn; errors never include guest output.
+
+Without `--skill`, only Armada's minimal launcher-tool reference is installed;
+no orchestration method is selected. `ARMADA_ORCHESTRATOR_SKILL_REVISION` is no
+longer required and remains only legacy receipt metadata. Only new creates receive
+the built-in reference or selected skill. Existing parents retain the files already
+installed in their project directory and are not re-bootstrapped, including on
+resume. Creating a new parent does not remove skills inherited from a golden.
+
+Private/share-token skills, custom origins and unversioned references are not
+supported yet. No Skillpack credentials are inferred from Armada credentials.
+See [investigation and design](orchestrator-skillpack.md) for safety, migration
+and staging verification. Pinning identifies code, not trust: a selected skill
+can instruct the parent to run commands and use its owner-scoped delegation.

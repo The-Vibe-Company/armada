@@ -46,8 +46,8 @@ export function createProductionOrchestrators(input: {
 }) {
   const enabledPairs = input.requestedPairs.filter((pair) => pair === "modal:codex" || pair.startsWith("boat:"));
   if (enabledPairs.length === 0) return undefined;
-  if (!input.skillRevision || !/^[a-f0-9]{40}$/.test(input.skillRevision))
-    throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
+  // Legacy database metadata only; 40 zeroes means none. No skill is selected by this revision.
+  const skillRevision = input.skillRevision ?? "0".repeat(40);
   const { sql } = input;
   const authority = new OrchestratorAuthority(sql, async (tx, account) => {
     // The actual named credential policy under the authority transaction, never
@@ -224,7 +224,7 @@ export function createProductionOrchestrators(input: {
       },
       authority,
       reserveOperation: reserveOrchestratorOperation,
-      skillRevision: input.skillRevision,
+      skillRevision,
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs,
       recoverCreate: async (request, diagnostics) => {

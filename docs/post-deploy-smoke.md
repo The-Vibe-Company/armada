@@ -1,5 +1,18 @@
 # Deployed API smoke
 
+> **Release-only production gate:** With repository variables
+> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
+> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
+> continuously deploy/migrate/smoke main on staging. Release calls that same staging
+> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
+> Independent automatic migration applies and deployment-event smoke below are disabled.
+> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
+> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
+> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
+> smoke to finish and ensure no next deployment is queued before running it.
+> It can otherwise observe staging mid-deploy and never authorizes a release.
+> With both variables absent/false, legacy behavior below is unchanged.
+
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
 deploy, apply migrations, or contact a provider/database directly.
@@ -109,8 +122,58 @@ The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
 the sandbox and checks provider state. The optional path also exercises
 orchestrator create → send → stop → resume → stop. It requires `goldenId`;
-currently the orchestrator supports Modal/Codex only. Use a separate cases file
-containing only supported pairs for that run.
+orchestrator capabilities must enable the selected pair (Modal/Codex native or
+Boat/Claude and Boat/Codex best-effort). Within that supported set,
+the smoke reads `orchestrators/capabilities` once and validates every selected
+pair before **any** sandbox or orchestrator allocation. A disabled or absent
+pair fails the run; it is never silently skipped. Use a separate cases file
+containing only enabled pairs for that run. Ordinary-only runs do not use this
+orchestrator capability gate. Ordinary-pair preflight is tracked in
+[#859](https://github.com/The-Vibe-Company/armada/issues/859): add an authenticated
+`sandbox/capabilities` route using launch's provider/harness availability policy
+and caller-visible model-account validation, then gate ordinary cases before
+allocation. Orchestrator enablement is a separate policy and cannot substitute
+for that route.
+
+### Pair prerequisites
+
+All four rows use the same GitHub **staging** environment variable
+`ARMADA_ORIGIN` and secrets `ARMADA_SMOKE_TOKEN` and `ARMADA_SMOKE_CASES`.
+These are shared across the matrix, not one secret per pair. Provider keys and
+model credentials live in Armada's staging credential store, not GitHub Actions.
+
+| Pair | Staging resources | Fields in each `ARMADA_SMOKE_CASES` entry | GitHub staging configuration |
+| --- | --- | --- | --- |
+| Boat × Claude | Boat golden with git checkout; Claude model account available to smoke user | `provider: "boat"`, `harness: "claude"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID for orchestrator runs; `modelAccountId` = Claude account ID; `model` = model supported by that account | Shared `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN`, `ARMADA_SMOKE_CASES`; no pair-specific GitHub key |
+| Boat × Codex | Same staging Boat account/key and reusable Boat golden; Codex model account available to smoke user | `provider: "boat"`, `harness: "codex"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID for orchestrator runs; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Modal × Claude | Modal golden with git checkout; Claude model account available to smoke user | `provider: "modal"`, `harness: "claude"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID for orchestrator runs; `modelAccountId` = Claude account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Modal × Codex | Reusable Modal golden; Codex model account available to smoke user | `provider: "modal"`, `harness: "codex"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID for orchestrator runs; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+
+Every entry also requires `org` (staging org ID) and `repo` (absolute path to
+that golden's git checkout with an accessible `origin`); `reasoningEffort`
+is optional. The smoke token's user needs access to those resources and a staging
+GitHub connection authorized for the checkout. `goldenId` is currently required
+only with `--orchestrator`; use the same provider's golden, not another provider's
+ID. Account references are per harness and may be reused across providers when
+the account supports both; they are identifiers, never credential values.
+
+Goldens are provider-specific: a Boat golden cannot stand in for a Modal golden.
+Use a **separate Boat account and account key for staging**, shared by both Boat
+harness rows (not a separate Boat key per pair): Boat allows one golden per
+account. Configure that key in Armada's staging credential store, never in the
+cases file or workflow. For orchestrator runs, every selected pair must also be
+enabled on the staging server and reported enabled by its capabilities endpoint.
+A server-wide disabled switch reports `orchestrator_disabled`; an absent or
+disabled selected pair reports `pair_disabled`.
+These prerequisites do not imply a pair is enabled today.
+
+This first matrix slice adds preflight only. Sandbox resume/recall,
+orchestrator post-resume recall, bounded recovery/terminal-state assertions,
+timings/job summaries and expanded closed failure labels remain follow-up work
+in [#826](https://github.com/The-Vibe-Company/armada/issues/826) and
+[#827](https://github.com/The-Vibe-Company/armada/issues/827). Before those full-cycle
+changes are merge-ready, the coordinator must run the staging workflow with
+`--orchestrator` and every enabled pair and return its receipts.
 
 The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
 a successful GitHub `deployment_status` for environment exactly `armada / staging`

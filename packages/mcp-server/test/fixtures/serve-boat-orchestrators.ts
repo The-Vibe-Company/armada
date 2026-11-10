@@ -7,6 +7,7 @@ import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
@@ -144,11 +145,13 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     return json({
       type: "command.finished",
       success: true,
-      exitCode: 0,
+      exitCode: JSON.stringify(body).includes("example/missing") ? 1 : 0,
       stdout:
         body.command === "cat /proc/sys/kernel/random/boot_id"
           ? boots.get(machine.id)
-          : `Source: https://github.com/The-Vibe-Company/armada/tree/${"a".repeat(40)}/.agents/skills\n`,
+          : body.command.startsWith("skillpack install")
+            ? catalogLock(body.command.includes("claude-code") ? "claude-code" : "codex")
+            : "",
       stderr: "",
       timedOut: false,
     });
@@ -304,11 +307,22 @@ async function cli(args: string[], expected = 0) {
   assert.equal(code, expected, `${args.join(" ")}: ${err}\n${out}\n${logs.join("\n")}\n${requests.join("\n")}`);
   return JSON.parse(out || err);
 }
+async function waitForCreate(operation: { id: string; orchestratorId: string }): Promise<core.OrchestratorDetail> {
+  for (let attempt = 0; attempt < 150; attempt++) {
+    const detail: core.OrchestratorDetail = await cli(["detail", operation.orchestratorId, "--org", orgId]);
+    const receipt = detail.operations.find((item) => item.id === operation.id);
+    if (receipt && receipt.state !== "pending") return detail;
+  }
+  throw Error("Create did not settle after bounded real HTTP polling");
+}
+
 try {
   const selected = await connectionFixture(sql, key, ownerId, orgId);
   for (const harness of ["codex", "claude"] as const) {
     const model = core.resolveModelChoice(harness, {}).model;
     const selectors = [
+      "--skill",
+      catalogReference,
       "--org",
       orgId,
       "--golden",
@@ -365,13 +379,11 @@ try {
       selected.first.id,
     ]);
     const id = create.orchestratorId;
-    let detail: core.OrchestratorDetail = await cli(["detail", id, "--org", orgId]);
-    for (let i = 0; i < 150; i++) {
-      detail = await cli(["detail", id, "--org", orgId]);
-      if (detail?.orchestrator.state !== "creating") break;
-    }
+    let detail = await waitForCreate(create);
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
+    assert.equal(detail.orchestrator.configuration.skill, catalogReference);
+    assert.deepEqual(detail.orchestrator.skillReceipt, catalogReceipt);
     const empty = await cli([
       "create",
       `Boat empty ${harness}`,
@@ -380,9 +392,7 @@ try {
       "--idempotency-key",
       `empty-create-${harness}`,
     ]);
-    let emptyDetail: core.OrchestratorDetail = await cli(["detail", empty.orchestratorId, "--org", orgId]);
-    for (let attempt = 0; attempt < 150 && emptyDetail.orchestrator.state === "creating"; attempt++)
-      emptyDetail = await cli(["detail", empty.orchestratorId, "--org", orgId]);
+    const emptyDetail = await waitForCreate(empty);
     assert.equal(emptyDetail.orchestrator.state, "ready", JSON.stringify(emptyDetail));
     assert.deepEqual(emptyDetail.connections, []);
     const emptyNative = (
@@ -559,6 +569,32 @@ try {
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
   }
+  const beforeFailurePrompts = prompts;
+  const failed = await cli([
+    "create",
+    "missing method",
+    "--org",
+    orgId,
+    "--golden",
+    golden.id,
+    "--provider",
+    "boat",
+    "--agent",
+    "codex",
+    "--model",
+    core.resolveModelChoice("codex", {}).model,
+    "--model-account",
+    models.get("codex")!,
+    "--skill",
+    "example/missing@1.0.0",
+    "--idempotency-key",
+    "missing-method",
+  ]);
+  const blocked = await waitForCreate(failed);
+  assert.equal(blocked.orchestrator.state, "blocked");
+  assert.equal(blocked.orchestrator.skillReceipt, null);
+  assert.equal(blocked.orchestrator.conversationId, null);
+  assert.equal(prompts, beforeFailurePrompts, "Failed installation must not start a turn");
   assert(logs.some((line) => line.includes('"kind":"prompt_dispatch"') && line.includes('"value":"accepted"')));
   assert(logs.some((line) => line.includes('"kind":"prompt_status"') && line.includes('"value":"finished"')));
   assert(logs.some((line) => line.includes('"kind":"events_poll"') && line.includes('"value":"published"')));

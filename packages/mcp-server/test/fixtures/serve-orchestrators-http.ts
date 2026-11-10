@@ -11,6 +11,7 @@ import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
+import { catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
@@ -462,6 +463,8 @@ try {
     [
       "create",
       "actual-managed-create",
+      "--skill",
+      catalogReference,
       "--org",
       orgId,
       "--golden",
@@ -489,6 +492,8 @@ try {
     assert(!logs.join("\n").includes(secret), "Sensitive value in server logs.");
   assert.equal(initialized.operation.state, "succeeded", `${JSON.stringify(initialized.operation)} ${logs.join("\n")}`);
   assert.equal(initialized.detail.orchestrator.state, "ready");
+  assert.equal(initialized.detail.orchestrator.configuration.skill, catalogReference);
+  assert.deepEqual(initialized.detail.orchestrator.skillReceipt, catalogReceipt);
   assert.equal(effects.allocationAttempts, 1);
   assert.equal(effects.allocations, 1);
   assert.equal(effects.modelCalls, 0);
@@ -692,7 +697,65 @@ try {
     assert(physical?.physical_id, "A completed stop must retain its exact physical incarnation");
     expectedPhysicalExits.add(physical.physical_id);
   }
-  // Prove exact recovery/child/ordinary resource closure, not transport attempt
+  const epochsBeforeFailure = effects.epochInstalls;
+  const callsBeforeFailure = effects.modelCalls;
+  const failed = await cli(
+    [
+      "create",
+      "missing method",
+      "--org",
+      orgId,
+      "--golden",
+      golden.id,
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-6.1-sol",
+      "--model-account",
+      modelId,
+      "--skill",
+      "example/missing@1.0.0",
+      "--idempotency-key",
+      "missing-method",
+    ],
+    202,
+  );
+  const blocked = await waitForOperation(failed.orchestratorId, failed.id);
+  assert.equal(blocked.detail.orchestrator.state, "blocked");
+  assert.equal(blocked.detail.orchestrator.skillReceipt, null);
+  assert.equal(blocked.detail.orchestrator.conversationId, null);
+  assert.equal(effects.epochInstalls, epochsBeforeFailure, "No delegated authority after failed install");
+  assert.equal(effects.modelCalls, callsBeforeFailure, "No first turn after failed install");
+  const failedStopped = await cli(
+    [
+      "recover",
+      failed.orchestratorId,
+      "--org",
+      orgId,
+      "--expected-revision",
+      String(blocked.detail.orchestrator.revision),
+      "--idempotency-key",
+      "cleanup-missing-method",
+    ],
+    202,
+  );
+  assert.equal(
+    failedStopped.state,
+    "succeeded",
+    "The failed installer VM must close through exact never-conversed create recovery",
+  );
+  const failedPhysical = (
+    await sql.query<{ physical_id: string }>(
+      `select m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+     on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.id=$1`,
+      [blocked.detail.orchestrator.sandboxId],
+    )
+  ).rows[0];
+  assert(failedPhysical?.physical_id);
+  expectedPhysicalExits.add(failedPhysical.physical_id);
+  // Prove exact recovery/child/ordinary/failed-installer resource closure, not transport attempt
   // counts. Missing stops or an accidental stop of either live parent must fail.
   const physicalExits = fake.physicalExits();
   const physicalInventory = (

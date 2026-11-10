@@ -1,5 +1,15 @@
 # Automatic production migrations
 
+> **Release-only production gate:** With repository variables
+> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
+> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
+> continuously deploy/migrate/smoke main on staging. Release calls that same staging
+> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
+> Independent automatic migration applies and deployment-event smoke below are disabled.
+> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
+> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
+> With both variables absent/false, legacy behavior below is unchanged.
+
 > **Release-sync opt-in:** When repository variable `RELEASE_SYNCED_DEPLOYS=true`,
 > the push-to-main production job and manual standalone migration apply are disabled.
 > Tagged migrations run inside Release before server/dashboard/npm deployment, using

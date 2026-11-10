@@ -1,134 +1,168 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Provider } from "@armada/core";
+import { expect, test } from "bun:test";
+import { type Provider, ProviderError } from "@armada/core";
 import { bootstrapOrchestrator } from "../src/orchestrator-bootstrap.ts";
+import { OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
 
-const revision = "78884de87066851b75e09cbda134606c0a8bc6d7";
-const source = `https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills`;
+const reference = "example/notes@1.0.0";
+const checksum = `sha256:${"a".repeat(64)}`;
+const entry = {
+  version: "1.0.0",
+  pinned: "1.0.0",
+  catalogReference: "example/notes",
+  skillId: "11111111-1111-4111-8111-111111111111",
+  checksum,
+  targets: [{ tool: "codex", version: "1.0.0", packageChecksum: checksum }],
+};
+const lock = (skill = entry) =>
+  JSON.stringify({
+    lockfileVersion: 2,
+    workspaces: { "catalog:example": { apiUrl: "https://skillpack.app/v1", skills: { notes: skill } } },
+  });
 
-function fixture(stdout = `Source: ${source}\n`, exitCode = 0) {
+// Owns installer receipt validation/order; serve composition owns persistence and first-turn readiness.
+test.each([
+  "plain",
+  "pinned",
+  "nonzero",
+  "provider error",
+  "invalid JSON",
+  "detached",
+  "truncated",
+  "wrong version",
+  "wrong checksum",
+  "invalid reference",
+  "reserved reference",
+])("bootstrap %s", async (mode) => {
+  const calls: string[] = [];
   const commands: string[] = [];
+  const lines: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "create");
+  diagnostics.stage("skills");
   const provider = {
     exec: async ({ command }: { command: string }) => {
       commands.push(command);
+      calls.push("install");
+      if (mode === "provider error")
+        throw new ProviderError({ provider: "boat", code: "unavailable", message: "private output", retryable: false });
       return {
-        detached: false as const,
-        exitCode,
-        stdout,
-        stderr: "private diagnostic",
+        detached: mode === "detached",
         timedOut: false,
-        truncated: false,
+        truncated: mode === "truncated",
+        exitCode: mode === "nonzero" ? 1 : 0,
+        stdout:
+          mode === "invalid JSON"
+            ? "private output"
+            : lock(
+                mode === "wrong version"
+                  ? { ...entry, version: "2.0.0" }
+                  : mode === "wrong checksum"
+                    ? { ...entry, checksum: "bad" }
+                    : entry,
+              ),
+        stderr: "private output",
       };
     },
   } as unknown as Provider;
-  return { commands, provider };
-}
-
-describe("orchestrator bootstrap", () => {
-  test("installs pinned public skills before private authority, with literal shell arguments", async () => {
-    const { provider, commands } = fixture();
-    let configured = false;
-    const receipt = await bootstrapOrchestrator(provider, {
-      sandboxId: "parent",
-      projectDir: "/home/user/repo'$(false)",
-      skillRevision: revision,
-      configureAuthority: async () => {
-        expect(commands).toHaveLength(1);
-        configured = true;
-      },
-    });
-    expect(configured).toBe(true);
-    expect(commands[0]).toContain(`--revision '${revision}'`);
-    expect(commands[0]).toContain("--project '/home/user/repo'\\''$(false)'");
-    expect(receipt).toEqual({ revision, source });
-  });
-
-  test.each([
-    ["conflicting destination", `Source: ${source}\n`, 1],
-    ["missing provenance", "Installed: directory\n", 0],
-    ["different revision", `Source: ${source.replace(revision, "a".repeat(40))}\n`, 0],
-  ])("%s blocks authority and does not expose guest output", async (_name, stdout, exitCode) => {
-    const { provider } = fixture(stdout, exitCode);
-    let configured = false;
-    await expect(
-      bootstrapOrchestrator(provider, {
-        sandboxId: "parent",
-        projectDir: "/home/user/repo",
-        skillRevision: revision,
-        configureAuthority: async () => {
-          configured = true;
-        },
-      }),
-    ).rejects.toThrow("orchestrator_skill_bootstrap_failed");
-    expect(configured).toBe(false);
-  });
-
-  test.each(["main", "a".repeat(39), "A".repeat(40)])(
-    "refuses unpinned revision %s before guest I/O",
-    async (skillRevision) => {
-      const { provider, commands } = fixture();
-      await expect(
-        bootstrapOrchestrator(provider, {
-          sandboxId: "parent",
-          projectDir: "/home/user/repo",
-          skillRevision,
-          configureAuthority: async () => {},
+  const run = bootstrapOrchestrator(provider, {
+    sandboxId: "parent",
+    diagnostics,
+    projectDir: "/home/user/repo'$(false)",
+    skillRevision: "a".repeat(40),
+    ...(mode === "plain"
+      ? {}
+      : {
+          skill:
+            mode === "invalid reference"
+              ? "--evil"
+              : mode === "reserved reference"
+                ? "example/armada-tools@1.0.0"
+                : reference,
         }),
-      ).rejects.toThrow("orchestrator_invalid_bootstrap");
-      expect(commands).toHaveLength(0);
+    harness: "codex",
+    recordReceipt: async () => {
+      calls.push("receipt");
     },
-  );
+    configureAuthority: async () => {
+      calls.push("authority");
+    },
+  });
+  if (mode === "plain" || mode === "pinned") {
+    const receipt = await run;
+    expect(calls).toEqual(["install", "receipt", "authority"]);
+    if (mode === "pinned")
+      expect(commands[0]?.split(" && ")[0]).toBe(
+        "skillpack install 'example/notes' --version '1.0.0' --api-url https://skillpack.app/v1 --scope project --project '/home/user/repo'\\''$(false)' --tools codex --pin --yes --json >/dev/null",
+      );
+    expect(receipt).toEqual(
+      mode === "plain"
+        ? null
+        : { reference, version: "1.0.0", skillId: entry.skillId, checksum, origin: "https://skillpack.app/v1" },
+    );
+  } else {
+    await expect(run).rejects.toThrow(
+      mode === "invalid reference" || mode === "reserved reference"
+        ? "orchestrator_invalid_bootstrap"
+        : "orchestrator_skill_bootstrap_failed",
+    );
+    expect(calls).toEqual(mode === "invalid reference" || mode === "reserved reference" ? [] : ["install"]);
+    diagnostics.report("failed");
+    const reason =
+      mode === "provider error"
+        ? "provider_unavailable"
+        : ["invalid JSON", "wrong version", "wrong checksum"].includes(mode)
+          ? "skill_provenance_missing"
+          : mode === "detached"
+            ? "skill_execution_detached"
+            : mode === "truncated"
+              ? "skill_output_truncated"
+              : ["invalid reference", "reserved reference"].includes(mode)
+                ? "skill_configuration_invalid"
+                : "skill_install_nonzero";
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      {
+        event: "orchestrator_operation_failure",
+        component: "owner",
+        action: "create",
+        outcome: "failed",
+        stage: "skills",
+        reason,
+      },
+    ]);
+  }
 });
 
-test("bootstrap uses existing CLI or pinned public installer without executing registry scripts", async () => {
-  for (const existing of [false, true]) {
-    const root = await mkdtemp(join(tmpdir(), "armada-installer-"));
-    const trace = join(root, "arguments");
-    const project = "/home/user/repo'$(false)";
-    try {
-      const program = '#!/bin/sh\nprintf "%s\\n" "$@" > "$TRACE"\nprintf "Source: %s\\n" "$SOURCE"\n';
-      await writeFile(join(root, "npx"), program, { mode: 0o700 });
-      if (existing) await writeFile(join(root, "armada"), program, { mode: 0o700 });
-      const provider = {
-        exec: async ({ command }: { command: string }) => {
-          const child = Bun.spawn(["/bin/sh", "-c", command], {
-            cwd: root,
-            env: { PATH: root, TRACE: trace, SOURCE: source },
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          const [stdout, stderr, exitCode] = await Promise.all([
-            new Response(child.stdout).text(),
-            new Response(child.stderr).text(),
-            child.exited,
-          ]);
-          return { detached: false, stdout, stderr, exitCode, timedOut: false, truncated: false };
-        },
-      } as unknown as Provider;
-      let configured = false;
-      await bootstrapOrchestrator(provider, {
-        sandboxId: "fixture",
-        projectDir: project,
-        skillRevision: revision,
-        configureAuthority: async () => {
-          configured = true;
-        },
-      });
-      expect(configured).toBe(true);
-      expect((await readFile(trace, "utf8")).trimEnd().split("\n")).toEqual([
-        ...(existing ? [] : ["--yes", "--ignore-scripts", "--package", "@the-vibe-company/armada@2.14.0", "armada"]),
-        "skill",
-        "install",
-        "--project",
-        project,
-        "--yes",
-        "--revision",
-        revision,
-      ]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+// Real shell boundary: repeated preparation is safe, but unrelated content is never replaced.
+test("built-in reference preserves conflicting files", async () => {
+  const { mkdtemp, readFile, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(`${tmpdir()}/armada-reference-`);
+  const provider = {
+    exec: async ({ command }: { command: string }) => {
+      const child = Bun.spawn(["/bin/sh", "-c", command], { stdout: "pipe", stderr: "pipe" });
+      return {
+        detached: false,
+        timedOut: false,
+        truncated: false,
+        exitCode: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      };
+    },
+  } as unknown as Provider;
+  const request = {
+    sandboxId: "parent",
+    projectDir: root,
+    skillRevision: "a".repeat(40),
+    configureAuthority: async () => {},
+  };
+  try {
+    await bootstrapOrchestrator(provider, request);
+    await bootstrapOrchestrator(provider, request);
+    const path = `${root}/.agents/skills/armada-tools/SKILL.md`;
+    await writeFile(path, "user content");
+    await expect(bootstrapOrchestrator(provider, request)).rejects.toThrow("orchestrator_skill_bootstrap_failed");
+    expect(await readFile(path, "utf8")).toBe("user content");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -2012,6 +2012,7 @@ export type Database = {
           blocked_reason: string | null;
           created_at: string;
           mcp_wrapper_revision: string | null;
+          skill_receipt: Json | null;
         };
         Insert: {
           orchestrator_id: string;
@@ -2027,6 +2028,7 @@ export type Database = {
           blocked_reason?: string | null;
           created_at?: string;
           mcp_wrapper_revision?: string | null;
+          skill_receipt?: Json | null;
         };
         Update: {
           orchestrator_id?: string;
@@ -2042,6 +2044,7 @@ export type Database = {
           blocked_reason?: string | null;
           created_at?: string;
           mcp_wrapper_revision?: string | null;
+          skill_receipt?: Json | null;
         };
         Relationships: [
           {
