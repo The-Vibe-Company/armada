@@ -151,7 +151,9 @@ struct SandboxConversationView: View {
                 ? "This sandbox was deleted, so its conversation can no longer be read."
                 : model.feed.hasLoaded ? "Prompts you send and the agent's replies appear here." : "Reading the latest messages from Armada.",
             onRetryPending: nil,
-            onDismissPending: { model.dismiss($0) }
+            onDismissPending: { model.dismiss($0) },
+            hasOlder: model.feed.hasOlder,
+            onLoadOlder: { Task { await model.loadOlder() } }
         )
         .refreshable { await model.refresh() }
         .safeAreaInset(edge: .top, spacing: 0) {

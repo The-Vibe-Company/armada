@@ -76,7 +76,9 @@ struct OrchestratorConversationView: View {
             onDismissPending: {
                 discardBubbleID = $0.id
                 confirmingDiscard = true
-            }
+            },
+            hasOlder: model.feed.hasOlder,
+            onLoadOlder: { Task { await model.loadOlder() } }
         )
         .safeAreaInset(edge: .top, spacing: 0) {
             banners(model)

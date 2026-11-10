@@ -137,21 +137,26 @@ repeat. Unknown `other` events without `data` keep their page and cursor.
 ## Opening a conversation fast (#813)
 
 `ConversationLoader` is the loading order both conversation screens use, over
-any event type and fetch: a `ConversationCache` snapshot from earlier in the
-session is shown before any request; otherwise one ordinary page is read and
-shown (the first paint never waits for more); while the server reports more,
-the rest is read with `ConversationRead.catchUp` reads back to back, never
-behind the poll delay; then the stream is polled. A catch-up read is
-`logs/read` with `all` (`sandboxEvents(id:cursor:all:)`, the server reads up to
-100 provider pages in one response) or the orchestrator events route's largest
-page (500). A catch-up `logs/read` may stay silent for `catchUpTimeout` (120 s)
-instead of 30 s; once a catch-up read fails, that loader reads ordinary pages
-only, so a history too long for one response never loops. Today `armada serve`
-keeps Bun's default 10 s idle timeout, so a catch-up the server cannot finish
-within it fails once and the loader continues page by page. The clock is
-injected; tests use a recording one.
-Reading a conversation from its end is #812; until it ships, the history is
-still read from the oldest event, but in one round trip instead of one per page.
+any event type and fetch, against the #812 paging contract (`logs/read` and the
+orchestrator events route with `direction: backward`):
+
+1. a `ConversationCache` snapshot from earlier in the session is shown before
+   any request;
+2. otherwise the latest page is read backward from the end and shown, so the
+   first paint is one read and shows the newest messages;
+3. the stream is followed forward from that page's `cursor` (the live
+   frontier), back to back while the server reports more, otherwise after the
+   poll delay;
+4. older pages are read only when asked (`loadOlder`, on scroll-up) from
+   `olderCursor` and prepended. They never move the frontier, and an event
+   already shown is replaced in place, so history and live follow stitch
+   without gap or duplicate.
+
+Reads are not coalesced: #812 coalesces a page's fragments into a snapshot of
+that page's text only, which would replace the earlier part of a message that
+spans pages. A server without backward reads answers with its first page and no
+`olderCursor`; it is then followed forward at once. The clock is injected; tests
+use a recording one.
 
 ## Launching a sandbox (#750)
 

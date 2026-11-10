@@ -147,9 +147,6 @@ final class OrchestratorConversationModel {
     /// Shows what is known of the conversation, catches up, then follows the event stream until
     /// the screen disappears. Runs beside `load`: the history never waits for detail.
     func follow() async {
-        let fetch: ConversationFeed.Fetch = { [service, orchestratorID] (cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
-            try await service.events(id: orchestratorID, cursor: cursor, catchUp: catchUp)
-        }
         await feed.follow(fetch, onSignedOut: onSignedOut)
         if case .stopped(let failure) = feed.connection {
             switch failure {
@@ -159,6 +156,21 @@ final class OrchestratorConversationModel {
             case .rejected(let reason): notice = ("The conversation stopped updating: \(reason)", true)
             case .signedOut, .staleRevision, .uncertain, .offline: break
             }
+        }
+    }
+
+    /// Reads older history when the person scrolls to the top of what is shown.
+    func loadOlder() async {
+        do throws(ServiceFailure) {
+            try await feed.loadOlder(fetch)
+        } catch {
+            handleReadFailure(error)
+        }
+    }
+
+    private var fetch: ConversationFeed.Fetch {
+        { [service, orchestratorID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
+            try await service.events(id: orchestratorID, cursor: cursor, backward: backward)
         }
     }
 

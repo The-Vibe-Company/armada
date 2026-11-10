@@ -125,6 +125,15 @@ final class SandboxConversationModel {
         handleReadFailure(failure)
     }
 
+    /// Reads older history when the person scrolls to the top of what is shown.
+    func loadOlder() async {
+        do throws(ServiceFailure) {
+            try await feed.loadOlder(fetch)
+        } catch {
+            handleReadFailure(error)
+        }
+    }
+
     /// Keeps the turn's state current while the screen is shown: often while the agent works or a
     /// stop settles, rarely otherwise. A refusal (access revoked) replaces the interior.
     func watchState() async {
@@ -142,8 +151,8 @@ final class SandboxConversationModel {
     }
 
     private var fetch: ConversationFeed.Fetch {
-        { [service, sandboxID, orgID] (cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
-            try await service.sandboxEvents(id: sandboxID, orgID: orgID, cursor: cursor, catchUp: catchUp)
+        { [service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
+            try await service.sandboxEvents(id: sandboxID, orgID: orgID, cursor: cursor, backward: backward)
         }
     }
 

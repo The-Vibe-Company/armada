@@ -46,10 +46,9 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    func events(id: String, cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         do {
-            // 500 is the route's largest page: a long history is caught up in few round trips.
-            let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: catchUp ? 500 : 100)
+            let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100, backward: backward)
             let supported = page.events.filter { event in
                 switch event.body {
                 case .unknown: return false
@@ -59,7 +58,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
                 default: return true
                 }
             }
-            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore)
+            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore, olderCursor: page.olderCursor)
         } catch {
             throw Self.readFailure(error)
         }
@@ -220,15 +219,16 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    func sandboxEvents(id: String, orgID: String, cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         try await requireOrganization(orgID)
         do {
-            let page = try await client.sandboxEvents(id: id, cursor: cursor, all: catchUp)
+            let page = try await client.sandboxEvents(id: id, cursor: cursor, backward: backward)
             // A sandbox stream has no orchestrator revision; every event is an agent event.
             return OrchestratorEventPage(
                 events: page.events.map { OrchestratorEvent(id: $0.id, at: Date(timeIntervalSince1970: $0.at / 1_000), revision: 0, body: .agent(Self.agentEvent($0))) },
                 cursor: page.cursor,
-                hasMore: page.hasMore
+                hasMore: page.hasMore,
+                olderCursor: page.olderCursor
             )
         } catch {
             throw Self.sandboxReadFailure(error)
