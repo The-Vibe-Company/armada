@@ -2,6 +2,8 @@
 
 Status: proposed design for [#906](https://github.com/The-Vibe-Company/armada/issues/906).
 No feature, migration, production change, or scheduling system is implemented here.
+The [owner decision](https://github.com/The-Vibe-Company/armada/issues/906#issuecomment-6769156110)
+adds routine design coverage, with implementation after variables/secrets and templates.
 Owner decisions in §7 precede implementation. Armada remains a launcher, not an
 orchestrator ([#455](https://github.com/The-Vibe-Company/armada/issues/455)).
 
@@ -75,8 +77,8 @@ within its org context. Personal does not mean an org admin can inspect it.
 | Create, edit, rotate, delete | Owner only | Admin only |
 | Read variable or safe metadata | Owner only | Current members |
 | Read secret value after write | Nobody through Armada, including owner/admin | Nobody through Armada |
-| Attach to template | Owner, if every reference is usable | Admin, org references only |
-| Use to launch | Owner, with current membership for org references | Current members |
+| Attach to template | Owner for personal resources; org secret requires admin-approved binding to this template | Admin, org references only; explicit secret binding approval |
+| Use to launch | Owner, with current membership and explicit org-secret template-use grant | Current members; secrets additionally require an admin-approved template-use grant for the actor |
 | Change sharing | No in-place promotion; explicit copy and fresh secret input | No implicit personal copy |
 
 Authorization is checked on both template and every resolved reference, even when
@@ -85,8 +87,12 @@ Org admins may rotate/revoke and decide who can use a shared secret, not reveal 
 “Use without read” means **no read API**, not secrecy from someone who controls the
 agent that receives plaintext. A compromised member can exfiltrate every org secret
 they may launch with. Prefer narrow upstream credentials and explicit per-template
-use grants if broad membership is unacceptable; recommendation: require admin opt-in
-for each org secret/template binding, and audit launches.
+use grants. Proposed authoritative rule: require admin approval for each org-secret/
+template binding and an actor (or explicitly approved member-group) use grant.
+Recheck both at publish and admission, including personal templates; membership
+alone never authorizes secret use. Revoking either grant advances its epoch.
+Audit successful and denied launches. §7 asks the owner to approve this proposal,
+not to choose between conflicting rules.
 
 ### Launch resolution and provenance
 
@@ -113,10 +119,20 @@ until explicitly refreshed/published. Old revisions cannot recover retired value
 Live runs are drained as below. Retrying the same request returns its recorded
 result, not a new launch with a new secret version.
 
+Normal launch does not currently supply durable idempotency. Add an actor/org-scoped
+launch_requests row with a unique client key, canonical non-secret request digest,
+immutable resolved manifest, allocated sandbox ID and terminal result. Claim it
+transactionally before fork; same key/body joins the existing request, different
+body returns conflict. Bind taint and grant epochs to that request. On an unknown
+provider allocation outcome, keep a reconciling state and refuse another allocation
+until the original is found or conclusively absent; do not blindly retry. Recovery
+workers revalidate authority before hydration. Retain a tombstone for expired keys
+so expiry cannot silently turn a retry into a new launch.
+
 Overrides in the first slice are prompt, TTL, size and repository only, validated
 by existing policies. No arbitrary env/tool/account override to enlarge authority.
-Future routines can store template revision + prompt + schedule externally; no
-scheduler, task model or routine UI is part of this ticket.
+Future routines are covered in §8, per the owner decision; scheduler code, task
+execution and routine UI are not implemented in this design-only ticket.
 
 ## 3. Secret threat model and guarantees
 
@@ -145,7 +161,7 @@ allowlists); a broker still exposes the authorized data/actions.
 | Encryption-key rotation | Maintenance rewrap using same crypto scheme, inventory every encrypted table, verify before retiring old key; versioned key rollout needed before online rotation, never invent a second cipher | Disposable DB rewrap/rollback exercise; prove old key retirement and restore procedure |
 | Transit: no plaintext argv, command journal, checkout file | TLS to control/provider, explicit confidential stdin/bootstrap channel with SDK tracing off; fixed commands, body not echoed or retained. Never interpolate shell commands, URLs, args or provider metadata; no env written to repository | Fake-provider request/exec-journal capture plus real Boat/Modal canary checks; provider unable to prove confidential transport is refused |
 | Execution: least exposure | Run repo pull/init credential-free for these application secrets; hydrate only at final harness start via trusted supervisor, minimal allowlisted env, no inheritance into unrelated exec/tools. Children of the intended workload inherit by explicit policy; this is not protection from malicious code it runs | Runtime test inspects init, harness, child process and unrelated exec env with disposable canaries |
-| Goldens/snapshots: Armada never intentionally embeds secrets | No secret resolution during golden build; no snapshot/fork of secret-bearing machines, including provider-native paths exposed through Armada. Golden scans remain defence in depth | Fake-provider rejection before snapshot, then staging inspect fresh fork filesystem/history |
+| Goldens/snapshots: Armada never intentionally embeds secrets | No template/application secret resolution during build. Only fresh isolated build recipes may produce eligible snapshots; mutable connected masters become permanently ineligible. Existing checkout credentials need scoped stdin delivery and cleanup before snapshot. Never snapshot/fork tainted machines; scans are defence in depth, not proof | Reject connect → arbitrary canary write → snapshot; inspect staging fork filesystem/history and builder credential cleanup |
 | Preservation/recovery: no automatic secret-bearing archive | Mark machine tainted durably **before** delivery. Disable automatic collection and recovery export for tainted machines; value-free warning that unpushed work was not preserved. Never call today's collector on them | Stop/expiry/delete/recovery tests prove collector not called, including failed hydration and restart |
 | Event/transcript/log/error/usage sinks | Register known values before delivery; redact at producer before persistence and before consumer/webhook delivery; allowlisted structured server errors and usage metadata, no raw SDK causes. Block output when redactor context unavailable | Canary in stdout/stderr, tool result, nested JSON, errors, webhook, dashboard/iOS DTO; verify stored and returned bytes, not just rendered text |
 | PR bodies and external output | Never insert secrets into Armada-generated PR text or prompts. Block known-value output through managed paths; warn arbitrary agent git/network output cannot be guaranteed clean | Generated-body canary test; staging malicious prompt demonstrates and documents residual exfiltration risk |
@@ -158,6 +174,22 @@ logs and runtime env merging. Do not call a transport confidential merely becaus
 is stdin or TLS. Provider administrators can still read delivered secrets. If a
 provider cannot exclude sensitive request bodies from journals, **do not enable raw
 secret delivery on that provider**; use a server-side broker.
+
+### Golden eligibility is a separate release gate
+
+Today connectGolden permits mutable master setup and the snapshot scanner recognizes
+selected token formats, not all application secrets. Before enabling secret-bearing
+templates, add durable golden provenance/eligibility: connect irreversibly invalidates
+master snapshot eligibility; snapshot must reject it even after reconnect/restart.
+Rebuild in a fresh disposable builder from an approved, pinned recipe instead.
+Legacy/unattested snapshots require rebuild, never grandfathering by name. No raw
+application secrets are delivered to the builder. Existing GitHub checkout auth is
+a distinct scoped credential: preserve its stdin-only transport, remove residual
+auth, and prove cleanup in working tree/history before publishing. A malicious recipe
+can embed an externally sourced secret; neither scans nor provenance prove absence
+of arbitrary external secrets. Treat recipe authors as trusted environment publishers
+and do not label a scan as proof against malicious publishers. Direct provider
+operations outside Armada remain outside its enforcement boundary.
 
 ### Retention, revocation and redaction limits
 
@@ -240,7 +272,7 @@ adding a provider/harness. No template can overwrite management/native auth.
    Secret input later only after a secure-entry/no-telemetry audit. Never native decryption.
 
 All surfaces distinguish revision mismatch, unavailable grant and pending revocation
-without exposing private names. No scheduled routines or launch UI redesign here.
+without exposing private names. Routine surface contracts are in §8; no routine implementation or launch UI redesign here.
 
 ## 5. Delivery sequence (proposed follow-up issues, not changes in this PR)
 
@@ -250,13 +282,15 @@ production credentials. A failed security check disables that capability/provide
 
 | Order / issue | Small scope and acceptance criteria | New migrations needed | Real-provider staging check |
 | --- | --- | --- | --- |
-| 1. Template presets + readable variables | Smallest useful slice: immutable revisions, explicit tools/environment/model, readable config only; shared API/MCP authorization, no raw secrets. Missing/version-changed refs fail before allocation; no inherited tool defaults | templates, template_revisions, readable_variables and revision bindings; explicit grants/RLS, revision CAS and metadata provenance | Boat + Modal launch two presets into different test Notion connections; verify tool isolation and chosen model/env; no app secrets |
+| 1. Template presets + readable variables | Smallest useful slice: immutable revisions, explicit tools/environment/model, readable config only; shared API/MCP authorization, no raw secrets. Missing/version-changed refs fail before allocation; no inherited tool defaults | templates, template_revisions, readable_variables and revision bindings; launch_requests/immutable manifests/results with actor/org key uniqueness and digest; explicit grants/RLS, revision CAS and metadata provenance | Boat + Modal launch two presets into different test Notion connections; verify tool isolation and chosen model/env; lost-response, same-key/same-body, changed-body and unknown-provider-outcome retry checks prove one allocation; no app secrets |
 | 2. Write-only vault ingress | API secure writes, versioned metadata, encrypted storage, RLS/column tests and audit; secure MCP upload refs; no delivery yet | application_secrets (value_enc server-only), secret_versions/metadata, audit, revocation epochs and upload-reference hashes/expiry; no JWT ciphertext grants | Disposable staging write/rotate/delete via API and MCP; inspect API/provider traffic to prove nothing reaches a machine |
 | 3. CLI configuration | stdin/file ingestion, template publish/use, safe errors and no local caches; tests inspect captured argv/output | None beyond 1–2 | Use source/built CLI against staging, invalid request and rotation canaries; no value in terminal logs |
-| 4. Broker-first grants and child authority | Server-held remote MCP auth, explicit connection selection, narrowed per-template use, fresh child authorization; no expansion to generic owner authority | revision connection/grant-version bindings and template-use/delegation grants as needed; all explicit RLS/grants | Sentry allowed/denied presets; two Notion workspaces; revoked child cannot reuse gateway token |
-| 5. Raw-secret lifecycle safety, then opt-in delivery | Provider transport proof, final-start hydration, redaction/replay gates, taint-before-delivery, preservation/recovery/resume/fork denial, revoke races and physical cleanup. No opt-in until every matrix gate passes | launch secret-version bindings, taint flag, lifecycle epochs/leases, cleanup state, encrypted redaction context with retention | Boat + Modal canary across env/argv/journals/files, malicious env output, stop/expiry/revoke/restart/fork; assert no archive and no stale admission. Disable unsupported provider |
+| 4. Broker-first grants and child authority | Server-held remote MCP auth, explicit connection selection, narrowed per-template use, fresh child authorization; no expansion to generic owner authority | revision connection/grant-version bindings, admin-approved org-secret/template bindings and actor/group template-use/delegation grants; all explicit RLS/grants | Sentry allowed/denied presets; two Notion workspaces; revoked child cannot reuse gateway token; unapproved member and personal-template org-secret attachment fail closed |
+| 5. Raw-secret lifecycle safety, then opt-in delivery | Provider transport proof, final-start hydration, redaction/replay gates, taint-before-delivery, preservation/recovery/resume/fork denial, revoke races and physical cleanup. No opt-in until every matrix gate passes | launch secret-version bindings, taint flag, golden provenance/snapshot eligibility and connect invalidation, lifecycle epochs/leases, cleanup state, encrypted redaction context with retention | Boat + Modal canary across env/argv/journals/files, malicious env output, stop/expiry/revoke/restart/fork; assert no archive and no stale admission; connect/write-canary/snapshot must reject across restart. Disable unsupported provider |
 | 6. Dashboard management | Safe metadata UI, secret replacement not reveal, org/private checks, launch warnings and revision preview; browser tests at user boundary | None; server-backed mutation functions only if required, separately reviewed migration | Real staging browser create/publish/launch/revoke; inspect network, analytics and error payloads for canaries |
 | 7. iOS consumption | API parity for selection, metadata and revocation state; no client decryption or persisted secret input | None | Staging device launch with both providers, reconnect after revoke; inspect crash/state-restoration logs |
+
+| 8. Routines after templates/secrets | Implement §8 authority, occurrence idempotency, schedule bounds and revoke/pause behavior; no privileged scheduler identity | routines/revisions, schedule state, occurrence claims and delegated-use grant/epoch bindings; private/org RLS and explicit grants | Staging Boat + Modal scheduled canary run, duplicate tick/restart executes once; owner removal, secret revoke and template deletion prevent next allocation |
 
 Implementation tickets must name actual new timestamped migration files when scoped;
 never edit applied migrations or apply migrations as part of this design review.
@@ -306,5 +340,51 @@ These are UX/security comparisons, not evidence of Armada provider conformance.
 8. Should model accounts follow the launching user or be pinned? Recommend existing
    user-over-org defaults when unspecified, explicit ID/version when selected, and
    persist the resolved binding. No silent fallback.
-9. Confirm API/MCP → CLI → dashboard → iOS order and defer routines entirely?
-   Recommend yes; routines may later reference revisions without changing authority.
+9. Confirm API/MCP → CLI → dashboard → iOS order? Recommend yes. Routines are
+   confirmed by the owner, after variables/secrets and templates; approve §8 defaults
+   (especially principal, missed-run and concurrency policy) before implementation.
+
+
+## 8. Future routines: design contract, not a scheduler implementation
+
+The owner confirmed routines will be built after variables/secrets and templates.
+A routine is a versioned consumer, not a new source of authority: ID, org context,
+owner/execution user, private/org scope, approved delegated-use grant, pinned template
+revision, non-secret task description and prompt, bounded schedule/time zone, status,
+and concurrency policy. No plaintext or encrypted secret payload is stored in its
+prompt, task or schedule; only template references. The API cannot detect every
+secret a user types, so warn, reject known values and never auto-expand secrets into
+stored text. Inputs are not passed through command-line shell expansion.
+
+Recommend org routines are created/edited/enabled by admins; personal routines by
+their owner. Viewing follows private owner-only/org membership rules. Neither org
+visibility nor admin authorship grants execution rights: every occurrence executes
+as the explicit user with a separately approved, scoped, revocable delegation,
+never as the scheduler's service-role identity. Changing owner, template, prompt,
+schedule or grants creates a revision and pauses until reapproved. No “run as any
+org member” fallback. A member leaving the org, user disablement, revoked delegation,
+missing resource or changed secret version pauses the routine with a safe diagnostic.
+
+At each occurrence, claim a durable unique (routine ID, revision, scheduled UTC
+instant) record and derive its launch idempotency key. Reuse §2 launch admission:
+recheck current user/membership, template-use grants, connection/account versions,
+secret epochs and environment eligibility before allocation and hydration. Pinning
+a revision never preserves authorization. Duplicate ticks, worker restart, timeout
+and unknown provider outcome reconcile the same occurrence; never launch twice.
+Persist result/sandbox IDs and value-free errors only.
+
+Recommend one active run per routine, no overlap, no catch-up of missed occurrences
+(initially record “missed”), explicit IANA time zone with UTC occurrence identity,
+and minimum hourly cadence with bounded TTL. Define daylight-saving repeated/skipped
+local times via UTC occurrence generation and test both; changing schedule cancels
+unclaimed old occurrences. Pause/delete denies new claims immediately; already
+admitted runs require explicit stop, while grant/secret revocation always invokes
+the existing drain policy. The schedule worker only submits scoped launch requests;
+it cannot decrypt the vault directly or inherit secrets into itself/other routines.
+
+Surface order remains API/MCP (safe routine CRUD, enable/pause, occurrence metadata),
+CLI, dashboard Run > Routines, then iOS. Routine secret writes still use secure vault
+ingress, not conversational arguments. Real staging acceptance in slice 8 includes
+duplicate ticks, DST, missed runs, worker restart, denied cross-org references,
+removed owner and revoke racing allocation. This design deliberately does not choose
+a scheduler vendor, implement execution or authorize production scheduling.
