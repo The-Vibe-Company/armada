@@ -31,6 +31,7 @@ export interface DistributionOptions {
   prepareSnapshot: RunnerDistribution["prepareSnapshot"];
   prepareFreshMachine?: NonNullable<RunnerDistribution["prepareFreshMachine"]>;
   captureProcessBaseline?: NonNullable<RunnerDistribution["captureProcessBaseline"]>;
+  sealProcessBaseline?: NonNullable<RunnerDistribution["sealProcessBaseline"]>;
 }
 /** No bootstrap, authorization or session data enters image construction. Pinned npm packages provide
  * official native binaries. OCI + apt locks are deployment inputs, not mutable latest tags. */
@@ -104,6 +105,7 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     restoreEnv: options.restoreEnv,
     prepareSnapshot: options.prepareSnapshot,
     ...(options.captureProcessBaseline ? { captureProcessBaseline: options.captureProcessBaseline } : {}),
+    ...(options.sealProcessBaseline ? { sealProcessBaseline: options.sealProcessBaseline } : {}),
     ...(options.prepareFreshMachine ? { prepareFreshMachine: options.prepareFreshMachine } : {}),
   };
 }

@@ -251,9 +251,9 @@ test.each([
   expect(lines.join("")).not.toContain("private-");
 });
 
-test("process inspection diagnostics project only a primitive and errno class", () => {
+test("process diagnostics project only closed classifications, booleans and bounded survivor counts", () => {
   const lines: string[] = [];
-  for (const inspection of ["kill_EPERM", "private-path-or-command"]) {
+  const project = (details: Record<string, unknown>) => {
     new OrchestratorDiagnostics((line) => lines.push(line), "stop").report(
       "uncertain",
       new ProviderError({
@@ -261,12 +261,80 @@ test("process inspection diagnostics project only a primitive and errno class", 
         code: "conflict",
         retryable: false,
         message: "private-path-or-command",
-        details: { processCategory: "runtime_or_mcp", processFailure: "pidfd_signal", processInspection: inspection },
+        details,
       }),
     );
+    const record = JSON.parse(lines.at(-1) ?? "{}");
+    return Object.fromEntries(Object.entries(record).filter(([key]) => key.startsWith("process")));
+  };
+  const valid = {
+    processCategory: "privileged_writer",
+    processFailure: "pidfd_signal",
+    processInspection: "kill_EPERM",
+    processUidClass: "root",
+    processIsAncestor: false,
+    processIsPid1: true,
+    processCommClass: "armada_runner",
+    processExeClass: "bun",
+    processRole: "platform_control_child",
+    processSurvivorCount: 4096,
+    processStateClass: "blocked",
+    processManagedState: "outside",
+  };
+  expect(project(valid)).toEqual(valid);
+  expect(project({ ...valid, processRole: "kernel_control" }).processRole).toBe("kernel_control");
+  expect(project({ ...valid, processSurvivorCount: 1 }).processSurvivorCount).toBe(1);
+  const untrusted = {
+    ...Object.fromEntries(Object.keys(valid).map((field) => [field, "private-path-or-command"])),
+    processCategory: "runtime_or_mcp",
+    processComm: "private-path-or-command",
+    processCmdline: "private-path-or-command",
+    processExe: "private-path-or-command",
+    processEnv: "private-path-or-command",
+  };
+  expect(project(untrusted)).toEqual({ processCategory: "runtime_or_mcp" });
+  expect(project({ ...valid, processCategory: "private-path-or-command" })).toEqual({});
+  expect(project({ ...valid, processCategory: undefined })).toEqual({});
+  for (const count of [0, -1, 1.5, 4097, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN, "1", 1n, null]) {
+    expect(project({ processCategory: "user_writer", processSurvivorCount: count })).toEqual({
+      processCategory: "user_writer",
+    });
   }
-  expect(JSON.parse(lines[0]!).processInspection).toBe("kill_EPERM");
-  expect(JSON.parse(lines[1]!)).not.toHaveProperty("processInspection");
+  for (const value of [0, 1, "true", "false", {}, null]) {
+    expect(project({ processCategory: "unknown", processIsAncestor: value, processIsPid1: value })).toEqual({
+      processCategory: "unknown",
+    });
+  }
+  const hostile = new Proxy(valid, {
+    get(target, field, receiver) {
+      if (field === "processCommClass") throw Error("private-path-or-command");
+      return Reflect.get(target, field, receiver);
+    },
+  });
+  const { processCommClass: _omitted, ...remaining } = valid;
+  expect(project(hostile)).toEqual(remaining);
+  for (const field of Object.keys(valid)) {
+    const details = Object.defineProperty({ ...valid }, field, {
+      get() {
+        throw Error("private-path-or-command");
+      },
+    });
+    const expected: Record<string, unknown> = { ...valid };
+    delete expected[field];
+    expect(project(details)).toEqual(field === "processCategory" ? {} : expected);
+  }
+  expect(
+    project(
+      new Proxy(
+        {},
+        {
+          get() {
+            throw Error("private-path-or-command");
+          },
+        },
+      ),
+    ),
+  ).toEqual({});
   expect(lines.join("")).not.toContain("private-path-or-command");
 });
 

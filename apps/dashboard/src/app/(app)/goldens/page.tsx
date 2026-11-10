@@ -5,6 +5,7 @@ import {
   GitBranchIcon,
   GlobeIcon,
   InfoIcon,
+  LayersIcon,
   LockIcon,
   ServerIcon,
   TriangleAlertIcon,
@@ -22,8 +23,10 @@ import { type LaunchConnections, LaunchDialog } from "@/components/launch-dialog
 import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
 import { RemoveGolden } from "@/components/remove-golden";
 import { SizeDefaults } from "@/components/size-defaults";
+import { ToneBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
 import {
@@ -45,6 +48,7 @@ import {
   editDefaults,
   GOLDEN_PROVIDERS,
   goldenInit,
+  goldenLaunchReadiness,
   goldenRemoveBlocker,
   goldenRepos,
   goldenRowState,
@@ -56,6 +60,7 @@ import type { LaunchAccounts } from "@/lib/model-accounts";
 import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
+import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Goldens" };
 export const dynamic = "force-dynamic";
@@ -155,7 +160,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       <section className="space-y-3" aria-labelledby="build-golden-title">
         <SectionHeader id="build-golden-title" title="Build a golden" />
         {(connected ?? []).length > 0 && (
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className={cn("grid gap-3", (connected ?? []).length > 1 && "md:grid-cols-2")}>
             {(connected ?? []).map((provider) => {
               const state = capacities[provider];
               return state ? (
@@ -406,17 +411,6 @@ function CreateCard({
           </AlertDescription>
         </Alert>
       )}
-      {discouraged &&
-        (boatLive > 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Boat is full: use <span className="font-medium text-foreground">Edit and rebuild</span> above
-            {modalOpen ? ", or choose Modal." : "."}
-          </p>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            A removed Boat golden holds the Boat slot{modalOpen ? ": choose Modal." : "."}
-          </p>
-        ))}
       <GoldenForm
         mode="create"
         orgId={org.org.id}
@@ -428,25 +422,55 @@ function CreateCard({
       />
     </div>
   );
+  // One tree for both states: a build that fills Boat turns this into "Create another golden" without remounting the
+  // form that follows it. Discouraged, it takes the empty-state look, its form a click away.
+  const quiet = discouraged && serverReady;
   return (
-    <Card className="gap-4" aria-labelledby="create-golden-title">
-      <CardHeader>
-        <CardTitle id="create-golden-title" role="heading" aria-level={3}>
+    <section
+      aria-labelledby="create-golden-title"
+      data-create-golden={quiet ? "discouraged" : "open"}
+      className={cn(
+        "rounded-xl border",
+        quiet ? "border-dashed bg-card/50 px-6 py-8" : "bg-card px-6 py-6 text-card-foreground shadow-xs",
+      )}
+    >
+      <div className={cn(quiet && "mx-auto max-w-md text-center")}>
+        {quiet && (
+          <div
+            aria-hidden="true"
+            className="mx-auto mb-3 flex size-10 items-center justify-center rounded-lg border bg-background text-muted-foreground shadow-xs"
+          >
+            <LayersIcon className="size-5" />
+          </div>
+        )}
+        <h3 id="create-golden-title" className={quiet ? "font-medium" : "leading-none font-semibold"}>
           {discouraged ? "Create another golden" : "Create a golden"}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </h3>
+        {quiet && (
+          <p className="mt-1 text-sm text-pretty text-muted-foreground">
+            {boatLive > 0 ? (
+              <>
+                Boat is full: use <span className="font-medium text-foreground">Edit and rebuild</span> above
+                {modalOpen ? ", or build on Modal." : "."}
+              </>
+            ) : (
+              <>A removed Boat golden holds the Boat slot{modalOpen ? ": build on Modal." : "."}</>
+            )}
+          </p>
+        )}
+      </div>
+      <div className={cn("mt-4", quiet && "[&>details>summary]:mx-auto [&>details>summary]:w-fit")}>
         {!serverReady ? (
           <p className="text-sm text-muted-foreground">
             The Armada server is not configured: goldens cannot be built here.
           </p>
         ) : (
           <Disclosure summary="Show the create form" defaultOpen={!discouraged}>
-            {body}
+            <div className={cn(quiet && "rounded-xl border bg-card p-4 shadow-xs sm:p-6")}>{body}</div>
           </Disclosure>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -519,6 +543,12 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
   const titleId = `golden-${golden.id}`;
   const label = PROVIDER_LABELS[golden.provider];
   const canStart = context.connected?.includes(golden.provider) ?? false;
+  const readiness = goldenLaunchReadiness({
+    provider: golden.provider,
+    hasSnapshot: Boolean(golden.provider_snapshot_id),
+    serverReady: context.serverReady,
+    connected: context.connected,
+  });
   const directories = goldenRepositoryDirs(golden.config);
   const sizing = goldenSizing(golden, directories);
   return (
@@ -565,8 +595,8 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
             <dd>{displayUser(context.directory, golden.owner_id, context.viewerId)}</dd>
           </dl>
         </div>
-        <div className="flex flex-wrap items-start gap-2 lg:justify-end">
-          {golden.provider_snapshot_id && context.serverReady && canStart ? (
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+          {readiness.kind === "ready" ? (
             <LaunchDialog
               golden={golden.name}
               provider={golden.provider}
@@ -578,19 +608,18 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
               {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}
             />
           ) : (
-            <span className="text-xs text-muted-foreground" data-launch-paused>
-              {!golden.provider_snapshot_id ? (
-                "Launch needs a snapshot: build it first"
-              ) : !context.serverReady ? (
-                "Launch needs the Armada server"
-              ) : context.connected === null ? (
-                "Launch paused: provider status unavailable"
-              ) : (
-                <Link className="underline underline-offset-4" href={PROVIDER_SETTINGS_PATH}>
-                  Connect {label} to launch
-                </Link>
+            <>
+              {/* The pill names what holds the launch; the sentence that completes it is read aloud and shown on hover. */}
+              <ToneBadge tone={readiness.tone} title={readiness.detail} data-launch-paused={readiness.kind}>
+                {readiness.label}
+                <span className="sr-only">. {readiness.detail}</span>
+              </ToneBadge>
+              {readiness.connect && (
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={PROVIDER_SETTINGS_PATH}>Connect {label} to launch</Link>
+                </Button>
               )}
-            </span>
+            </>
           )}
           {!isOwner ? (
             <span className="text-xs text-muted-foreground">Only its owner changes sharing</span>

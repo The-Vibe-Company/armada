@@ -51,3 +51,18 @@ export const TONE_DOT: Record<Tone, string> = {
   destructive: "bg-destructive",
   neutral: "bg-muted-foreground/60",
 };
+
+/** Whether something the org or the viewer connects (a sandbox provider, GitHub) is usable now. */
+export type ConnectionState = "connected" | "not-connected" | "revoked" | "unavailable";
+
+const CONNECTION_LOOKS: Record<ConnectionState, StatusLook> = {
+  connected: { tone: "success", pulse: false, label: "Connected" },
+  "not-connected": { tone: "neutral", pulse: false, label: "Not connected" },
+  revoked: { tone: "destructive", pulse: false, label: "Revoked" },
+  unavailable: { tone: "warning", pulse: false, label: "Unavailable" },
+};
+
+/** How a connection's state looks: connected is live, not connected at rest, revoked failed, unread in doubt. */
+export function connectionLook(state: ConnectionState): StatusLook {
+  return CONNECTION_LOOKS[state];
+}
