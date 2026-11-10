@@ -206,3 +206,19 @@ parent with `armada orchestrator stop "$ID" --org "$ORG_ID" --expected-revision
 "$REV" --idempotency-key "$(uuidgen)" --json` using a fresh detail revision, and
 retire staging resources through the normal operator cleanup. Do not claim this
 check passed until both providers and both key-scope cases actually pass.
+
+## Diagnosing a failed create
+
+A golden used for private skills must contain the trusted released **native**
+Skillpack executable on the SSH user's PATH, plus Node, Bash and `flock`.
+A pre-Skillpack golden is not upgraded automatically: rebuild and snapshot it.
+Before snapshotting, run `command -v skillpack node bash flock` and
+`skillpack --version` as the guest user. Do not use `auth login` in a golden or
+snapshot a credential. Check private access using a disposable sandbox and a
+command-local, stdin-supplied `skills:read`-only key; never print auth status or
+raw install output into a shared log.
+
+The first staging failure in #897 did not include enough evidence to distinguish
+an old golden from a CLI/API failure. Its cause must not be inferred from the
+opaque legacy reason. A staging rerun should capture only Armada's closed reason
+and stage, and check the golden prerequisites above.
