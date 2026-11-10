@@ -185,6 +185,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     );
     return json({ promptId: `prompt-${prompts}`, conversationId, status: "queued" }, 202);
   }
+  if (suffix === "/steer")
+    return Response.json({ ok: false, code: "no_running_turn", message: "Nothing runs" }, { status: 409 });
   if (suffix.startsWith("/prompts/"))
     return json({
       promptRun: {
@@ -386,6 +388,12 @@ try {
       agentEvents.some((item) => item?.kind === "prompt" && item.status === "finished"),
       JSON.stringify(page),
     );
+    const refused = await act("steer", "too late", 1);
+    assert.equal(refused.state, "failed", JSON.stringify(refused));
+    assert.equal(refused.errorCode, "no_running_turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.state, "ready");
+    assert.equal(detail.orchestrator.blockedReason, null);
     await act("stop");
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
