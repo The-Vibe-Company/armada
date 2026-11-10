@@ -305,6 +305,7 @@ function invitationReasonMessage(payload: unknown): string | undefined {
 function isSandboxInteriorPath(path: string): boolean {
   return (
     /^\/api\/v1\/sandbox\/(?:detail|status|send|steer|interrupt|exec|stop|wait)$/.test(path) ||
+    /^\/api\/v1\/sandboxes\/[0-9a-f-]+(?:\?.*)?$/i.test(path) ||
     path === "/api/v1/logs/read" ||
     path === "/api/v1/mcp/sandbox-connections"
   );

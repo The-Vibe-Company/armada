@@ -68,6 +68,8 @@ export interface ToolContext {
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
   /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
   provider(target: ProviderTarget): Promise<Provider>;
+  /** Deletion only: resolve the sandbox owner's immutable source management authority after authorization. */
+  deletionProvider?(sandbox: SandboxView): Promise<Provider>;
   providerMetadata?: (selection: { orgId: string; provider: SandboxProviderId }) => Promise<GoldenProviderMetadata>;
   goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
   now(): Date;
@@ -1309,6 +1311,52 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const found = await data.sandboxes.get(args.id);
       if (!found) throw new ToolError("not_found", "No such sandbox.");
       return { archive: (await data.sandboxes.readWorkRecovery?.(found.id, args.recovery_id)) ?? null };
+    },
+  );
+
+  tool(
+    "delete",
+    {
+      title: "Delete a stopped sandbox",
+      description:
+        "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Managed orchestrator parents and children are refused.",
+      input: { id },
+      output: { id: z.string(), status: z.literal("deleted") },
+      destructive: true,
+    },
+    async (args) => {
+      if (!data.sandboxes.assertDeletionAllowed)
+        throw new ToolError("unavailable", "Sandbox deletion is not configured.");
+      await data.sandboxes.assertDeletionAllowed(args.id);
+      const found = await visible(args.id);
+      if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
+      const deletionProvider = context.deletionProvider;
+      if (found.providerSandboxId && !deletionProvider)
+        throw new ToolError("unavailable", "Sandbox deletion provider is not configured.");
+      const provider = found.providerSandboxId && deletionProvider ? await deletionProvider(found) : null;
+      return sandboxActivity(data.sandboxes, found, { deleteRequested: true }, async (signal) => {
+        signal.throwIfAborted();
+        if (provider) {
+          try {
+            const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
+            if (!["deleted", "completed"].includes(receipt.status))
+              throw new ToolError(
+                "conflict",
+                "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
+              );
+          } catch (error) {
+            if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+          }
+        }
+        return {
+          result: { id: found.id, status: "deleted" as const },
+          patch: {
+            status: "deleted",
+            deletedAt: context.now().toISOString(),
+            ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
+          },
+        };
+      });
     },
   );
 

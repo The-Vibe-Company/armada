@@ -35,6 +35,7 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  assertDeletionAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
@@ -262,6 +263,25 @@ export function createSqlData(sql: Sql): DataSource {
         if (!row) throw new DataError("The sandbox could not be recorded.");
         return mapSandboxRow(row);
       },
+      async assertDeletionAllowed(id) {
+        if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
+        const row = (
+          await sql.query<{ status: string; managed: boolean }>(
+            `select s.status::text as status,
+             (exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+              or exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id)) as managed
+           from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
+           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
+             and (s.owner_id=$2::uuid or m.role='admin'))`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new GoldenError("not_found", "No such sandbox or deletion access denied.");
+        if (row.managed)
+          throw new GoldenError("conflict", "Managed orchestrator parents and children have their own lifecycle.");
+        if (!["stopped", "failed", "deleted"].includes(row.status))
+          throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
+      },
       async recordUsage(id, usage) {
         await sql.query(
           `update public.sandboxes s set usage_turns=$4::text::jsonb
@@ -315,6 +335,7 @@ export function createSqlData(sql: Sql): DataSource {
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
         if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
+        if (patch.status === "deleted") sets.push("preservation_note = null");
         const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
@@ -323,15 +344,19 @@ export function createSqlData(sql: Sql): DataSource {
           params.push(patch.expectedGeneration);
           fence = ` and s.lifecycle_generation = $${params.length}`;
         }
+        if (patch.deleteRequested)
+          fence += ` and s.status in ('stopped','failed')
+            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+            and not exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id)`;
         const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
         if (ownsActivity) {
           params.push(patch.activityToken);
           fence += ` and s.activity_lease_id = $${params.length}::uuid`;
         }
         const result = await sql.query<{ id: string }>(
-          `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
+          `${patch.status === "deleted" ? "with updated as (" : ""}update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now()) and (s.activity_until is null or s.activity_until < now())"}) ${fence} returning s.id`,
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now()) and (s.activity_until is null or s.activity_until < now())"}) ${fence} returning s.id${patch.status === "deleted" ? "), purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id) select id from updated" : ""}`,
           params,
         );
         if (!result.rows[0]) throw new DataError("The sandbox could not be updated.");

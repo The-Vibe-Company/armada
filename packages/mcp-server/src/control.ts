@@ -217,10 +217,14 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         : fail(401, "unauthorized", "Run armada login.");
     }
   }
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
+  if (deletion ? request.method !== "DELETE" : request.method !== "POST")
+    return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
-    const body = await readBody(request);
+    const body = deletion
+      ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
+      : await readBody(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
@@ -246,7 +250,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           : invitationAction === "accept"
             ? await options.invitations.accept(caller, body.token)
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
-    } else result = await dispatch(route, caller, body, options);
+    } else result = await dispatch(deletion ? "sandbox/delete" : route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
     return Response.json(result, {
       status:
@@ -643,6 +647,7 @@ async function dispatch(
       "sandbox/send": "send",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
+      "sandbox/delete": "delete",
       "sandbox/wait": "wait",
       "sandbox/exec": "exec",
       "sandbox/steer": "steer",
@@ -672,6 +677,10 @@ async function dispatch(
         provider: (target) =>
           options.providers
             ? options.providers.resolve(target, scopedCaller)
+            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+        deletionProvider: (sandbox) =>
+          options.providers
+            ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
             : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
         ...(options.providerMetadata
           ? {

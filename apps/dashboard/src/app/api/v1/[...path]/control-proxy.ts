@@ -80,12 +80,12 @@ const PRIVATE_POST_PATHS = new Set([
   "logs/read",
 ]);
 
-type ControlVerb = "GET" | "POST";
+type ControlVerb = "GET" | "POST" | "DELETE";
 const ORCHESTRATOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Only the actual owner API shapes. No delegated/private callback or arbitrary tail. */
 function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean {
-  if (path[0] !== "orchestrators") return false;
+  if (method === "DELETE" || path[0] !== "orchestrators") return false;
   if (path.length === 1) return true;
   if (method === "POST" && path.length === 2 && path[1] === "reconcile") return true;
   if (method === "GET" && path.length === 2 && path[1] === "capabilities") return true;
@@ -144,12 +144,15 @@ export async function forwardControl(
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return fail(503, "Armada API is not configured.");
-  if (request.method !== "GET" && request.method !== "POST") return fail(404, "Not found.");
+  if (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE")
+    return fail(404, "Not found.");
   const method: ControlVerb = request.method;
   const relative = path.join("/");
   const orchestrator = orchestratorPath(method, path);
+  const sandboxDeletion =
+    method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && ORCHESTRATOR_ID.test(path[1] ?? "");
   const isPublic = method === "POST" && PUBLIC_POST_PATHS.has(relative);
-  if (!orchestrator && !(method === "POST" && (isPublic || PRIVATE_POST_PATHS.has(relative))))
+  if (!orchestrator && !sandboxDeletion && !(method === "POST" && (isPublic || PRIVATE_POST_PATHS.has(relative))))
     return fail(404, "Not found.");
   const authorization = request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
@@ -162,7 +165,7 @@ export async function forwardControl(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  if (orchestrator) target.search = new URL(request.url).search;
+  if (orchestrator || sandboxDeletion) target.search = new URL(request.url).search;
   const idempotencyKey = orchestrator && method === "POST" ? request.headers.get("idempotency-key") : null;
   let response: Response;
   try {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
-import { GET, POST } from "../src/app/api/v1/[...path]/route.ts";
+import { DELETE, GET, POST } from "../src/app/api/v1/[...path]/route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
@@ -23,6 +23,39 @@ test("forwards allowed control paths with the bearer and preserves status/body",
   expect(await response.json()).toEqual({ goldens: [] });
   expect(seen[0]?.url).toBe("https://armada.test/api/v1/golden/list");
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
+});
+
+test("DELETE proxy forwards only the authenticated sandbox deletion shape and organization scope", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  const id = "11111111-1111-4111-8111-111111111111";
+  const seen: Request[] = [];
+  const send = async (method: string, path: string[], bearer = true) =>
+    forwardControl(
+      new Request(`https://dashboard.test/api/v1/${path.join("/")}?org=${id}`, {
+        method,
+        headers: bearer ? { authorization: "Bearer masked" } : {},
+      }),
+      path,
+      async (input, init) => {
+        seen.push(new Request(input, init));
+        return Response.json({ id, status: "deleted" });
+      },
+    );
+  expect((await send("DELETE", ["sandboxes", id], false)).status).toBe(401);
+  expect((await send("DELETE", ["sandboxes", id])).status).toBe(200);
+  expect(seen[0]?.method).toBe("DELETE");
+  expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${id}`);
+  expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
+  for (const [method, path] of [
+    ["POST", ["sandboxes", id]],
+    ["GET", ["sandboxes", id]],
+    ["DELETE", ["sandboxes", "not-a-uuid"]],
+    ["DELETE", ["sandboxes", id, "extra"]],
+    ["DELETE", ["orchestrators", id]],
+    ["DELETE", ["golden", "list"]],
+  ] as const)
+    expect((await send(method, [...path])).status).toBe(404);
+  expect(seen).toHaveLength(1);
 });
 
 test("forwards anonymous public auth routes without a bearer", async () => {
@@ -391,11 +424,29 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
       const context = {
         params: Promise.resolve({ path: new URL(request.url).pathname.slice("/api/v1/".length).split("/") }),
       };
-      return request.method === "GET" ? GET(request, context) : POST(request, context);
+      return request.method === "GET"
+        ? GET(request, context)
+        : request.method === "DELETE"
+          ? DELETE(request, context)
+          : POST(request, context);
     },
   });
   process.env.ARMADA_MCP_URL = upstream.url.toString();
   try {
+    const deletion = await fetch(new URL(`/api/v1/sandboxes/${id}?org=${id}`, publicOrigin.url), {
+      method: "DELETE",
+      headers: { authorization: "Bearer proxy-fixture" },
+    });
+    expect(deletion.status).toBe(200);
+    expect(received.at(-1)).toEqual({
+      method: "DELETE",
+      path: `/api/v1/sandboxes/${id}`,
+      query: `?org=${id}`,
+      key: null,
+      bearer: "Bearer proxy-fixture",
+      cookie: null,
+      body: "",
+    });
     for (const path of [
       "orchestrators",
       "orchestrators/capabilities",

@@ -1,5 +1,6 @@
 import { GoldenError, HARNESSES } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { authorizeConnection, type ConnectionStatus, validateConnectionStatus } from "./connection-authorization.ts";
 import { control } from "./control.ts";
@@ -23,8 +24,28 @@ export async function operation(
         : command === "list"
           ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
           : [],
-    command === "list" ? ["--page-info"] : [],
+    command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : [],
   );
+  if (command === "rm") {
+    const [id, ...extra] = args.positionals;
+    uuid(id, "sandbox id");
+    if (extra.length || [...args.options.keys()].some((key) => !["--yes", "--org", "--json"].includes(key)))
+      throw new GoldenError("invalid_config", "Run armada rm <sandbox-id> --yes [--org UUID] [--json].");
+    if (!flag(args, "--yes"))
+      throw new GoldenError(
+        "invalid_config",
+        "Deletion permanently removes the disk and recovery archives. Pass --yes to confirm.",
+      );
+    const org = single(args, "--org");
+    if (org) uuid(org, "--org");
+    const client = await createArmadaApiClient(auth);
+    const result = await client.request<{ id: string; status: "deleted" }>(
+      `/api/v1/sandboxes/${id}${org ? `?org=${encodeURIComponent(org)}` : ""}`,
+      { method: "DELETE" },
+    );
+    auth.out(flag(args, "--json") ? `${JSON.stringify(result)}\n` : `Deleted sandbox ${result.id}.\n`);
+    return 0;
+  }
   if (single(args, "--repo") !== undefined)
     throw new GoldenError(
       "invalid_config",
