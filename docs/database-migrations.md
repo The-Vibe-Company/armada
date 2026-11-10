@@ -1,5 +1,5 @@
 # Automatic production migrations
- 
+
 > **Staging gate opt-in:** With repository variable STAGING_GATED_DEPLOYS=true,
 > [Staging-gated production](releasing.md#staging-gated-production-owner-opt-in)
 > owns staging migrations/deployment/smoke and production migrations/deployment
