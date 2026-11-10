@@ -186,11 +186,7 @@ function WorkingStrip({ rows, now }: { rows: FleetRow[]; now: Date }) {
                 aria-hidden="true"
                 className="size-1.5 shrink-0 animate-pulse rounded-full bg-info motion-reduce:animate-none"
               />
-              <Link
-                href={`/sandboxes/${row.id}`}
-                className="min-w-0 font-medium underline-offset-4 hover:underline"
-                aria-label={`Open the conversation of ${row.name}`}
-              >
+              <Link href={`/sandboxes/${row.id}`} className="min-w-0 font-medium underline-offset-4 hover:underline">
                 {row.workItem?.label ?? <span className="font-mono">{row.name}</span>}
               </Link>
               <span className="min-w-0 flex-1 truncate text-muted-foreground" title={doing}>

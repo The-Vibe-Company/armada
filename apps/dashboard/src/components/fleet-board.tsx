@@ -154,7 +154,7 @@ export function FleetRowActions({
           <form action={action}>
             <input type="hidden" name="sandbox" value={sandboxId} />
             <input type="hidden" name="prompt" value={CONTINUE_PROMPT} />
-            <Button type="submit" size="sm" disabled={pending} aria-label={`Tell ${name} to continue`}>
+            <Button type="submit" size="sm" disabled={pending} aria-label={`Continue ${name}`}>
               <PlayIcon /> Continue
             </Button>
           </form>
@@ -187,7 +187,7 @@ function AckButton({ dismissed, name }: { dismissed: boolean; name: string }) {
       variant="ghost"
       size="sm"
       disabled={pending}
-      aria-label={dismissed ? `Bring ${name} back to Needs you` : `Dismiss ${name} from Needs you`}
+      aria-label={dismissed ? `Restore ${name} to Needs you` : `Dismiss ${name} from Needs you`}
     >
       {dismissed ? <Undo2Icon /> : <CheckIcon />}
       {dismissed ? "Restore" : "Dismiss"}

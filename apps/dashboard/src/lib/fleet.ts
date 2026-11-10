@@ -146,16 +146,16 @@ export function isRecoverableReason(reason: string | null | undefined): boolean 
 export type Recorded = {
   statusReason: string | null;
   lifecycleError: string | null;
-  /** The operator stopped the sandbox (it records a stop request or a stop time): a failure it had is handled. */
-  stopped?: boolean;
 };
 
 /**
  * The sandbox's status says whether the machine is up; the latest turn says what the agent is doing on it.
  *
- * A failure is a failure only when it is the sandbox's latest state and nothing happened since: a failed sandbox the
- * operator stopped, or whose latest turn finished after the failure, reads as stopped; a reason that only says the
- * turn was cut short (the box moved, a restart) reads as an interruption to resend, never as an error.
+ * A failure is shown as an error only while it is the latest state: a failed turn followed by one that finished is
+ * history, not a failure; a reason that only says the turn was cut short (the box moved, a restart, an interrupted
+ * launch) reads as an interruption to resend, never as an error. A failed sandbox cannot run another turn, and the
+ * server records a stop on it by itself once the machine is gone, so it stays a failure until the viewer acknowledges
+ * it or a newer run of the same work item replaces it.
  *
  * A reported outcome (ready to merge, or blocked) stands for the latest finished turn, on a live or a stopped machine:
  * the server clears it when a new turn starts, so a turn in flight or a failed one still wins over it.
@@ -168,10 +168,6 @@ export function boardState(
 ): BoardState {
   const settled = turn?.status !== "queued" && turn?.status !== "running" && turn?.status !== "failed";
   if (status === "failed") {
-    if (recorded.stopped || turn?.status === "finished") {
-      if (outcome && settled) return { kind: outcome.kind, label: outcome.label, failure: null, outcome };
-      return { kind: "stopped", label: recorded.stopped ? "Stopped" : "Ended", failure: null };
-    }
     const reason = (turn?.status === "failed" ? turn.reason : null) ?? recorded.statusReason ?? recorded.lifecycleError;
     return isRecoverableReason(reason) ? interrupted(reason) : failed(reason, "Sandbox failed");
   }
@@ -273,11 +269,14 @@ export function attentionOf(
     case "failed":
       return state.kind;
     case "interrupted":
-      return isActiveStatus(status) ? "interrupted" : "unconcluded";
+      // An ended sandbox cannot be resent to: it needs the operator only for the work it preserved.
+      if (isActiveStatus(status)) return "interrupted";
+      return preservation?.kind === "preserved" ? "unconcluded" : null;
     case "finished":
       return "unconcluded";
     case "stopped": {
-      const midTurn = turn !== null && turn.status !== "finished" && turn.status !== null;
+      // Unread events cannot show the turn concluded: preserved work then still needs a look.
+      const midTurn = turn === null || (turn.status !== "finished" && turn.status !== null);
       return preservation?.kind === "preserved" && midTurn ? "unconcluded" : null;
     }
     case "working":
@@ -304,30 +303,40 @@ const NAMED_ITEM = /\b(?:issue|ticket|pr|pull request)\s*#?(\d+)\b/i;
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 
 /**
- * The work item a launch prompt names (a GitHub issue or pull request URL, `owner/repo#12`, or "issue #12" in the
+ * The work item a launch prompt names first (a GitHub issue or pull request URL, `owner/repo#12`, or "issue #12" in the
  * sandbox's repository), else the pull request its outcome carries. Issues and pull requests share their numbers on
- * GitHub, so one key names either.
+ * GitHub, so one key names either; a number whose repository is unknown names nothing.
  */
 export function workItemOf(
   launch: string | null | undefined,
   outcome: { prUrl?: string | undefined; prNumber?: number | undefined } | null,
   repository: string | null,
 ): WorkItem | null {
-  const item = (repo: string | null, number: string): WorkItem => {
+  const item = (repo: string | null, number: string): WorkItem | null => {
+    // Without its repository a number is ambiguous: the same #12 in two repositories is two work items.
     const owned = repo && OWNER_REPO.test(repo) ? repo : null;
+    if (!owned) return null;
     return {
-      key: `${(owned ?? repository ?? "").toLowerCase()}#${Number(number)}`,
-      label: owned ? `${owned}#${Number(number)}` : `#${Number(number)}`,
-      href: owned ? `https://github.com/${owned}/issues/${Number(number)}` : null,
+      key: `${owned.toLowerCase()}#${Number(number)}`,
+      label: `${owned}#${Number(number)}`,
+      href: `https://github.com/${owned}/issues/${Number(number)}`,
     };
   };
   if (launch) {
+    // The first reference in the prompt names the work; a link given later as context does not.
     const url = GITHUB_ITEM.exec(launch);
-    if (url?.[1] && url[2]) return item(url[1], url[2]);
     const ref = REPO_ITEM.exec(launch);
-    if (ref?.[1] && ref[2]) return item(ref[1], ref[2]);
     const named = NAMED_ITEM.exec(launch);
-    if (named?.[1]) return item(repository, named[1]);
+    const found = [
+      url && { at: url.index, repo: url[1] ?? null, n: url[2] },
+      ref && { at: ref.index, repo: ref[1] ?? null, n: ref[2] },
+      named && { at: named.index, repo: repository, n: named[1] },
+    ]
+      .filter((match): match is { at: number; repo: string; n: string | undefined } =>
+        Boolean(match?.repo && OWNER_REPO.test(match.repo)),
+      )
+      .sort((a, b) => a.at - b.at)[0];
+    if (found?.n) return item(found.repo ?? null, found.n);
   }
   const pr = outcome?.prUrl ? GITHUB_ITEM.exec(outcome.prUrl) : null;
   if (pr?.[1] && pr[2]) return item(pr[1], pr[2]);
@@ -414,16 +423,7 @@ type SandboxRow = Pick<
   "id" | "status" | "harness" | "model" | "created_at" | "owner_id" | "provider_sandbox_id"
 > &
   Partial<
-    Pick<
-      Sandbox,
-      | "status_reason"
-      | "task_outcome"
-      | "preservation_note"
-      | "stopped_at"
-      | "stop_requested_at"
-      | "usage_running_since"
-      | "conversation_ids"
-    >
+    Pick<Sandbox, "status_reason" | "task_outcome" | "preservation_note" | "usage_running_since" | "conversation_ids">
   >;
 
 /** Epoch milliseconds before 2001 are not a real turn start (test fixtures and legacy events count from zero). */
@@ -449,7 +449,6 @@ export function fleetRow(
     {
       statusReason: sandbox.status_reason ?? null,
       lifecycleError: lifecycle.lifecycleError,
-      stopped: Boolean(sandbox.stop_requested_at || sandbox.stopped_at),
     },
     outcomeView(outcome),
   );
@@ -555,14 +554,15 @@ export type Board = {
 };
 
 /**
- * The board from every row read: grouped by work item, kept only while it holds something, acknowledged rows out of
+ * The board from every row read: kept only while it holds something, grouped by work item, acknowledged rows out of
  * "Needs you". Within a group the nearest deadline comes first, then the newest.
  */
 export function buildBoard(rows: readonly FleetRow[], acknowledged: ReadonlySet<string>): Board {
   const all = sortBoard(
-    groupByWorkItem(rows)
-      .filter(onBoard)
-      .map((row) => ({ ...row, dismissed: row.attention !== null && acknowledged.has(row.ackKey) })),
+    groupByWorkItem(rows.filter(onBoard)).map((row) => ({
+      ...row,
+      dismissed: row.attention !== null && acknowledged.has(row.ackKey),
+    })),
   );
   return {
     needs: all.filter((row) => row.attention !== null && !row.dismissed),

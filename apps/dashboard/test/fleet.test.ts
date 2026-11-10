@@ -117,8 +117,6 @@ describe("boardState", () => {
     expect(boardState("running", turn("running"), undefined, ready).kind).toBe("working");
     expect(boardState("ready", turn("failed", "usage_limit"), undefined, ready).kind).toBe("failed");
     expect(boardState("failed", null, undefined, ready).kind).toBe("failed");
-    // A failed sandbox whose latest turn finished after the failure reads as its outcome.
-    expect(boardState("failed", turn("finished"), undefined, ready).kind).toBe("ready");
     expect(boardState("stopping", null, undefined, ready).kind).toBe("stopped");
   });
 
@@ -256,14 +254,20 @@ describe("honest failures", () => {
     expect(boardState("failed", null, { statusReason: BOX_MOVED, lifecycleError: null }).kind).toBe("interrupted");
   });
 
-  test("a failed sandbox the operator stopped, or whose later turn finished, is not a failure", () => {
+  test("a failed sandbox stays a failure, whatever stop the server recorded, unless only interrupted", () => {
     const crash = { statusReason: "The harness exited unexpectedly.", lifecycleError: null };
     expect(boardState("failed", turn("failed", "crash"), crash).kind).toBe("failed");
-    expect(boardState("failed", turn("failed", "crash"), { ...crash, stopped: true })).toMatchObject({
-      kind: "stopped",
-      failure: null,
-    });
-    expect(boardState("failed", turn("finished"), crash)).toMatchObject({ kind: "stopped", label: "Ended" });
+    expect(boardState("failed", turn("finished"), crash).kind).toBe("failed");
+    // A failed turn followed by one that finished on a live machine is history.
+    expect(boardState("ready", turn("finished")).kind).toBe("finished");
+    const launch = {
+      statusReason: "Launch interrupted before completion; provider cleanup is retried until confirmed.",
+      lifecycleError: null,
+    };
+    const state = boardState("failed", null, launch);
+    expect(state.kind).toBe("interrupted");
+    // Nothing can be resent to an ended sandbox: it needs the operator only for work it preserved.
+    expect(attentionOf(state, "failed", null, null, null)).toBeNull();
   });
 });
 
@@ -288,6 +292,8 @@ describe("attentionOf", () => {
     const stopped = boardState("stopped", turn("interrupted"));
     expect(attentionOf(stopped, "stopped", turn("interrupted"), null, preserved)).toBe("unconcluded");
     expect(attentionOf(stopped, "stopped", turn("interrupted"), null, null)).toBeNull();
+    // Events that could not be read cannot show the turn concluded.
+    expect(attentionOf(boardState("stopped", null), "stopped", null, null, preserved)).toBe("unconcluded");
     expect(
       attentionOf(boardState("stopped", turn("finished")), "stopped", turn("finished"), null, preserved),
     ).toBeNull();
@@ -306,7 +312,17 @@ describe("workItemOf", () => {
     expect(workItemOf("Improve the README", { prUrl: "https://github.com/acme/web/pull/805" }, null)?.key).toBe(
       "acme/web#805",
     );
-    expect(workItemOf("Improve the README", { prNumber: 9 }, null)).toEqual({ key: "#9", label: "#9", href: null });
+    expect(workItemOf("Improve the README", { prNumber: 9 }, "acme/web")?.key).toBe("acme/web#9");
+    // A number without its repository names nothing: #12 in two repositories is two work items.
+    expect(workItemOf("Improve the README", { prNumber: 9 }, null)).toBeNull();
+    expect(workItemOf("Deliver issue #12.", null, null)).toBeNull();
+    expect(workItemOf("Deliver issue #12, see https://github.com/acme/api/pull/3.", null, null)?.key).toBe(
+      "acme/api#3",
+    );
+    // The first reference names the work; a link given later as context does not.
+    expect(workItemOf("Deliver issue #801; context: https://github.com/acme/api/pull/3", null, "acme/web")?.key).toBe(
+      "acme/web#801",
+    );
     expect(workItemOf("Improve the README", null, "acme/web")).toBeNull();
     expect(workItemOf(null, null, "acme/web")).toBeNull();
   });
@@ -444,12 +460,22 @@ describe("buildBoard on a busy organization", () => {
     );
     rows.push(
       row(
-        { status: "failed", created_at: at(26), stop_requested_at: at(20), ...crash },
-        summary({ status: "failed", reason: "crash" }),
+        { status: "failed", created_at: at(26), stopped_at: at(25), ...crash },
+        summary({ status: "failed", reason: "crash", launch: work(801) }),
       ),
     );
     // The interrupted launch already reconciled and stopped.
-    rows.push(row({ status: "failed", created_at: at(15), stopped_at: at(15) }, null));
+    rows.push(
+      row(
+        {
+          status: "failed",
+          created_at: at(15),
+          stopped_at: at(15),
+          status_reason: "Launch interrupted before completion; provider cleanup is retried until confirmed.",
+        },
+        null,
+      ),
+    );
     return rows;
   }
 
@@ -494,6 +520,18 @@ describe("buildBoard on a busy organization", () => {
     expect(board.needs).toEqual([]);
     expect(board.working).toHaveLength(1);
     expect(board.all).toHaveLength(1);
+  });
+
+  test("a newer run that holds nothing does not hide one that does", () => {
+    const ready = row(
+      { status: "ready", created_at: at(3), task_outcome: { state: "ready", prNumber: 5 } },
+      summary({ status: "finished", launch: work(900) }),
+    );
+    const done = row(
+      { status: "stopped", created_at: at(1), stopped_at: at(0.5) },
+      summary({ status: "finished", launch: work(900) }),
+    );
+    expect(buildBoard([ready, done], new Set()).needs.map((item) => item.id)).toEqual([ready.id]);
   });
 
   test("grouping keeps rows without a work item apart", () => {

@@ -50,7 +50,7 @@ test("on a busy organization, Needs you holds only what needs a decision", async
   await expect(interrupted.locator("[data-failure]")).toHaveCount(0);
   await expect(interrupted.locator("[data-interruption]")).toContainText("moved to a new machine");
   await expect(
-    row(page, BUSY.unconcluded).getByRole("button", { name: `Tell ${BUSY_LABELS.unconcluded} to continue` }),
+    row(page, BUSY.unconcluded).getByRole("button", { name: `Continue ${BUSY_LABELS.unconcluded}` }),
   ).toBeVisible();
   await expect(row(page, BUSY.expiring).locator('[data-expiry="urgent"]')).toBeVisible();
 
@@ -89,7 +89,7 @@ test("on a busy organization, Needs you holds only what needs a decision", async
   await expect(row(page, BUSY.failed)).toHaveAttribute("data-dismissed", "");
   await expect(row(page, BUSY.failed)).toContainText("Dismissed");
   await row(page, BUSY.failed)
-    .getByRole("button", { name: `Bring ${BUSY_LABELS.failed} back to Needs you` })
+    .getByRole("button", { name: `Restore ${BUSY_LABELS.failed} to Needs you` })
     .click();
   await expect(row(page, BUSY.failed)).not.toHaveAttribute("data-dismissed", "");
   await segments.getByRole("link", { name: /Needs you/ }).click();
@@ -119,7 +119,7 @@ test("an empty Needs you is a good state, and Continue sends the agent back to w
   await signIn(page, "alice@example.com", "/fleet");
   const bob = row(page, IDS.bobSecret);
   await expect(bob.locator('[data-board-state="finished"]')).toHaveText("No outcome reported");
-  await bob.getByRole("button", { name: `Tell ${LABELS.bobSecret} to continue` }).click();
+  await bob.getByRole("button", { name: `Continue ${LABELS.bobSecret}` }).click();
   await expect(page.locator("[data-nothing-needed]")).toHaveText("Nothing needs you. 2 agents working.");
   const sent = (await toolCalls()).find((call) => call.name === "send");
   expect(sent?.args).toMatchObject({

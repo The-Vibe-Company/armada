@@ -194,37 +194,29 @@ export function busyFleet(): Row[] {
   });
   rows.push(moved(1, 801, false), moved(2, 806, false), moved(3, 790, true), moved(4, 791, true), moved(5, 792, true));
 
-  // The night's harness crashes: four relaunched on the same issue since, one stopped by the operator.
-  const crash = (n: number, issue: number, stopped: boolean): Row => ({
+  // The night's harness crashes, each relaunched on the same issue since. The lifecycle worker records the stop of a
+  // failed machine itself, so a crash carries a stop time whether or not anyone looked at it.
+  const crash = (n: number, issue: number): Row => ({
     id: uuid(2, n),
     provider_sandbox_id: `bx_crash_${n}`,
     status: "failed",
     repository_dir: "web",
     created_at: ago(26 * HOUR + n * MIN),
-    last_observed_at: ago(25 * HOUR - 2 * HOUR),
+    last_observed_at: ago(23 * HOUR),
+    stopped_at: ago(25 * HOUR),
     status_reason: "The harness exited unexpectedly (code 137).",
-    stopped_at: stopped ? ago(20 * HOUR) : null,
-    stop_requested_at: stopped ? ago(20 * HOUR) : null,
     events: [prompt(`c${n}`, now - 26 * HOUR, work(issue), "failed", { reason: "harness_crashed" })],
   });
-  rows.push(
-    crash(6, 812, false),
-    crash(7, 809, false),
-    crash(8, 810, false),
-    crash(9, 811, false),
-    crash(10, 793, true),
-  );
-  // The launch interrupted by a deploy, already reconciled and stopped.
+  rows.push(crash(6, 812), crash(7, 809), crash(8, 810), crash(9, 811), crash(10, 799));
+  // The launch interrupted by a deploy, already reconciled and stopped (the server's closed diagnostic).
   rows.push({
     id: uuid(2, 11),
     provider_sandbox_id: "bx_launch_interrupted",
     status: "failed",
     created_at: ago(15 * HOUR),
     stopped_at: ago(15 * HOUR - 5 * MIN),
-    stop_requested_at: ago(15 * HOUR - 5 * MIN),
-    lifecycle_error: "The launch was interrupted; Armada reconciled it.",
+    status_reason: "Launch interrupted before completion; provider cleanup is retried until confirmed.",
   });
-
   // 175 stopped sandboxes: finished work, nothing left for the operator.
   for (let n = 1; n <= 175; n++)
     rows.push({

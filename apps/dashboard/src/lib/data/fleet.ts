@@ -18,11 +18,11 @@ import { listGoldenHistory } from "./goldens";
 import { selectedOrganization } from "./selected-org";
 import type { Viewer } from "./viewer";
 
-/** The most sandboxes the board reads; each costs a read of its events. */
-export const BOARD_LIMIT = 60;
-
-/** Each kind of sandbox the board reads is read at most this many at a time, the newest first. */
-const READ_LIMIT = 30;
+/**
+ * Each kind of sandbox the board reads (live, failed, stopped holding something) is read at most this many at a time,
+ * the newest first, so no kind crowds another out. Each row read costs a read of its events.
+ */
+const READ_LIMIT = 20;
 
 /** Events per page of the one `logs` call a row costs; the server bounds the pages it reads in that call. */
 const LOG_PAGE_SIZE = 500;
@@ -33,9 +33,9 @@ export type FleetBoard = Board & { configured: boolean; capped: boolean };
 
 /**
  * The board of the selected organization. The rows are the raw `sandboxes` read as the signed-in user, so row level
- * security keeps exactly those the viewer may open (their own, or every one for an admin). Live sandboxes take the
- * slots first, then failures of the last day, then sandboxes stopped in the last day that hold an outcome or a
- * preservation receipt: a stopped sandbox with neither is never read, however many there are. The events come from
+ * security keeps exactly those the viewer may open (their own, or every one for an admin). It reads the live sandboxes,
+ * the failures of the last day and the sandboxes stopped in the last day that hold an outcome or a preservation
+ * receipt, each bounded on its own: a stopped sandbox with neither is never read, however many there are. The events come from
  * the Armada server with the viewer's own session, which checks the same rule again; a row whose events cannot be
  * read, or are longer than one bounded read, is shown from its status. The viewer's acknowledgements are a cookie.
  */
@@ -66,7 +66,7 @@ export async function readBoard(supabase: Supabase, viewer: Viewer, now: Date): 
   const candidates = [live.data ?? [], failed.data ?? [], stopped.data ?? []].flatMap((read) =>
     read.slice(0, READ_LIMIT),
   );
-  const shown = candidates.slice(0, BOARD_LIMIT);
+  const shown = candidates;
   const gateway = viewerGateway(viewer);
   const turns = await Promise.all(
     shown.map(async (row): Promise<TurnSummary | null> => {
@@ -92,8 +92,6 @@ export async function readBoard(supabase: Supabase, viewer: Viewer, now: Date): 
   return {
     ...board,
     configured: gateway !== null,
-    capped:
-      candidates.length > BOARD_LIMIT ||
-      [live.data, failed.data, stopped.data].some((read) => (read?.length ?? 0) > READ_LIMIT),
+    capped: [live.data, failed.data, stopped.data].some((read) => (read?.length ?? 0) > READ_LIMIT),
   };
 }
