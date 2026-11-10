@@ -100,7 +100,7 @@ export function createProductionOrchestrators(input: {
   });
   const stores = {
     goldens: createSqlGoldenStore(sql),
-    sandboxes: createSqlSandboxStore(sql),
+    sandboxes: createSqlSandboxStore(sql, { turnModels: true }),
     credentials: input.credentials,
     ...(input.connections ? { connections: input.connections } : {}),
   };
