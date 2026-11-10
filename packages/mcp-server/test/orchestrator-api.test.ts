@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { MODEL_CATALOG } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
 import { orchestratorHttp } from "../src/orchestrator-api.ts";
 
@@ -120,6 +121,32 @@ test("requested production pairs stay unavailable and explain their independent 
         enabled: false,
         reason: "production_runtime_unavailable",
         continuity: "native",
+      },
+    ],
+    harnesses: [
+      {
+        harness: "claude",
+        defaultModel: MODEL_CATALOG.claude.defaultModel,
+        defaultReasoningEffort: MODEL_CATALOG.claude.defaultReasoningEffort,
+        reasoningEfforts: [...MODEL_CATALOG.claude.reasoningEfforts],
+        models: MODEL_CATALOG.claude.models.map(({ id, label, reasoningEfforts }) => ({
+          id,
+          label,
+          reasoningEfforts: [...reasoningEfforts],
+        })),
+        accountKinds: ["claude_oauth", "anthropic"],
+      },
+      {
+        harness: "codex",
+        defaultModel: MODEL_CATALOG.codex.defaultModel,
+        defaultReasoningEffort: MODEL_CATALOG.codex.defaultReasoningEffort,
+        reasoningEfforts: [...MODEL_CATALOG.codex.reasoningEfforts],
+        models: MODEL_CATALOG.codex.models.map(({ id, label, reasoningEfforts }) => ({
+          id,
+          label,
+          reasoningEfforts: [...reasoningEfforts],
+        })),
+        accountKinds: ["openai", "codex_auth"],
       },
     ],
   };

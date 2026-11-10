@@ -8,8 +8,7 @@ import Foundation
 ///
 /// What ArmadaKit publishes is used as-is: capabilities, list, detail, events, the durable
 /// prepare/submit command store, #680 sandbox metadata and a sandbox's interior (detail, events,
-/// send, stop). What it does not publish (golden, model-account and model lists for create) is
-/// reported as unavailable, never simulated.
+/// send, stop), and for create the server's pairs and model catalog, goldens and model accounts.
 struct ArmadaKitServices: OrchestratorService, SandboxService {
     let client: ArmadaClient
 
@@ -65,12 +64,23 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
+    /// Capabilities (pairs and per-harness catalog), goldens and model accounts, all from the server
+    /// over the CLI's routes. Nothing is offered that the server did not report.
     func createOptions(orgID: String) async throws(ServiceFailure) -> CreateOptions {
         try await requireOrganization(orgID)
-        try await requireEnabled()
-        throw .unavailable(
-            "Creating an orchestrator here needs the golden, model and account lists, which this version of the app can't read yet. Create it from the dashboard or the CLI."
-        )
+        let capabilities = try await fetchCapabilities()
+        guard capabilities.enabled || !(capabilities.pairs ?? []).isEmpty else {
+            throw .unavailable(ArmadaKit.OrchestratorExplanation.text(for: capabilities.reason ?? "native_conformance_required"))
+        }
+        do {
+            async let goldens = client.goldens()
+            async let accounts = client.modelAccounts()
+            return CreateOptions(catalog: ArmadaKit.OrchestratorCreateCatalog(
+                capabilities: capabilities, goldens: try await goldens, accounts: try await accounts
+            ))
+        } catch {
+            throw Self.readFailure(error)
+        }
     }
 
     // MARK: Commands
@@ -80,22 +90,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         // Never save a command the server would not accept now: a saved command can only be
         // cleared once it has a final outcome.
         try await requireEnabled()
-        guard let provider = ArmadaKit.ArmadaProvider(rawValue: request.provider.rawValue),
-              let harness = ArmadaKit.ArmadaHarness(rawValue: request.harness.rawValue) else {
-            throw .rejected("This app version cannot create an orchestrator with that provider or agent.")
-        }
-        let configuration = ArmadaKit.OrchestratorCreate(
-            orgId: request.orgID,
-            name: request.name,
-            goldenId: request.goldenID,
-            provider: provider,
-            harness: harness,
-            model: request.model,
-            modelAccountId: request.modelAccountID,
-            repo: request.repository,
-            reasoningEffort: request.reasoningEffort,
-            idleSeconds: request.idleSeconds
-        )
+        let configuration = request.configuration
         do {
             return try await client.prepareOrchestratorCreate(configuration).id.uuidString
         } catch {
@@ -115,6 +110,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .steer(let value): kitAction = .steer; text = value
         case .stop: kitAction = .stop; text = nil
         case .resume: kitAction = .resume; text = nil
+        case .recover: kitAction = .recover; text = nil
         }
         try await requireEnabled()
         do {
@@ -283,18 +279,21 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     /// The server's own capability decides. Today's handler answers `enabled: false`
     /// (`native_conformance_required`); that is shown, never worked around.
     private func requireEnabled() async throws(ServiceFailure) {
-        let capabilities: ArmadaKit.OrchestratorCapabilities
-        do {
-            capabilities = try await client.orchestratorCapabilities()
-        } catch ArmadaError.http(404), ArmadaError.http(405), ArmadaError.http(501) {
-            throw .unavailable("This Armada server doesn't offer orchestrators yet.")
-        } catch {
-            throw Self.readFailure(error)
-        }
+        let capabilities = try await fetchCapabilities()
         guard capabilities.enabled else {
             throw .unavailable(
                 "Orchestrators aren't enabled on this Armada server yet. They appear here once the server enables them."
             )
+        }
+    }
+
+    private func fetchCapabilities() async throws(ServiceFailure) -> ArmadaKit.OrchestratorCapabilities {
+        do {
+            return try await client.orchestratorCapabilities()
+        } catch ArmadaError.http(404), ArmadaError.http(405), ArmadaError.http(501) {
+            throw .unavailable("This Armada server doesn't offer orchestrators yet.")
+        } catch {
+            throw Self.readFailure(error)
         }
     }
 

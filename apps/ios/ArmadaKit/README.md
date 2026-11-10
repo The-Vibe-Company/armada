@@ -160,3 +160,30 @@ shared by a refused account and a provider outage) and unknown codes to `unconfi
 local text adapted from the dashboard's failure help; only validation codes add the
 server's own message, on one line of at most 300 characters. Sandbox delete is not
 offered: `/api/v1` has no delete route for a sandbox.
+
+## Orchestrators on the phone (#751)
+
+Create sources use the CLI's routes for the selected organization: `goldens()`
+(`POST golden/list`) and `modelAccounts()` (`POST creds/list`, named, active,
+unexpired accounts; ids, names and kinds only). Provider and harness ids are open
+values (`ArmadaProvider`, `ArmadaHarness`), never a closed list in the app.
+
+`OrchestratorCapabilities` decodes the server's `pairs` (provider × harness,
+`enabled`, `reason`) and `harnesses` (suggested models and efforts, the credential
+kinds that run each harness), additive to the capabilities route since #751.
+`OrchestratorCreateCatalog` offers only ready goldens, enabled pairs (a disabled
+pair keeps its reason as a sentence), the server's models and the accounts whose
+kind runs the harness, and validates a `Draft` into the exact `OrchestratorCreate`.
+
+`OrchestratorControls` derives what may be done from state, continuity and open
+operations (the dashboard's rule): nothing new while any operation is open;
+message only when ready; steer only while a turn runs; stop when ready or blocked;
+resume only a stopped native conversation; recover only what the server can
+settle at the current revision (an open or pre-machine-failed create, an uncertain
+stop) or an uncertain first create. `OrchestratorCreateProgress` says when a create has
+settled: nothing is sent before. `OrchestratorPolling` gives the next detail or
+list read (transitional states and open operations only; failures back off to a
+minute). `OrchestratorExplanation` turns request codes, receipt `errorCode`s,
+`blockedReason`s and pair reasons into sentences; an unknown code still reads as
+one. `recover` is a durable mutation like the others (same key and revision on
+retry); its receipt is the `stop` (or `create`) it settles.
