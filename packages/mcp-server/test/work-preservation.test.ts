@@ -29,7 +29,12 @@ test("recovery receipts retain encrypted versions and only current interior owne
     let transportArchive = "";
     const provider = {
       ...boat.provider,
-      async interrupt() {},
+      async interrupt() {
+        throw new Error("idle harness must not be interrupted");
+      },
+      async conversations() {
+        return [];
+      },
       async get() {
         return { id: "bx_recovery", name: "recovery", state: "ready" as const, providerState: "running", labels: {} };
       },
@@ -85,6 +90,13 @@ test("recovery receipts retain encrypted versions and only current interior owne
         sha256: createHash("sha256").update(Buffer.from(archive, "base64")).digest("hex"),
       });
     };
+    // Idle reviewers need no harness call, artifact, or warning, even on a retry.
+    await db.query("update sandboxes set preservation_note='old failure' where id=$1", [id]);
+    boat.setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
+    await preserveBeforeStop(sql, provider, id, "bx_recovery");
+    expect((await owner.get(id))?.preservationNote).toBeNull();
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
+
     const archive = Buffer.from("recovery fixture one: private repository material").toString("base64");
     boat.setExecOutput({ stdout: captured(archive) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
@@ -100,6 +112,8 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect((await owner.get(id))?.preservationNote).toBe(`unpushed work preserved at work_recovery:${id}/${first.id}`);
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
 
+    // A clean retry clears a stale failure without losing the recovery receipt.
+    await db.query("update sandboxes set preservation_note='old failure' where id=$1", [id]);
     // Clean stops must neither create an archive nor hide an earlier recovery receipt.
     boat.setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
@@ -109,7 +123,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
     // Retrying after failed capture surfaces a closed reason without losing earlier data.
     boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
-    expect((await owner.get(id))?.preservationNote).toBe("unpushed work could not be preserved (collector_failed)");
+    expect((await owner.get(id))?.preservationNote).toBe(
+      "Work preservation could not be verified (collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
+    );
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
     await db.query("update sandbox_work_recovery set created_at='2020-01-01' where id=$1", [first.id]);
@@ -197,7 +213,9 @@ test("the stop deadline publishes timeout and fences a late active provider obse
     const row = (
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
-    expect(row?.preservation_note).toBe("unpushed work could not be preserved (timeout)");
+    expect(row?.preservation_note).toBe(
+      "Work preservation could not be verified (timeout). Resume the sandbox and push or copy any local work before stopping again.",
+    );
     expect(interrupts).toBe(0);
     expect(execs).toBe(0);
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);

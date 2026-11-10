@@ -5,6 +5,7 @@ import { RECOVERY_BUN, RECOVERY_COLLECTOR } from "./work-preservation-collector.
 const FAILURE_REASONS = [
   "timeout",
   "unavailable",
+  "exec_failed",
   "size_limit",
   "missing_git",
   "missing_bun",
@@ -77,7 +78,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   const token = crypto.randomUUID().replaceAll("-", "");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
-  let stage: CaptureFailure = "unavailable";
+  let stage: CaptureFailure = "exec_failed";
   async function collect(): Promise<WorkPreservation> {
     const result = await provider.exec({
       sandboxId,
@@ -107,6 +108,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       )
         throw new Error();
       const chunks: Buffer[] = [];
+      stage = "exec_failed";
       const count = Math.ceil(size / CHUNK_BYTES);
       for (let start = 0; start < count; start += 8) {
         if (expired) return { status: "failed", reason: "timeout" };
