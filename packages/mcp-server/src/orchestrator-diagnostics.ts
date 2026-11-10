@@ -183,7 +183,27 @@ function baseReason(error: unknown): string {
         // Only closed provider-owned boot labels, never arbitrary SDK diagnostics.
         try {
           const boot: unknown = Reflect.get(error, "providerCode");
-          if (typeof boot === "string" && MODAL_BOOT_CODES.has(boot)) return `${family}_${code}_${boot}`;
+          if (typeof boot === "string" && MODAL_BOOT_CODES.has(boot)) {
+            const failure = error instanceof ProviderError ? error.details?.modalFailure : undefined;
+            const suffix =
+              typeof failure === "string" &&
+              [
+                "AuthError",
+                "NotFoundError",
+                "AlreadyExistsError",
+                "InvalidError",
+                "PermissionDeniedError",
+                "ResourceExhaustedError",
+                "TimeoutError",
+                "SandboxTimeoutError",
+                "unknown",
+                "grpc",
+              ].includes(failure)
+                ? failure
+                : "armada_refusal";
+            const status = error instanceof ProviderError ? error.status : undefined;
+            return `${family}_${code}_${boot}_${suffix}${typeof status === "number" && Number.isInteger(status) && status >= 0 && status <= 16 ? `_grpc_${status}` : ""}`;
+          }
         } catch {
           /* Preserve the normalized code even for a hostile getter. */
         }
