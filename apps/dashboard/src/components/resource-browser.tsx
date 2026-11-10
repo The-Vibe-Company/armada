@@ -72,6 +72,7 @@ export function ResourceBrowser({
   blockers,
   notices,
   create,
+  actions,
   footer,
   empty,
   initial,
@@ -87,7 +88,9 @@ export function ResourceBrowser({
   notices?: ReactNode;
   /** The New button and the form it opens; absent when nothing can be created here. */
   create?: { label: string; title: string; subtitle?: ReactNode; content: ReactNode };
-  /** One quiet line under the list (the capacity). */
+  /** Header controls of a page whose add flow is not a panel (Tools opens a dialog, #896). */
+  actions?: ReactNode;
+  /** What follows the list: a quiet line (the capacity), or a section of its own. */
   footer?: ReactNode;
   empty: ReactNode;
   /** The panel open on the first render: the `?item=` of the URL, or what the page follows. */
@@ -177,6 +180,7 @@ export function ResourceBrowser({
             <PlusIcon /> {create.label}
           </Button>
         )}
+        {actions}
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}

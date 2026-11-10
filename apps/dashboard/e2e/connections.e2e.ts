@@ -29,10 +29,10 @@ async function panel(page: Page, name: string) {
   return open;
 }
 
-/** Opens the New panel and returns its custom server form. */
+/** Opens the Add server dialog and returns its custom server form. */
 async function openAdd(page: Page) {
-  await page.getByRole("button", { name: "New", exact: true }).click();
-  const form = page.locator("form[data-add-connection]");
+  await page.getByRole("button", { name: "Add server", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "Add a custom server" }).locator("form[data-add-connection]");
   await expect(form).toBeVisible();
   return form;
 }
@@ -42,9 +42,8 @@ async function menu(page: Page, name: string, item: string) {
   await (await panel(page, name)).getByRole("button", { name: item, exact: true }).click();
 }
 
-/** Opens the New panel and returns its catalog of services. */
+/** The Services section under the list: the one place a catalog service is connected. */
 async function openServices(page: Page) {
-  await page.getByRole("button", { name: "New", exact: true }).click();
   const services = page.getByRole("region", { name: "Services" });
   await expect(services).toBeVisible();
   return services;
@@ -71,16 +70,17 @@ for (const mobile of [false, true]) {
     await expect(card(page, "Acme Sentry")).toContainText("Needs reconnect");
     await expect(card(page, "Acme Sentry")).toContainText("refresh token was revoked");
     await expect(page.getByText("Bob Notes")).toHaveCount(0);
-    // Needs a fix first, then ready, then the services nobody added.
+    // Needs a fix first, then ready. The services are offered once, in their own section, not as rows.
     await expect(page.getByRole("list", { name: "Tools" }).locator(":scope > li")).toHaveText([
       /^A?Acme Search/,
       /^A?Acme Sentry/,
       /^R?Repo Files/,
       /^A?Acme Docs/,
       /^L?Alice Linear/,
-      /^N?Notion/,
-      /^S?Slack/,
     ]);
+    const services = await openServices(page);
+    await expect(services.locator("[data-service]")).toHaveCount(3);
+    await expect(services.locator('[data-service="notion"]')).toContainText("Not added");
     // The strip names each fix and opens the row's panel, where its button is.
     const strip = page.locator("[data-readiness]");
     await expect(strip.getByRole("link")).toHaveText([
@@ -97,13 +97,30 @@ for (const mobile of [false, true]) {
     const dialog = await openAdd(page);
     await expect(dialog.getByLabel("Authentication")).toHaveValue("auto");
     await expect(dialog.getByRole("option", { name: "Auto-detect (recommended)" })).toHaveCount(1);
-    await expect(dialog).toBeInViewport();
+    // A dialog over the list, not a panel beside it: the catalog is not repeated, and on a laptop the whole form
+    // shows without scrolling, its irreversible choice marked.
+    await expect(page.getByRole("dialog").locator("[data-service]")).toHaveCount(0);
+    await expect(dialog.getByRole("group", { name: /Who uses it/ })).toContainText("Cannot be changed later");
+    if (!mobile) await expect(dialog.getByRole("button", { name: "Add and connect" })).toBeInViewport({ ratio: 1 });
+    if (!mobile) {
+      // The stdio path fits too: its importer is folded, so the scope choice and the submit stay in view.
+      await dialog.getByRole("radio", { name: /stdio command/ }).check();
+      await expect(dialog.getByText("Runs in each sandbox launched with it")).toBeVisible();
+      await expect(dialog.getByRole("radio", { name: /Personal/ })).toBeInViewport({ ratio: 1 });
+      await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeInViewport({ ratio: 1 });
+      await expect(dialog.getByRole("button", { name: "Add connection" })).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: "test-results/connections-add-stdio-desktop.png", animations: "disabled" });
+      await dialog.getByRole("radio", { name: /Remote URL/ }).check();
+    }
+    // On a phone the form scrolls inside the dialog, but nothing overflows its width.
+    await expect(dialog.getByText("stdio command")).toBeInViewport({ ratio: 1 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobile ? 390 : 1280);
     await page.screenshot({
       path: `test-results/connections-add-${mobile ? "mobile" : "desktop"}.png`,
       animations: "disabled",
     });
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Add server", exact: true })).toBeFocused();
   });
 }
 
@@ -298,16 +315,17 @@ test("a stdio server is imported, must pin its package and is configured for lau
   const dialog = await openAdd(page);
   await dialog.getByRole("radio", { name: /stdio command/ }).check();
   await expect(dialog.getByText("Runs in each sandbox launched with it")).toBeVisible();
-  const importBox = dialog.getByLabel("Import a JSON definition (optional)");
+  await dialog.getByRole("button", { name: "Import JSON definition" }).click();
+  const importBox = dialog.getByLabel("JSON definition");
   await importBox.fill(JSON.stringify({ mcpServers: { files: { command: "npx", env: { TOKEN: "x" } } } }));
-  await dialog.getByRole("button", { name: "Import" }).click();
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("Remove the env block");
   await importBox.fill(
     JSON.stringify({
       mcpServers: { files: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem"] } },
     }),
   );
-  await dialog.getByRole("button", { name: "Import" }).click();
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog.getByLabel("Name")).toHaveValue("files");
   await expect(dialog.getByRole("textbox", { name: "Command" })).toHaveValue("npx");
   await dialog.getByRole("button", { name: "Add connection" }).click();
@@ -446,7 +464,7 @@ test("switching organization switches the connections and their launch choices",
   await expect(card(page, "Zenith Search")).toBeVisible();
   await expect(card(page, "Acme Docs")).toHaveCount(0);
   await expect(card(page, "Alice Linear")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add server", exact: true })).toBeVisible();
   // Alice is only a member in Zenith: its org connections are read-only for her.
   await expect(await panel(page, "Zenith Search")).toContainText("Managed by the org's admins.");
   const lists = (await mockState()).controlCalls.filter((call) => call.operation === "list");
@@ -469,19 +487,17 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   page,
 }) => {
   await signIn(page, "alice@example.com", "/tools");
-  // A service nobody added is a row at the end of the list; Slack's says what the server still needs.
-  await expect(page.locator('[data-service-row="slack"]')).toContainText("Needs server setup");
-  await expect(page.locator('[data-service-row="slack"]').getByRole("link", { name: "Setup guide" })).toBeVisible();
+  // Each service has one card; Slack's says what the server still needs instead of offering Connect.
   const services = await openServices(page);
   const slack = services.locator('[data-service="slack"]');
-  await expect(slack).toContainText("Setup required");
+  await expect(slack).toContainText("Needs server setup");
   await expect(slack).toContainText("Registered confidential OAuth client required");
   await expect(slack.getByRole("button")).toHaveCount(0);
   await expect(slack.getByRole("link", { name: "Setup guide" })).toHaveAttribute(
     "href",
     "https://docs.slack.dev/ai/slack-mcp-server/",
   );
-  await expect(services.locator('[data-service="linear"]')).toContainText("1 connection");
+  await expect(services.locator('[data-service="linear"]')).toContainText("1 account in your list");
 
   await services.getByRole("button", { name: "Connect another Linear account" }).click();
   const dialog = page.getByRole("dialog", { name: "Connect Linear" });
@@ -502,7 +518,7 @@ test("a catalog service adds a second named account through its sign-in, and Sla
     (await panel(page, "Work Linear")).getByRole("switch", { name: "Include Work Linear by default" }),
   ).toHaveAttribute("aria-checked", "true");
   await openServices(page);
-  await expect(services.locator('[data-service="linear"]')).toContainText("2 connections");
+  await expect(services.locator('[data-service="linear"]')).toContainText("2 accounts in your list");
   await page.screenshot({ path: "test-results/connections-catalog-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "test-results/connections-catalog-mobile.png", fullPage: true });
