@@ -252,7 +252,9 @@ function orchestratorFixture(failure?: "resume" | "create_response" | "turn" | "
       return json({
         version: 1,
         enabled: failure !== "disabled",
-        pairs: [{ provider: "modal", harness: "codex", enabled: true }],
+        ...(failure === "disabled"
+          ? { reason: "native_conformance_required" }
+          : { pairs: [{ provider: "modal", harness: "codex", enabled: true }] }),
       });
     if (call.path.startsWith("orchestrators?") && call.init.method === "GET") {
       const cursor = new URL(`https://smoke.invalid/${call.path}`).searchParams.get("cursor");
