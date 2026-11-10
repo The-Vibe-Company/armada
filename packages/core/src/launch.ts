@@ -465,7 +465,21 @@ async function setup(
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets);
+    try {
+      await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets);
+    } catch (error) {
+      // Do not disable Git's ownership guard or expose its raw safe.directory workaround.
+      if (
+        error instanceof LaunchError &&
+        error.code === "init_failed" &&
+        error.message.includes("detected dubious ownership in repository")
+      )
+        throw new LaunchError(
+          "init_failed",
+          `Cannot update repository '${repo.dir}': checkout ownership does not match the sandbox command user. Ask the golden owner to rebuild and snapshot the golden with repositories owned by the sandbox user, then retry the launch.`,
+        );
+      throw error;
+    }
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");

@@ -418,6 +418,32 @@ describe("launch", () => {
     expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
   });
 
+  test("a no-repo ownership refusal is actionable and stops the multi-repo sandbox before init or prompt", async () => {
+    const world = setup({
+      golden: golden("org"),
+      exec: (command) =>
+        command.includes("'pull'")
+          ? { exitCode: 128, stderr: "fatal: detected dubious ownership in repository at '/home/user/web'" }
+          : { exitCode: 0 },
+    });
+    const failure = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      prompt: "go",
+    }).catch((error: unknown) => error as LaunchError);
+    expect(failure).toBeInstanceOf(LaunchError);
+    const error = failure as LaunchError;
+    expect(error.code).toBe("init_failed");
+    expect(error.message).toContain("checkout ownership");
+    expect(error.message).toContain("rebuild");
+    expect(error.message).not.toContain("fatal:");
+    expect(error.message).not.toContain("safe.directory");
+    expect(world.rows.get(error.sandboxId ?? "")).toMatchObject({ status: "failed", statusReason: error.message });
+    expect(world.stopped).toEqual(["bx_1"]);
+    expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.prompts).toEqual([]);
+  });
+
   test("a refused first prompt leaves a failed sandbox and says so", async () => {
     const world = setup({
       golden: golden("org"),
