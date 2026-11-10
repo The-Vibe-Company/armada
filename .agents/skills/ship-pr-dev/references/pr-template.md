@@ -34,16 +34,13 @@ Examples:
 - Status: <all visible non-skipped checks green / blocked>
 - Checks: <short summary>
 
-## Author self-check
-- Full diff against issue: <result, findings/fixes and coverage>
-- Independent review: pending coordinator (not performed by the worker)
-
-## Real-provider verification
-Mandatory for sandbox/orchestrator lifecycle, provider-adapter or agent-runtime changes.
-- <real-provider commands, enabled provider/harness pairs and observed results; OR
-  exact deployed check the coordinator must run, with missing evidence explicit>
-- Mock/unit tests are not real-provider verification. Never deploy to fill this
-  section without authorization.
+## Review Gate
+- `review-code-dev` v2 / Alibaba delegation: <passed / findings fixed / blocked>
+- Required focus areas: <frontend/security/API/etc. / none>
+- Original need and approved plan, if supplied: <criteria met / deviations and disposition>
+- Coverage: <reviewed/excluded/skipped counts; scope matches latest source>
+- Findings: <critical/high/medium/low counts and disposition>
+- Artifacts: `<path or PR-safe summary>`
 
 ## Risk
 - <deployment, migration, compatibility, UI, data, or security risk>
@@ -63,15 +60,13 @@ Do not paste local secrets, long logs, noisy generated output, or machine-local 
 After PR creation or update, answer with:
 
 ```markdown
-PR ready for coordinator review: <url>
+PR ready to merge by a human: <url>
 
 Changed: <one sentence about delivered behavior>
 To test: <2-3 concrete human steps>
-Verified: <local checks, author self-check and latest-SHA CI>
+Verified: <local checks, independent review and latest-SHA CI>
 Screenshots / limits: <actual evidence or relevant limitation; omit if irrelevant>
 Details: <local RUN_DIR with branch/base, SHA, coverage, CI and learning report>
-
-READY FOR REVIEW: PR #<number> head <full SHA>
 ```
 
 If blocked:
