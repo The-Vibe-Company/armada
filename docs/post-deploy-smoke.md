@@ -109,7 +109,7 @@ The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
 the sandbox and checks provider state. The optional path also exercises
 orchestrator create → send → stop → resume → stop. It requires `goldenId`;
-currently the orchestrator supports Modal/Codex only. Use a separate cases file
+orchestrator capabilities must enable the selected pair (Modal/Codex native or Boat/Claude and Boat/Codex best-effort). Use a separate cases file
 containing only supported pairs for that run.
 
 The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
