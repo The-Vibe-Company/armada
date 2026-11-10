@@ -10,6 +10,7 @@ import {
   type SandboxProviderId,
 } from "@armada/core";
 import type { GoldenCapabilities } from "./control.ts";
+import type { Tone } from "./status-tone.ts";
 
 /** One repository row of the golden form, as typed. */
 export type RepoRow = { url: string; branch: string; dir: string };
@@ -257,4 +258,66 @@ export type { GoldenConfig };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether a golden launches from this page, and otherwise what holds it, as a status pill: a short label in the
+ * tone of the cause, and a sentence that completes it. `connect` asks for the one fix the viewer can start from here.
+ */
+export type LaunchReadiness =
+  | { kind: "ready" }
+  | {
+      kind: "no-snapshot" | "no-server" | "provider-unknown" | "provider-missing";
+      tone: Tone;
+      label: string;
+      detail: string;
+      connect: boolean;
+    };
+
+export function goldenLaunchReadiness({
+  provider,
+  hasSnapshot,
+  serverReady,
+  connected,
+}: {
+  provider: SandboxProviderId;
+  hasSnapshot: boolean;
+  serverReady: boolean;
+  /** The providers the org has connected; null when their status could not be read. */
+  connected: readonly SandboxProviderId[] | null;
+}): LaunchReadiness {
+  const label = PROVIDER_LABELS[provider];
+  if (!hasSnapshot)
+    return {
+      kind: "no-snapshot",
+      tone: "warning",
+      label: "Needs a snapshot",
+      detail: "Build it before launching from it.",
+      connect: false,
+    };
+  if (!serverReady)
+    return {
+      kind: "no-server",
+      tone: "destructive",
+      label: "Server not configured",
+      detail: "Launching needs the Armada server.",
+      connect: false,
+    };
+  if (connected === null)
+    return {
+      kind: "provider-unknown",
+      tone: "warning",
+      label: "Launch paused",
+      detail: "The provider status is unavailable.",
+      connect: false,
+    };
+  if (!connected.includes(provider))
+    return {
+      kind: "provider-missing",
+      tone: "neutral",
+      label: `${label} not connected`,
+      detail: `Connect ${label} in Settings to launch.`,
+      connect: true,
+    };
+  return { kind: "ready" };
 }

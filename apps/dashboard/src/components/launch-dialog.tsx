@@ -1,13 +1,24 @@
 "use client";
 
 import type { Harness, MachineSize, MachineSizePolicy, SandboxProviderId } from "@armada/core";
-import { ChevronDownIcon, CircleAlertIcon, RocketIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  CircleAlertIcon,
+  CpuIcon,
+  FolderIcon,
+  GaugeIcon,
+  PlugIcon,
+  RocketIcon,
+  ServerIcon,
+  WalletIcon,
+} from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
+import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
+import { ModKey } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +29,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +51,7 @@ import {
   launchDefault,
   type ModelAccount,
 } from "@/lib/model-accounts";
+import { isSubmitShortcut } from "@/lib/shortcut";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
@@ -112,10 +125,20 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
     const reveal = () => {
       details.open = true;
     };
+    // ⌘↵ launches from any field, as the composer sends. It goes through the Launch button, so a held or pending
+    // launch (the button is disabled) is not submitted by the keyboard either.
+    const shortcut = (event: KeyboardEvent) => {
+      if (!isSubmitShortcut(event)) return;
+      event.preventDefault();
+      const button = node.querySelector<HTMLButtonElement>('button[type="submit"]');
+      if (button && !button.disabled) button.form?.requestSubmit(button);
+    };
     node.addEventListener("reset", keep, true);
+    node.addEventListener("keydown", shortcut);
     details.addEventListener("invalid", reveal, true);
     return () => {
       node.removeEventListener("reset", keep, true);
+      node.removeEventListener("keydown", shortcut);
       details.removeEventListener("invalid", reveal, true);
     };
   }, []);
@@ -135,16 +158,16 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
   const onChoice = useCallback((next: { model: string; effort: string }) => setChoice(next), []);
   const entry = catalog[harness];
   const modelLabel = entry.models.find((option) => option.id === choice.model)?.label ?? (choice.model || "Model id");
-  const summary = [
-    modelLabel,
-    EFFORT_LABEL[choice.effort] ?? choice.effort,
+  const summary: { key: string; icon: ReactNode; text: string }[] = [
+    { key: "model", icon: <CpuIcon />, text: modelLabel },
+    { key: "effort", icon: <GaugeIcon />, text: EFFORT_LABEL[choice.effort] ?? choice.effort },
     // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
-    repositories.length === 1 ? project || "Default directory" : null,
-    sizing ? sizeFact(size) : null,
-    mcpFact(access),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+    ...(repositories.length === 1
+      ? [{ key: "project", icon: <FolderIcon />, text: project || "Default directory" }]
+      : []),
+    ...(sizing ? [{ key: "size", icon: <ServerIcon />, text: sizeFact(size) }] : []),
+    { key: "mcp", icon: <PlugIcon />, text: mcpFact(access) },
+  ];
 
   return (
     <div ref={root} className="flex min-h-0 flex-1 flex-col">
@@ -170,6 +193,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
               {...(access.held ? { disabled: true, "aria-describedby": `${id}-held` } : {})}
             >
               <RocketIcon /> Launch
+              <LaunchShortcut />
             </SubmitButton>
           </div>
         }
@@ -212,8 +236,25 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
             <summary className="flex cursor-pointer list-none items-center gap-3 rounded-md px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
               <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
                 <span className="font-medium">Advanced</span>
-                <span data-launch-summary className="min-w-0 text-xs text-muted-foreground sm:flex-1 sm:text-right">
-                  {summary}
+                {/* Each default is its own chip; the hidden separators keep it one sentence when read aloud. */}
+                <span
+                  data-launch-summary
+                  className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground sm:flex-1 sm:justify-end"
+                >
+                  {summary.map((fact, index) => (
+                    <Fragment key={fact.key}>
+                      {index > 0 && <span className="sr-only"> · </span>}
+                      <span
+                        data-launch-fact={fact.key}
+                        className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2 py-0.5 dark:bg-input/30 [&_svg]:size-3 [&_svg]:shrink-0"
+                      >
+                        <span aria-hidden="true" className="contents">
+                          {fact.icon}
+                        </span>
+                        <span className="truncate">{fact.text}</span>
+                      </span>
+                    </Fragment>
+                  ))}
                 </span>
               </span>
               <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
@@ -328,40 +369,74 @@ function AccountField({
     [accounts.orgName, compatible.filter((account) => account.scope === "org")],
   ];
   return (
-    <div className="space-y-2">
-      <Label htmlFor={`${idPrefix}-account`}>Account</Label>
-      <NativeSelect
-        id={`${idPrefix}-account`}
-        name="credential"
-        defaultValue={preset}
-        required
-        aria-describedby={`${idPrefix}-account-hint`}
+    // Its own row, apart from the run settings: the choice of who pays is read before Launch, never assumed.
+    <div data-account-row className="flex gap-3 rounded-lg border bg-muted/40 p-3 dark:bg-input/20">
+      <span
+        aria-hidden="true"
+        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs [&_svg]:size-4"
       >
-        {preset === "" && (
-          <option value="" disabled>
-            Choose an account
-          </option>
-        )}
-        {groups.map(([group, rows]) =>
-          rows.length === 0 ? null : (
-            <optgroup key={group} label={group}>
-              {rows.map((account) => (
-                <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
-                  {optionLabel(account, accounts.now, accounts.orgName)}
-                </option>
-              ))}
-            </optgroup>
-          ),
-        )}
-      </NativeSelect>
-      <p id={`${idPrefix}-account-hint`} className="text-xs text-muted-foreground" data-account-field={resolved.state}>
-        {resolved.state === "unusable"
-          ? `${resolved.account.name} would be used, but it is ${accountProblem(resolved.account, accounts.now)}. Choose another account.`
-          : resolved.state === "ambiguous"
-            ? "No default for this agent: choose who is billed."
-            : "Billed for this sandbox, now and for every later message."}
-      </p>
+        <WalletIcon />
+      </span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="space-y-1">
+          <Label htmlFor={`${idPrefix}-account`}>Account</Label>
+          <p
+            id={`${idPrefix}-account-hint`}
+            className={cn(
+              "text-xs text-pretty",
+              resolved.state === "unusable" ? "text-warning" : "text-muted-foreground",
+            )}
+            data-account-field={resolved.state}
+          >
+            {resolved.state === "unusable"
+              ? `${resolved.account.name} would be used, but it is ${accountProblem(resolved.account, accounts.now)}. Choose another account.`
+              : resolved.state === "ambiguous"
+                ? "No default for this agent: choose who is billed."
+                : "Billed for this sandbox, now and for every later message."}
+          </p>
+        </div>
+        <NativeSelect
+          id={`${idPrefix}-account`}
+          name="credential"
+          defaultValue={preset}
+          required
+          aria-describedby={`${idPrefix}-account-hint`}
+          className="w-full bg-background"
+        >
+          {preset === "" && (
+            <option value="" disabled>
+              Choose an account
+            </option>
+          )}
+          {groups.map(([group, rows]) =>
+            rows.length === 0 ? null : (
+              <optgroup key={group} label={group}>
+                {rows.map((account) => (
+                  <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
+                    {optionLabel(account, accounts.now, accounts.orgName)}
+                  </option>
+                ))}
+              </optgroup>
+            ),
+          )}
+        </NativeSelect>
+      </div>
     </div>
+  );
+}
+
+/** The shortcut Launch answers to, on the button itself; hidden from its accessible name. */
+function LaunchShortcut() {
+  return (
+    <Kbd
+      aria-hidden="true"
+      className="-mr-1 ml-0.5 border-transparent bg-primary-foreground/15 text-primary-foreground/80 shadow-none max-sm:hidden"
+    >
+      <span>
+        <ModKey />
+      </span>
+      <span>↵</span>
+    </Kbd>
   );
 }
 

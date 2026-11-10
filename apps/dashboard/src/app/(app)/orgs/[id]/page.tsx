@@ -2,13 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { inviteMember, resendInvitation, revokeInvitation } from "@/app/actions/invitations";
-import { changeMemberRole, removeMember } from "@/app/actions/orgs";
-import { ActionForm, SubmitButton } from "@/components/action-form";
 import { InvitationList, InviteForm } from "@/components/invitations";
-import { PageHeader } from "@/components/page-header";
+import { MemberRoleForm, RemoveMember } from "@/components/member-controls";
+import { PageHeader, SectionHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { isUuid } from "@/lib/action";
 import { ControlError, createInvitationControl } from "@/lib/control";
@@ -16,6 +14,7 @@ import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { type InvitationView, pendingInvitations } from "@/lib/invitations";
+import { initialOf } from "@/lib/members";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
@@ -81,15 +80,11 @@ export default async function OrgPage({ params, searchParams }: Props) {
 
       {invitations && (
         <section className="space-y-3" aria-labelledby="invite-heading">
-          <div>
-            <h2 id="invite-heading" className="text-base font-semibold">
-              Invite a teammate
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Armada emails them a link to this invitation. They sign in with that address, review the organization and
-              join only if they accept.
-            </p>
-          </div>
+          <SectionHeader
+            id="invite-heading"
+            title="Invite a teammate"
+            description="Armada emails them a link to this invitation. They sign in with that address, review the organization and join only if they accept."
+          />
           <InviteForm org={id} action={inviteMember} />
           <h3 className="pt-2 text-sm font-medium">Pending invitations</h3>
           {invitations.ok ? (
@@ -108,59 +103,81 @@ export default async function OrgPage({ params, searchParams }: Props) {
         </section>
       )}
 
-      <section className="space-y-3" aria-label="Members">
-        <h2 className="text-base font-semibold">Members</h2>
-        <div className="rounded-lg border">
+      <section className="space-y-3" aria-labelledby="members-heading">
+        <SectionHeader
+          id="members-heading"
+          title="Members"
+          description={isAdmin ? "Admins manage members, org goldens and providers." : "Only an admin changes members."}
+        >
+          <span className="text-sm text-muted-foreground tabular-nums">
+            {roster.data.length} {roster.data.length === 1 ? "member" : "members"}
+          </span>
+        </SectionHeader>
+        <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Email</TableHead>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="pl-3 sm:pl-4">Member</TableHead>
                 <TableHead>Role</TableHead>
-                {isAdmin && <TableHead className="text-right">Manage</TableHead>}
+                {isAdmin && (
+                  <TableHead className="pr-4 text-right">
+                    <span className="sr-only">Manage</span>
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {roster.data.map((member) => (
-                <TableRow key={member.user_id} data-member={member.email}>
-                  <TableCell>
-                    {member.email}
-                    {member.user_id === viewer.id && <span className="ml-2 text-xs text-muted-foreground">you</span>}
-                  </TableCell>
-                  <TableCell>
-                    {isAdmin ? (
-                      <ActionForm action={changeMemberRole} className="flex items-center gap-2">
-                        <input type="hidden" name="org" value={id} />
-                        <input type="hidden" name="user" value={member.user_id} />
-                        <NativeSelect
-                          name="role"
-                          defaultValue={member.role}
-                          aria-label={`Role of ${member.email}`}
-                          className="h-8 w-28"
+              {roster.data.map((member) => {
+                const self = member.user_id === viewer.id;
+                const role = member.role === "admin" ? "admin" : "member";
+                return (
+                  <TableRow key={member.user_id} data-member={member.email} className="hover:bg-muted/30">
+                    <TableCell className="pl-3 whitespace-normal sm:pl-4 sm:whitespace-nowrap">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap">
+                        <span
+                          aria-hidden="true"
+                          className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-medium text-muted-foreground max-sm:hidden"
                         >
-                          <option value="admin">admin</option>
-                          <option value="member">member</option>
-                        </NativeSelect>
-                        <SubmitButton variant="outline" size="sm">
-                          Save
-                        </SubmitButton>
-                      </ActionForm>
-                    ) : (
-                      <Badge variant={member.role === "admin" ? "default" : "secondary"}>{member.role}</Badge>
-                    )}
-                  </TableCell>
-                  {isAdmin && (
-                    <TableCell className="text-right">
-                      <ActionForm action={removeMember} className="flex flex-col items-end gap-1">
-                        <input type="hidden" name="org" value={id} />
-                        <input type="hidden" name="user" value={member.user_id} />
-                        <SubmitButton variant="ghost" size="sm" aria-label={`Remove ${member.email}`}>
-                          Remove
-                        </SubmitButton>
-                      </ActionForm>
+                          {initialOf(member.email)}
+                        </span>
+                        <span className="min-w-0 font-medium break-all sm:truncate" title={member.email}>
+                          {member.email}
+                        </span>
+                        {self && (
+                          <Badge variant="secondary" className="shrink-0">
+                            you
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
-                  )}
-                </TableRow>
-              ))}
+                    <TableCell className="align-top sm:align-middle">
+                      {isAdmin ? (
+                        <MemberRoleForm
+                          org={id}
+                          orgName={membership.org.name}
+                          user={member.user_id}
+                          email={member.email}
+                          role={role}
+                          self={self}
+                        />
+                      ) : (
+                        <Badge variant={role === "admin" ? "default" : "secondary"}>{role}</Badge>
+                      )}
+                    </TableCell>
+                    {isAdmin && (
+                      <TableCell className="pr-3 text-right sm:pr-4">
+                        <RemoveMember
+                          org={id}
+                          orgName={membership.org.name}
+                          user={member.user_id}
+                          email={member.email}
+                          self={self}
+                        />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
