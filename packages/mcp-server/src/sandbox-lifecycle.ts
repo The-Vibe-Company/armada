@@ -78,7 +78,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           const owned = await sql.query<{ id: string }>(
             `update public.sandboxes
             set reconcile_lease_until=now()+interval '2 minutes',
-              status=case when status in ('failed','starting') then status else 'stopping'::public.sandbox_status end
+              stop_requested_at=coalesce(stop_requested_at,now())
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
               and reconcile_lease_until>now() and (activity_until is null or activity_until<now()) returning id`,
             [row.id, token, row.lifecycle_generation],
@@ -87,7 +87,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           signal?.throwIfAborted();
           if (
             !(
-              ["stopping", "starting", "failed"].includes(row.status) &&
+              (row.status === "stopping" || row.stop_requested_at !== null) &&
               row.preservation_note?.startsWith("unpushed work could not be preserved")
             )
           )
