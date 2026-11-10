@@ -1,3 +1,4 @@
+import ArmadaKit
 import Foundation
 
 /// Presentation values for the persistent orchestrator surface. Every field maps one-to-one to the
@@ -45,10 +46,18 @@ enum OrchestratorState: Hashable, Sendable {
         }
     }
 
-    /// The design's transitions: only a ready orchestrator admits messages.
-    var admitsMessages: Bool { self == .ready }
-    var canStop: Bool { self == .ready || self == .blocked }
-    var canResume: Bool { self == .stopped }
+    /// The wire value, for ArmadaKit's pure rules (`OrchestratorControls`, `OrchestratorPolling`).
+    var rawValue: String {
+        switch self {
+        case .creating: "creating"
+        case .ready: "ready"
+        case .stopping: "stopping"
+        case .stopped: "stopped"
+        case .resuming: "resuming"
+        case .blocked: "blocked"
+        case .other(let value): value
+        }
+    }
 }
 
 enum OrchestratorContinuity: Hashable, Sendable {
@@ -92,6 +101,16 @@ enum OrchestratorContinuity: Hashable, Sendable {
             "This app does not know this continuity state yet."
         }
     }
+
+    var rawValue: String {
+        switch self {
+        case .notStarted: "not_started"
+        case .native: "native"
+        case .unverified: "unverified"
+        case .lost: "lost"
+        case .other(let value): value
+        }
+    }
 }
 
 struct OrchestratorSummary: Identifiable, Hashable, Sendable {
@@ -123,6 +142,11 @@ struct OrchestratorSummary: Identifiable, Hashable, Sendable {
 
     var agentLabel: String { harness?.label ?? harnessRaw }
 
+    /// The blocked reason as a plain sentence; the server's code is never shown alone.
+    var blockedExplanation: String? {
+        blockedReason.map { ArmadaKit.OrchestratorExplanation.text(for: $0) }
+    }
+
     var modelLine: String {
         guard let reasoningEffort, !reasoningEffort.isEmpty else { return model }
         return "\(model) · \(reasoningEffort)"
@@ -141,6 +165,8 @@ enum OperationKind: Hashable, Sendable {
     case steer
     case stop
     case resume
+    /// A request only: its receipt is the stop (or create) it settles.
+    case recover
     case other(String)
 
     init(rawValue: String) {
@@ -150,7 +176,20 @@ enum OperationKind: Hashable, Sendable {
         case "steer": self = .steer
         case "stop": self = .stop
         case "resume": self = .resume
+        case "recover": self = .recover
         default: self = .other(rawValue)
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .create: "create"
+        case .message: "message"
+        case .steer: "steer"
+        case .stop: "stop"
+        case .resume: "resume"
+        case .recover: "recover"
+        case .other(let value): value
         }
     }
 
@@ -161,6 +200,7 @@ enum OperationKind: Hashable, Sendable {
         case .steer: "Steer"
         case .stop: "Stop"
         case .resume: "Resume"
+        case .recover: "Recovery"
         case .other(let value): value.capitalized
         }
     }
@@ -185,6 +225,16 @@ enum OperationState: Hashable, Sendable {
     }
 
     var isOpen: Bool { self == .pending || self == .uncertain }
+
+    var rawValue: String {
+        switch self {
+        case .pending: "pending"
+        case .succeeded: "succeeded"
+        case .failed: "failed"
+        case .uncertain: "uncertain"
+        case .other(let value): value
+        }
+    }
 }
 
 struct OperationSummary: Identifiable, Hashable, Sendable {
@@ -223,6 +273,26 @@ struct OrchestratorDetail: Sendable {
     let childSandboxIDs: [String]
 
     var openOperations: [OperationSummary] { operations.filter(\.state.isOpen) }
+
+    /// What may be done now (ArmadaKit's rule, the dashboard's too). `agentWorking`: a turn runs.
+    func controls(agentWorking: Bool) -> ArmadaKit.OrchestratorControls {
+        ArmadaKit.OrchestratorControls(
+            state: summary.state.rawValue,
+            continuity: summary.continuity.rawValue,
+            blockedReason: summary.blockedReason,
+            operations: operations.map { (kind: $0.kind.rawValue, state: $0.state.rawValue) },
+            agentWorking: agentWorking
+        )
+    }
+
+    /// Where its create stands: nothing is sent before it has succeeded.
+    var createProgress: ArmadaKit.OrchestratorCreateProgress {
+        ArmadaKit.OrchestratorCreateProgress(
+            state: summary.state.rawValue,
+            operations: operations.map { (kind: $0.kind.rawValue, state: $0.state.rawValue, errorCode: $0.errorCode) },
+            blockedReason: summary.blockedReason
+        )
+    }
 }
 
 /// The owner actions the design exposes on `/api/v1/orchestrators/:id/*`.
@@ -231,6 +301,7 @@ enum OrchestratorAction: Hashable, Sendable {
     case steer(String)
     case stop
     case resume
+    case recover
 
     var kind: OperationKind {
         switch self {
@@ -238,6 +309,7 @@ enum OrchestratorAction: Hashable, Sendable {
         case .steer: .steer
         case .stop: .stop
         case .resume: .resume
+        case .recover: .recover
         }
     }
 }
@@ -268,147 +340,20 @@ enum IdlePolicy {
 
 // MARK: - Creation
 
-struct GoldenChoice: Identifiable, Hashable, Sendable {
-    let id: String
-    let name: String
-    let provider: ProviderID
-    /// A golden can start an orchestrator only once its snapshot is saved.
-    let isReady: Bool
-    /// Repository directories recorded in the golden (`repos[].dir`).
-    let repositories: [String]
-}
-
-struct ModelAccountChoice: Identifiable, Hashable, Sendable {
-    let id: String
-    let name: String
-    /// Short safe detail, for example "Personal · Subscription". Never a credential value.
-    let detail: String
-    /// The harness this account can run.
-    let harness: Harness
-    let isDefault: Bool
-}
-
-struct ModelChoice: Identifiable, Hashable, Sendable {
-    let id: String
-    let label: String
-    let reasoningEfforts: [String]
-}
-
-struct HarnessModels: Hashable, Sendable {
-    let defaultModel: String
-    let defaultReasoningEffort: String
-    let reasoningEfforts: [String]
-    let models: [ModelChoice]
-
-    func efforts(for model: String) -> [String] {
-        models.first { $0.id == model }?.reasoningEfforts ?? reasoningEfforts
-    }
-}
-
+/// What the create form may offer, entirely from the server: ArmadaKit's catalog filters goldens,
+/// provider × harness pairs (enabled ones only, disabled ones explained), models and accounts.
 struct CreateOptions: Sendable {
-    let goldens: [GoldenChoice]
-    let accounts: [ModelAccountChoice]
-    let catalog: [Harness: HarnessModels]
+    let catalog: ArmadaKit.OrchestratorCreateCatalog
 }
 
-/// Exactly the fields of `OrchestratorCreate` v1. Omitted optionals are left to server defaults.
-struct OrchestratorCreateRequest: Hashable, Sendable {
-    let orgID: String
-    let name: String
-    let goldenID: String
-    let provider: ProviderID
-    let harness: Harness
-    let repository: String?
-    let model: String
-    let reasoningEffort: String?
-    let modelAccountID: String
-    let idleSeconds: Int?
+/// The exact `OrchestratorCreate` v1 the person confirmed. Omitted optionals keep server defaults.
+struct OrchestratorCreateRequest: Sendable {
+    let configuration: ArmadaKit.OrchestratorCreate
+    var orgID: String { configuration.orgId }
+    var name: String { configuration.name }
 }
 
-/// What the create form edits. Validation mirrors the server's checks so the person learns early;
-/// the server still decides.
-struct OrchestratorDraft: Hashable, Sendable {
-    var name = ""
-    var goldenID: String?
-    var harness: Harness = .claude
-    var model = ""
-    var reasoningEffort = ""
-    var accountID: String?
-    var repository: String?
-    var idleSeconds = IdlePolicy.defaultSeconds
-
-    /// Applies the harness defaults and the first compatible default account.
-    mutating func adopt(harness: Harness, options: CreateOptions) {
-        self.harness = harness
-        if let models = options.catalog[harness] {
-            model = models.defaultModel
-            reasoningEffort = models.defaultReasoningEffort
-        } else {
-            model = ""
-            reasoningEffort = ""
-        }
-        let compatible = options.accounts.filter { $0.harness == harness }
-        if let accountID, compatible.contains(where: { $0.id == accountID }) { return }
-        accountID = (compatible.first(where: \.isDefault) ?? compatible.first)?.id
-    }
-
-    func request(orgID: String, options: CreateOptions) -> Result<OrchestratorCreateRequest, DraftProblem> {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return .failure(.missingName) }
-        guard let goldenID, let golden = options.goldens.first(where: { $0.id == goldenID }) else {
-            return .failure(.missingGolden)
-        }
-        guard golden.isReady else { return .failure(.goldenNotReady) }
-        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedModel.isEmpty else { return .failure(.missingModel) }
-        let effort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let models = options.catalog[harness], !effort.isEmpty,
-           !models.efforts(for: trimmedModel).contains(effort) {
-            return .failure(.unsupportedEffort)
-        }
-        guard let accountID,
-              options.accounts.contains(where: { $0.id == accountID && $0.harness == harness }) else {
-            return .failure(.missingAccount)
-        }
-        if let repository, !golden.repositories.contains(repository) {
-            return .failure(.unknownRepository)
-        }
-        guard IdlePolicy.isValid(idleSeconds) else { return .failure(.idleOutOfRange) }
-        return .success(OrchestratorCreateRequest(
-            orgID: orgID,
-            name: trimmedName,
-            goldenID: golden.id,
-            provider: golden.provider,
-            harness: harness,
-            repository: repository,
-            model: trimmedModel,
-            reasoningEffort: effort.isEmpty ? nil : effort,
-            modelAccountID: accountID,
-            idleSeconds: idleSeconds == IdlePolicy.defaultSeconds ? nil : idleSeconds
-        ))
-    }
-}
-
-enum DraftProblem: Error, Hashable, Sendable {
-    case missingName
-    case missingGolden
-    case goldenNotReady
-    case missingModel
-    case unsupportedEffort
-    case missingAccount
-    case unknownRepository
-    case idleOutOfRange
-
-    var message: String {
-        switch self {
-        case .missingName: "Name the orchestrator."
-        case .missingGolden: "Choose a golden."
-        case .goldenNotReady: "This golden has no saved snapshot yet."
-        case .missingModel: "Choose a model."
-        case .unsupportedEffort: "That reasoning effort is not available for this model."
-        case .missingAccount: "Choose a model account for this agent."
-        case .unknownRepository: "Choose a repository recorded in the golden."
-        case .idleOutOfRange: "Choose an idle stop between 15 minutes and 24 hours."
-        }
-    }
+/// Display names for an open harness id: today's known ones by name, any other as sent.
+enum HarnessName {
+    static func label(_ raw: String) -> String { Harness(rawValue: raw)?.label ?? raw }
 }

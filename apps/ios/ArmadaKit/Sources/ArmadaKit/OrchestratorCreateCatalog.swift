@@ -29,6 +29,9 @@ public struct ModelAccount: Sendable, Equatable, Identifiable {
     public let kind: String
     public let scope: Scope
     public let isDefault: Bool
+    public init(id: String, name: String, kind: String, scope: Scope, isDefault: Bool) {
+        self.id = id; self.name = name; self.kind = kind; self.scope = scope; self.isDefault = isDefault
+    }
 }
 
 struct CredentialListing: Decodable, Sendable {

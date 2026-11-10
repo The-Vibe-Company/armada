@@ -1,7 +1,10 @@
+import ArmadaKit
 import SwiftUI
 
 /// Create an orchestrator: name, golden (which fixes the provider), agent, model and effort, and a
-/// named model account, with sensible defaults. Repository and idle stop sit under More Options.
+/// named model account, with the server's defaults. Only provider × agent pairs the server reports
+/// as enabled can be chosen; a disabled one is listed with the server's reason. Models, efforts and
+/// account kinds come from the server's catalog. Repository and idle stop sit under More Options.
 /// The request carries an idempotency key; an unconfirmed create locks the form and can only be
 /// retried as the same request or explicitly forgotten after a duplicate-effects warning.
 struct CreateOrchestratorView: View {
@@ -11,8 +14,8 @@ struct CreateOrchestratorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var options: CreateOptions?
     @State private var loadError: ServiceFailure?
-    @State private var draft = OrchestratorDraft()
-    @State private var problem: DraftProblem?
+    @State private var draft = ArmadaKit.OrchestratorCreateCatalog.Draft()
+    @State private var problem: ArmadaKit.OrchestratorCreateCatalog.Problem?
     @State private var showsMore = false
     @State private var customModel = false
     @State private var confirmingDiscard = false
@@ -121,15 +124,15 @@ struct CreateOrchestratorView: View {
                 }
 
                 Section("Golden") {
-                    if options.goldens.isEmpty {
+                    if catalog(options).goldens.isEmpty {
                         Text("No golden in this organization yet. Create one from the dashboard or the CLI.")
                             .font(.footnote)
                             .foregroundStyle(ArmadaTheme.textSecondary)
                     } else {
-                        Picker("Golden", selection: $draft.goldenID) {
+                        Picker("Golden", selection: goldenBinding(options)) {
                             Text("Choose").tag(String?.none)
-                            ForEach(options.goldens) { golden in
-                                Text(golden.isReady ? "\(golden.name) · \(golden.provider.label)" : "\(golden.name) · no snapshot")
+                            ForEach(catalog(options).goldens) { golden in
+                                Text(golden.isReady ? "\(golden.name) · \(ProviderID(rawValue: golden.provider.rawValue).label)" : "\(golden.name) · no snapshot")
                                     .tag(Optional(golden.id))
                                     .selectionDisabled(!golden.isReady)
                             }
@@ -137,23 +140,13 @@ struct CreateOrchestratorView: View {
                         .accessibilityIdentifier("create.golden")
                         if let golden = selectedGolden(options) {
                             LabeledContent("Provider") {
-                                ProviderBadge(provider: golden.provider)
+                                ProviderBadge(provider: ProviderID(rawValue: golden.provider.rawValue))
                             }
                         }
                     }
                 }
 
-                Section("Agent") {
-                    Picker("Agent", selection: harnessBinding(options)) {
-                        ForEach(Harness.allCases) { harness in
-                            Text(harness.label).tag(harness)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("create.agent")
-                    modelFields(options)
-                    accountField(options)
-                }
+                agentSection(options)
 
                 Section {
                     DisclosureGroup("More Options", isExpanded: $showsMore) {
@@ -165,14 +158,15 @@ struct CreateOrchestratorView: View {
                         }
                         .disabled(selectedGolden(options)?.repositories.isEmpty ?? true)
                         Picker("Stop when idle for", selection: $draft.idleSeconds) {
-                            ForEach(IdlePolicy.choices, id: \.self) { seconds in
-                                Text(IdlePolicy.label(seconds)).tag(seconds)
+                            Text("Default (\(IdlePolicy.label(IdlePolicy.defaultSeconds)))").tag(Int?.none)
+                            ForEach(IdlePolicy.choices.filter { $0 != IdlePolicy.defaultSeconds }, id: \.self) { seconds in
+                                Text(IdlePolicy.label(seconds)).tag(Optional(seconds))
                             }
                         }
                         .accessibilityIdentifier("create.idle")
                     }
                 } footer: {
-                    Text("Compute stops after this long without real activity (running turns, tools, reviews, CI and active workers count). The conversation stays and can resume. Default: \(IdlePolicy.label(IdlePolicy.defaultSeconds)).")
+                    Text("Compute stops after this long without real activity (running turns, tools, reviews, CI and active workers count). The conversation stays and can resume.")
                 }
             }
             .disabled(isLocked)
@@ -187,20 +181,58 @@ struct CreateOrchestratorView: View {
             }
         }
         .scrollDismissesKeyboard(.interactively)
-        .onChange(of: draft.goldenID) { _, _ in
-            if let repository = draft.repository, selectedGolden(options)?.repositories.contains(repository) != true {
-                draft.repository = nil
+    }
+
+    private func catalog(_ options: CreateOptions) -> ArmadaKit.OrchestratorCreateCatalog { options.catalog }
+
+    @ViewBuilder
+    private func agentSection(_ options: CreateOptions) -> some View {
+        let offers = selectedGolden(options).map { catalog(options).offers(for: $0) } ?? []
+        let enabled = offers.filter(\.enabled)
+        let disabled = offers.filter { !$0.enabled }
+        Section {
+            if enabled.isEmpty {
+                Text(selectedGolden(options) == nil
+                    ? "Choose a golden to see the agents this server runs on its provider."
+                    : "This server runs no agent on this golden's provider yet.")
+                    .font(.footnote)
+                    .foregroundStyle(ArmadaTheme.textSecondary)
+            } else {
+                Picker("Agent", selection: harnessBinding(options)) {
+                    ForEach(enabled) { offer in
+                        Text(HarnessName.label(offer.harness.rawValue)).tag(Optional(offer.harness))
+                    }
+                }
+                .accessibilityIdentifier("create.agent")
+                if let harness = draft.harness, enabled.contains(where: { $0.harness == harness }) {
+                    modelFields(options, harness: harness)
+                    accountField(options, harness: harness)
+                }
+            }
+        } header: {
+            Text("Agent")
+        } footer: {
+            if !disabled.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(disabled) { offer in
+                        Text("\(HarnessName.label(offer.harness.rawValue)) isn't available: \(offer.explanation ?? "turned off on this server.")")
+                    }
+                }
+                .accessibilityIdentifier("create.disabledPairs")
             }
         }
     }
 
     @ViewBuilder
-    private func modelFields(_ options: CreateOptions) -> some View {
-        let models = options.catalog[draft.harness]
-        if let models, !customModel {
+    private func modelFields(_ options: CreateOptions, harness: ArmadaKit.ArmadaHarness) -> some View {
+        let models = catalog(options).catalog(for: harness)
+        if let models, !models.models.isEmpty, !customModel {
             Picker("Model", selection: $draft.model) {
                 ForEach(models.models) { choice in
                     Text(choice.label).tag(choice.id)
+                }
+                if !models.models.contains(where: { $0.id == draft.model }), !draft.model.isEmpty {
+                    Text(draft.model).tag(draft.model)
                 }
             }
             .accessibilityIdentifier("create.model")
@@ -209,9 +241,10 @@ struct CreateOrchestratorView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.body.monospaced())
+                .accessibilityIdentifier("create.modelID")
         }
-        if models != nil {
-            Toggle("Another model id", isOn: $customModel)
+        if let models, !models.models.isEmpty {
+            Toggle("Another model id", isOn: customModelBinding(models))
                 .font(.footnote)
         }
         let efforts = models?.efforts(for: draft.model) ?? []
@@ -220,23 +253,27 @@ struct CreateOrchestratorView: View {
                 ForEach(efforts, id: \.self) { effort in
                     Text(effort.capitalized).tag(effort)
                 }
+                if !efforts.contains(draft.reasoningEffort) {
+                    Text("Choose").tag(draft.reasoningEffort)
+                }
             }
+            .accessibilityIdentifier("create.effort")
         }
     }
 
     @ViewBuilder
-    private func accountField(_ options: CreateOptions) -> some View {
-        let accounts = options.accounts.filter { $0.harness == draft.harness }
+    private func accountField(_ options: CreateOptions, harness: ArmadaKit.ArmadaHarness) -> some View {
+        let accounts = catalog(options).accounts(for: harness)
         if accounts.isEmpty {
-            Text("No \(draft.harness.label) model account is available to you. Add one from the dashboard or the CLI.")
+            Text("No \(HarnessName.label(harness.rawValue)) model account is available to you. Add one from the dashboard or the CLI.")
                 .font(.footnote)
                 .foregroundStyle(ArmadaTheme.textSecondary)
         } else {
-            Picker("Model account", selection: $draft.accountID) {
+            Picker("Model account", selection: $draft.accountId) {
                 ForEach(accounts) { account in
                     VStack(alignment: .leading) {
                         Text(account.name)
-                        Text(account.detail)
+                        Text(Self.accountDetail(account))
                     }
                     .tag(Optional(account.id))
                 }
@@ -245,19 +282,52 @@ struct CreateOrchestratorView: View {
         }
     }
 
-    private func harnessBinding(_ options: CreateOptions) -> Binding<Harness> {
+    private static func accountDetail(_ account: ArmadaKit.ModelAccount) -> String {
+        let scope = account.scope == .user ? "Personal" : "Organization"
+        return account.isDefault ? "\(scope) · Default" : scope
+    }
+
+    private func goldenBinding(_ options: CreateOptions) -> Binding<String?> {
         Binding(
-            get: { draft.harness },
-            set: { harness in
+            get: { draft.goldenId },
+            set: { id in
                 customModel = false
-                draft.adopt(harness: harness, options: options)
+                if let id, let golden = catalog(options).goldens.first(where: { $0.id == id }) {
+                    catalog(options).adopt(golden: golden, into: &draft)
+                } else {
+                    draft.goldenId = id
+                }
             }
         )
     }
 
-    private func selectedGolden(_ options: CreateOptions?) -> GoldenChoice? {
-        guard let options, let id = draft.goldenID else { return nil }
-        return options.goldens.first { $0.id == id }
+    private func harnessBinding(_ options: CreateOptions) -> Binding<ArmadaKit.ArmadaHarness?> {
+        Binding(
+            get: { draft.harness },
+            set: { harness in
+                customModel = false
+                if let harness { catalog(options).adopt(harness: harness, into: &draft) }
+            }
+        )
+    }
+
+    /// Back to the suggestions restores the harness's default model and effort.
+    private func customModelBinding(_ models: ArmadaKit.OrchestratorCapabilities.HarnessCatalog) -> Binding<Bool> {
+        Binding(
+            get: { customModel },
+            set: { custom in
+                customModel = custom
+                if !custom, !models.models.contains(where: { $0.id == draft.model }) {
+                    draft.model = models.defaultModel
+                    draft.reasoningEffort = models.defaultReasoningEffort
+                }
+            }
+        )
+    }
+
+    private func selectedGolden(_ options: CreateOptions?) -> ArmadaKit.GoldenSummary? {
+        guard let options, let id = draft.goldenId else { return nil }
+        return options.catalog.goldens.first { $0.id == id }
     }
 
     private func loadOptions() async {
@@ -265,8 +335,9 @@ struct CreateOrchestratorView: View {
         do throws(ServiceFailure) {
             let loaded = try await list.service.createOptions(orgID: list.orgID)
             if options == nil {
-                draft.goldenID = loaded.goldens.first(where: \.isReady)?.id
-                draft.adopt(harness: draft.harness, options: loaded)
+                let name = draft.name
+                draft = loaded.catalog.initialDraft()
+                draft.name = name
                 nameFocused = true
             }
             options = loaded
@@ -277,15 +348,15 @@ struct CreateOrchestratorView: View {
 
     private func submit() {
         guard let options, !isLocked else { return }
-        switch draft.request(orgID: list.orgID, options: options) {
+        switch options.catalog.request(orgId: list.orgID, draft: draft) {
         case .failure(let failure):
             problem = failure
-        case .success(let request):
+        case .success(let configuration):
             problem = nil
             // A refused request is final; the edited form is a new intent with a new key.
             list.clearRefusedCreate()
             Task {
-                if let id = await list.create(request) { onCreated(id) }
+                if let id = await list.create(OrchestratorCreateRequest(configuration: configuration)) { onCreated(id) }
             }
         }
     }

@@ -3,6 +3,18 @@ Armada private beta — candidate checklist (publish only after root validates t
 Check sign-in, refresh and sign-out using your authorized Armada account.
 Check organization selection and that private resources stay private.
 Check orchestrator listing and chat only where enabled by the real backend.
+Orchestrators tab: each row shows its state (starting, ready, needs attention with a
+plain reason, stopped), name, agent, model, provider and last activity.
+New Orchestrator: only provider and agent pairs the server enables can be chosen; a
+disabled pair is listed with the server's reason. Models, efforts and accounts come
+from the server. After Create the orchestrator shows as starting and nothing can be
+sent until the server confirms it is ready.
+Conversation: send and steer, the event stream updating live, Details listing the
+workers it launched with a link to each worker's sandbox.
+Actions menu: Stop, Resume and Recover each ask for confirmation. Turn on Airplane
+Mode during an action: it shows as not confirmed with Retry, which repeats the same
+request; Recover is offered when the orchestrator needs attention.
+Check iPhone and iPad, light and dark appearance.
 Check loading, empty, permission-denied, offline and retry states.
 Check readability, keyboard/composer behavior and accessibility on iPhone and iPad.
 

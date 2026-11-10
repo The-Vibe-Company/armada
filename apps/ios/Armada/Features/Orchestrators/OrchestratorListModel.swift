@@ -1,3 +1,4 @@
+import ArmadaKit
 import Foundation
 import Observation
 
@@ -39,6 +40,7 @@ final class OrchestratorListModel {
     /// Creates the server refused in this launch; never offered again as a retry.
     @ObservationIgnored private var refusedHandles = Set<String>()
     @ObservationIgnored private var cursor: String?
+    @ObservationIgnored private var consecutiveReadFailures = 0
     @ObservationIgnored let service: any OrchestratorService
     @ObservationIgnored let orgID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
@@ -62,10 +64,33 @@ final class OrchestratorListModel {
             cursor = page.cursor
             refreshError = nil
             phase = .loaded
+            consecutiveReadFailures = 0
         } catch {
+            consecutiveReadFailures += 1
             handleReadFailure(error)
         }
         await recoverOpenCreate()
+    }
+
+    /// Changes whenever the list polling policy could choose another delay.
+    var pollKey: String {
+        items.map { "\($0.id):\($0.state.rawValue)" }.joined(separator: ",") + "|\(String(describing: createStatus))"
+    }
+
+    /// Refreshes the first page while an orchestrator is creating, stopping or resuming, or a create
+    /// is in progress, so its state appears without pulling. ArmadaKit's `OrchestratorPolling`
+    /// decides the delay; failed reads back off. Ends when nothing is changing.
+    func pollWhileChanging() async {
+        while !Task.isCancelled {
+            var states = items.map(\.state.rawValue)
+            if createStatus == .inProgress { states.append("creating") }
+            guard phase == .loaded, let delay = ArmadaKit.OrchestratorPolling.listDelay(
+                states: states, consecutiveFailures: consecutiveReadFailures
+            ) else { return }
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await load()
+        }
     }
 
     func loadMore() async {
@@ -145,7 +170,7 @@ final class OrchestratorListModel {
             if operation.state == .failed {
                 refusedHandles.insert(handle)
                 pendingCreateHandle = nil
-                createStatus = .refused(operation.errorCode.map { "Armada could not create it (\($0))." } ?? "Armada could not create it.")
+                createStatus = .refused(ArmadaKit.OrchestratorExplanation.text(for: operation.errorCode ?? "create_failed"))
                 return nil
             }
             pendingCreateHandle = nil

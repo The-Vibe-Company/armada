@@ -1,3 +1,4 @@
+import ArmadaKit
 import Foundation
 import Observation
 
@@ -34,6 +35,7 @@ final class OrchestratorConversationModel {
     /// Saved command handle per local bubble id.
     @ObservationIgnored private var handles: [String: String] = [:]
     @ObservationIgnored private var lifecycleHandle: String?
+    @ObservationIgnored private var consecutiveReadFailures = 0
     /// Commands the server definitively refused in this launch. ArmadaKit may still keep one saved;
     /// it is never offered again as a retry that cannot succeed.
     @ObservationIgnored private var refusedHandles = Set<String>()
@@ -49,30 +51,28 @@ final class OrchestratorConversationModel {
 
     var summary: OrchestratorSummary? { detail?.summary }
 
-    /// Why the composer cannot send now, or nil when it can.
-    var composerUnavailableReason: String? {
-        guard let summary else { return "Loading…" }
-        if summary.continuity == .lost {
-            return "The saved conversation was lost. Start a new orchestrator to continue."
-        }
-        if isDiscardingCommand { return "Forgetting local request tracking…" }
-        if lifecycle != nil { return "Waiting for Armada to confirm the last action." }
-        switch summary.state {
-        case .ready: return nil
-        case .creating: return "Starting. You can write once it is ready."
-        case .stopping: return "Stopping…"
-        case .stopped: return "Stopped. Resume to continue this conversation."
-        case .resuming: return "Resuming the same conversation…"
-        case .blocked: return summary.blockedReason ?? "This orchestrator needs attention. See Details."
-        case .other: return "This app does not know this orchestrator's state yet."
-        }
+    /// What the server's state allows now (ArmadaKit `OrchestratorControls`, the dashboard's rule).
+    var controls: ArmadaKit.OrchestratorControls? {
+        detail?.controls(agentWorking: feed.conversation.running)
     }
 
-    var canStop: Bool { summary?.state.canStop == true && lifecycle == nil && !isDiscardingCommand }
+    /// Why the composer cannot send now, or nil when it can. Creation is asynchronous: nothing is
+    /// sent before the create operation has succeeded.
+    var composerUnavailableReason: String? {
+        guard let controls else { return "Loading…" }
+        if isDiscardingCommand { return "Forgetting local request tracking…" }
+        if lifecycle != nil { return "Waiting for Armada to confirm the last action." }
+        return controls.composerNote
+    }
 
-    var canResume: Bool {
-        guard let summary, lifecycle == nil, !isDiscardingCommand else { return false }
-        return summary.state.canResume && summary.continuity != .lost
+    private var lifecycleIdle: Bool { lifecycle == nil && !isDiscardingCommand }
+    var canStop: Bool { controls?.canStop == true && lifecycleIdle }
+    var canResume: Bool { controls?.canResume == true && lifecycleIdle }
+    var canRecover: Bool { controls?.canRecover == true && lifecycleIdle }
+
+    /// Changes whenever the detail polling policy could choose another delay.
+    var pollKey: String {
+        "\(summary?.state.rawValue ?? "-")|\(detail?.openOperations.map(\.id).joined(separator: ",") ?? "")|\(String(describing: lifecycle))"
     }
 
     // MARK: Reading
@@ -81,7 +81,9 @@ final class OrchestratorConversationModel {
         do throws(ServiceFailure) {
             detail = try await service.detail(id: orchestratorID)
             phase = .loaded
+            consecutiveReadFailures = 0
         } catch {
+            consecutiveReadFailures += 1
             handleReadFailure(error)
         }
         await settleFinishedCommand()
@@ -152,11 +154,19 @@ final class OrchestratorConversationModel {
         }
     }
 
-    /// While an accepted command is still open, re-read detail now and then so it settles even if
-    /// it finishes without a new conversation item. Ends when the state changes or the screen goes.
-    func pollWhileInProgress() async {
-        while case .inProgress = lifecycle, !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(5))
+    /// Re-reads detail while something is changing on its own: creating, stopping or resuming, or an
+    /// operation still open here or on the server (so a create settles and a command's receipt is
+    /// read even without a new conversation item). The delay is ArmadaKit's `OrchestratorPolling`;
+    /// failed reads back off. Ends when nothing is changing or the screen goes away.
+    func pollDetail() async {
+        while !Task.isCancelled {
+            let open = !(detail?.openOperations.isEmpty ?? true) || lifecycle != nil
+            guard let delay = ArmadaKit.OrchestratorPolling.detailDelay(
+                state: summary?.state.rawValue ?? "creating",
+                hasOpenOperation: open,
+                consecutiveFailures: consecutiveReadFailures
+            ) else { return }
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             await load()
         }
@@ -285,6 +295,12 @@ final class OrchestratorConversationModel {
         startLifecycle(.resume, revision: summary.revision)
     }
 
+    /// Settles a blocked orchestrator or an unknown first create without allocating anything new.
+    func recover() {
+        guard let summary, canRecover else { return }
+        startLifecycle(.recover, revision: summary.revision)
+    }
+
     func retryLifecycle() {
         guard !isDiscardingCommand, let lifecycleHandle, case .unconfirmed(let kind) = lifecycle else { return }
         lifecycle = .sending(kind)
@@ -381,7 +397,8 @@ final class OrchestratorConversationModel {
     }
 
     private static func failedMessage(_ receipt: OperationSummary) -> String {
-        receipt.errorCode.map { "\(receipt.kind.label) failed (\($0))." } ?? "\(receipt.kind.label) failed."
+        let reason = receipt.errorCode.map { " " + ArmadaKit.OrchestratorExplanation.text(for: $0) } ?? ""
+        return "\(receipt.kind.label) failed.\(reason)"
     }
 
     private func handleReadFailure(_ error: ServiceFailure) {

@@ -154,6 +154,7 @@ struct OrchestratorListView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .refreshable { await model.load() }
+        .task(id: model.pollKey) { await model.pollWhileChanging() }
     }
 }
 
@@ -198,7 +199,7 @@ struct OrchestratorRow: View {
     private func detail(now: Date) -> String? {
         switch item.state {
         case .blocked:
-            return item.blockedReason ?? "Needs attention"
+            return item.blockedExplanation ?? "Needs attention"
         case .ready:
             guard let deadline = item.idleDeadline else { return "Ready" }
             return "Ready · stops when idle \(RelativeTime.until(deadline, now: now))"
