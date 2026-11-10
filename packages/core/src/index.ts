@@ -255,6 +255,7 @@ export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-ac
 export {
   COST_BASIS_LABELS,
   type CostBasis,
+  combineCosts,
   costBasis,
   type SandboxCost,
   sandboxCost,

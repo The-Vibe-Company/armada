@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { costBasis, MODEL_CATALOG, MODEL_PRICES, modelPrice, sandboxCost, turnCost } from "../src/index.ts";
+import {
+  combineCosts,
+  costBasis,
+  MODEL_CATALOG,
+  MODEL_PRICES,
+  modelPrice,
+  sandboxCost,
+  turnCost,
+} from "../src/index.ts";
 
 const turn = (model: string | null, input: number | null, cached: number | null, output: number | null, id = "p1") => ({
   promptId: id,
@@ -87,5 +95,24 @@ describe("cost", () => {
     expect(costBasis(null)).toBe("api_equivalent");
     expect(sandboxCost(null, "claude", "api_equivalent").label).toBe("API-equivalent cost");
     expect(sandboxCost(null, "claude", "estimated").label).toBe("Estimated cost");
+  });
+
+  test("an orchestrator's cost sums its own and its workers', and stays API-equivalent unless all are estimates", () => {
+    const own = sandboxCost(
+      { computeSeconds: 60, turnCount: 1, turns: [turn("claude-sonnet-5-5", 1_000_000, 0, 0, "o")] },
+      "claude",
+      "estimated",
+    );
+    const worker = sandboxCost(
+      { computeSeconds: 30, turnCount: 2, turns: [turn("gpt-6.1-sol", 1_000_000, 0, 0, "w"), turn("x", 1, 0, 1, "v")] },
+      "codex",
+      "api_equivalent",
+    );
+    const total = combineCosts([own, worker]);
+    expect(total.usd).toBeCloseTo(4, 10);
+    expect(total).toMatchObject({ basis: "api_equivalent", turnCount: 3, computeSeconds: 90, unpricedTurns: 1 });
+    expect(total.tokens).toEqual({ input: 2_000_001, cached: 0, output: 1 });
+    expect(combineCosts([own, own]).basis).toBe("estimated");
+    expect(combineCosts([own, sandboxCost(null, "claude", "estimated")]).computeSeconds).toBeNull();
   });
 });
