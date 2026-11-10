@@ -333,7 +333,9 @@ test("owner request reconciliation survives failed account preflight and disting
     });
     expect(effects).toBe(0);
     const lost = (await (await mutate(2, "effect")).json()) as { error: { operation: { id: string } } };
-    expect(lost).toMatchObject({ error: { code: "conflict", admission: "unknown", operation: { state: "pending" } } });
+    expect(lost).toMatchObject({
+      error: { code: "outcome_unknown", admission: "unknown", operation: { state: "pending" } },
+    });
     expect(effects).toBe(1);
     expect(
       await backend.reconcile(caller, {

@@ -92,7 +92,7 @@ export function createGateway(options: Options): Gateway {
 }
 
 function toolError(text: string, code: string | undefined): GatewayError {
-  return new GatewayError(describeFailure(text)?.hint ?? text, undefined, code);
+  return new GatewayError(describeFailure(code)?.hint ?? text, undefined, code);
 }
 
 /** The server adds its typed failure as a separate text part: `error code: <code>`. */

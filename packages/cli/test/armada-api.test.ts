@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
+import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 const token = "secret-token-that-must-not-leak";
@@ -218,3 +218,25 @@ for (const failure of ["502", "network"] as const) {
     );
   });
 }
+
+test("closed server failures give actionable CLI help without parsing free text", async () => {
+  for (const [code, status, help] of [
+    ["credential_refused", 422, "Replace or reconnect"],
+    ["provider_unavailable", 502, "Try again later"],
+    ["dependency_unavailable", 503, "Try again later"],
+    ["outcome_unknown", 503, "Check its status before retrying"],
+  ] as const) {
+    const client = await createArmadaApiClient({
+      ...io({ ARMADA_TOKEN: token }),
+      fetch: async () => Response.json({ error: { code, message: "credential_refused revoked expired" } }, { status }),
+    });
+    try {
+      await client.request("/api/v1/sandbox/launch");
+      throw new Error("Expected error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArmadaApiError);
+      expect((error as ArmadaApiError).serverCode).toBe(code);
+      expect((error as Error).message).toContain(help);
+    }
+  }
+});

@@ -39,6 +39,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
+import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
@@ -46,7 +47,7 @@ import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import { callOrchestrator } from "./orchestrator-api.ts";
+import { callOrchestrator, orchestratorFailureCode } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
@@ -310,7 +311,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
           };
         } catch (error) {
-          const code = error instanceof OrchestratorRuntimeError ? error.code : "unavailable";
+          const code = orchestratorFailureCode(error);
           return {
             isError: true,
             content: [
@@ -824,7 +825,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const found = await visible(args.id);
       const store = data.resourceObservations;
-      if (!store) throw new ToolError("unavailable", "Resource observation persistence is unavailable.");
+      if (!store) throw new ToolError("dependency_unavailable", "Resource observation persistence is unavailable.");
       const admission =
         found.resourceProject && found.machineSize?.capacity && ["ready", "running"].includes(found.status)
           ? await store.claim(found.id, context.now())
@@ -1000,6 +1001,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         found.id,
         machine.state === "stopped",
       );
+      let acknowledged = false;
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1010,14 +1012,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
         },
         async (signal) => {
-          const receipt = await provider.prompt({
-            sandboxId: found.providerSandboxId,
-            harness: found.harness,
-            text: args.prompt,
-            signal,
-            ...(conversation ? { conversationId: conversation } : {}),
-            ...(choice ?? {}),
-          });
+          const receipt = await provider
+            .prompt({
+              sandboxId: found.providerSandboxId,
+              harness: found.harness,
+              text: args.prompt,
+              signal,
+              ...(conversation ? { conversationId: conversation } : {}),
+              ...(choice ?? {}),
+            })
+            .catch(unknownMutationOutcome);
+          acknowledged = true;
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];
@@ -1038,7 +1043,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             },
           };
         },
-      );
+      ).catch((error) => publicationFailure(error, acknowledged));
     },
   );
 
@@ -1077,16 +1082,20 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         orgId: found.orgId,
         role: member.role,
       });
+      let acknowledged = false;
       return sandboxActivity(
         data.sandboxes,
         found,
         { clearTaskOutcome: true },
         async () => {
-          const receipt = await provider.steer({
-            sandboxId: found.providerSandboxId,
-            text: args.text,
-            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-          });
+          const receipt = await provider
+            .steer({
+              sandboxId: found.providerSandboxId,
+              text: args.text,
+              ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+            })
+            .catch(unknownMutationOutcome);
+          acknowledged = true;
           return {
             patch: {
               status: "running",
@@ -1125,7 +1134,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             throw error;
           },
         },
-      );
+      ).catch((error) => publicationFailure(error, acknowledged));
     },
   );
 
@@ -1142,10 +1151,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!provider.capabilities[found.harness].interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
-      await provider.interrupt({
-        sandboxId: found.providerSandboxId,
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-      });
+      await provider
+        .interrupt({
+          sandboxId: found.providerSandboxId,
+          ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+        })
+        .catch(unknownMutationOutcome);
       return { id: found.id, interrupted: true };
     },
   );
@@ -1178,6 +1189,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
       );
+      let acknowledged = false;
       const execute = async () => {
         const membership = caller.orgs.find((member) => member.orgId === found.orgId);
         if (!membership) throw new ToolError("forbidden", "No current organization membership.");
@@ -1195,34 +1207,49 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             found.providerSandboxId,
             "before",
           )) ?? [];
-        const result = await provider.exec({
-          sandboxId: found.providerSandboxId,
-          command: args.command,
-          cwd: args.cwd ?? "/home/user",
-          timeoutSeconds: args.timeout_seconds ?? 120,
-        });
-        if (result.detached) throw new ToolError("unknown", "The command started in the background.");
-        const nativeAfter =
-          (await context.launchCredentials.nativeSecrets?.(
-            nativeActor,
-            found.id,
-            provider,
-            found.providerSandboxId,
-            "after",
-          )) ?? [];
-        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-        const clip = (text: string) => {
-          const safe = redact(text, secrets);
-          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
-        };
-        return {
-          id: found.id,
-          exitCode: result.exitCode,
-          stdout: clip(result.stdout),
-          stderr: clip(result.stderr),
-          timedOut: result.timedOut,
-          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-        };
+        const result = await provider
+          .exec({
+            sandboxId: found.providerSandboxId,
+            command: args.command,
+            cwd: args.cwd ?? "/home/user",
+            timeoutSeconds: args.timeout_seconds ?? 120,
+          })
+          .catch(unknownMutationOutcome);
+        acknowledged = true;
+        if (result.detached)
+          throw new ToolError(
+            "outcome_unknown",
+            "The command started in the background. Check sandbox status before retrying.",
+          );
+        try {
+          const nativeAfter =
+            (await context.launchCredentials.nativeSecrets?.(
+              nativeActor,
+              found.id,
+              provider,
+              found.providerSandboxId,
+              "after",
+            )) ?? [];
+          const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+          const clip = (text: string) => {
+            const safe = redact(text, secrets);
+            return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+          };
+          return {
+            id: found.id,
+            exitCode: result.exitCode,
+            stdout: clip(result.stdout),
+            stderr: clip(result.stderr),
+            timedOut: result.timedOut,
+            truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+          };
+        } catch (error) {
+          throw new LaunchError(
+            "outcome_unknown",
+            "The command ran but its result could not be safely published. Check sandbox status before retrying.",
+            { cause: error },
+          );
+        }
       };
       if (!managedNative) return execute();
       // Stop and native-file mutation must not interleave: a stop receipt sampled
@@ -1238,7 +1265,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           return { result, patch: {} };
         },
         { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
-      );
+      ).catch((error) => publicationFailure(error, acknowledged));
     },
   );
 
@@ -1434,7 +1461,7 @@ async function readLogs(
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
   const { code, message } = describe(error);
-  if (code === "internal" || code === "unavailable") {
+  if (["internal", "unavailable", "provider_unavailable", "dependency_unavailable", "outcome_unknown"].includes(code)) {
     logError(redactForLog(`armada serve: tool ${tool} failed (${code}): ${describeFailure(error)}`));
   }
   return {
@@ -1447,6 +1474,8 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
 }
 
 function describe(error: unknown): { code: string; message: string } {
+  const failure = apiFailureCode(error);
+  if (failure) return { code: failure, message: error instanceof Error ? error.message : failure };
   if (error instanceof ToolError) return { code: error.code, message: error.message };
   if (error instanceof LaunchError) {
     const tail = error.sandboxId ? ` Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.` : "";
@@ -1462,10 +1491,35 @@ function describe(error: unknown): { code: string; message: string } {
   }
   if (error instanceof VaultError)
     return {
-      code: error.code.startsWith("credential_binding_") ? error.code : "missing_credential",
+      code: error.code.startsWith("credential_binding_")
+        ? error.code
+        : error.code === "unavailable"
+          ? "dependency_unavailable"
+          : "missing_credential",
       message: error.message,
     };
-  if (error instanceof EncryptionKeyError) return { code: "unavailable", message: error.message };
-  if (error instanceof DataError) return { code: "unavailable", message: error.message };
+  if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
+  if (error instanceof DataError) return { code: "dependency_unavailable", message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };
+}
+
+/** This catch belongs on the dispatch itself, never on preparation or provider reads. */
+function unknownMutationOutcome(error: unknown): never {
+  if (!(error instanceof ProviderError) || error.code === "unavailable" || error.code === "unknown")
+    throw new LaunchError(
+      "outcome_unknown",
+      "The operation outcome is unknown. Check sandbox status before retrying.",
+      { cause: error },
+    );
+  throw error;
+}
+
+function publicationFailure(error: unknown, acknowledged: boolean): never {
+  if (acknowledged)
+    throw new LaunchError(
+      "outcome_unknown",
+      "The operation was accepted but its result could not be published. Check sandbox status before retrying.",
+      { cause: error },
+    );
+  throw error;
 }

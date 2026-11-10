@@ -14,7 +14,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
+import { API_FAILURE_STATUS, goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -76,6 +76,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
+import { apiFailureCode } from "./api-failure.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
@@ -169,6 +170,7 @@ const STATUS: Record<VaultErrorCode, number> = {
   missing_credential: 404,
   conflict: 409,
   unavailable: 503,
+  credential_refused: 422,
 };
 
 const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
@@ -195,7 +197,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (request.method !== "GET" && request.method !== "POST") return fail(405, "invalid", "Use POST or GET.");
     return options.githubAccount
       ? options.githubAccount.callback(request)
-      : fail(503, "unavailable", "GitHub account authorization is not configured.");
+      : fail(503, "dependency_unavailable", "GitHub account authorization is not configured.");
   }
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
@@ -211,7 +213,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return orchestratorHttp(request, caller, options.orchestrators, options.orchestratorPairs);
     } catch (error) {
       return error instanceof AuthUnavailable
-        ? fail(503, "unavailable", "Authentication unavailable.")
+        ? fail(503, "dependency_unavailable", "Authentication unavailable.")
         : fail(401, "unauthorized", "Run armada login.");
     }
   }
@@ -257,6 +259,20 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store" },
     });
   } catch (error) {
+    const failureCode = apiFailureCode(error);
+    if (failureCode)
+      return Response.json(
+        {
+          error: {
+            code: failureCode,
+            message: error instanceof Error ? error.message : failureCode,
+            ...(error instanceof ProviderError && error.details?.keepSource === true
+              ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
+              : {}),
+          },
+        },
+        { status: API_FAILURE_STATUS[failureCode], headers: { "cache-control": "no-store" } },
+      );
     if (error instanceof GatewayError) {
       const status =
         error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
@@ -264,7 +280,8 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     }
     if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
-    if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
+    if (error instanceof AuthUnavailable)
+      return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     if (error instanceof ProviderError) {
       const status =
         error.code === "conflict"
@@ -309,9 +326,13 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
-      return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
+      return fail(
+        503,
+        "dependency_unavailable",
+        `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`,
+      );
     }
-    return fail(500, "unavailable", "The server could not complete the request.");
+    return fail(500, "internal", "The server could not complete the request.");
   }
 }
 
