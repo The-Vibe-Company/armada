@@ -251,8 +251,8 @@ export async function mutateCredentialAccount(
 ): Promise<CredentialInfo> {
   if (input.id !== undefined && !UUID.test(input.id)) throw new VaultError("invalid", "Account id must be a UUID.");
   if (!store.mutateAccount) throw new VaultError("unavailable", "Named accounts are unavailable.");
-  if (input.kind === "boat" || input.kind === "modal")
-    throw new VaultError("invalid", "Provider credentials are singletons.");
+  if (input.kind === "boat" || input.kind === "modal" || input.kind === "skillpack")
+    throw new VaultError("invalid", "Provider and registry credentials are singletons.");
   if (input.name !== undefined && (input.name.trim().length < 1 || input.name.trim().length > 120))
     throw new VaultError("invalid", "An account name is 1 to 120 characters.");
   const org = input.scope === "org" ? await resolveAdminOrg(store, userId, input.org) : undefined;

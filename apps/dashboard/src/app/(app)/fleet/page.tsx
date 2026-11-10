@@ -11,6 +11,7 @@ import Link from "next/link";
 import { BoardRefresh, FleetRowActions, FleetRowMessage } from "@/components/fleet-board";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
+import { RowCost } from "@/components/sandbox-cost";
 import { OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { readBoard } from "@/lib/data/fleet";
@@ -195,6 +196,7 @@ function WorkingStrip({ rows, now }: { rows: FleetRow[]; now: Date }) {
               <span className="text-xs tabular-nums text-muted-foreground" data-elapsed>
                 {elapsedText(row.since, now)}
               </span>
+              {row.cost && <RowCost cost={row.cost} className="text-xs" />}
             </li>
           );
         })}
@@ -263,6 +265,7 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           {row.dismissed && <span className="text-xs text-muted-foreground">Dismissed</span>}
+          {row.cost && <RowCost cost={row.cost} className="text-xs" />}
           <StateBadge row={row} />
           {row.expiry && (
             <span

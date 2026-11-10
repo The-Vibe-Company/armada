@@ -36,6 +36,7 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<void>;
@@ -282,6 +283,19 @@ export function createSqlData(sql: Sql): DataSource {
         const row = result.rows[0];
         if (!row) throw new DataError("The sandbox could not be recorded.");
         return mapSandboxRow(row);
+      },
+      async assertExtensionAllowed(id) {
+        if (!UUID.test(id)) throw new GoldenError("not_found", "Sandbox not found.");
+        const row = (
+          await sql.query<{ allowed: boolean }>(
+            `select exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
+             and (s.owner_id=$2::uuid or m.role='admin')) as allowed
+           from public.sandboxes s where ${SANDBOX_MEMBER} and s.id=$3::uuid`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new GoldenError("not_found", "Sandbox not found.");
+        if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
       async assertDeletionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");

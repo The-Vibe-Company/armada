@@ -166,3 +166,35 @@ test("built-in reference preserves conflicting files", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// Missing private auth is rejected before guest commands, receipts or delegated authority.
+test.each(["boat", "modal"] as const)("private bootstrap without a key fails closed on %s", async (id) => {
+  const calls: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics(() => {}, "create");
+  diagnostics.stage("skills");
+  await expect(
+    bootstrapOrchestrator(
+      {
+        id,
+        exec: async () => {
+          calls.push("exec");
+          throw Error("unexpected");
+        },
+      } as unknown as Provider,
+      {
+        sandboxId: "parent",
+        projectDir: "/home/user/repo",
+        skillRevision: "a".repeat(40),
+        skill: "notes@1.0.0",
+        diagnostics,
+        recordReceipt: async () => {
+          calls.push("receipt");
+        },
+        configureAuthority: async () => {
+          calls.push("authority");
+        },
+      },
+    ),
+  ).rejects.toThrow("skillpack_credential_missing");
+  expect(calls).toEqual([]);
+});

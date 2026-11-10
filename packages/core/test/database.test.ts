@@ -131,6 +131,7 @@ describe("database", () => {
         "boat",
         "codex_auth",
         "modal",
+        "skillpack",
       ]);
       expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
     } finally {

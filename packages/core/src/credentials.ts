@@ -4,6 +4,7 @@ import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
 import { LaunchError } from "./launch-error.ts";
+import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
@@ -167,6 +168,7 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
   boat: { name: "boat", label: "boat.dev API key" },
   modal: { name: "modal", label: "Modal token pair (id and secret)" },
+  skillpack: { name: "skillpack", label: "Skillpack personal access token" },
 };
 
 /**
@@ -201,6 +203,12 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
   const value = raw.trim();
   if (value === "") throw new VaultError("invalid", "The value is empty.");
   if (kind === "modal") return JSON.stringify(modalPairJson(parseModalTokenPair(value)));
+  if (kind === "skillpack" && !new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(value)) {
+    throw new VaultError(
+      "invalid",
+      "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
+    );
+  }
   if (kind === "codex_auth") {
     if (value.length > MAX_AUTH_FILE_LENGTH) throw new VaultError("invalid", "That auth.json is too large.");
     let parsed: unknown;
@@ -305,6 +313,41 @@ export async function resolveModalTokens(
       ? "No Modal token pair for you or your org. Run 'armada creds set modal' or ask an org admin to set the org's."
       : "Your org has no Modal token pair. An org admin sets it with 'armada creds set modal --org <name>'.",
   );
+}
+
+/**
+ * Private registry access, resolved separately from model credentials. The caller must authorize org
+ * membership first. User wins over org; absence means public-only registry access. Never inject this
+ * key into a harness environment or use it with a custom registry origin.
+ */
+export async function resolveSkillpackCredential(
+  reader: CredentialReader,
+  encryptionKey: string | undefined,
+  input: { userId: string; orgId: string },
+): Promise<{ key: string; scope: CredentialScope } | null> {
+  for (const [scope, ownerId] of [
+    ["user", input.userId],
+    ["org", input.orgId],
+  ] as const) {
+    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "skillpack");
+    if (!row) continue;
+    if (
+      (row.status !== undefined && row.status !== "active") ||
+      (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now())
+    ) {
+      throw new VaultError(
+        "credential_refused",
+        "The stored Skillpack credential is expired or revoked. Set it again.",
+      );
+    }
+    const value = await open(row.valueEnc, encryptionKey);
+    try {
+      return { key: parseCredentialValue("skillpack", value), scope };
+    } catch {
+      throw new VaultError("unavailable", "The stored Skillpack credential is not valid. Set it again.");
+    }
+  }
+  return null;
 }
 
 /** Ciphertext of the stored credentials. Only the server, as the service role, can read it. */

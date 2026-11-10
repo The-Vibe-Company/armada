@@ -365,6 +365,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "registration",
       "initialization",
       "skills",
+      "private-skill",
+      "expired-skill-key",
+      "undecryptable-skill-key",
       "epoch",
       "completion",
       "failure_publication",
@@ -381,9 +384,29 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         await db.exec(`create function diagnostic_publication_fault() returns trigger language plpgsql as $$ begin
         if new.state='succeeded' or (new.state='uncertain' and ${scenario === "failure_publication" ? "true" : "false"}) then raise exception using errcode='40001',message='synthetic-private-sql'; end if; return new; end $$;
         create trigger diagnostic_publication_fault before update on orchestrator_operations for each row execute function diagnostic_publication_fault()`);
+      const storedSkillKey = scenario === "expired-skill-key" || scenario === "undecryptable-skill-key";
+      if (storedSkillKey) {
+        const orgKey = await core.encryptSecret("cmp_pat_" + "b".repeat(48), ENCRYPTION_KEY);
+        await sql.query(
+          "insert into public.credentials(scope,owner_id,kind,value_enc) values('org',$1,'skillpack',$2::bytea)",
+          [p.org, orgKey],
+        );
+        await sql.query(
+          "insert into public.credentials(scope,owner_id,kind,value_enc,expires_at) values('user',$1,'skillpack',$2::bytea,$3::timestamptz)",
+          [
+            p.owner,
+            scenario === "expired-skill-key" ? orgKey : new Uint8Array([1, 2, 3]),
+            scenario === "expired-skill-key" ? "2000-01-01T00:00:00Z" : null,
+          ],
+        );
+      }
       const admitted = await bundle.runtime.create(
         caller,
-        { ...config, name: `diagnostic-${scenario}` },
+        {
+          ...config,
+          name: `diagnostic-${scenario}`,
+          ...(scenario === "private-skill" || storedSkillKey ? { skill: "notes@1.0.0" } : {}),
+        },
         `diagnostic-${scenario}`,
       );
       expect(admitted.state).toBe("pending");
@@ -394,6 +417,24 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(operation?.state).toBe(
         scenario === "launcher" ? "failed" : scenario === "failure_publication" ? "pending" : "uncertain",
       );
+      if (storedSkillKey) {
+        const expectedReason =
+          scenario === "expired-skill-key" ? "skillpack_credential_refused" : "skillpack_install_failed";
+        expect(operation?.errorCode).toBe(expectedReason);
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          expectedReason,
+        );
+        await sql.query("delete from public.credentials where kind='skillpack' and owner_id in ($1,$2)", [
+          p.owner,
+          p.org,
+        ]);
+      }
+      if (scenario === "private-skill") {
+        expect(operation?.errorCode).toBe("skillpack_credential_missing");
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          "skillpack_credential_missing",
+        );
+      }
       if (scenario === "registration")
         await db.exec(
           "drop trigger diagnostic_registration_fault on sandboxes; drop function diagnostic_registration_fault()",
@@ -409,6 +450,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         registration: ["registration", "sql_check"],
         initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
+        "private-skill": ["skills", "skillpack_credential_missing"],
+        "expired-skill-key": ["skills", "skillpack_credential_refused"],
+        "undecryptable-skill-key": ["skills", "skillpack_install_failed"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
         failure_publication: ["completion", "sql_serialization"],

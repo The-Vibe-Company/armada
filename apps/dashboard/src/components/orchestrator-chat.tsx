@@ -29,6 +29,7 @@ import { type OrchestratorResult, orchestratorCommand } from "@/app/actions/orch
 import { OrchestratorStateBadge } from "@/components/orchestrator-badge";
 import { ProviderName } from "@/components/provider-mark";
 import { Transcript } from "@/components/sandbox-chat";
+import { RowCost } from "@/components/sandbox-cost";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -67,6 +68,7 @@ import {
   unsettledAfterReread,
 } from "@/lib/orchestrators";
 import { relativeAge } from "@/lib/relative-time";
+import { type OrchestratorCost, orchestratorCostRows } from "@/lib/sandbox-cost";
 import { cn } from "@/lib/utils";
 
 /** While something can change soon (a turn, a transition), the page reads every couple of seconds. */
@@ -81,7 +83,7 @@ type Connection =
   | { state: "reconnecting"; message: string }
   | { state: "stopped"; failure: OrchestratorFailure | "contract"; message: string };
 
-type Facts = { golden: string; harnessLabel: string };
+type Facts = { golden: string; harnessLabel: string; cost?: OrchestratorCost };
 
 /**
  * An orchestrator as one persistent conversation: its messages and tool calls (the sandbox chat's own transcript),
@@ -606,6 +608,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
       ? []
       : [["Workers at once", `at most ${config.maxActiveChildren}`] as [string, string]]),
     ...(idleFact ? [["Idle stop", idleFact] as [string, string]] : []),
+    ...(facts.cost ? orchestratorCostRows(facts.cost, children) : []),
   ];
   return (
     <aside
@@ -632,6 +635,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
               >
                 {child.slice(0, 8)}
               </Link>
+              {facts.cost?.children[child] && <RowCost cost={facts.cost.children[child]} className="ml-2 text-xs" />}
             </li>
           ))}
         </ul>

@@ -139,7 +139,19 @@ function seed(): State {
       { ...golden(id(26), "modal-golden", "org", ALICE, "snap-modal"), provider: "modal", boat_snapshot_id: null },
     ],
     sandboxes: [
-      sandbox(id(30), "bx_alice_running", id(20), ALICE, "claude", "running", "2026-11-08T10:05:00.000Z"),
+      {
+        ...sandbox(id(30), "bx_alice_running", id(20), ALICE, "claude", "running", "2026-11-08T10:05:00.000Z"),
+        // Reported usage (#770): two Claude turns and a completed compute interval, priced by the dashboard (#875).
+        usage_runtime_seconds: 754,
+        usage_running_since: null,
+        usage_turns: {
+          turnCount: 2,
+          turns: [
+            { promptId: "p-1", model: "claude-opus-5-5", inputTokens: 12000, outputTokens: 9500, cachedTokens: 480000 },
+            { promptId: "p-2", model: "claude-opus-5-5", inputTokens: 3000, outputTokens: 4200, cachedTokens: 610000 },
+          ],
+        },
+      },
       // On Modal, as its golden: the list names the provider from this column, never from the ID (#645).
       {
         ...sandbox(id(31), "bx_alice_failed", id(26), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),

@@ -9,10 +9,12 @@ import { Empty } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { listGoldenHistory } from "@/lib/data/goldens";
 import { readFailure, viewerOrchestrators } from "@/lib/data/orchestrators";
+import { sandboxCosts } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { isOrchestratorId } from "@/lib/orchestrators";
+import { orchestratorCost } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Orchestrator" };
@@ -68,7 +70,14 @@ export default async function OrchestratorPage({ params }: Props) {
     );
 
   const config = detail.orchestrator.configuration;
-  const golden = (await listGoldenHistory(await createClient())).find((row) => row.id === config.goldenId);
+  const supabase = await createClient();
+  const own = detail.orchestrator.sandboxId;
+  const [goldens, costs] = await Promise.all([
+    listGoldenHistory(supabase),
+    // Its own sandbox and its workers, read as the viewer: row level security returns the rows they may open.
+    sandboxCosts(supabase, [...(own ? [own] : []), ...detail.childSandboxIds]),
+  ]);
+  const golden = goldens.find((row) => row.id === config.goldenId);
   return (
     <div className="space-y-2">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2">
@@ -81,6 +90,7 @@ export default async function OrchestratorPage({ params }: Props) {
         facts={{
           golden: golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown",
           harnessLabel: HARNESS_LABELS[config.harness],
+          cost: orchestratorCost(own, detail.childSandboxIds, costs),
         }}
       />
     </div>
