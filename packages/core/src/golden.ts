@@ -1,6 +1,7 @@
 import { boatSnapshotName } from "./boat-snapshot-name.ts";
 import type { Visibility } from "./contract.ts";
 import type { MemberRole } from "./database.types.ts";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import {
   cloneCommand,
   GOLDEN_BUILD_TTL_SECONDS,
@@ -30,6 +31,7 @@ export interface GoldenActor {
 
 /** A golden the caller is allowed to see. `config` is the parsed, secret-free file. */
 export interface GoldenRecord {
+  buildWarnings?: GoldenBuildWarning[];
   sizePolicy?: MachineSizePolicy | null;
   id: string;
   orgId: string;
@@ -695,7 +697,7 @@ function saveInProgress(error: unknown): boolean {
   return error instanceof ProviderError && error.code === "conflict" && error.providerCode === "save_in_progress";
 }
 
-function delay(ms: number): Promise<void> {
+export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 

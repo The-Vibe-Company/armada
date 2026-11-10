@@ -2094,6 +2094,10 @@ function control(url: URL, body: Row): Response {
         });
       }
     }
+    if (body.skillpackWarning) {
+      const shared = state.goldens.find((row) => row.name === "shared-golden" && row.provider === "boat");
+      if (shared) shared.build_warnings = ["skillpack_download_unavailable"];
+    }
     sessions.clear();
     goldenJobs.clear();
     return json({ ok: true });

@@ -732,7 +732,10 @@ try {
       )
     ).rows[0]!;
     assert.equal(row.status, "stopped");
-    assert.equal(row.preservation_note, `unpushed work could not be preserved (${reason})`);
+    assert.equal(
+      row.preservation_note,
+      `unpushed work could not be preserved (${reason === "unavailable" ? "exec_failed" : reason}). Resume the sandbox and push or copy any local work before stopping again.`,
+    );
     const physical = (
       await sql.query<{ physical_id: string }>(
         `select m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m

@@ -43,10 +43,16 @@ export type GoldenErrorCode =
 export class GoldenError extends Error {
   override readonly name = "GoldenError";
   readonly code: GoldenErrorCode;
+  readonly safeReason: "skillpack_integrity_failed" | undefined;
 
-  constructor(code: GoldenErrorCode, message: string, options?: { cause?: unknown }) {
+  constructor(
+    code: GoldenErrorCode,
+    message: string,
+    options?: { cause?: unknown; safeReason?: "skillpack_integrity_failed" },
+  ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
+    this.safeReason = options?.safeReason;
   }
 }
 

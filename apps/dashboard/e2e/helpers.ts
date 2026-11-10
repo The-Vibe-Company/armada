@@ -55,17 +55,32 @@ export function goldenRow(page: Page, name: string, provider?: "boat" | "modal")
 /** Selects an environment's row, unless its detail panel already shows, and returns the panel. */
 export async function goldenPanel(page: Page, name: string, provider?: "boat" | "modal"): Promise<Locator> {
   const panel = page.locator(`[data-golden-panel="${name}"]${provider ? `[data-golden-provider="${provider}"]` : ""}`);
-  if (!(await panel.isVisible())) await goldenRow(page, name, provider).locator("[data-select-item]").click();
+  if (!(await panel.isVisible())) {
+    await leaveCreate(page);
+    await goldenRow(page, name, provider).locator("[data-select-item]").click();
+  }
   await expect(panel).toBeVisible();
   return panel;
 }
 
-/** Opens the New panel, and its form when Boat is full and it starts folded; returns the create form. */
+/** The create dialog of the Environments page. */
+export function createDialog(page: Page): Locator {
+  return page.getByRole("dialog", { name: "Create a golden" });
+}
+
+/** Closes the create dialog, when it shows, so the list behind it can be used. */
+export async function leaveCreate(page: Page): Promise<void> {
+  const dialog = createDialog(page);
+  if (!(await dialog.isVisible())) return;
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+}
+
+/** Opens the create dialog, and its form when Boat is full and it starts folded; returns the create form. */
 export async function openCreate(page: Page): Promise<Locator> {
   const form = page.locator('form[data-golden-form="create"]');
-  if (!(await page.locator('[data-panel="new"]').isVisible()))
-    await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect(page.locator('[data-panel="new"]')).toBeVisible();
+  if (!(await createDialog(page).isVisible())) await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(createDialog(page)).toBeVisible();
   if (!(await form.isVisible())) await page.getByText("Show the create form").click();
   await expect(form).toBeVisible();
   return form;

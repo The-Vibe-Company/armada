@@ -17,6 +17,7 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
 import { type LaunchConnections, LaunchDialog } from "@/components/launch-dialog";
 import { Empty } from "@/components/page-header";
@@ -27,6 +28,7 @@ import { SizeDefaults } from "@/components/size-defaults";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { DialogClose } from "@/components/ui/dialog";
 import { isUuid } from "@/lib/action";
 import {
   CAPABILITIES_TIMEOUT_MS,
@@ -66,7 +68,7 @@ import type { LaunchAccounts } from "@/lib/model-accounts";
 import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
-import { type Bucket, ITEM_PARAM, NEW_ITEM, sortResources } from "@/lib/resource-list";
+import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { createClient } from "@/lib/supabase/server";
 import { cn } from "@/lib/utils";
 
@@ -165,25 +167,21 @@ export default async function GoldensPage({ searchParams }: Props) {
   const providerPending = setupPending && selected !== null;
   const blockers = environmentBlockers({ providerPending, rows: rows.map((row) => ({ ...row, state: row.status })) });
   // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
+  // A build the page tracks reopens the dialog, which follows it.
   const create =
-    selected && capacities && (canStart || createTracked)
-      ? {
-          label: "New",
-          title: "Create a golden",
-          subtitle: "Repositories, branches and init commands, built once and saved as a snapshot.",
-          content: (
-            <CreatePanel
-              org={selected}
-              providers={connected ?? []}
-              capacities={capacities}
-              boatLive={counts.boat.live}
-              serverReady={serverReady}
-              githubConnected={githubConnected}
-              rebuildable={rows.filter((row) => row.provider === "boat" && row.rebuildable)}
-            />
-          ),
-        }
-      : undefined;
+    selected && capacities && (canStart || createTracked) ? (
+      <GoldenCreateDialog orgId={selected.org.id} initialOpen={createTracked}>
+        <CreatePanel
+          org={selected}
+          providers={connected ?? []}
+          capacities={capacities}
+          boatLive={counts.boat.live}
+          serverReady={serverReady}
+          githubConnected={githubConnected}
+          rebuildable={rows.filter((row) => row.provider === "boat" && row.rebuildable)}
+        />
+      </GoldenCreateDialog>
+    ) : undefined;
   const parts =
     selected && capacities
       ? capacityParts(
@@ -195,7 +193,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       : [];
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
   const initial =
-    requested ?? (createTracked ? NEW_ITEM : (goldens.find((golden) => rebuildsTracked.has(golden.id))?.id ?? null));
+    requested ?? (createTracked ? null : (goldens.find((golden) => rebuildsTracked.has(golden.id))?.id ?? null));
 
   const notices = (
     <>
@@ -249,7 +247,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       blockers={blockers}
       notices={notices}
       initial={initial}
-      {...(create ? { create } : {})}
+      {...(create ? { actions: create } : {})}
       footer={
         parts.length > 0 ? (
           <p className="text-xs text-muted-foreground" data-capacity-summary>
@@ -349,7 +347,7 @@ function LegacyConflict({ provider, goldens }: { provider: SandboxProviderId; go
 }
 
 /**
- * The create form, in the panel the New button opens. When Boat is full it says so first and points at the
+ * The create form, in the dialog the New button opens. When Boat is full it says so first and points at the
  * environments the viewer can rebuild instead; the form stays a click away (Modal, or a slot freed meanwhile).
  */
 function CreatePanel({
@@ -381,7 +379,7 @@ function CreatePanel({
       </p>
     );
   return (
-    <div className="space-y-4" data-create-golden={discouraged ? "discouraged" : "open"}>
+    <div className="space-y-3" data-create-golden={discouraged ? "discouraged" : "open"}>
       {discouraged && (
         <Alert className="border-warning/40" data-boat-full>
           <LayersIcon className="text-warning" />
@@ -396,9 +394,14 @@ function CreatePanel({
               <ul className="flex flex-wrap gap-2">
                 {rebuildable.map((row) => (
                   <li key={row.key}>
-                    <SelectItem item={row.key} variant="outline" size="sm" className="h-7">
-                      Rebuild {row.name}
-                    </SelectItem>
+                    {/* Closes the dialog and opens the environment's panel, where it is rebuilt. */}
+                    <DialogClose asChild>
+                      <span>
+                        <SelectItem item={row.key} variant="outline" size="sm" className="h-7">
+                          Rebuild {row.name}
+                        </SelectItem>
+                      </span>
+                    </DialogClose>
                   </li>
                 ))}
               </ul>
@@ -407,17 +410,17 @@ function CreatePanel({
         </Alert>
       )}
       {!githubConnected && (
-        <Alert>
+        <Alert className="py-2">
           <InfoIcon />
-          <AlertTitle>GitHub is not connected</AlertTitle>
-          <AlertDescription>
-            <Link className="underline underline-offset-4" href="/settings">
+          <AlertTitle className="flex flex-wrap gap-x-2">
+            GitHub is not connected
+            <Link className="font-normal underline underline-offset-4" href="/settings">
               Connect GitHub in Settings
             </Link>
-          </AlertDescription>
+          </AlertTitle>
         </Alert>
       )}
-      <Disclosure summary="Show the create form" defaultOpen={!discouraged}>
+      <Disclosure summary="Show the create form" defaultOpen={!discouraged} quiet={!discouraged}>
         <GoldenForm
           mode="create"
           orgId={org.org.id}
@@ -484,6 +487,28 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
   const meta = [label, owner === "You" ? "yours" : `by ${owner}`, age].filter(Boolean).join(" · ");
   const twinLabel = `${golden.name} on ${label}`;
 
+  const buildWarnings = (golden.build_warnings ?? []).flatMap((warning) => {
+    if (warning === "skillpack_download_unavailable")
+      return [
+        {
+          reason: warning,
+          label: "Skillpack unavailable",
+          message:
+            "The last build could not download Skillpack. Allow HTTPS access to GitHub releases, then rebuild before using skills.",
+        },
+      ];
+    if (warning === "skillpack_user_local_only")
+      return [
+        {
+          reason: warning,
+          label: "User-local Skillpack",
+          message:
+            "The last build installed Skillpack for the sandbox user only. Skill installation uses the user-local executable; no system launcher was available.",
+        },
+      ];
+    return [];
+  });
+
   const action =
     state.action === "launch" ? (
       <LaunchDialog
@@ -515,6 +540,16 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         <p className="text-sm text-muted-foreground">{state.detail}</p>
         {state.action !== null && state.action !== "snapshot" && <div className="pt-2">{action}</div>}
       </div>
+      {buildWarnings.map((warning) => (
+        <Alert key={warning.reason} className="border-warning/40" data-golden-build-warning={warning.reason}>
+          <TriangleAlertIcon aria-hidden className="text-warning" />
+          <AlertTitle>{warning.label}</AlertTitle>
+          <AlertDescription>
+            <p>{warning.message}</p>
+            <code className="text-xs">{warning.reason}</code>
+          </AlertDescription>
+        </Alert>
+      ))}
       <PanelSection title="Repositories">
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repository recorded in this golden.</p>
@@ -652,6 +687,11 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
           {golden.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
           {golden.visibility === "private" ? "Private" : "Org"}
         </RowTag>
+        {buildWarnings.map((warning) => (
+          <RowTag key={warning.reason} className="border-warning/40 text-warning" title={warning.message}>
+            <TriangleAlertIcon aria-hidden /> {warning.label}
+          </RowTag>
+        ))}
         {row.duplicateName && (
           <RowTag className="border-warning/40 text-warning">
             <TriangleAlertIcon aria-hidden /> Name shared by another golden

@@ -43,7 +43,12 @@ export {
   type OrchestratorAuthorityTransport,
 } from "./orchestrator-authority.ts";
 export { reserveOrchestratorOperation } from "./orchestrator-operations.ts";
-export { installPrivateSkill, PRIVATE_SKILL_PATTERN, PrivateSkillError } from "./private-skill.ts";
+export {
+  installPrivateSkill,
+  PRIVATE_SKILL_FAILURES,
+  PRIVATE_SKILL_PATTERN,
+  PrivateSkillError,
+} from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export * from "./skillpack.ts";
@@ -57,4 +62,4 @@ export {
 } from "./ssh-executor.ts";
 export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
-export { preserveWork, type WorkPreservation } from "./work-preservation.ts";
+export { preserveWork, type WorkPreservation, workPreservationError } from "./work-preservation.ts";

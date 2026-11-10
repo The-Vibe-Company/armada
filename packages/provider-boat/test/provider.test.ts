@@ -813,3 +813,26 @@ test("prompt status cancellation reaches HTTP and suppresses late native capture
   expect(propagated).toBe(true);
   expect(captures).toBe(0);
 });
+
+// The real SDK must not send an idle interrupt; active turns must still settle
+// before local work capture can begin. No collector mocking at this boundary.
+test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Boat turns", async (state) => {
+  const conversations = (running: boolean) => ({ body: { ok: true, conversations: [{ id: "review", running }] } });
+  const boat = fakeBoat(
+    conversations(state !== "idle"),
+    ...(state === "idle" ? [] : [{ body: { ok: true } }, conversations(state === "pending")]),
+  );
+  if (!boat.provider.quiesce) throw new Error("Missing Boat quiescence support");
+  const result = boat.provider.quiesce({ sandboxId: ID });
+  if (state === "pending") await expect(result).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  else await result;
+  expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
+    ["GET", `/api/v1/sandboxes/${ID}/conversations`],
+    ...(state === "idle"
+      ? []
+      : [
+          ["POST", `/api/v1/sandboxes/${ID}/interrupt`],
+          ["GET", `/api/v1/sandboxes/${ID}/conversations`],
+        ]),
+  ]);
+});

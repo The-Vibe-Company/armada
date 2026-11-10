@@ -50,8 +50,8 @@ environment to `skillpack auth status` and `skillpack install`, then discarded;
 no `auth login`, profile write, argv secret or provider command journal is used.
 The freshly authorized SSH key is removed under the shared `authorized_keys`
 lock **before** the installer runs, including on refused/missing-skill paths;
-unrelated keys and file metadata are preserved. The golden must already include
-the trusted native CLI, Node and `flock`. Private secret
+unrelated keys and file metadata are preserved. Golden create/update installs the trusted native CLI automatically; the base
+image must supply Node, Bash and `flock`. Private secret
 projection is denied by the required read-only capability set: skills requiring
 secret projection fail at the API authorization boundary, before projection.
 
@@ -206,3 +206,123 @@ parent with `armada orchestrator stop "$ID" --org "$ORG_ID" --expected-revision
 "$REV" --idempotency-key "$(uuidgen)" --json` using a fresh detail revision, and
 retire staging resources through the normal operator cleanup. Do not claim this
 check passed until both providers and both key-scope cases actually pass.
+
+## Diagnosing a failed create
+
+A golden used for private skills must contain the trusted released **native**
+Skillpack executable on the SSH user's PATH, plus Node, Bash and `flock`.
+A pre-Skillpack golden is not upgraded automatically: rebuild it with
+`armada golden update` as below (the command also scans and snapshots it).
+Before snapshotting, run `command -v skillpack node bash flock` and
+`skillpack --version` as the guest user. Do not use `auth login` in a golden or
+snapshot a credential. Check private access using a disposable sandbox and a
+command-local, stdin-supplied `skills:read`-only key; never print auth status or
+raw install output into a shared log.
+
+Coordinator staging evidence confirmed the #897 cause: `smoke-modal` was built
+before private skills support and `skillpack` was absent from the SSH user's PATH.
+Node v22.23.4, Bash and `flock` were present. Authentication was never reached;
+key scope remains unverified. This now returns `skillpack_cli_unavailable` at
+`skills_auth`, directing the owner to rebuild the golden. The failed operation
+settles as `failed`; the parent becomes `stopped` only after confirmed cleanup.
+
+Closed reasons and corrective actions (API operation `errorCode`, event operation
+receipt and server diagnostics use the same codes):
+
+| Reason | Action |
+| --- | --- |
+| `skillpack_credential_missing` | Store a personal or org Skillpack credential. |
+| `skillpack_credential_refused` | Replace an expired/revoked key; check workspace membership. |
+| `skillpack_scope_refused` | Replace the key with one scoped **only** to `skills:read`. |
+| `skillpack_download_unavailable` | The last golden build could not download Skillpack. Allow GitHub release HTTPS egress, then rebuild; repeating offline builds will not help. |
+| `skillpack_cli_unavailable` | Rebuild the golden with the trusted native CLI executable on PATH; check its permissions/version. |
+| `skillpack_auth_unavailable` | Check registry connectivity and CLI/API compatibility during auth status. |
+| `skillpack_protocol_invalid` | Update the trusted native CLI/API; auth status did not return the supported workspace contract. |
+| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's workspace access; secret-projecting skills are not supported. |
+| `skillpack_install_conflict` | Inspect project lock/install state in a disposable sandbox; rebuild a clean golden. |
+| `skillpack_request_rejected` | Check the requested version/tool and update CLI/API compatibility. |
+| `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
+| `skillpack_timeout` | Check guest resources and registry connectivity; inspect before retrying. |
+| `skillpack_receipt_invalid` | Rebuild with a compatible native CLI; inspect project permissions and lockfile without exposing package contents. |
+| `skillpack_transport_failed` | Check SSH connectivity, Node, Bash, `flock`, home permissions and pinned-host access. |
+| `skillpack_credential_unreadable` | Re-store the personal/org key with `armada creds set skillpack --file <private-file>`; check server encryption-key configuration if this persists. |
+| `skillpack_process_failed` | Check guest process limits and CLI execution resources; no registry response was obtained. |
+| `skillpack_install_nonzero` | The native installer exited with an unsupported status; check CLI version/permissions and report the closed install-stage reason. |
+| `skillpack_install_state_invalid` | Check project directory permissions and native CLI compatibility; installation could not produce supported state. |
+
+Diagnostics distinguish `skills_credential` (stored-key resolution/validation), `skills_auth`, `skills_install`, `skills_receipt` and
+`skills_transport`. A private installation error settles the operation as
+`failed`, never `uncertain`: no delegated authority or conversation has started.
+Create attempts stop the failed allocation and publish `stopped` only after the
+provider confirms it. If cleanup cannot be confirmed, the parent remains
+`blocked` for explicit owner cleanup; the original failure reason is preserved.
+A new create needs a new idempotency key; replay returns the failed receipt.
+
+## Automatic provisioning and rebuilding smoke-modal
+
+Golden create **and update** provision native Skillpack **0.3.5** before user init
+and the secret scan. Armada downloads the official versioned Linux x64/arm64
+archive over HTTPS, verifies the platform SHA-256 pinned in
+`packages/core/src/golden-skillpack.ts`, then extracts it and self-tests both
+native binaries. No downloaded installer shell is executed. A checksum mismatch,
+invalid archive or failed version/help self-test **fails** the build with
+`failureReason: skillpack_integrity_failed`; the old golden remains unchanged.
+
+An unreachable release download is the only provisioning failure that is soft.
+The build can succeed for non-skill use, but its result has
+`warnings: ["skillpack_download_unavailable"]`. The same snapshot-bound metadata
+is persisted as `goldens.build_warnings`, visible in golden API/list output,
+CLI create/update warnings, build-status JSON and the dashboard golden row and
+expanded panel. This is not only a server log. Allow HTTPS egress to github.com
+and release-asset hosts **before** rebuilding; repeating an offline build is not
+a remedy. A later missing-CLI error from that golden reports
+`skillpack_download_unavailable` and the last build's network problem rather
+than blindly asking for another rebuild. A successful clean rebuild clears the
+warning. Old goldens with no warning history still report `skillpack_cli_unavailable`.
+
+The managed executable is linked through `/usr/local/bin/skillpack` when writable
+or passwordless sudo is available. Otherwise the build retains its user-local
+executable and reports informational `skillpack_user_local_only`; both public and
+private skill installs discover `/home/user/.local/bin`. Root builds normalize
+ownership before the worker runs. No login or Skillpack key is used in building.
+
+### Deployment prerequisite
+
+Apply **20261110210000_golden_build_warnings.sql** before deploying this server or
+dashboard revision. It adds only closed server-written metadata to existing
+rows/jobs (empty defaults), no secret or user-write grant. Deploying the old code
+again leaves the additive metadata harmless; do not drop columns while new code
+is running. No migration or deployment was performed by this PR workflow.
+
+After the coordinator makes this server revision available on **staging** (not
+production), use the staging Armada origin/session and an org admin account.
+Preserve the existing repositories, branches, directory names and init steps:
+
+```sh
+STAGING_ORG='<staging org id or name>'
+armada golden list --provider modal --json > /tmp/staging-goldens.json
+jq -e '[.[] | select(.id == "33a32ddc-1e48-48af-83d0-e65398674674" and .name == "smoke-modal" and .provider == "modal")]
+  | if length == 1 then .[0].config else error("expected smoke-modal golden missing or ambiguous") end' \
+  /tmp/staging-goldens.json > /tmp/smoke-modal.golden.json
+armada golden update smoke-modal --org "$STAGING_ORG" --provider modal \
+  --config /tmp/smoke-modal.golden.json --timeout 600
+```
+
+Do not resubmit an admitted build if local polling ends: use the printed job ID
+with `armada golden build-status <job-id>` until `succeeded`. Update replaces the
+snapshot pointer in place, retaining the golden ID/provider binding/visibility;
+do not use `golden snapshot` on the old master. Files or setup performed by hand
+on an old golden are not part of its persisted config: reapply any required
+non-secret custom setup with `--setup <local-script>` during update.
+
+Then rerun the original `orchestrator create` with a fresh name/idempotency key,
+the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key must
+be scoped **only** to `skills:read`; broad keys now return
+`skillpack_scope_refused`. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
+Send only closed stage/reason if it fails, not raw auth status or a key value.
+
+The public sandbox-launch path now reports the same closed missing-CLI reason
+and `golden update` action, with distinct request/package/registry/receipt/transport
+classifications. It discovers the user-local executable too. Native install-stage
+usage exit (2) is `skillpack_request_rejected`, not a missing CLI; auth-status
+usage exit (2) signals an incompatible CLI.

@@ -364,6 +364,8 @@ export type Database = {
           provider: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id: string | null;
           revision_known: boolean;
+          build_warnings: string[];
+          failure_reason: string | null;
         };
         Insert: {
           id: string;
@@ -389,6 +391,8 @@ export type Database = {
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id?: string | null;
           revision_known?: boolean;
+          build_warnings?: string[];
+          failure_reason?: string | null;
         };
         Update: {
           id?: string;
@@ -414,6 +418,8 @@ export type Database = {
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id?: string | null;
           revision_known?: boolean;
+          build_warnings?: string[];
+          failure_reason?: string | null;
         };
         Relationships: [
           {
@@ -674,6 +680,7 @@ export type Database = {
           modal_app_id: string | null;
           removed_at: string | null;
           size_policy: Json | null;
+          build_warnings: string[];
         };
         Insert: {
           id?: string;
@@ -693,6 +700,7 @@ export type Database = {
           modal_app_id?: string | null;
           removed_at?: string | null;
           size_policy?: Json | null;
+          build_warnings?: string[];
         };
         Update: {
           id?: string;
@@ -712,6 +720,7 @@ export type Database = {
           modal_app_id?: string | null;
           removed_at?: string | null;
           size_policy?: Json | null;
+          build_warnings?: string[];
         };
         Relationships: [
           {

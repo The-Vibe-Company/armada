@@ -5,12 +5,13 @@ import { catalogLock, catalogReceipt, catalogReference } from "./support/skillpa
 test("public install uses provider exec with shared receipt validation and sanitized failures", async () => {
   let output = "";
   let fail = false;
+  let exitCode = 0;
   const provider = {
     exec: async ({ command }: { command: string }) => {
-      expect(command).toStartWith("skillpack install ");
+      expect(command).toContain("skillpack install ");
       expect(command).toEndWith("&& cat '/home/user/repo/.companion/skills.lock.json'");
       if (fail) throw new Error("guest-detail-must-not-escape");
-      return { detached: false, exitCode: 0, stdout: output, stderr: "", timedOut: false, truncated: false };
+      return { detached: false, exitCode, stdout: output, stderr: "", timedOut: false, truncated: false };
     },
   } as unknown as Provider;
   const run = (stdout: string) => {
@@ -19,8 +20,12 @@ test("public install uses provider exec with shared receipt validation and sanit
   };
   expect(await run(catalogLock("codex"))).toEqual(catalogReceipt);
   await expect(run(catalogLock("claude-code"))).rejects.toThrow("Skillpack installation failed:");
+  exitCode = 127;
+  await expect(run("")).rejects.toThrow("skillpack_cli_unavailable. Rebuild the golden with armada golden update");
+  await expect(
+    installSkill(provider, "sandbox", "/home/user/repo", "codex", catalogReference, ["skillpack_download_unavailable"]),
+  ).rejects.toThrow("last golden build reported skillpack_download_unavailable: allow GitHub release egress");
+  exitCode = 0;
   fail = true;
-  await expect(run("")).rejects.toThrow(
-    "Skillpack installation failed: native CLI, public pin or verified receipt unavailable.",
-  );
+  await expect(run("")).rejects.toThrow("skillpack_transport_failed");
 });

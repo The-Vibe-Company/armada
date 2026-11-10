@@ -101,7 +101,7 @@ export type PreservationView =
   | { kind: "other"; text: string };
 
 const PRESERVED = /^unpushed work preserved at work_recovery:[0-9a-f-]+\/[0-9a-f-]+$/i;
-const NOT_PRESERVED = /^unpushed work could not be preserved \(([a-z0-9_]+)\)$/;
+const NOT_PRESERVED = /^unpushed work could not be preserved \(([a-z0-9_]+)\)(?:\. .+)?$/;
 
 /**
  * The receipt of an ended sandbox's last preservation attempt, or null when there is none to show (no attempt, or the
@@ -122,7 +122,6 @@ export function preservationView(
       command: canRecover ? recoveryCommand(sandboxId) : null,
     };
   const failed = NOT_PRESERVED.exec(note.trim());
-  if (failed?.[1])
-    return { kind: "failed", text: `Unpushed work could not be preserved (${failed[1]})`, reason: failed[1] };
+  if (failed?.[1]) return { kind: "failed", text: note.trim().replace(/^unpushed/, "Unpushed"), reason: failed[1] };
   return { kind: "other", text: note.trim() };
 }

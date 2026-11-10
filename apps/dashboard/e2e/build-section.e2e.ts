@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { goldenPanel, goldenRow, MOCK, openCreate, reset, signIn } from "./helpers";
+import { createDialog, goldenPanel, goldenRow, MOCK, openCreate, reset, signIn } from "./helpers";
 
-/** The #808 skeleton shared by Environments and Tools: strip, sorted list, panel (a sheet on a phone), New. */
+/** The #808 skeleton shared by Environments and Tools: strip, sorted list, panel (a sheet on a phone), New in a dialog (#898). */
 
 const ALICE_PRIVATE = "00000000-0000-4000-8000-000000000021";
 
@@ -54,13 +54,58 @@ test("keyboard: a row is focusable, Enter opens its panel, Escape closes it and 
   await expect(select).toBeFocused();
   await expect(page).not.toHaveURL(/[?&]item=/);
 
-  // New opens the create form in the same panel.
+  // New opens the create dialog over the list; Escape closes it and gives the focus back.
   await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Create a golden" })).toBeFocused();
+  await expect(createDialog(page)).toBeVisible();
   await openCreate(page);
   await page.keyboard.press("Escape");
+  await expect(createDialog(page)).toBeHidden();
   await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
 });
+
+for (const mobile of [false, true]) {
+  test(`New opens the create form in a dialog over the list, whole on a laptop (${mobile ? "phone" : "laptop"})`, async ({
+    page,
+  }) => {
+    // The default laptop viewport, and a Boat with room: no full-capacity notice above the form.
+    const width = mobile ? 390 : 1280;
+    await page.setViewportSize({ width, height: mobile ? 844 : 720 });
+    await fetch(`${MOCK}/__test/capabilities`, { method: "POST", body: JSON.stringify({ maxGoldens: null }) });
+    await signIn(page, "alice@example.com", "/environments");
+    const form = await openCreate(page);
+    // A dialog over the list, never the side panel beside it.
+    await expect(page.locator("#resource-panel")).toBeHidden();
+    await expect(page.locator("[data-golden]").first()).toBeAttached();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    // The one choice nothing changes later says so beside it.
+    await expect(form.locator("[data-permanent]")).toHaveText("Cannot be changed later");
+    await page.screenshot({
+      path: `test-results/environments-create-${mobile ? "mobile" : "desktop"}.png`,
+      animations: "disabled",
+    });
+    // On a laptop the whole form reads without scrolling; on a phone the dialog scrolls inside itself.
+    const scrolls = await createDialog(page).evaluate((dialog) => dialog.scrollHeight > dialog.clientHeight);
+    expect(scrolls).toBe(mobile);
+    if (!mobile) {
+      await expect(form.getByLabel("Name")).toBeInViewport({ ratio: 1 });
+      await expect(form.getByRole("button", { name: "Build golden" })).toBeInViewport({ ratio: 1 });
+      await expect(form.getByRole("button", { name: "Recover admission by key" })).toBeInViewport({ ratio: 1 });
+    }
+    await page.keyboard.press("Escape");
+    await expect(createDialog(page)).toBeHidden();
+    await expect(page).not.toHaveURL(/[?&]item=/);
+    await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+
+    // With a row's panel open beside the list, closing the dialog still gives the focus back to New.
+    if (!mobile) {
+      await goldenPanel(page, "shared-golden");
+      await openCreate(page);
+      await page.keyboard.press("Escape");
+      await expect(createDialog(page)).toBeHidden();
+      await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+    }
+  });
+}
 
 test("a long list offers a filter by name, provider or repository", async ({ page }) => {
   await large();
