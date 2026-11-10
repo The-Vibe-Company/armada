@@ -77,16 +77,14 @@ jobs:
       group: staging-supabase-migrations
       cancel-in-progress: false
     env:
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - name: Check staging migration configuration
         id: config
         shell: bash
         run: |
           enabled=true
-          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
+          for key in SUPABASE_DB_URL; do
             if [[ -z "${!key}" ]]; then
               echo "::notice::Staging migrations are not configured; missing staging secret: $key. No database connection made."
               enabled=false
@@ -103,21 +101,18 @@ jobs:
         if: steps.config.outputs.enabled == 'true'
         with:
           version: 2.75.0
-      - name: Link staging project
-        if: steps.config.outputs.enabled == 'true'
-        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
       - name: Show local and applied staging versions
         if: steps.config.outputs.enabled == 'true'
-        run: supabase migration list --linked
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
       - name: Preview pending staging migrations
         if: steps.config.outputs.enabled == 'true'
-        run: supabase db push --linked --dry-run
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
       - name: Apply pending staging migrations (forward only)
         if: steps.config.outputs.enabled == 'true' && (github.event_name == 'push' || !inputs.dry_run)
-        run: supabase db push --linked --yes
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --yes
       - name: Show resulting staging versions
         if: steps.config.outputs.enabled == 'true'
-        run: supabase migration list --linked
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
 
   production:
     name: Production migrations

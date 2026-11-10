@@ -40,6 +40,23 @@ Reconcile discrepancies deliberately after verifying the actual schema; the
 automatic apply path intentionally does not run `migration repair` or `--include-all`.
 No production operation is needed to review this PR.
 
+## Staging environment
+
+The independent **Staging migrations** job uses only this environment secret in
+the **staging** GitHub Actions environment:
+
+| Exact name | Value |
+| --- | --- |
+| `SUPABASE_DB_URL` | Staging session-mode pooler PostgreSQL connection URL including credentials and `sslmode=require` |
+
+It connects directly with `supabase migration list --db-url` and
+`supabase db push --db-url` (preview with `--dry-run`, apply with `--yes`).
+No management API, `supabase link`, access token, project reference or separate
+database password is needed. A missing URL emits a no-op notice before any
+database connection. Never echo this secret or enable CLI debug/shell tracing.
+Production configuration above is unchanged. See
+[staging migration operation](post-deploy-smoke.md#staging-migrations).
+
 ## Railway ordering (required operational prerequisite)
 
 Railway GitHub autodeploy and GitHub Actions are independent: **this workflow does

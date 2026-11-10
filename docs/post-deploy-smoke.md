@@ -12,14 +12,12 @@ Set these at environment scope, not to production values:
 | Kind | Name | Purpose |
 | --- | --- | --- |
 | Variable | `ARMADA_ORIGIN` | `https://armada-mcp-staging.up.railway.app`; smoke API origin |
-| Secret | `SUPABASE_PROJECT_ID` | Separate staging Supabase project reference; migrations only |
-| Secret | `SUPABASE_DB_PASSWORD` | Staging database password; migrations only |
-| Secret | `SUPABASE_ACCESS_TOKEN` | Supabase management token authorized for staging; migrations only |
+| Secret | `SUPABASE_DB_URL` | Staging session-mode pooler PostgreSQL URL including credentials and `sslmode=require`; migrations only |
 | Secret | `ARMADA_SMOKE_TOKEN` | Staging Armada bearer token; smoke only |
 | Secret | `ARMADA_SMOKE_CASES` | JSON array with staging org, golden and model account identifiers; smoke only |
 
-The project reference, database password and origin variable are already configured.
-The owner must still add the access token, smoke token and cases. Each job checks
+The database URL and origin variable are already configured.
+The owner must still add the smoke token and cases. Each job checks
 its own required configuration and emits a clear no-op notice if any is missing.
 Migration credentials are never passed to the smoke script.
 
@@ -73,13 +71,16 @@ this workflow.
 
 The **Database migrations** workflow runs an independent `Staging migrations`
 job on main pushes that change `supabase/migrations/**`, and on main manual
-dispatches with `mode=migrate`. It uses the separate staging project, links it,
-lists applied versions, previews with `supabase db push --linked --dry-run`, then
+dispatches with `mode=migrate`. It connects directly to the separate staging database
+using `SUPABASE_DB_URL`, lists applied versions with `supabase migration list --db-url`,
+previews with `supabase db push --db-url … --dry-run`, then
 applies pending migrations with `--yes` on push or when manual `dry_run=false`.
 Manual dispatch defaults to preview-only. History/repair remain production-only.
 
-All three `SUPABASE_*` secrets above are required before checkout, CLI setup or
-any database connection. Missing configuration produces notices and successful
+Only `SUPABASE_DB_URL` is required before checkout, CLI setup or any database
+connection. Staging does not use `supabase link` or require a management access
+token, project reference or separate database password. Never echo the URL or
+enable CLI debug/shell tracing; it is passed via the masked environment secret. Missing configuration produces notices and successful
 no-op completion. Staging has its own concurrency group and no dependency on or
 from production, so missing staging secrets cannot block production. Production
 conditions, commands and release-synchronized behavior are unchanged.
