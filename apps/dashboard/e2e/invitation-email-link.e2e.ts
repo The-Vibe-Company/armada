@@ -143,6 +143,6 @@ test("the invited account, already signed in, keeps its own session and reviews 
 test("a pending invitation does not take over another sign-in's return target", async ({ page }) => {
   await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
   await page.goto(`/invitations/accept?token=${INVITATION}`);
-  await signIn(page, "carol@example.com", "/credentials");
-  await expect(page).toHaveURL(/\/credentials$/);
+  await signIn(page, "carol@example.com", "/harness");
+  await expect(page).toHaveURL(/\/harness$/);
 });

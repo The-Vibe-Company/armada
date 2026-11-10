@@ -118,6 +118,9 @@ public struct OrchestratorCapabilities: Decodable, Sendable {
         public let harness: ArmadaHarness
         public let enabled: Bool
         public let reason: String?
+        /// `native` (the conversation resumes exactly) or `best_effort` (it may restart); open, so
+        /// a newer level still decodes. Absent on older servers.
+        public let continuity: String?
     }
     /// What a create form may offer for one harness: suggested models and efforts, and the
     /// credential kinds whose named accounts run it.

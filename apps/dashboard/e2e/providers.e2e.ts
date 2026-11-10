@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { alert, LABELS, MOCK, signIn } from "./helpers";
+import { alert, goldenPanel, goldenRow, LABELS, MOCK, openCreate, signIn } from "./helpers";
 
 /**
  * Sandbox providers (#598): Settings connects, replaces and disconnects the active organization's Boat and Modal, as
@@ -51,7 +51,7 @@ test("a new org connects its first provider in Settings; new work waits for it; 
   await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "not-connected");
   const org = String((await post("/__test/state")).providerCalls.at(-1).body.org);
   // New work leads to Settings; the older setup address does too, for the active org.
-  for (const path of ["/goldens", "/sandboxes", `/orgs/${org}/setup`]) {
+  for (const path of ["/environments", "/sandboxes", `/orgs/${org}/setup`]) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/settings$/);
   }
@@ -75,8 +75,8 @@ test("a new org connects its first provider in Settings; new work waits for it; 
   expect(sent?.body.provider).toBe("modal");
   expect(JSON.parse(String(sent?.body.value))).toEqual({ token_id: MODAL_ID, token_secret: MODAL_SECRET });
   await expect(page.locator("body")).not.toContainText(MODAL_SECRET);
-  await page.goto("/goldens");
-  await expect(page.locator('form[data-golden-form="create"] [data-provider-fixed="modal"]')).toBeVisible();
+  await page.goto("/environments");
+  await expect((await openCreate(page)).locator('[data-provider-fixed="modal"]')).toBeVisible();
   await expect(page.locator("[data-capacity-provider]")).toHaveCount(1);
 });
 
@@ -86,9 +86,8 @@ test("an admin adds a second provider and new goldens offer both; a rejected rep
   await signIn(page, "alice@example.com", "/settings");
   await expect(row(page, "boat")).toHaveAttribute("data-provider-state", "connected");
   await connectModal(page);
-  await page.goto("/goldens");
-  const form = page.locator('form[data-golden-form="create"]');
-  if (!(await form.isVisible())) await page.getByText("Show the create form").click();
+  await page.goto("/environments");
+  const form = await openCreate(page);
   await expect(form.locator("[data-provider-choice]")).toHaveCount(2);
 
   await page.goto("/settings");
@@ -105,7 +104,7 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   page,
 }) => {
   await post("/__test/reset", { acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await expect(page.getByRole("button", { name: "Launch from shared-golden" })).toBeVisible();
   await page.goto("/settings");
   await row(page, "boat").getByRole("button", { name: "Disconnect" }).click();
@@ -119,11 +118,15 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   ]);
 
   // The Boat golden stays listed with its provider; its launch and rebuild ask for Boat; new goldens use Modal.
-  await page.goto("/goldens");
-  const card = page.locator('[data-golden="shared-golden"]');
+  await page.goto("/environments");
+  const card = goldenRow(page, "shared-golden");
   await expect(card).toHaveAttribute("data-golden-provider", "boat");
   await expect(card.getByRole("link", { name: "Connect Boat to launch" })).toHaveAttribute("href", "/settings");
-  await expect(card.locator("[data-rebuild-paused]")).toHaveText("Rebuilding needs Boat connected.");
+  // The strip names the fix once, for every environment waiting on it.
+  await expect(page.locator('[data-blocker="connect-boat"]')).toContainText("Connect Boat");
+  await expect((await goldenPanel(page, "shared-golden")).locator("[data-rebuild-paused]")).toHaveText(
+    "Rebuilding needs Boat connected.",
+  );
   await expect(page.locator('form[data-golden-form="create"] [data-provider-fixed="modal"]')).toHaveCount(1);
   await expect(page.locator("[data-capacity-provider]")).toHaveCount(1);
   await expect(page.locator('[data-capacity-provider="modal"]')).toBeVisible();
@@ -133,10 +136,10 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect Modal" }).click();
   await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "not-connected");
   // Goldens to manage: no redirect, no new build; running sandboxes stay listed.
-  await page.goto("/goldens");
-  await expect(page).toHaveURL(/\/goldens$/);
-  await expect(page.locator('[data-setup-state="pending"]')).toContainText("No sandbox provider for Acme");
-  await expect(page.getByRole("heading", { name: "Build a golden" })).toHaveCount(0);
+  await page.goto("/environments");
+  await expect(page).toHaveURL(/\/environments$/);
+  await expect(page.locator('[data-blocker="provider"]')).toContainText("Connect a sandbox provider");
+  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
   await expect(card).toBeVisible();
   await page.goto("/sandboxes");
   await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
@@ -203,12 +206,14 @@ test("an unavailable status is a retryable error: never unconfigured, never retr
   await expect(providers(page).getByRole("button")).toHaveCount(0);
   await expect(providers(page).getByRole("link", { name: "Check again" })).toBeVisible();
 
-  await page.goto("/goldens");
-  await expect(page).toHaveURL(/\/goldens$/);
-  await expect(page.getByRole("heading", { name: "Build a golden" })).toHaveCount(0);
-  const card = page.locator('[data-golden="shared-golden"]');
+  await page.goto("/environments");
+  await expect(page).toHaveURL(/\/environments$/);
+  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  const card = goldenRow(page, "shared-golden");
   await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused. The provider status is unavailable.");
-  await expect(card.locator("[data-rebuild-paused]")).toHaveText("Rebuilding paused: provider status unavailable.");
+  await expect((await goldenPanel(page, "shared-golden")).locator("[data-rebuild-paused]")).toHaveText(
+    "Rebuilding paused: provider status unavailable.",
+  );
 
   await post("/__test/provider-status-fail", {});
   await page.goto("/settings");
@@ -222,14 +227,16 @@ test("an edge 404 while no deployment serves is a temporary outage, and Check ag
   await post("/__test/provider-status-fail", {
     fail: { status: 404, message: "", html: "<html><body>Application not found</body></html>" },
   });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const alert = page.locator('[data-setup-state="unavailable"]');
   await expect(alert).toContainText("The Armada server could not be reached just now. Check again in a moment.");
   await expect(alert).not.toContainText("does not offer");
   await expect(alert).not.toContainText("Application not found");
-  const card = page.locator('[data-golden="shared-golden"]');
+  const card = goldenRow(page, "shared-golden");
   await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused. The provider status is unavailable.");
-  await expect(card.locator("[data-rebuild-paused]")).toHaveText("Rebuilding paused: provider status unavailable.");
+  await expect((await goldenPanel(page, "shared-golden")).locator("[data-rebuild-paused]")).toHaveText(
+    "Rebuilding paused: provider status unavailable.",
+  );
 
   await post("/__test/provider-status-fail", {});
   await alert.getByRole("link", { name: "Check again" }).click();
@@ -243,7 +250,7 @@ test("a launch from a page rendered while Boat was connected is refused once Boa
   page,
 }) => {
   await post("/__test/reset", { acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Task").fill("Ship it");
@@ -259,10 +266,12 @@ test("a launch from a page rendered while Boat was connected is refused once Boa
 test("a build the page tracks keeps its form while the org has no provider", async ({ page }) => {
   await signIn(page, "carol@example.com", "/settings");
   const key = "6f1c2d3e-4b5a-4c6d-8e7f-901234567890";
-  await page.goto(`/goldens?build-key.create.${ORION}=${key}`);
-  await expect(page).toHaveURL(/\/goldens\?/);
-  await expect(page.locator('[data-setup-state="pending"]')).toBeVisible();
+  await page.goto(`/environments?build-key.create.${ORION}=${key}`);
+  await expect(page).toHaveURL(/\/environments\?/);
+  await expect(page.locator('[data-blocker="provider"]')).toBeVisible();
+  // The tracked build reopens the create panel.
   const form = page.locator('form[data-golden-form="create"]');
+  await expect(form).toBeVisible();
   await expect(form).toHaveCount(1);
   await expect(form.getByRole("button", { name: "Build golden" })).toBeDisabled();
   expect((await post("/__test/state")).goldenCalls).toHaveLength(0);

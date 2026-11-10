@@ -1,3 +1,4 @@
+import ArmadaKit
 import SwiftUI
 
 /// The compact status dot of Companion's roster (`CompanionStatusDot`): an 8-point dot in a fixed
@@ -204,4 +205,45 @@ struct InlineBanner: View {
         case .error: ArmadaTheme.dangerText
         }
     }
+}
+
+/// A list section header for one status group: its title, its row count and a disclosure toggle.
+struct StatusSectionHeader: View {
+    let group: ListStatusGroup
+    let count: Int
+    @Binding var collapsed: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.snappy) { collapsed.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Text(group.title)
+                Text("\(count)")
+                    .monospacedDigit()
+                    .foregroundStyle(ArmadaTheme.textSecondary)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(group.title), \(count)")
+        .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+        .accessibilityHint(collapsed ? "Shows these rows" : "Hides these rows")
+    }
+}
+
+/// Which status sections the person opened or closed; the rest follow `ListOrdering`'s default.
+struct StatusSectionDisclosure {
+    private var chosen: [ListStatusGroup: Bool] = [:]
+
+    func isCollapsed(_ group: ListStatusGroup, groups: [ListStatusGroup]) -> Bool {
+        chosen[group] ?? ListOrdering.collapsedByDefault(group, groups: groups)
+    }
+
+    mutating func set(_ group: ListStatusGroup, collapsed: Bool) { chosen[group] = collapsed }
 }

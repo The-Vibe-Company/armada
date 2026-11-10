@@ -1,3 +1,4 @@
+import ArmadaKit
 import Observation
 import SwiftUI
 
@@ -72,7 +73,8 @@ final class SandboxListModel {
     }
 }
 
-/// Every sandbox of the selected organization, as allowlisted metadata. Members see the list;
+/// Every sandbox of the selected organization, as allowlisted metadata, grouped by status and
+/// newest first (`ListOrdering`). Members see the list;
 /// only the owner or a current admin can open the interior, and the server decides each time.
 struct SandboxListView: View {
     @Environment(AppModel.self) private var app
@@ -81,6 +83,7 @@ struct SandboxListView: View {
     @State private var newSandbox: NewSandboxModel?
     @State private var showingNewSandbox = false
     @State private var launched: SandboxSummary?
+    @State private var disclosure = StatusSectionDisclosure()
 
     var body: some View {
         NavigationStack {
@@ -134,6 +137,7 @@ struct SandboxListView: View {
             // Rebuilt only when the organization changes; a reappearing tab just refreshes.
             if model?.orgID != orgID {
                 model = SandboxListModel(service: app.sandboxes, orgID: orgID) { app.sessionEnded() }
+                disclosure = StatusSectionDisclosure()
             }
             await model?.load()
         }
@@ -181,20 +185,42 @@ struct SandboxListView: View {
                 ))
                 .listRowBackground(Color.clear)
             } else {
-                Section {
-                    ForEach(model.items) { sandbox in
-                        NavigationLink(value: sandbox) {
-                            SandboxRow(sandbox: sandbox, currentUserID: app.currentUserID)
+                let sections = ListOrdering.sections(
+                    model.items, group: { .sandbox($0.status.rawValue) }, createdAt: \.createdAt, id: \.id
+                )
+                let groups = sections.map(\.group)
+                ForEach(sections, id: \.group) { section in
+                    let collapsed = disclosure.isCollapsed(section.group, groups: groups)
+                    Section {
+                        if !collapsed {
+                            ForEach(section.items) { sandbox in
+                                NavigationLink(value: sandbox) {
+                                    SandboxRow(sandbox: sandbox, currentUserID: app.currentUserID)
+                                }
+                                .accessibilityIdentifier("sandboxes.row.\(sandbox.id)")
+                            }
                         }
-                        .accessibilityIdentifier("sandboxes.row.\(sandbox.id)")
+                    } header: {
+                        StatusSectionHeader(
+                            group: section.group,
+                            count: section.items.count,
+                            collapsed: Binding(
+                                get: { collapsed },
+                                set: { disclosure.set(section.group, collapsed: $0) }
+                            )
+                        )
                     }
+                }
+                Section {
                     if model.hasMore {
                         HStack {
                             Spacer()
                             ProgressView()
                             Spacer()
                         }
-                        .task { await model.loadMore() }
+                        // Keyed by the row count: a page that lands only in a collapsed group adds nothing visible,
+                        // so the row never leaves the screen and must ask again after each page.
+                        .task(id: model.items.count) { await model.loadMore() }
                     }
                 } footer: {
                     Text(model.total == 1 ? "1 sandbox" : "\(model.total) sandboxes")

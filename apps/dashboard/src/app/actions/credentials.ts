@@ -13,6 +13,7 @@ import {
 import { listCredentials } from "@/lib/data/credentials";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
+import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 /**
@@ -76,7 +77,7 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
     const { error } = await supabase.from("credentials").insert({ scope, owner_id: owner, kind, value_enc: valueEnc });
     if (error) return fail(explainDbError(error));
   }
-  revalidatePath("/credentials");
+  revalidatePath(PROVIDER_SETTINGS_PATH);
   return done(`${credentialKindInfo(kind).label} saved.`);
 }
 
@@ -87,13 +88,13 @@ export async function removeCredential(_previous: ActionResult | null, data: For
   if (!isUuid(id)) return fail("That request is not valid.");
   const supabase = await createClient();
   const row = (await listCredentials(supabase)).find((item) => item.id === id);
-  if (!row) return fail("That credential is not available in this scope.");
+  if (!row) return fail("That key is not available in this scope.");
   // A model credential is a named account, removed by id through the server (`creds/accounts/remove`).
-  if (!isCredentialKind(row.kind)) return fail("Remove a model account from its card above.");
+  if (!isCredentialKind(row.kind)) return fail("Remove a subscription or API key on the Harness page.");
   if (row.scope === "org") return fail(ORG_HOSTING_IN_SETTINGS);
   const { data: rows, error } = await supabase.from("credentials").delete().eq("id", id).select("id");
   if (error) return fail(explainDbError(error));
   if (rows.length === 0) return fail("You are not allowed to do that.");
-  revalidatePath("/credentials");
-  return done("Credential removed.");
+  revalidatePath(PROVIDER_SETTINGS_PATH);
+  return done("Key removed.");
 }

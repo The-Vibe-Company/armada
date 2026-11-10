@@ -191,17 +191,27 @@ offered: `/api/v1` has no delete route for a sandbox.
 
 ## Orchestrators on the phone (#751)
 
-Create sources use the CLI's routes for the selected organization: `goldens()`
-(`POST golden/list`) and `modelAccounts()` (`POST creds/list`, named, active,
-unexpired accounts; ids, names and kinds only). Provider and harness ids are open
-values (`ArmadaProvider`, `ArmadaHarness`), never a closed list in the app.
+Create sources are the New sandbox form's reads for the selected organization
+(#750, #815): `launchGoldens()` (`POST golden/list`, `LaunchGolden`) and
+`launchAccounts()` (`POST creds/list`, `LaunchAccount`; ids, names and kinds
+only). Provider and harness ids are open values (`ArmadaProvider`,
+`ArmadaHarness`), never a closed list in the app.
 
 `OrchestratorCapabilities` decodes the server's `pairs` (provider × harness,
-`enabled`, `reason`) and `harnesses` (suggested models and efforts, the credential
-kinds that run each harness), additive to the capabilities route since #751.
-`OrchestratorCreateCatalog` offers only ready goldens, enabled pairs (a disabled
-pair keeps its reason as a sentence), the server's models and the accounts whose
-kind runs the harness, and validates a `Draft` into the exact `OrchestratorCreate`.
+`enabled`, `reason`, `continuity`) and `harnesses` (suggested models and efforts,
+the credential kinds that run each harness), additive to the capabilities route
+since #751. `OrchestratorCreateCatalog` offers only ready goldens, enabled pairs
+with their continuity in plain words ("Resume guaranteed" for `native`, "Resume
+not guaranteed" for `best_effort`; a disabled pair keeps its reason as a
+sentence), the server's models and the usable (active, unexpired) accounts whose
+kind runs the harness, the person's before the org's. The account is preselected
+as the server resolves it and chosen only when there are several; it validates a
+`Draft` into the exact `OrchestratorCreate`.
+
+`followOrchestratorCreate(_ UUID, sleep:)` follows an accepted create: it reads
+the new orchestrator's detail on `OrchestratorPolling`'s schedule (backing off
+after a failed read), records the create receipt, sends nothing, and returns
+`OrchestratorCreateProgress` `.ready` or `.failed`. `sleep` is the injected clock.
 
 `OrchestratorControls` derives what may be done from state, continuity and open
 operations (the dashboard's rule): nothing new while any operation is open;

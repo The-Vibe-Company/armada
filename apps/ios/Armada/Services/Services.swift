@@ -34,9 +34,24 @@ protocol OrchestratorService: Sendable {
     /// Reads owner detail to reconcile an exact known receipt without sending a mutation.
     /// An unknown outcome without a receipt is retried only by the person.
     func settle(handle: String) async
+    /// Follows an accepted create (ArmadaKit `followOrchestratorCreate`): reads the new
+    /// orchestrator's detail on ArmadaKit's polling schedule until its create settles. Sends nothing.
+    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement
+}
+
+/// How an accepted create ended.
+enum CreateSettlement: Equatable, Sendable {
+    case ready
+    /// A plain sentence: the create failed or the orchestrator needs attention.
+    case failed(String)
 }
 
 extension OrchestratorService {
+    /// Services that cannot follow a create report it as unavailable; the list's own refresh still settles it.
+    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement {
+        throw .unavailable("Following a create isn't available in this build.")
+    }
+
     func discardUncertain(handle: String) async throws(ServiceFailure) {
         throw .unavailable("Forgetting an unconfirmed request isn't available in this build.")
     }

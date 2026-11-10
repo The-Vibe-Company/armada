@@ -2,7 +2,6 @@
 
 import {
   CircleAlertIcon,
-  EllipsisIcon,
   GlobeIcon,
   KeyRoundIcon,
   LogInIcon,
@@ -49,13 +48,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -66,6 +58,7 @@ import {
   type ConnectionAuthType,
   type ConnectionScope,
   connectAction,
+  hostOf,
   type McpCatalogService,
   type McpConnection,
   parseStdioImport,
@@ -133,12 +126,11 @@ const AUTH_CHOICES: { value: ConnectionAuthType; hint: string }[] = [
 type HeaderRow = { key: number; name: string };
 
 /**
- * The custom server dialog, for anything the catalog does not offer. Non-secret fields are controlled, so they survive a refused submission; the
+ * The custom server form, for anything the catalog does not offer, in the Tools page's New panel. Non-secret fields are controlled, so they survive a refused submission; the
  * token, header values and client secret are uncontrolled password fields that React empties after every
- * submission, and nothing echoes them back. A success remounts the fields, so the dialog starts clean.
+ * submission, and nothing echoes them back. A success remounts the fields, so the form starts clean.
  */
-export function AddConnectionDialog({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
-  const [open, setOpen] = useState(false);
+export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   const [state, formAction] = useActionState(addConnection, null);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
@@ -146,23 +138,10 @@ export function AddConnectionDialog({ orgId, orgName, isAdmin }: { orgId: string
   }, [state]);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline">
-          <PlusIcon /> Custom server
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Add a custom server</DialogTitle>
-          <DialogDescription>Any MCP server by URL, or a command that runs in the sandbox.</DialogDescription>
-        </DialogHeader>
-        <form action={formAction} className="space-y-4">
-          <input type="hidden" name="org" value={orgId} />
-          <AddFields key={generation} orgName={orgName} isAdmin={isAdmin} result={state} />
-        </form>
-      </DialogContent>
-    </Dialog>
+    <form action={formAction} className="space-y-4" data-add-connection>
+      <input type="hidden" name="org" value={orgId} />
+      <AddFields key={generation} orgName={orgName} isAdmin={isAdmin} result={state} />
+    </form>
   );
 }
 
@@ -557,7 +536,7 @@ function StdioFields({
 /* ---------------------------------------------------------------- catalog */
 
 /** A service's initial in a quiet square: the mark of a connection without borrowing anyone's logo. */
-function ServiceMark({ label, className }: { label: string; className?: string }) {
+export function ServiceMark({ label, className }: { label: string; className?: string }) {
   return (
     <span
       aria-hidden
@@ -569,14 +548,6 @@ function ServiceMark({ label, className }: { label: string; className?: string }
       {label.trim().charAt(0).toUpperCase() || "?"}
     </span>
   );
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
 }
 
 /**
@@ -598,7 +569,7 @@ export function ServiceCatalog({
   isAdmin: boolean;
 }) {
   return (
-    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+    <ul className="grid gap-2">
       {services.map((service) => {
         const count = connections.filter((connection) => connection.catalogId === service.id).length;
         const ready = service.availability === "available";
@@ -659,7 +630,7 @@ export function ServiceCatalog({
  * Name, who uses it and the launch default for a new connection to a catalog service, then its sign-in. The name
  * is a nickname for Armada only; the account it acts as is whatever the service's sign-in returns.
  */
-function ConnectServiceDialog({
+export function ConnectServiceDialog({
   service,
   taken,
   another,
@@ -933,10 +904,37 @@ function DefaultSwitch({
 type RowDialog = "rename" | "edit" | "revoke" | "delete" | null;
 
 /**
- * One connection as a compact row: its name (a nickname), its state, the account the service verified, and the
- * one action that makes it usable. The rest sits in its menu.
+ * A connection's one expected action on its row of the Tools list (#808): sign in for the first time, sign in
+ * again, try again or configure. Its outcome is said under it. Everything else is in {@link ToolPanel}.
  */
-export function ConnectionCard({
+export function ToolRowAction({ connection }: { connection: McpConnection }) {
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const primary = connectAction(connection);
+  return (
+    <div className="flex flex-col items-end gap-1">
+      {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
+      <RowAction
+        action={connectConnection}
+        fields={{ org: connection.orgId, id: connection.id }}
+        onResult={setResult}
+        variant={primary === "Retry" ? "outline" : "default"}
+        label={`${primary ?? "Connect"} ${connection.name}`}
+        hidden={primary === null}
+      >
+        {primary === "Retry" && <RefreshCwIcon />}
+        {primary ?? "Connect"}
+      </RowAction>
+      <ResultLine result={result} className="max-w-56 text-right text-xs" />
+    </div>
+  );
+}
+
+/**
+ * Everything rare about one connection, in the Tools page's detail panel: where it points, how it signs in, what it
+ * exposes, its last error, the launch default, and its management (rename, edit, check, sign in again, enable or
+ * disable, revoke, delete). A member who does not manage it reads the same facts without the controls.
+ */
+export function ToolPanel({
   connection,
   canManage,
   serviceLabel,
@@ -950,23 +948,23 @@ export function ConnectionCard({
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<RowDialog>(null);
   const [, startTransition] = useTransition();
-  const menuTrigger = useRef<HTMLButtonElement>(null);
   const target = { org: connection.orgId, id: connection.id };
   const remote = connection.transport !== "stdio";
   const enabled = connection.status !== "disabled";
   const custom = !connection.catalogId;
   const primary = connectAction(connection);
-  const tools =
-    remote && connection.toolCount !== undefined
-      ? `${connection.toolCount} ${connection.toolCount === 1 ? "tool" : "tools"}`
-      : null;
-  const where = !remote
-    ? [connection.command, ...(connection.args ?? [])].filter(Boolean).join(" ")
-    : serviceLabel
-      ? null
-      : (connection.url ?? "URL hidden");
+  const counts = remote
+    ? [
+        ["tool", connection.toolCount],
+        ["resource", connection.resourceCount],
+        ["prompt", connection.promptCount],
+      ]
+        .filter((entry): entry is [string, number] => entry[1] !== undefined)
+        .map(([noun, count]) => `${count} ${count === 1 ? noun : `${noun}s`}`)
+        .join(" · ")
+    : "";
 
-  /** Runs an action that never navigates, reporting on the row's live line. */
+  /** Runs an action that never navigates, reporting on the panel's live line. */
   function run(action: Action, fields: Record<string, string>, pendingText: string) {
     const data = new FormData();
     for (const [key, value] of Object.entries(fields)) data.set(key, value);
@@ -978,134 +976,140 @@ export function ConnectionCard({
     });
   }
 
-  // Stable, so a dialog's success effect runs once per result rather than on every render of the row.
+  // Stable, so a dialog's success effect runs once per result rather than on every render of the panel.
   const closeDialog = useCallback((next: boolean) => {
     if (!next) setDialog(null);
   }, []);
+  // A dialog closes back onto the button that opened it.
+  const opener = useRef<HTMLElement | null>(null);
   const restoreFocus = useCallback((event: Event) => {
     event.preventDefault();
-    menuTrigger.current?.focus();
+    opener.current?.focus();
   }, []);
+  function open(next: RowDialog) {
+    return (event: { currentTarget: HTMLElement }) => {
+      opener.current = event.currentTarget;
+      setDialog(next);
+    };
+  }
 
   return (
-    <li className="p-4" data-connection={connection.name} aria-labelledby={`connection-${connection.id}`}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <ServiceMark
-            label={serviceLabel ?? connection.name}
-            className={cn(!serviceLabel && "font-normal", !remote && "font-mono")}
-          />
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <h3 id={`connection-${connection.id}`} className="truncate font-medium">
-                {connection.name}
-              </h3>
-              <ConnectionStatusBadge connection={connection} />
-              {connection.defaultForLaunch && !canManage && (
-                <Badge variant="secondary" data-default-for-launch>
-                  Default
-                </Badge>
-              )}
-            </div>
-            <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-              {serviceLabel && <span>{serviceLabel}</span>}
-              {where && (
-                <span className="max-w-full truncate font-mono" title={where}>
-                  {where}
-                </span>
-              )}
-              {!remote && <span>{transportLabel(connection.transport)}</span>}
-              {remote && !serviceLabel && <span>{authLabel(connection.authType)}</span>}
-              {connection.accountLabel && (
-                <span>
-                  Signed in as <span className="text-foreground">{connection.accountLabel}</span>
-                </span>
-              )}
-              {tools && <span>{tools}</span>}
-            </p>
-            {connection.lastError && <p className="text-xs text-destructive">{connection.lastError}</p>}
-          </div>
+    <div className="space-y-4" data-connection-panel={connection.name}>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <ConnectionStatusBadge connection={connection} />
+          <ScopeBadge scope={connection.scope} />
         </div>
-
-        {canManage ? (
-          <div className="flex shrink-0 items-center justify-end gap-2 pl-11 sm:pl-0">
-            {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
-            <RowAction
-              action={connectConnection}
-              fields={target}
-              onResult={setResult}
-              variant={primary === "Retry" ? "outline" : "default"}
-              label={`${primary ?? "Connect"} ${connection.name}`}
-              hidden={primary === null}
-            >
-              {primary === "Retry" && <RefreshCwIcon />}
-              {primary ?? "Connect"}
-            </RowAction>
-            <DefaultSwitch connection={connection} onResult={setResult} />
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  ref={menuTrigger}
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`More actions for ${connection.name}`}
-                >
-                  <EllipsisIcon />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-44">
-                <DropdownMenuItem onSelect={() => setDialog("rename")}>
-                  <PencilIcon /> Rename
-                </DropdownMenuItem>
-                {custom && (
-                  <DropdownMenuItem onSelect={() => setDialog("edit")}>
-                    <SettingsIcon /> Edit server
-                  </DropdownMenuItem>
-                )}
-                {remote && enabled && connection.authType === "oauth" && connection.status === "connected" && (
-                  <DropdownMenuItem onSelect={() => run(connectConnection, target, "Opening sign-in…")}>
-                    <LogInIcon /> Sign in again
-                  </DropdownMenuItem>
-                )}
-                {remote && (
-                  <DropdownMenuItem onSelect={() => run(checkConnection, target, "Checking…")}>
-                    <RefreshCwIcon /> Check
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onSelect={() =>
-                    run(
-                      setConnectionEnabled,
-                      { ...target, enabled: String(!enabled) },
-                      enabled ? "Disabling…" : "Enabling…",
-                    )
-                  }
-                >
-                  <PowerIcon /> {enabled ? "Disable" : "Enable"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {remote && connection.authType !== "none" && (
-                  <DropdownMenuItem variant="destructive" onSelect={() => setDialog("revoke")}>
-                    <KeyRoundIcon /> Revoke access
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem variant="destructive" onSelect={() => setDialog("delete")}>
-                  <Trash2Icon /> Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ) : (
-          <p className="pl-11 text-xs text-muted-foreground sm:pl-0">Managed by the org's admins.</p>
+        {connection.lastError && <p className="text-sm text-destructive">{connection.lastError}</p>}
+        {canManage && primary && (
+          <RowAction
+            action={connectConnection}
+            fields={target}
+            onResult={setResult}
+            variant={primary === "Retry" ? "outline" : "default"}
+          >
+            {primary === "Retry" && <RefreshCwIcon />}
+            {primary}
+          </RowAction>
         )}
       </div>
-      <div className="pl-11 empty:hidden">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-t pt-4 text-sm">
+        {serviceLabel && (
+          <>
+            <dt className="text-muted-foreground">Service</dt>
+            <dd>{serviceLabel}</dd>
+          </>
+        )}
+        <dt className="text-muted-foreground">{remote ? "URL" : "Command"}</dt>
+        <dd className="font-mono text-xs break-all">
+          {remote
+            ? (connection.url ?? "Hidden")
+            : [connection.command, ...(connection.args ?? [])].filter(Boolean).join(" ")}
+        </dd>
+        <dt className="text-muted-foreground">Transport</dt>
+        <dd>{transportLabel(connection.transport)}</dd>
+        {remote && (
+          <>
+            <dt className="text-muted-foreground">Sign-in</dt>
+            <dd>{authLabel(connection.authType)}</dd>
+          </>
+        )}
+        {connection.accountLabel && (
+          <>
+            <dt className="text-muted-foreground">Signed in as</dt>
+            <dd className="break-all">{connection.accountLabel}</dd>
+          </>
+        )}
+        {counts && (
+          <>
+            <dt className="text-muted-foreground">Exposes</dt>
+            <dd>{counts}</dd>
+          </>
+        )}
+      </dl>
+      <div className="border-t pt-4">
+        {canManage ? (
+          <DefaultSwitch connection={connection} onResult={setResult} />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {connection.defaultForLaunch ? (
+              <Badge variant="secondary" data-default-for-launch>
+                Default
+              </Badge>
+            ) : (
+              "Not included by default."
+            )}
+          </p>
+        )}
+      </div>
+      {canManage ? (
+        <div className="flex flex-wrap gap-2 border-t pt-4">
+          <Button variant="outline" size="sm" onClick={open("rename")}>
+            <PencilIcon /> Rename
+          </Button>
+          {custom && (
+            <Button variant="outline" size="sm" onClick={open("edit")}>
+              <SettingsIcon /> Edit server
+            </Button>
+          )}
+          {remote && enabled && connection.authType === "oauth" && connection.status === "connected" && (
+            <Button variant="outline" size="sm" onClick={() => run(connectConnection, target, "Opening sign-in…")}>
+              <LogInIcon /> Sign in again
+            </Button>
+          )}
+          {remote && (
+            <Button variant="outline" size="sm" onClick={() => run(checkConnection, target, "Checking…")}>
+              <RefreshCwIcon /> Check
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              run(setConnectionEnabled, { ...target, enabled: String(!enabled) }, enabled ? "Disabling…" : "Enabling…")
+            }
+          >
+            <PowerIcon /> {enabled ? "Disable" : "Enable"}
+          </Button>
+          {remote && connection.authType !== "none" && (
+            <Button variant="destructive-outline" size="sm" onClick={open("revoke")}>
+              <KeyRoundIcon /> Revoke access
+            </Button>
+          )}
+          <Button variant="destructive-outline" size="sm" onClick={open("delete")}>
+            <Trash2Icon /> Delete
+          </Button>
+        </div>
+      ) : (
+        <p className="border-t pt-4 text-xs text-muted-foreground">Managed by the org's admins.</p>
+      )}
+      <div className="empty:hidden">
         {busy ? (
-          <p role="status" className="pt-2 text-sm text-muted-foreground">
+          <p role="status" className="text-sm text-muted-foreground">
             {busy}
           </p>
         ) : (
-          <ResultLine result={result} className="pt-2" />
+          <ResultLine result={result} />
         )}
       </div>
 
@@ -1151,7 +1155,7 @@ export function ConnectionCard({
           />
         </>
       )}
-    </li>
+    </div>
   );
 }
 

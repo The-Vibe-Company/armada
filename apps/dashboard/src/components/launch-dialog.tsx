@@ -46,6 +46,7 @@ import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import {
   accountProblem,
   accountsFor,
+  HARNESS_PATH,
   kindNote,
   type LaunchAccounts,
   launchDefault,
@@ -357,7 +358,7 @@ function AccountField({
     return (
       <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground" data-account-field="none">
         No {label} account.{" "}
-        <Link href="/credentials" className="underline">
+        <Link href={HARNESS_PATH} className="underline">
           Add one
         </Link>
       </p>
@@ -564,7 +565,7 @@ function useLaunchAccess(connections: LaunchConnections) {
           <span className="min-w-48 flex-1">
             {unready.map((connection) => connection.name).join(", ")}{" "}
             {unready.length === 1 ? "is a default but is" : "are defaults but are"} not connected.{" "}
-            <Link href="/connections" className="underline">
+            <Link href="/tools" className="underline">
               Reconnect
             </Link>{" "}
             or continue without {unready.length === 1 ? "it" : "them"}.
@@ -603,7 +604,7 @@ function useLaunchAccess(connections: LaunchConnections) {
             {list.length === 0 ? (
               <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
                 No connections.{" "}
-                <Link href="/connections" className="underline">
+                <Link href="/tools" className="underline">
                   Add one
                 </Link>
               </p>

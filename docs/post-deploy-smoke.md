@@ -1,5 +1,18 @@
 # Deployed API smoke
 
+> **Release-only production gate:** With repository variables
+> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
+> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
+> continuously deploy/migrate/smoke main on staging. Release calls that same staging
+> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
+> Independent automatic migration applies and deployment-event smoke below are disabled.
+> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
+> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
+> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
+> smoke to finish and ensure no next deployment is queued before running it.
+> It can otherwise observe staging mid-deploy and never authorizes a release.
+> With both variables absent/false, legacy behavior below is unchanged.
+
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
 deploy, apply migrations, or contact a provider/database directly.
@@ -109,6 +122,8 @@ The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
 the sandbox and checks provider state. The optional path also exercises
 orchestrator create → send → stop → resume → stop. It requires `goldenId`;
+orchestrator capabilities must enable the selected pair (Modal/Codex native or
+Boat/Claude and Boat/Codex best-effort). Within that supported set,
 the smoke reads `orchestrators/capabilities` once and validates every selected
 pair before **any** sandbox or orchestrator allocation. A disabled or absent
 pair fails the run; it is never silently skipped. Use a separate cases file

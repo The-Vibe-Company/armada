@@ -12,7 +12,7 @@ only the sandbox owner or an organization administrator can retrieve them throug
 
 Provider-native TTL termination cannot be intercepted by this version. Armada's
 lifecycle reconciler attempts preservation when it drives expiry while compute is
-still available. There is no idle-stop scheduler today. Oversize, unavailable or
+still available. Ordinary sandboxes have no idle-stop scheduler; orchestrator parents have a separate fenced idle-stop policy. Oversize, unavailable or
 late capture is reported, never allowed to prevent a stop. Automatic restoration,
 rescue-ref pushing and external object storage are deliberately out of scope.
 
@@ -33,7 +33,7 @@ or initialize an empty repository when `head` is null. Apply nonempty
 copy `untracked/` contents into the worktree. Bundles include local refs and HEAD.
 No ignored files, external LFS objects or submodule object stores are promised.
 
-Capture requires Python 3 and git in the provider image. The archive limit is
+Capture requires the Armada runtime Bun (or Bun on PATH) and git in the provider image; Python is not required. The archive limit is
 2 MiB total; collection gets 12 seconds at the provider and a 15-second server
 bound. The whole preservation attempt has a 20-second wait budget. SQL failure
 may prevent recording a receipt, but never prevents stopping compute. In-flight
@@ -76,7 +76,7 @@ the manifest's `head` in the original clone before applying patches. For an
 unborn repository (`head: null`), initialize an empty repository.
 Version 1 archives remain standalone and use the original instructions above.
 
-Failures use closed receipt reasons: missing_git, missing_python3,
+Failures use closed receipt reasons: missing_git, missing_bun,
 missing_openssl, collector_exit, collector_signal, collector_failed,
 output_invalid, output_truncated, timeout, size_limit, decrypt, unavailable,
 or storage. A failed attempt logs only the Armada sandbox ID and that reason,

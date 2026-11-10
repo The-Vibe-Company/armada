@@ -71,7 +71,7 @@ export default async function FleetPage({ searchParams }: Props) {
           title="No agents on the board"
           action={
             <Button asChild>
-              <Link href="/goldens">
+              <Link href="/environments">
                 <LinkPendingIcon>
                   <RocketIcon />
                 </LinkPendingIcon>
