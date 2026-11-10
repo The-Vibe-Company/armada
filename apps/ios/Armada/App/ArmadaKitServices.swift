@@ -198,16 +198,18 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement {
         guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
+        let progress: ArmadaKit.OrchestratorCreateProgress
         do {
-            switch try await client.followOrchestratorCreate(id) {
-            case .ready: return .ready
-            case .failed(let reason): return .failed(reason)
-            // Not settled: the list keeps showing it in progress.
-            case .creating: throw .offline
-            }
+            progress = try await client.followOrchestratorCreate(id)
         } catch {
             if error is CancellationError { throw .offline }
             throw Self.readFailure(error)
+        }
+        switch progress {
+        case .ready: return .ready
+        case .failed(let reason): return .failed(reason)
+        // Not settled: the list keeps showing it in progress.
+        case .creating: throw .offline
         }
     }
 
