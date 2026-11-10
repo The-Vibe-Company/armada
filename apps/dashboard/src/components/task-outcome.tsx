@@ -123,6 +123,13 @@ function CopyLine({ command }: { command: string }) {
         {copied === "copied" ? <CheckIcon /> : <CopyIcon />}
         {copied === "copied" ? "Copied" : copied === "failed" ? "Select to copy" : "Copy"}
       </Button>
+      <span role="status" className="sr-only">
+        {copied === "copied"
+          ? "The recovery command was copied."
+          : copied === "failed"
+            ? "The clipboard is unavailable: select the command to copy it."
+            : ""}
+      </span>
     </div>
   );
 }

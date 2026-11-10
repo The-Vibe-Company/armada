@@ -18,7 +18,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
-import { outcomeView, preservationView } from "@/lib/outcome";
+import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
@@ -266,7 +266,7 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
  * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
  */
 function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
-  const outcome = outcomeView(sandbox.taskOutcome);
+  const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome);
   const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
   if (!outcome && !preservation) return null;
   return (

@@ -154,7 +154,11 @@ test("the board shows blocked and ready to merge above the rest, and Needs me ke
   await reportOutcomes();
   await post("sandbox-lifecycle", {
     id: IDS.failed,
-    fields: { last_observed_at: new Date(Date.now() - 3600_000).toISOString() },
+    fields: {
+      last_observed_at: new Date(Date.now() - 3600_000).toISOString(),
+      // Stopping a failed sandbox preserves its work and keeps it failed.
+      preservation_note: "unpushed work could not be preserved (size_limit)",
+    },
   });
   await signIn(page, "alice@example.com", "/fleet");
 
@@ -164,6 +168,9 @@ test("the board shows blocked and ready to merge above the rest, and Needs me ke
     "blocked",
     "ready",
   ]);
+  await expect(row(page, IDS.failed).locator('[data-preservation="failed"]')).toHaveText(
+    "Unpushed work could not be preserved (size_limit)",
+  );
   const blocked = row(page, IDS.running);
   await expect(blocked.locator('[data-board-state="blocked"]')).toHaveText("Blocked");
   await expect(blocked.locator('[data-outcome-detail="blocked"]')).toContainText("The staging API key is missing");

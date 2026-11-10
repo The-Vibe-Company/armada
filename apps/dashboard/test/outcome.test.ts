@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { outcomeView, parseTaskOutcome, preservationView, safeHref } from "../src/lib/outcome.ts";
+import { outcomeView, parseTaskOutcome, preservationView, safeHref, settledOutcome } from "../src/lib/outcome.ts";
 
 const SHA = "0123456789abcdef0123456789ABCDEF01234567";
 const ID = "00000000-0000-4000-8000-000000000032";
@@ -27,6 +27,10 @@ describe("parseTaskOutcome", () => {
       { state: "ready", prNumber: "12" },
       { state: "ready", prUrl: "" },
       { state: "ready", headSha: "abc123" },
+      { state: "ready", extra: true },
+      { state: "ready", prUrl: `https://github.com/${"x".repeat(2048)}` },
+      { state: "blocked", reason: "x".repeat(1001) },
+      { state: "blocked", reason: "why", prNumber: 1 },
     ])
       expect(parseTaskOutcome(value)).toBeNull();
   });
@@ -42,8 +46,8 @@ describe("outcomeView", () => {
       pr: { label: "PR #768", href: "https://github.com/acme/web/pull/768" },
       sha: "0123456",
     });
-    expect(outcomeView({ state: "ready", prUrl: "https://example.com/pr" })).toMatchObject({
-      pr: { label: "Pull request", href: "https://example.com/pr" },
+    expect(outcomeView({ state: "ready", prUrl: "https://github.com/acme/web/pull/9" })).toMatchObject({
+      pr: { label: "Pull request", href: "https://github.com/acme/web/pull/9" },
     });
     expect(outcomeView({ state: "ready" })).toMatchObject({ pr: null, sha: null });
   });
@@ -53,6 +57,11 @@ describe("outcomeView", () => {
       pr: { label: "PR #3", href: null },
     });
     expect(outcomeView({ state: "ready", prUrl: "http://github.com/x" })).toMatchObject({ pr: null });
+    // The agent writes the address: another site is never labelled as its pull request.
+    expect(outcomeView({ state: "ready", prNumber: 4, prUrl: "https://evil.example/pull/4" })).toMatchObject({
+      pr: { label: "PR #4", href: null },
+    });
+    expect(safeHref("https://user:pw@github.com/a/b/pull/1")).toBeNull();
     expect(safeHref("/relative")).toBeNull();
     expect(safeHref("data:text/html,x")).toBeNull();
   });
@@ -64,6 +73,16 @@ describe("outcomeView", () => {
       reason: "Needs review",
     });
     expect(outcomeView(null)).toBeNull();
+  });
+});
+
+describe("settledOutcome", () => {
+  test("a failed, deleted, starting or stopping sandbox reads as that, not as an earlier outcome", () => {
+    const ready = { state: "ready" } as const;
+    for (const status of ["ready", "running", "stopped"] as const)
+      expect(settledOutcome(status, ready)?.kind).toBe("ready");
+    for (const status of ["failed", "deleted", "starting", "stopping"] as const)
+      expect(settledOutcome(status, ready)).toBeNull();
   });
 });
 
@@ -88,7 +107,8 @@ describe("preservationView", () => {
     expect(preservationView("something else", "stopped", ID, true)).toEqual({ kind: "other", text: "something else" });
   });
 
-  test("only a stopped sandbox with a note shows one", () => {
+  test("only an ended sandbox with a note shows one; stopping a failed sandbox keeps it failed", () => {
+    expect(preservationView(preserved, "failed", ID, true)).toMatchObject({ kind: "preserved" });
     expect(preservationView(preserved, "running", ID, true)).toBeNull();
     expect(preservationView(null, "stopped", ID, true)).toBeNull();
     expect(preservationView("  ", "stopped", ID, true)).toBeNull();

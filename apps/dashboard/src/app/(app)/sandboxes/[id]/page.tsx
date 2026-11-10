@@ -28,7 +28,7 @@ import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
-import { outcomeView, parseTaskOutcome, preservationView } from "@/lib/outcome";
+import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { createClient } from "@/lib/supabase/server";
@@ -81,7 +81,7 @@ export default async function SandboxPage({ params }: Props) {
       : undefined;
   const machineSize = describeEvidence(sandbox.provider, sandbox);
   // The interior row is returned only to a viewer who may open the sandbox, so the recovery command is theirs to run.
-  const outcome = outcomeView(parseTaskOutcome(sandbox.task_outcome));
+  const outcome = settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome));
   const preservation = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
 
   const facts: [string, string][] = [
