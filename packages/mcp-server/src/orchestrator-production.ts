@@ -17,6 +17,7 @@ import {
   createOrchestratorBackendResolver,
   type NamedOrchestratorCredentials,
 } from "./orchestrator-backend-resolver.ts";
+import { createBoatBestEffortAdapter } from "./orchestrator-boat-best-effort.ts";
 import { launchOrchestratorChild } from "./orchestrator-child-launch.ts";
 import type { OrchestratorChildExecutor } from "./orchestrator-children.ts";
 import { createOrchestratorCreateRecovery } from "./orchestrator-create-recovery.ts";
@@ -25,9 +26,9 @@ import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-nativ
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
 
-/** Real production composition. Only Modal-owned Codex sessions have an implemented
- * private no-text restore driver. The deployment setting is admission policy, not
- * provider-native evidence; every operation still validates actual native receipts. */
+/** Real production composition. Modal Codex retains its native checkpoint lane;
+ * Boat is explicitly best-effort ordinary archival/activation. Deployment intent
+ * alone never upgrades either pair's continuity guarantees. */
 export function createProductionOrchestrators(input: {
   sql: Sql;
   providers: ProviderRegistry;
@@ -41,7 +42,8 @@ export function createProductionOrchestrators(input: {
   skillRevision: string | undefined;
   diagnosticLog?: OrchestratorDiagnosticLog;
 }) {
-  if (!input.requestedPairs.includes("modal:codex")) return undefined;
+  const enabledPairs = input.requestedPairs.filter((pair) => pair === "modal:codex" || pair.startsWith("boat:"));
+  if (enabledPairs.length === 0) return undefined;
   if (!input.skillRevision || !/^[a-f0-9]{40}$/.test(input.skillRevision))
     throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
   const { sql } = input;
@@ -69,6 +71,7 @@ export function createProductionOrchestrators(input: {
         throw new OrchestratorRuntimeError("unavailable");
     },
   });
+  const boat = createBoatBestEffortAdapter({ sql, mcpUrl: input.scopedMcpUrl });
   const selection = createOrchestratorBackendResolver({
     sql,
     providers: input.providers,
@@ -78,7 +81,8 @@ export function createProductionOrchestrators(input: {
       : {}),
     encryptionKey: input.encryptionKey,
     mcpUrl: input.scopedMcpUrl,
-    native: (provider, harness) => (provider === "modal" && harness === "codex" ? native : undefined),
+    native: (provider, harness) =>
+      provider === "boat" ? boat : provider === "modal" && harness === "codex" ? native : undefined,
     // Creation explicitly selects this golden and this named billing account.
     // Never infer consent to all of the owner's accounts or organization goldens.
     async consent(_actor, configuration) {
@@ -203,7 +207,7 @@ export function createProductionOrchestrators(input: {
       reserveOperation: reserveOrchestratorOperation,
       skillRevision: input.skillRevision,
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
-      enabledPairs: ["modal:codex"],
+      enabledPairs,
       recoverCreate: createOrchestratorCreateRecovery(sql, input.providers, input.diagnosticLog),
       resolveBackend: selection.resolveBackend,
       managed: { sql, resolveManaged: selection.resolveManaged },

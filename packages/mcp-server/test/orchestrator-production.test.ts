@@ -165,8 +165,8 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     expect(capabilities).toMatchObject({
       enabled: true,
       pairs: [
-        { provider: "boat", enabled: false, reason: "boat_native_checkpoint_restore_unavailable" },
-        { provider: "boat", enabled: false, reason: "boat_native_checkpoint_restore_unavailable" },
+        { provider: "boat", enabled: false, reason: "server_setting_off" },
+        { provider: "boat", enabled: false, reason: "server_setting_off" },
         { provider: "modal", harness: "claude", enabled: false, reason: "native_resume_driver_unavailable" },
         { provider: "modal", harness: "codex", enabled: true, reason: null },
       ],

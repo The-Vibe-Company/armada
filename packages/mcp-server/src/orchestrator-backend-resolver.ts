@@ -24,9 +24,10 @@ import type { ManagedMachine, ManagedNativeBackend, ManagedSelection } from "./o
 import type { OrchestratorRuntimeBackend, OrchestratorRuntimeOptions } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError, type RuntimeIdentity } from "./orchestrator-runtime-store.ts";
 
-/** A real native adapter is mandatory; missing provider/harness entries are unavailable,
- * never a fallback to another harness/provider or a declared resume capability bit. */
+/** A concrete adapter is mandatory; Boat declares best-effort explicitly. Missing
+ * entries never fall back to another harness/provider or a capability bit. */
 export interface OrchestratorNativeAdapter {
+  readonly continuity?: "best_effort";
   assertPrerequisites(provider: Provider, golden: GoldenRecord, configuration: OrchestratorCreate): Promise<void>;
   resumeWithoutText?(provider: Provider, identity: RuntimeIdentity, operationId: string): Promise<void>;
   managed(provider: Provider, machine: ManagedMachine, selection: ManagedSelection): ManagedNativeBackend;
@@ -162,6 +163,7 @@ export function createOrchestratorBackendResolver(input: {
     const resume = adapter.resumeWithoutText?.bind(adapter);
     const backend: OrchestratorRuntimeBackend = {
       provider,
+      ...(adapter.continuity ? { continuity: adapter.continuity } : {}),
       selection: choice,
       projectDir: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
       mcpUrl: input.mcpUrl,

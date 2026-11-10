@@ -23,16 +23,19 @@ export function orchestratorCapabilities(
   const pairs = PAIRS.map((pair) => {
     const [provider, harness] = pair.split(":");
     const selected = requested.includes(pair);
-    const enabled = selected && pair === "modal:codex" && available.includes(pair);
+    const enabled = selected && (provider === "boat" || pair === "modal:codex") && available.includes(pair);
     return {
       provider,
       harness,
       requested: selected,
       enabled,
+      continuity: provider === "boat" ? ("best_effort" as const) : ("native" as const),
       reason: enabled
         ? null
         : provider === "boat"
-          ? "boat_native_checkpoint_restore_unavailable"
+          ? !selected
+            ? "server_setting_off"
+            : "production_runtime_unavailable"
           : harness === "claude"
             ? "native_resume_driver_unavailable"
             : !selected

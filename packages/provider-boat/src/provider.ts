@@ -158,7 +158,15 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
 }
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
-export function createBoatProvider(options: BoatProviderOptions): Provider {
+export interface BoatProvider extends Provider {
+  /** Ordinary VM activation only. Does not restore or verify a native harness session. */
+  resumeBestEffort(sandboxId: string): Promise<void>;
+  conversations(
+    sandboxId: string,
+  ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
+}
+
+export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
   const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const api = new BoatApi(
@@ -185,7 +193,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     return sandboxInfo(response.sandbox);
   }
 
-  const provider: Provider = {
+  const provider: BoatProvider = {
     id: PROVIDER_ID,
     harnesses: ["claude", "codex"],
     capabilities: BOAT_CAPABILITIES,
@@ -340,6 +348,30 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       );
       if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
       return sandboxInfo(response.sandbox);
+    },
+
+    async resumeBestEffort(sandboxId: string): Promise<void> {
+      const signal = AbortSignal.timeout(150_000);
+      // Only the trusted managed adapter calls this port after its own owner,
+      // account and operation fence. Ordinary MCP resume hooks deliberately hide
+      // managed parents; managed MCP is prepared by that adapter after activation.
+      await call(() => api.resume({ sandboxId }, { signal }));
+      let info = await provider.get(sandboxId, { signal });
+      for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
+        signal.throwIfAborted();
+        await sleep(1000);
+        info = await provider.get(sandboxId, { signal });
+      }
+      if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
+    },
+    async conversations(sandboxId: string) {
+      const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
+      return response.conversations.map(({ id, running, lastHarness, lastModel }) => ({
+        id,
+        running,
+        lastHarness,
+        lastModel,
+      }));
     },
 
     async list(request: ListRequest = {}): Promise<Page<SandboxInfo>> {
