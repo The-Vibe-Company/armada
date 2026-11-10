@@ -183,7 +183,7 @@ async function main() {
     resumed.sandboxId !== before.sandboxId ||
     resumed.continuity !== (provider === "boat" ? "unverified" : "native")
   )
-    fail("unexpected_continuity_or_identity");
+    fail(provider === "boat" ? "unexpected_continuity_or_identity" : "native_continuity_not_verified");
   await settle(await mutate("stop"), "stopped");
   step = "complete";
 }
