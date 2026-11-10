@@ -374,7 +374,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       // Read the raw acceptance so the exact operation fence is not discarded.
       const response = await call(async () => {
         const accepted = await api.stopRaw({ sandboxId }, { signal });
-        return (await accepted.raw.json()) as { id?: string; stop?: { id?: string }; sandbox?: { stop?: { id?: string } } };
+        return (await accepted.raw.json()) as {
+          id?: string;
+          stop?: { id?: string };
+          sandbox?: { stop?: { id?: string } };
+        };
       });
       if (response.id !== sandboxId) throw unexpectedAnswer("stop operation");
       const stopId = response.stop?.id ?? response.sandbox?.stop?.id;

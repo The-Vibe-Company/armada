@@ -229,3 +229,26 @@ Boat parents use ordinary archival, not Modal native checkpoints. Their continui
 must remain `unverified` after resume. The owner lifecycle regression must boot
 `startServer` without substituting the orchestrator factory and drive the CLI;
 backend-only fakes cannot validate the provider hooks installed by production.
+
+An owner can retire a Boat parent blocked by an uncertain stop, including after
+resume. Read detail first and use that revision with a fresh recovery key:
+
+```sh
+armada orchestrator detail ID --org ORG --json
+armada orchestrator recover ID --org ORG --expected-revision REVISION \
+  --idempotency-key RETIREMENT_KEY --json
+```
+
+Use the same key and original revision to retry an uncertain retirement. Recovery
+confirms ordinary archival and publishes `stopped`, but permanently fences resume;
+it does not claim conversation continuity or reactivate compute. This also covers
+the #763 smoke parents `d31da303-bb66-4959-9a93-59366d9fdc4c` and
+`96f80008-d49f-423c-b468-f7d6c48db77d` (their reported blocked revision was 3;
+read current detail rather than assuming it is unchanged).
+
+A successful send receipt proves Boat accepted the prompt, not that a harness
+started it. If events stay empty, retain sanitized prompt ID, conversation ID,
+Boat prompt status and provider event response/cursor for diagnosis. Never include
+credentials or guest output containing secrets. The production-composition test
+proves request dispatch, event publication and reconnect against documented Boat
+responses; it cannot explain an upstream accepted-but-never-delivered turn.
