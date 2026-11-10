@@ -67,15 +67,40 @@ if (process.argv.includes("--parent")) {
   let restricted = false;
   const fixtureHome = mkdtempSync(join(tmpdir(), "checkpoint-home-"));
   const wrapper = join(fixtureHome, "signal-policy");
+  // A persistent root platform exec service exists before admission. Its late
+  // root child is not an Armada writer and may ignore in-sandbox signals.
+  const platform = Bun.spawn(
+    [
+      bun,
+      "-e",
+      `import {createInterface} from 'node:readline';
+const children=new Map();createInterface({input:process.stdin}).on('line',async line=>{const request=JSON.parse(line);let child;
+if(request.kill){child=children.get(request.kill);child.kill('SIGKILL');await child.exited;console.log(JSON.stringify({pid:request.kill}));return;}
+if(request.writer){child=Bun.spawn(['setpriv','--bounding-set=-sys_ptrace,-net_raw',process.execPath,'-e',"import {openSync} from 'node:fs';const fd=openSync("+JSON.stringify(request.writer)+",'w');console.log('ready');setInterval(()=>{},1000)"],{stdin:'ignore',stdout:'pipe',stderr:'ignore'});await child.stdout.getReader().read();}
+else child=Bun.spawn(request.session?['setsid','/bin/sleep','600']:['/bin/sleep','600'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});
+children.set(child.pid,child);console.log(JSON.stringify({pid:child.pid}));});`,
+    ],
+    { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { PATH: process.env.PATH, HOME: fixtureHome } },
+  );
+  const platformReader = platform.stdout.getReader();
+  async function platformChild(writer?: string, session = false, kill?: number): Promise<number> {
+    platform.stdin.write(JSON.stringify({ writer, session, kill }) + "\n");
+    const chunk = await platformReader.read();
+    if (chunk.done) throw Error("Platform control fixture exited");
+    return JSON.parse(new TextDecoder().decode(chunk.value)).pid;
+  }
+  let controlPid = 0,
+    writerPid = 0;
   // Real seccomp, not a controller mock. Native mode denies numeric kill, so a
   // silent fallback cannot masquerade as evidence that the pidfd path works.
   const deniedSyscalls = denyPidfd ? ["__NR_pidfd_open", "__NR_pidfd_send_signal"] : ["__NR_kill"];
-  const compiler = Bun.spawn(["cc", "-x", "c", "-o", wrapper, "-"], {
-    stdin: "pipe",
-    stdout: "ignore",
-    stderr: "inherit",
-  });
-  compiler.stdin.write(`#include <linux/filter.h>
+  async function compilePolicy() {
+    const compiler = Bun.spawn(["cc", "-x", "c", "-o", wrapper, "-"], {
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    compiler.stdin.write(`#include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
@@ -84,17 +109,32 @@ if (process.argv.includes("--parent")) {
 #include <errno.h>
 int main(int argc,char **argv){struct sock_filter code[]={
 BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+${[controlPid, writerPid]
+  .filter(Boolean)
+  .map(
+    (pid) => `BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_kill,0,3),
+BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,args[0])),
+BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,${pid},0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO),
+BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_pidfd_open,0,3),
+BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,args[0])),
+BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,${pid},0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|ENOSYS),
+BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),`,
+  )
+  .join("\n")}
 ${deniedSyscalls.map((syscall) => `BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,${syscall},0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|${denyPidfd ? "ENOSYS" : "EPERM"}),`).join("\n")}
 BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)};struct sock_fprog filter={sizeof(code)/sizeof(code[0]),code};
 if(argc<2||prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)||prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter))return 125;
 execvp(argv[1],argv+1);return 126;}`);
-  compiler.stdin.end();
-  if ((await compiler.exited) !== 0) throw Error("Seccomp fixture compilation failed");
+    compiler.stdin.end();
+    if ((await compiler.exited) !== 0) throw Error("Seccomp fixture compilation failed");
+  }
   let lastInspectionOutput = "";
   const sdk = {
     exec: async (argv: string[]) => {
       // Use the already-built local Bun rather than requiring an installed Modal image.
       let args = argv.map((arg) => (arg === "/opt/armada/runtime-bun/bun" ? bun : arg));
+      if (argv[0] === "/usr/bin/env") args[args.length - 1] = args.at(-1)!.replaceAll("/home/user", fixtureHome);
       if (argv[0] === "bash")
         args = args.map((arg) =>
           arg
@@ -132,6 +172,8 @@ execvp(argv[1],argv+1);return 126;}`);
   } as unknown as Sandbox;
   const machine = { physicalId: "fixture", generation: 1, phase: "booting" } as Machine;
   machine.processBaseline = await captureProcessBaseline(sdk, machine);
+  controlPid = await platformChild();
+  await compilePolicy();
   const lock = join(mkdtempSync(join(tmpdir(), "checkpoint-launcher-")), "runtime.lock");
   const parent = Bun.spawn(
     ["flock", lock, "runuser", "-u", process.env.SUDO_USER ?? "user", "--", bun, import.meta.path, "--parent"],
@@ -200,9 +242,55 @@ execvp(argv[1],argv+1);return 126;}`);
         return false;
       }
     });
-  if (live.length) throw Error("Managed process survived quiescence");
+  if (live.some((pid) => ![String(platform.pid), String(controlPid)].includes(pid)))
+    throw Error("Managed process survived quiescence");
+  if (!live.includes(String(platform.pid)) || !live.includes(String(controlPid)))
+    throw Error("Platform control processes must survive checkpoint");
+  // A detached/adopted root writer must not acquire platform trust merely by
+  // having a root control parent (as when that parent is a subreaper).
+  writerPid = await platformChild(undefined, true);
+  await compilePolicy();
+  try {
+    await prepareFilesystemSnapshot(sdk, { ...machine, golden: false });
+    throw Error("New-session root writer was exempted");
+  } catch (error) {
+    const details = (error as { details?: Record<string, unknown> }).details;
+    if (
+      details?.processCategory !== "privileged_writer" ||
+      details.processRole !== "writer" ||
+      details.processUidClass !== "root" ||
+      details.processSurvivorCount !== 1
+    )
+      throw error;
+  }
+  await platformChild(undefined, false, writerPid);
+  // The same provenance is NOT permission to retain a root writer with a managed FD.
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(join(fixtureHome, ".armada-runtime"), { recursive: true });
+  writerPid = await platformChild(join(fixtureHome, ".armada-runtime", "positive-writer"));
+  await compilePolicy();
+  try {
+    await prepareFilesystemSnapshot(sdk, { ...machine, golden: false });
+    throw Error("Root managed writer was exempted");
+  } catch (error) {
+    const details = (error as { details?: Record<string, unknown> }).details;
+    if (
+      details?.processCategory !== "runtime_or_mcp" ||
+      details.processFailure !== "unproven" ||
+      details.processUidClass !== "root" ||
+      details.processRole !== "platform_control_child" ||
+      details.processManagedState !== "managed" ||
+      details.processSurvivorCount !== 1 ||
+      details.processIsAncestor !== false ||
+      details.processIsPid1 !== false ||
+      details.processCommClass !== "bun"
+    )
+      throw error;
+  }
   writeFileSync(
     "/dev/stdout",
-    `PASS: unreadable PID1 namespaces checkpoint with ${denyPidfd ? "pidfds denied" : "numeric signals denied"}; real survivor classified\n`,
+    `PASS: unreadable PID1 namespaces checkpoint with ${denyPidfd ? "pidfds denied" : "numeric signals denied"}; platform root control survives and root managed writer refuses\n`,
   );
+  // PID1 exit tears down the intentionally retained platform controls in this private namespace.
+  process.exit(0);
 }

@@ -318,33 +318,66 @@ function reason(error: unknown): string {
   return base;
 }
 
-/** The provider transports only closed process categories via exit status. */
-function processFailure(error: unknown): {
-  processCategory?: string;
-  processFailure?: string;
-  processInspection?: string;
-} {
+/** The provider transports only closed process categories and survivor classifications. */
+function processFailure(error: unknown): Record<string, string | number | boolean> {
   try {
     if (!(error instanceof ProviderError)) return {};
-    const category = error.details?.processCategory;
-    const failure = error.details?.processFailure;
-    const inspection = error.details?.processInspection;
-    return typeof category === "string" &&
-      ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
-      ? {
-          processCategory: category,
-          ...(typeof inspection === "string" &&
-          /^(self_namespace|proc_stat|proc_status|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
-            inspection,
-          )
-            ? { processInspection: inspection }
-            : {}),
-          ...(typeof failure === "string" &&
-          ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
-            ? { processFailure: failure }
-            : {}),
-        }
-      : {};
+    const details: unknown = error.details;
+    const read = (field: string): unknown => {
+      try {
+        return details && typeof details === "object" ? Reflect.get(details, field) : undefined;
+      } catch {
+        // One hostile field must not suppress independently readable classifications.
+        return undefined;
+      }
+    };
+    const category = read("processCategory");
+    if (
+      typeof category !== "string" ||
+      !["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
+    )
+      return {};
+    const result: Record<string, string | number | boolean> = { processCategory: category };
+    const classes = ["armada_runner", "codex", "claude", "bun", "node", "ssh", "other", "unreadable"];
+    const allowed: Record<string, readonly string[]> = {
+      processFailure: ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"],
+      processUidClass: ["root", "user", "unknown"],
+      processCommClass: classes,
+      processExeClass: classes,
+      processRole: [
+        "pid1",
+        "scrub_ancestor",
+        "baseline_control",
+        "platform_control_child",
+        "armada_launcher",
+        "kernel_control",
+        "armada_runner",
+        "harness",
+        "writer",
+      ],
+      processStateClass: ["running", "stopped", "blocked", "unknown"],
+      processManagedState: ["managed", "outside", "unreadable"],
+    };
+    for (const [field, values] of Object.entries(allowed)) {
+      const value = read(field);
+      if (typeof value === "string" && values.includes(value)) result[field] = value;
+    }
+    for (const field of ["processIsAncestor", "processIsPid1"]) {
+      const value = read(field);
+      if (typeof value === "boolean") result[field] = value;
+    }
+    const count = read("processSurvivorCount");
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 1 && count <= 4096)
+      result.processSurvivorCount = count;
+    const inspection = read("processInspection");
+    if (
+      typeof inspection === "string" &&
+      /^(self_namespace|proc_stat|proc_status|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
+        inspection,
+      )
+    )
+      result.processInspection = inspection;
+    return result;
   } catch {
     return {};
   }

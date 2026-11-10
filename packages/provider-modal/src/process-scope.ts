@@ -17,14 +17,19 @@ function category(row){
 }
 let survivorCode=40, survivor;
 const roots=["/home/user/.armada-runtime","/home/user/.codex","/home/user/.claude","/home/user/.claude.json"];
-const inside=p=>roots.some(root=>p===root||p.startsWith(root+"/")||p.startsWith(root+" (deleted)"));
+const inside=p=>p.startsWith("/home/user/.claude.json.")||roots.some(root=>p===root||p.startsWith(root+"/")||p.startsWith(root+" (deleted)"));
 function nameClass(name){return ["bun","bun.exe"].includes(name)?"bun":name==="node"?"node":name==="codex"?"codex":name==="claude"?"claude":["sshd","sshd-session","sshd-auth"].includes(name)?"ssh":"other";}
 function names(row){
-  let comm="unreadable",exe="unreadable",runner=false;
+  let comm="unreadable",exe="unreadable",runner=false,launcher=false;
+  const main="/opt/armada/main.js",bun="/opt/armada/runtime-bun/bun",runuser=["/usr/sbin/runuser","-u","user","--",bun,main];
+  const flock=["/usr/bin/flock","--nonblock","--conflict-exit-code","73","/run/armada-runtime.lock","/usr/bin/env","-i","PATH=/usr/local/bin:/usr/bin:/bin","HOME=/home/user",...runuser];
   try{comm=nameClass(readFileSync("/proc/"+row.pid+"/comm","utf8").trim());}catch{}
   try{exe=nameClass(readlinkSync("/proc/"+row.pid+"/exe").replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch{}
-  if(comm==="bun"||exe==="bun")try{runner=readFileSync("/proc/"+row.pid+"/cmdline","utf8").split("\0").includes("/opt/armada/main.js");}catch{}
-  return {comm,exe,runner,owned:runner||[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
+  try{const args=readFileSync("/proc/"+row.pid+"/cmdline","utf8").split("\0");if(args.at(-1)==="")args.pop();
+    runner=(comm==="bun"||exe==="bun")&&args.includes(main);
+    launcher=[runuser,flock].some(expected=>args.length===expected.length&&expected.every((arg,i)=>args[i]===arg));
+  }catch{}
+  return {comm,exe,runner,launcher,owned:runner||[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
 }
 function managedState(row){
   let unreadable=false;try{if(inside(readlinkSync("/proc/"+row.pid+"/cwd")))return "managed";}catch{unreadable=true;}
@@ -41,11 +46,11 @@ function namespace(){const result={};for(const [key,name] of [["pid","pid"],["mo
 function identity(pid){
   let raw;try{raw=readFileSync("/proc/"+pid+"/stat","utf8");}catch(e){if(e.code==="ENOENT"||e.code==="ESRCH")return;denied("proc_stat",["EACCES","EPERM"].includes(e.code)?e.code:"other");throw Error("process_identity_unreadable");}
   const fields=raw.slice(raw.lastIndexOf(")")+2).split(" ");
-  let uid;try{const status=readFileSync("/proc/"+pid+"/status","utf8");uid=Number(/^Uid:\s+(\d+)\s+(\d+)/m.exec(status)?.[2]);}catch(e){
-    denied("proc_status",["EACCES","EPERM"].includes(e.code)?e.code:"other");uid=statSync("/proc/"+pid).uid;
+  let uid,uidKnown=true;try{const status=readFileSync("/proc/"+pid+"/status","utf8");uid=Number(/^Uid:\s+(\d+)\s+(\d+)/m.exec(status)?.[2]);}catch(e){
+    denied("proc_status",["EACCES","EPERM"].includes(e.code)?e.code:"other");uid=statSync("/proc/"+pid).uid;uidKnown=false;
   }
   if(!Number.isSafeInteger(uid)||!/^\d+$/.test(fields[19]??"")||!/^\d+$/.test(fields[1]??""))throw Error("process_identity_invalid");
-  return {pid,start:fields[19],parent:Number(fields[1]),state:fields[0],uid};
+  return {pid,start:fields[19],parent:Number(fields[1]),state:fields[0],uid,uidKnown,session:fields[3],kernel:(Number(fields[6])&0x00200000)!==0};
 }
 function all(){return readdirSync("/proc").filter(x=>/^\d+$/.test(x)).map(x=>{try{return identity(Number(x));}catch(e){try{readFileSync("/proc/"+x+"/stat");}catch(check){if(check.code==="ENOENT"||check.code==="ESRCH")return;throw e;}throw e;}}).filter(Boolean);}
 const ns=namespace();
@@ -71,28 +76,34 @@ if(input.op==="capture"){
   function role(row){
     if(row.pid===1&&controls.get(1)===row.start)return "pid1";
     if(ancestry.get(row.pid)===row.start)return "scrub_ancestor";
+    if(row.uid===0&&row.kernel)return "kernel_control";
+    if(controls.get(row.pid)===row.start)return "baseline_control";
     const known=names(row);
     if(known.runner)return "armada_runner"; // It still owns journal descriptors: must terminate.
     if(known.owned)return "harness";
-    if(controls.get(row.pid)===row.start)return "baseline_control";
-    if(row.uid!==0)return "writer";
+    if(row.uid!==0||!row.uidKnown)return "writer";
     const seen=new Set([row.pid]);let parent=row;
     for(let depth=0;depth<128;depth++){
       if(parent.parent<=1||seen.has(parent.parent))break;
       parent=identity(parent.parent);if(!parent||parent.uid!==0)break;
       seen.add(parent.pid);
+      if(!parent.uidKnown&&controls.get(parent.pid)!==parent.start&&ancestry.get(parent.pid)!==parent.start)break;
       if(names(parent).owned)break;
-      if(controls.get(parent.pid)===parent.start||ancestry.get(parent.pid)===parent.start)return "platform_control_child";
+      if(controls.get(parent.pid)===parent.start||ancestry.get(parent.pid)===parent.start){
+        if(known.launcher)return "armada_launcher";
+        if(row.session===parent.session)return "platform_control_child";
+        break;
+      }
     }
     return "writer";
   }
   function excluded(row){
     const kind=role(row);
-    if(kind==="pid1"||kind==="scrub_ancestor")return true;
-    return ["baseline_control","platform_control_child"].includes(kind)&&managedState(row)!=="managed";
+    if(kind==="pid1"||kind==="scrub_ancestor"||kind==="kernel_control")return true;
+    return ["baseline_control","platform_control_child","armada_launcher"].includes(kind)&&managedState(row)!=="managed";
   }
   function describe(rows){const row=rows[0],known=names(row);return {
-    processUidClass:row.uid===0?"root":"user",processIsAncestor:ancestry.get(row.pid)===row.start,processIsPid1:row.pid===1,
+    processUidClass:row.uidKnown?(row.uid===0?"root":"user"):"unknown",processIsAncestor:ancestry.get(row.pid)===row.start,processIsPid1:row.pid===1,
     processCommClass:known.comm,processExeClass:known.exe,processRole:role(row),processSurvivorCount:Math.min(rows.length,4096),
     processStateClass:["T","t"].includes(row.state)?"stopped":row.state==="D"?"blocked":["R","S","I"].includes(row.state)?"running":"unknown",
     processManagedState:managedState(row),
@@ -166,6 +177,8 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
           "scrub_ancestor",
           "baseline_control",
           "platform_control_child",
+          "armada_launcher",
+          "kernel_control",
           "armada_runner",
           "harness",
           "writer",
