@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { IDS, MOCK, openLaunch, reset, signIn } from "./helpers";
+import { IDS, leaveCreate, MOCK, openLaunch, reset, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
@@ -24,7 +24,10 @@ const panelOf = (page: Page, name: string) => page.locator(`[data-connection-pan
 /** Selects a connection's row, unless its panel already shows, and returns the panel. */
 async function panel(page: Page, name: string) {
   const open = panelOf(page, name);
-  if (!(await open.isVisible())) await card(page, name).locator("[data-select-item]").click();
+  if (!(await open.isVisible())) {
+    await leaveCreate(page);
+    await card(page, name).locator("[data-select-item]").click();
+  }
   await expect(open).toBeVisible();
   return open;
 }
@@ -97,6 +100,7 @@ for (const mobile of [false, true]) {
     const dialog = await openAdd(page);
     await expect(dialog.getByLabel("Authentication")).toHaveValue("auto");
     await expect(dialog.getByRole("option", { name: "Auto-detect (recommended)" })).toHaveCount(1);
+    await dialog.scrollIntoViewIfNeeded();
     await expect(dialog).toBeInViewport();
     await page.screenshot({
       path: `test-results/connections-add-${mobile ? "mobile" : "desktop"}.png`,
@@ -547,7 +551,10 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   );
   await expect(notion.getByRole("button", { name: "Continue to Notion" })).toHaveCount(0);
   await notion.locator("[data-service-outcome]").getByRole("button", { name: "Close" }).click();
+  await expect(notion).toBeHidden();
+  await leaveCreate(page);
   await expect(card(page, "Notion").getByRole("button", { name: "Connect Notion" })).toBeVisible();
+  await openServices(page);
   await services.getByRole("button", { name: "Connect another Notion account" }).click();
   await expect(notion.getByLabel("Name")).toHaveValue("Notion 2");
   await expect(notion.getByRole("alert")).toHaveCount(0);

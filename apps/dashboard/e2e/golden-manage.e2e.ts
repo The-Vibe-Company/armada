@@ -359,7 +359,8 @@ test("with only Boat connected, Boat is used without a choice and a forged Modal
   await expect(page.locator('[data-capacity-provider="boat"][data-capacity="available"]')).toContainText("0 of 1");
 
   const form = await openCreate(page);
-  await expect(form.locator('[data-provider-fixed="boat"]')).toContainText("Provider: Boat");
+  await expect(form.locator('[data-provider-fixed="boat"]')).toContainText("Boat");
+  await expect(form.locator('[data-provider-fixed="boat"] [data-permanent]')).toHaveText("Cannot be changed later");
   await expect(form.locator("[data-provider-choice]")).toHaveCount(0);
   await form.getByLabel("Name").fill("nova-docs");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/docs");
@@ -576,7 +577,8 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   // The build finishes; this tab's poll revalidates the page, which re-renders in place for Zenith (same URL).
   await post("/__test/golden-release");
   await page.clock.runFor(2_500);
-  await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
+  // The create view stays open over the re-rendered list, which now holds Zenith's golden.
+  await expect(page.locator('[data-golden="zenith-golden"]')).toBeAttached();
   expect(page.url()).toBe(tracked);
   await openCreate(page);
   // Zenith's create form starts clean: no Acme job, unlocked, nothing to recover.

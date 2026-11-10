@@ -55,12 +55,23 @@ export function goldenRow(page: Page, name: string, provider?: "boat" | "modal")
 /** Selects an environment's row, unless its detail panel already shows, and returns the panel. */
 export async function goldenPanel(page: Page, name: string, provider?: "boat" | "modal"): Promise<Locator> {
   const panel = page.locator(`[data-golden-panel="${name}"]${provider ? `[data-golden-provider="${provider}"]` : ""}`);
-  if (!(await panel.isVisible())) await goldenRow(page, name, provider).locator("[data-select-item]").click();
+  if (!(await panel.isVisible())) {
+    await leaveCreate(page);
+    await goldenRow(page, name, provider).locator("[data-select-item]").click();
+  }
   await expect(panel).toBeVisible();
   return panel;
 }
 
-/** Opens the New panel, and its form when Boat is full and it starts folded; returns the create form. */
+/** Goes back from the create view to the list, when the create view shows. */
+export async function leaveCreate(page: Page): Promise<void> {
+  const view = page.locator("[data-create-view]");
+  if (!(await view.isVisible())) return;
+  await view.getByRole("button", { name: /^Back to / }).click();
+  await expect(view).toBeHidden();
+}
+
+/** Opens the create view, and its form when Boat is full and it starts folded; returns the create form. */
 export async function openCreate(page: Page): Promise<Locator> {
   const form = page.locator('form[data-golden-form="create"]');
   if (!(await page.locator('[data-panel="new"]').isVisible()))

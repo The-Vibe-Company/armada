@@ -381,7 +381,7 @@ function CreatePanel({
       </p>
     );
   return (
-    <div className="space-y-4" data-create-golden={discouraged ? "discouraged" : "open"}>
+    <div className="space-y-3" data-create-golden={discouraged ? "discouraged" : "open"}>
       {discouraged && (
         <Alert className="border-warning/40" data-boat-full>
           <LayersIcon className="text-warning" />
@@ -407,17 +407,17 @@ function CreatePanel({
         </Alert>
       )}
       {!githubConnected && (
-        <Alert>
+        <Alert className="py-2">
           <InfoIcon />
-          <AlertTitle>GitHub is not connected</AlertTitle>
-          <AlertDescription>
-            <Link className="underline underline-offset-4" href="/settings">
+          <AlertTitle className="flex flex-wrap gap-x-2">
+            GitHub is not connected
+            <Link className="font-normal underline underline-offset-4" href="/settings">
               Connect GitHub in Settings
             </Link>
-          </AlertDescription>
+          </AlertTitle>
         </Alert>
       )}
-      <Disclosure summary="Show the create form" defaultOpen={!discouraged}>
+      <Disclosure summary="Show the create form" defaultOpen={!discouraged} quiet={!discouraged}>
         <GoldenForm
           mode="create"
           orgId={org.org.id}

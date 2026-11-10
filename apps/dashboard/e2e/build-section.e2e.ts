@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { goldenPanel, goldenRow, MOCK, openCreate, reset, signIn } from "./helpers";
 
-/** The #808 skeleton shared by Environments and Tools: strip, sorted list, panel (a sheet on a phone), New. */
+/** The #808 skeleton shared by Environments and Tools: strip, sorted list, panel (a sheet on a phone), New (#898). */
 
 const ALICE_PRIVATE = "00000000-0000-4000-8000-000000000021";
 
@@ -54,13 +54,52 @@ test("keyboard: a row is focusable, Enter opens its panel, Escape closes it and 
   await expect(select).toBeFocused();
   await expect(page).not.toHaveURL(/[?&]item=/);
 
-  // New opens the create form in the same panel.
+  // New opens the create view; Escape goes back to the list.
   await page.getByRole("button", { name: "New", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Create a golden" })).toBeFocused();
   await openCreate(page);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+  await expect(select).toBeVisible();
 });
+
+for (const mobile of [false, true]) {
+  test(`New replaces the list with the create view instead of a side panel (${mobile ? "phone" : "laptop"})`, async ({
+    page,
+  }) => {
+    // A laptop screen, and a Boat with room: no full-capacity notice above the form.
+    const width = mobile ? 390 : 1366;
+    await page.setViewportSize({ width, height: mobile ? 844 : 768 });
+    await fetch(`${MOCK}/__test/capabilities`, { method: "POST", body: JSON.stringify({ maxGoldens: null }) });
+    await signIn(page, "alice@example.com", "/environments");
+    const view = page.locator("[data-create-view]");
+    await expect(view).toBeHidden();
+    const form = await openCreate(page);
+    await expect(page).toHaveURL(/[?&]item=new/);
+    // No panel and no sheet: the list and its footer step aside; the form is the page.
+    await expect(page.locator("#resource-panel")).toBeHidden();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("[data-golden]").first()).toBeHidden();
+    await expect(page.locator("[inert]")).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    // The one choice nothing changes later says so beside it.
+    await expect(form.locator("[data-permanent]")).toHaveText("Cannot be changed later");
+    await page.screenshot({
+      path: `test-results/environments-create-${mobile ? "mobile" : "desktop"}.png`,
+      fullPage: true,
+    });
+    if (!mobile) await expect(form.getByRole("button", { name: "Build golden" })).toBeInViewport();
+
+    // A reload keeps the view; Back returns to the list with the focus on New.
+    await page.reload();
+    await expect(view).toBeVisible();
+    await view.getByRole("button", { name: "Back to environments" }).click();
+    await expect(view).toBeHidden();
+    await expect(page).not.toHaveURL(/[?&]item=/);
+    await expect(page.locator("[data-golden]").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+  });
+}
 
 test("a long list offers a filter by name, provider or repository", async ({ page }) => {
   await large();

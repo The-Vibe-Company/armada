@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, PlusIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import {
   type ComponentProps,
@@ -24,11 +24,12 @@ import { cn } from "@/lib/utils";
 /**
  * The skeleton every Build page shares (#808): the readiness strip on top, one dense list (a row per item, its
  * state and its one expected action), a detail panel on the right for everything rare (a sheet on a phone), and
- * one New button that opens the create form in that same panel. The page renders each row's cells and panel on
- * the server; this component only chooses which panel shows.
+ * one New button. New does not open that panel: it turns the page into a create view (#898), the form alone at a
+ * readable width with a way back, so creating never squeezes the list or scrolls a narrow column. The page renders
+ * each row's cells and panel on the server; this component only chooses what shows.
  *
- * Every panel stays mounted, hidden when another is selected: a form that follows a build keeps its state while
- * the person looks at another row.
+ * Every panel and the create view stay mounted, hidden when not selected: a form that follows a build keeps its
+ * state while the person looks at another row.
  */
 export type ResourceRow = {
   /** Stable and unique: the panel key and the `?item=` value. */
@@ -103,7 +104,9 @@ export function ResourceBrowser({
   const selected = chosen !== null && valid(chosen) ? chosen : null;
   const [query, setQuery] = useState("");
   const titleRef = useRef<HTMLHeadingElement>(null);
-  const opener = useRef<string | null>(null);
+  const createTitleRef = useRef<HTMLHeadingElement>(null);
+  // What gets the focus back on close: the row or New that opened it, or, for the first render's, its own.
+  const opener = useRef<string | null>(initial);
 
   const select = useCallback(
     (key: string | null) => {
@@ -115,7 +118,7 @@ export function ResourceBrowser({
       window.history.replaceState(null, "", url);
       if (next !== null) {
         opener.current = next;
-        requestAnimationFrame(() => titleRef.current?.focus());
+        requestAnimationFrame(() => (next === NEW_ITEM ? createTitleRef : titleRef).current?.focus());
       } else if (opener.current) {
         const back = opener.current;
         opener.current = null;
@@ -127,7 +130,7 @@ export function ResourceBrowser({
     [valid],
   );
 
-  // Escape closes the panel, unless a dialog opened from it is the one being closed.
+  // Escape closes the panel or the create view, unless a dialog opened from it is the one being closed.
   useEffect(() => {
     if (selected === null) return;
     function onKey(event: KeyboardEvent) {
@@ -141,14 +144,13 @@ export function ResourceBrowser({
   }, [selected, select]);
 
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
-  const current = selected === NEW_ITEM ? null : (rows.find((row) => row.key === selected) ?? null);
-  const panelTitle = selected === NEW_ITEM ? create?.title : current?.name;
-  const panelSubtitle = selected === NEW_ITEM ? create?.subtitle : current?.subtitle;
+  const creating = selected === NEW_ITEM;
+  const current = creating ? null : (rows.find((row) => row.key === selected) ?? null);
   const filterId = useId();
   const context = useMemo(() => ({ select, selected }), [select, selected]);
   // Below the lg breakpoint the panel is a sheet over the list: a modal dialog, the list behind it inert.
   const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
-  const sheet = selected !== null && !wide;
+  const sheet = current !== null && !wide;
   const panelRef = useRef<HTMLElement>(null);
   // As a sheet, the panel is a modal dialog that keeps Tab inside; beside the list, a plain landmark.
   useEffect(() => {
@@ -170,8 +172,8 @@ export function ResourceBrowser({
         {create && (
           <Button
             onClick={() => select(NEW_ITEM)}
-            aria-expanded={selected === NEW_ITEM}
-            aria-controls="resource-panel"
+            aria-expanded={creating}
+            aria-controls="resource-create"
             data-select-item={NEW_ITEM}
           >
             <PlusIcon /> {create.label}
@@ -180,10 +182,47 @@ export function ResourceBrowser({
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
+      {create && (
+        <section
+          id="resource-create"
+          aria-labelledby="resource-create-title"
+          hidden={!creating}
+          data-create-view
+          className="mx-auto w-full max-w-4xl rounded-xl border bg-card shadow-xs"
+        >
+          <div className="flex items-start gap-2 border-b px-3 py-3 sm:px-4">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
+              onClick={() => select(null)}
+              aria-label={`Back to ${label.toLowerCase()}`}
+              title={`Back to ${label.toLowerCase()}`}
+            >
+              <ArrowLeftIcon />
+            </Button>
+            <div className="min-w-0 space-y-0.5 pt-0.5">
+              <h2
+                id="resource-create-title"
+                ref={createTitleRef}
+                tabIndex={-1}
+                className="text-base font-semibold tracking-tight outline-none"
+              >
+                {create.title}
+              </h2>
+              {create.subtitle && <div className="text-sm text-muted-foreground">{create.subtitle}</div>}
+            </div>
+          </div>
+          <div className="px-4 py-4 sm:px-6 sm:py-5" data-panel={NEW_ITEM}>
+            {create.content}
+          </div>
+        </section>
+      )}
       <div
+        hidden={creating}
         className={cn(
           "grid items-start gap-4",
-          selected !== null && "lg:grid-cols-[minmax(0,1fr)_minmax(22rem,26rem)] xl:grid-cols-[minmax(0,1fr)_28rem]",
+          current !== null && "lg:grid-cols-[minmax(0,1fr)_minmax(22rem,26rem)] xl:grid-cols-[minmax(0,1fr)_28rem]",
         )}
       >
         <div className="@container min-w-0 space-y-3" inert={sheet}>
@@ -225,7 +264,7 @@ export function ResourceBrowser({
           id="resource-panel"
           ref={panelRef}
           aria-labelledby="resource-panel-title"
-          hidden={selected === null}
+          hidden={current === null}
           className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:sticky lg:top-6 lg:z-auto lg:max-h-[calc(100dvh-3rem)] lg:rounded-xl lg:bg-card lg:shadow-xs"
         >
           <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
@@ -236,20 +275,15 @@ export function ResourceBrowser({
                 tabIndex={-1}
                 className="truncate text-base font-semibold tracking-tight outline-none"
               >
-                {panelTitle}
+                {current?.name}
               </h2>
-              {panelSubtitle && <div className="text-xs text-muted-foreground">{panelSubtitle}</div>}
+              {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
             </div>
             <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
               <XIcon />
             </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
-            {create && (
-              <div hidden={selected !== NEW_ITEM} data-panel={NEW_ITEM}>
-                {create.content}
-              </div>
-            )}
             {rows.map((row) => (
               <div key={row.key} hidden={selected !== row.key} data-panel={row.key} {...row.panelAttrs}>
                 {row.detail}
@@ -257,7 +291,7 @@ export function ResourceBrowser({
             ))}
           </div>
         </aside>
-        {selected !== null && (
+        {current !== null && (
           <button
             type="button"
             tabIndex={-1}
