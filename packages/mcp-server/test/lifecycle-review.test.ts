@@ -297,7 +297,7 @@ test("manual stop retires an interrupted registration whose exact provider ident
   const provider = createBoatProvider({
     apiKey: "test-key",
     fetch: (async () =>
-      Response.json({ error: { code: "sandbox_not_found", message: "Absent" } }, { status: 404 })) as typeof fetch,
+      Response.json({ error: { code: "sandbox_not_found", message: "Absent" } }, { status: 404 })) as unknown as typeof fetch,
   });
   try {
     await f.insert();
