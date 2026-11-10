@@ -13,7 +13,8 @@ struct PendingBubble: Identifiable, Hashable {
 
     let id: String
     let text: String
-    let intent: ComposerIntent
+    /// What was asked; becomes `.message` when the turn had already ended (#847).
+    var intent: ComposerIntent
     let sentAt: Date
     var status: Status
 }

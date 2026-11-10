@@ -176,7 +176,13 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
                                         operations: [("message", "uncertain", 3, nil)], agentWorking: true)
     #expect(!settling.canMessage && !settling.canSteer && !settling.canStop)
     #expect(settling.open == .init(kind: "message", uncertain: true))
-    #expect(settling.composerNote?.contains("settling") == true)
+    #expect(settling.composerNote?.contains("still checking") == true)
+    // #847: the uncertain state is never a dead end; the note says what the person can do.
+    let unconfirmedSteer = OrchestratorControls(state: "blocked", continuity: "unverified", blockedReason: "runtime_uncertain", revision: 3,
+                                                operations: [("create", "succeeded", 1, nil), ("message", "succeeded", 2, nil),
+                                                             ("steer", "uncertain", 3, "runtime_uncertain")], agentWorking: true)
+    #expect(!unconfirmedSteer.canMessage && !unconfirmedSteer.canSteer)
+    #expect(unconfirmedSteer.composerNote?.contains("start a new orchestrator") == true)
     // Create is asynchronous: never send before it has succeeded.
     let creating = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil, revision: 3,
                                         operations: [("create", "pending", 3, nil)], agentWorking: false)
