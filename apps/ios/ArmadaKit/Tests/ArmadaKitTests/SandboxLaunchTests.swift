@@ -12,11 +12,12 @@ private final class LaunchMemoryStorage: SessionStorage, @unchecked Sendable {
 private actor LaunchTransport: ArmadaTransport {
     struct Reply: Sendable { let status: Int; let body: String }
     private var replies: [Reply]
+    private let offlineWhenEmpty: Bool
     private(set) var requests: [URLRequest] = []
-    init(_ replies: [Reply]) { self.replies = replies }
+    init(_ replies: [Reply], offlineWhenEmpty: Bool = false) { self.replies = replies; self.offlineWhenEmpty = offlineWhenEmpty }
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         requests.append(request)
-        guard !replies.isEmpty else { throw URLError(.timedOut) }
+        guard !replies.isEmpty else { throw URLError(offlineWhenEmpty ? .notConnectedToInternet : .timedOut) }
         let next = replies.removeFirst()
         return (Data(next.body.utf8), HTTPURLResponse(url: request.url!, statusCode: next.status, httpVersion: nil, headerFields: nil)!)
     }
@@ -70,8 +71,8 @@ private func make(_ id: String, kind: String = "claude_oauth", scope: LaunchAcco
     LaunchAccount(id: id, name: id.prefix(4) + "", kind: kind, scope: scope, isDefault: isDefault, status: status, expiresAt: expiresAt)
 }
 
-private func signedIn(_ replies: [LaunchTransport.Reply]) async throws -> (ArmadaClient, LaunchTransport) {
-    let transport = LaunchTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)] + replies)
+private func signedIn(_ replies: [LaunchTransport.Reply], offline: Bool = false) async throws -> (ArmadaClient, LaunchTransport) {
+    let transport = LaunchTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)] + replies, offlineWhenEmpty: offline)
     let client = try ArmadaClient(transport: transport, storage: LaunchMemoryStorage())
     try await client.verifyEmail(email: "person@example.test", code: "123456")
     try await client.selectOrganization("org-a")
@@ -257,19 +258,23 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
         Issue.record("Expected a refusal"); return
     }
     #expect(invalid.detail == "That reasoning effort is not available for model-b. Use one of: low, high.")
-    guard case .refused(let missing) = classify(400, #"{"error":{"code":"missing_credential","message":"Run 'armada creds set claude-oauth'."}}"#) else {
+    // Status and code pairs as the control API answers them (VaultError STATUS, ProviderError).
+    guard case .refused(let missing) = classify(404, #"{"error":{"code":"missing_credential","message":"Run 'armada creds set claude-oauth'."}}"#) else {
         Issue.record("Expected a refusal"); return
     }
     #expect(missing.title == "No model account for this agent")
     #expect(missing.detail == nil)
-    guard case .refused(let usage) = classify(402, #"{"error":{"code":"payment_required","message":"x"}}"#) else {
+    // A provider's non-allocating refusal of the fork arrives as 503 with its code.
+    guard case .refused(let plan) = classify(503, #"{"error":{"code":"payment_required","message":"x"}}"#) else {
         Issue.record("Expected a refusal"); return
     }
-    #expect(usage.title == "Usage limit reached")
+    #expect(plan.title == "Provider plan limit reached")
     guard case .refused(let notConnected) = classify(503, #"{"error":{"code":"provider_not_configured","message":"Modal is not configured."}}"#) else {
         Issue.record("Expected a refusal"); return
     }
     #expect(notConnected.title == "Provider not connected")
+    // `unavailable` is shared by a refused account and a provider outage during the fork: unproven.
+    #expect(classify(503, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmed)
     // After the fork: a sandbox may exist, and its raw output is never shown.
     guard case .failedAfterStart(let setup) = classify(400, #"{"error":{"code":"init_failed","message":"npm ci exited 1: secret-looking output"}}"#) else {
         Issue.record("Expected a failure after start"); return
@@ -293,4 +298,27 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     var draft = SandboxLaunchDraft(catalog: catalog)
     draft.prompt = "Go"
     await #expect(throws: SandboxLaunchFailure.signedOut) { _ = try await client.launchSandbox(try draft.request(catalog: catalog).get()) }
+}
+
+@Test func aLaunchThatNeverLeftTheDeviceIsNotSentRatherThanUnconfirmed() async throws {
+    // Offline: the transport fails before connecting, so the launch was never sent.
+    let offline = try await signedIn([], offline: true)
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.prompt = "Go"
+    let request = try draft.request(catalog: catalog).get()
+    await #expect(throws: SandboxLaunchFailure.notSent) { _ = try await offline.0.launchSandbox(request) }
+
+    // An expired session that cannot be refreshed: nothing reaches the launch route.
+    let expired = #"{"accessToken":"fixture-access","refreshToken":"fixture-refresh","expiresAt":"2000-01-01T00:00:00Z"}"#
+    // Sign-in and the organization read each refresh into another already-expired session.
+    let transport = LaunchTransport([
+        .init(status: 200, body: expired), .init(status: 200, body: expired), .init(status: 200, body: orgs),
+        .init(status: 503, body: "{}")
+    ])
+    let client = try ArmadaClient(transport: transport, storage: LaunchMemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    await #expect(throws: SandboxLaunchFailure.notSent) { _ = try await client.launchSandbox(request) }
+    #expect(await transport.requests.map { $0.url!.path }.last == "/api/v1/auth/refresh")
 }

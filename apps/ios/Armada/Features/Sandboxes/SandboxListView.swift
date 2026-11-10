@@ -108,17 +108,20 @@ struct SandboxListView: View {
             .sheet(isPresented: $showingAccount) {
                 AccountView()
             }
-            .sheet(isPresented: $showingNewSandbox) {
+            .sheet(isPresented: $showingNewSandbox, onDismiss: {
+                // After a launch the next form starts fresh; otherwise it keeps its fields.
+                if newSandbox?.didLaunch == true { newSandbox = nil }
+            }) {
                 if let newSandbox {
                     NewSandboxView(
                         model: newSandbox,
                         onLaunched: { sandbox in
                             showingNewSandbox = false
-                            self.newSandbox = nil
                             launched = sandbox
                             Task { await model?.load() }
                         },
                         onShowList: {
+                            newSandbox.acknowledgeOutcome()
                             showingNewSandbox = false
                             Task { await model?.load() }
                         }

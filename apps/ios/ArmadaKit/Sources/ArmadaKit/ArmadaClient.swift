@@ -116,7 +116,7 @@ public actor ArmadaClient {
         do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org, operations: operations ?? pendingOperations))) }
         catch { throw ArmadaError.secureStorage }
     }
-    private func authority() async throws -> String {
+    func authority() async throws -> String {
         try Task.checkCancellation()
         guard let current = session else { throw ArmadaError.signedOut }
         let formatter = ISO8601DateFormatter()
@@ -209,6 +209,9 @@ public actor ArmadaClient {
         do { (data, response) = try await transport.send(request) }
         catch is CancellationError { throw CancellationError() }
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
+        catch let error as URLError where route == SandboxLaunchRequest.route && SandboxLaunchFailure.neverConnected(error) {
+            throw SandboxLaunchFailure.notSent
+        }
         catch { throw ArmadaError.unavailable }
         try Task.checkCancellation()
         if route == SandboxLaunchRequest.route, response.statusCode != 401, !(200..<300).contains(response.statusCode) {

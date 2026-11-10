@@ -151,8 +151,12 @@ the dashboard use); omitted optionals keep the server defaults.
 `launchSandbox(_:)` has no idempotency key: it is sent once with a ten-minute timeout and
 never retried. `SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the
 form keeps every field), `start_failed`/`init_failed`/`prompt_failed` to
-`failedAfterStart` (a failed sandbox may be listed) and transport failures, 5xx and
-unknown codes to `unconfirmed` (check the list before launching again). Each code selects
+`failedAfterStart` (a failed sandbox may be listed), a provider's non-allocating fork
+refusals (503 `unauthorized`, `payment_required`, `provider_not_configured`,
+`not_found`) to `refused`, a failure before the request leaves the device (offline,
+session refresh) to `notSent`, and lost answers, other 5xx (including `unavailable`,
+shared by a refused account and a provider outage) and unknown codes to `unconfirmed`
+(check the list before launching again). Each code selects
 local text adapted from the dashboard's failure help; only validation codes add the
 server's own message, on one line of at most 300 characters. Sandbox delete is not
 offered: `/api/v1` has no delete route for a sandbox.

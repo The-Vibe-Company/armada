@@ -438,12 +438,20 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     case failedAfterStart(SandboxLaunchRefusal)
     /// The answer was lost: a sandbox may exist. Check the list before launching again.
     case unconfirmed
+    /// Nothing left the device (offline, the session could not be refreshed). Safe to launch again.
+    case notSent
 
-    /// Codes the server answers before any machine is allocated.
+    /// 4xx codes the server answers before any machine is allocated (`LaunchError`, `VaultError`,
+    /// `GoldenError` and a provider's `invalid_request`/`forbidden` refusal of the fork).
     static let preStartCodes: Set<String> = [
         "invalid", "invalid_request", "invalid_config", "no_credentials", "missing_credential", "forbidden",
-        "not_found", "conflict", "payment_required", "usage_limit", "rate_limited", "unauthorized", "auth_expiry",
-        "provider_not_configured", "unavailable",
+        "not_found", "conflict",
+    ]
+    /// Provider refusals of the fork that allocate nothing (`isNonMutatingProviderRefusal` in
+    /// `@armada/core`); the control API answers them with 503. Every other 5xx proves nothing,
+    /// including `unavailable`, which a provider outage during the fork shares with a refused account.
+    static let nonAllocatingServerCodes: Set<String> = [
+        "unauthorized", "payment_required", "provider_not_configured", "not_found",
     ]
     /// Launch steps that fail after the fork (`LaunchError` in `@armada/core`).
     static let postStartCodes: Set<String> = ["start_failed", "init_failed", "prompt_failed"]
@@ -463,7 +471,7 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
         if postStartCodes.contains(code) { return .failedAfterStart(refusal(code: code, message: nil)) }
         // A 5xx is a definite refusal only when its code says nothing was allocated.
         if status >= 500 {
-            guard code == "provider_not_configured" else { return .unconfirmed }
+            guard nonAllocatingServerCodes.contains(code) else { return .unconfirmed }
             return .refused(refusal(code: code, message: envelope?.error.message))
         }
         guard (400..<500).contains(status) else { return .unconfirmed }
@@ -480,26 +488,27 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
         return .unconfirmed
     }
 
+    /// Transport errors raised before a connection was made: the launch was never sent.
+    static func neverConnected(_ error: URLError) -> Bool {
+        [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(error.code)
+    }
+
     static func refusal(code: String, message: String?) -> SandboxLaunchRefusal {
         let detail = detailCodes.contains(code) ? message.flatMap(oneLine) : nil
         let help: (String, String)
         switch code {
-        case "usage_limit", "payment_required":
-            help = ("Usage limit reached", "The account this agent runs on has hit its plan or billing limit. Wait for the limit to reset, or choose another account and launch again.")
-        case "rate_limited":
-            help = ("Rate limited", "The provider is throttling this account. Wait a moment and try again.")
-        case "auth_expiry", "unauthorized":
-            help = ("Credential expired", "The account this agent runs on expired or was revoked. Replace it from the dashboard or the CLI, then launch again.")
+        case "payment_required":
+            help = ("Provider plan limit reached", "The provider refused to start a machine for this plan or billing state. An admin can check the provider account, then launch again.")
+        case "unauthorized":
+            help = ("Provider credential refused", "The provider did not accept the organization's provider credential. An admin reconnects it from the dashboard or the CLI.")
         case "no_credentials", "missing_credential":
             help = ("No model account for this agent", "Neither you nor the organization has an account this agent can use. Add one from the dashboard or the CLI, then launch again.")
         case "provider_not_configured":
             help = ("Provider not connected", "This golden's provider isn't connected for the organization. An admin connects it from the dashboard or the CLI.")
-        case "unavailable":
-            help = ("Can't launch now", "Armada can't use what this launch needs right now, such as the selected account. Check it, then launch again.")
         case "forbidden":
             help = ("Not allowed", "Armada did not let you launch from this golden.")
         case "not_found":
-            help = ("Golden not found", "This golden no longer exists or is no longer visible to you. Refresh the list.")
+            help = ("Not found", "Something this launch names no longer exists or is no longer visible to you, such as the golden or the model account. Pull to refresh the options.")
         case "conflict":
             help = ("Can't launch yet", "Armada can't launch this combination in its current state.")
         case "start_failed":
@@ -556,14 +565,22 @@ extension ArmadaClient {
         return SandboxLaunchCatalog(orgID: org, options: try await options, goldens: try await goldens, accounts: try await accounts)
     }
 
-    /// Launches once. Throws only `SandboxLaunchFailure` or `CancellationError` before sending;
-    /// never retried by this client, because the route has no idempotency key.
+    /// Launches once; never retried by this client, because the route has no idempotency key.
+    /// A failure before the request leaves the device (no organization, no fresh session, offline)
+    /// is `notSent`, `refused` or `signedOut`, never `unconfirmed`.
     public func launchSandbox(_ request: SandboxLaunchRequest) async throws(SandboxLaunchFailure) -> SandboxLaunchReceipt {
         do {
             guard try launchOrganization() == request.org else { throw ArmadaError.forbidden }
         } catch {
             if case .signedOut? = error as? ArmadaError { throw .signedOut }
             throw .refused(SandboxLaunchFailure.refusal(code: "forbidden", message: nil))
+        }
+        do {
+            // Refresh the session first so a refresh failure is known not to have sent the launch.
+            _ = try await authority()
+        } catch {
+            if case .signedOut? = error as? ArmadaError { throw .signedOut }
+            throw .notSent
         }
         let receipt: SandboxLaunchReceipt
         do {

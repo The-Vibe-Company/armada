@@ -21,12 +21,15 @@ final class NewSandboxModel {
         case refused(ArmadaKit.SandboxLaunchRefusal)
         case failedAfterStart(ArmadaKit.SandboxLaunchRefusal)
         case unconfirmed
+        case notSent
     }
 
     private(set) var phase: Phase = .loading
     private(set) var catalog: ArmadaKit.SandboxLaunchCatalog?
     private(set) var launching = false
     private(set) var outcome: Outcome?
+    /// Set once a launch opened a sandbox: the list then starts a fresh form next time.
+    private(set) var didLaunch = false
     var draft: ArmadaKit.SandboxLaunchDraft?
     var customModel = false
 
@@ -57,7 +60,8 @@ final class NewSandboxModel {
             switch error {
             case .signedOut: onSignedOut()
             case .unavailable(let reason): phase = .unavailable(reason)
-            default: phase = .failed(error.message)
+            // A background reload keeps the form it already shows.
+            default: if catalog == nil { phase = .failed(error.message) }
             }
         }
     }
@@ -77,19 +81,22 @@ final class NewSandboxModel {
         launching = true
         defer { launching = false }
         do throws(ArmadaKit.SandboxLaunchFailure) {
-            return try await launcher.launch(request)
+            let sandbox = try await launcher.launch(request)
+            didLaunch = true
+            return sandbox
         } catch {
             switch error {
             case .signedOut: onSignedOut()
             case .refused(let refusal): outcome = .refused(refusal)
             case .failedAfterStart(let refusal): outcome = .failedAfterStart(refusal)
             case .unconfirmed: outcome = .unconfirmed
+            case .notSent: outcome = .notSent
             }
             return nil
         }
     }
 
-    /// After an unconfirmed launch the person checks the list first; Launch stays available after.
+    /// Leaving for the list closes the explanation; the fields stay for the next opening.
     func acknowledgeOutcome() { outcome = nil }
 }
 
@@ -143,7 +150,8 @@ struct NewSandboxView: View {
             }
         }
         .interactiveDismissDisabled(model.launching)
-        .task { if model.catalog == nil { await model.load() } }
+        // Every opening rereads goldens and accounts; the draft is kept.
+        .task { await model.load() }
     }
 
     private func form(_ catalog: ArmadaKit.SandboxLaunchCatalog) -> some View {
@@ -183,6 +191,16 @@ struct NewSandboxView: View {
                 case .failedAfterStart(let refusal):
                     refusalText(refusal)
                     Button("Show Sandboxes", action: onShowList)
+                case .notSent:
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Armada can't be reached")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ArmadaTheme.dangerText)
+                        Text("Nothing was launched. Check your connection, then launch again.")
+                            .font(.footnote)
+                            .foregroundStyle(ArmadaTheme.textSecondary)
+                    }
+                    .accessibilityElement(children: .combine)
                 case .unconfirmed:
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Armada did not confirm this launch")
