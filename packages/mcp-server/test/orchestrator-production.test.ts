@@ -53,7 +53,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     },
     async exec(request) {
       const result = await placement.provider.exec(request);
-      if (request.command.startsWith("skillpack install ")) {
+      if (request.command.includes("skillpack install ")) {
         childPreparation.push("install");
         return { ...result, stdout: catalogLock("codex") };
       }

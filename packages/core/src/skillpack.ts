@@ -61,6 +61,7 @@ export async function installSkill(
   skill: string,
 ): Promise<OrchestratorSkillReceipt> {
   validateSkillPins([skill]);
+  let reason = "skillpack_transport_failed";
   try {
     const commands = {
       installCommand: skillInstallCommand(skill, projectDir, harness),
@@ -72,12 +73,27 @@ export async function installSkill(
       timeoutSeconds: 300,
       command: `${commands.installCommand} >/dev/null && ${commands.receiptCommand}`,
     });
-    if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0)
-      throw new Error("install_failed");
-    return parseSkillReceipt(result.stdout, skill, harness);
+    if (result.detached) reason = "skillpack_process_failed";
+    else if (result.timedOut) reason = "skillpack_timeout";
+    else if (result.truncated) reason = "skillpack_protocol_invalid";
+    else if ([126, 127].includes(result.exitCode ?? 0)) reason = "skillpack_cli_unavailable";
+    else if ([2, 5].includes(result.exitCode ?? 0)) reason = "skillpack_request_rejected";
+    else if ([3, 4, 7].includes(result.exitCode ?? 0)) reason = "skillpack_skill_unavailable";
+    else if (result.exitCode === 6) reason = "skillpack_install_conflict";
+    else if (result.exitCode === 8) reason = "skillpack_registry_unavailable";
+    else if (result.exitCode !== 0) reason = "skillpack_install_nonzero";
+    else {
+      reason = "skillpack_receipt_invalid";
+      return parseSkillReceipt(result.stdout, skill, harness);
+    }
   } catch {
-    throw new Error("Skillpack installation failed: native CLI, public pin or verified receipt unavailable.");
+    // Only the closed classification survives; guest output and provider errors do not.
   }
+  const action =
+    reason === "skillpack_cli_unavailable"
+      ? "Rebuild the golden with armada golden update to provision the native CLI."
+      : "Check the requested public pin, registry access and compatible CLI; see docs/private-skillpack.md.";
+  throw new Error(`Skillpack installation failed: ${reason}. ${action}`);
 }
 function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'";
@@ -86,5 +102,5 @@ function quote(value: string): string {
 export function skillInstallCommand(skill: string, projectDir: string, harness: string): string {
   validateSkillPins([skill]);
   const [reference, version] = skill.split("@");
-  return `skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${harness === "claude" ? "claude-code" : "codex"} --pin --yes --json`;
+  return `export PATH="$PATH:/home/user/.local/bin"; skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${harness === "claude" ? "claude-code" : "codex"} --pin --yes --json`;
 }

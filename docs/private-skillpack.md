@@ -310,9 +310,8 @@ be scoped **only** to `skills:read`; broad keys now return
 `skillpack_scope_refused`. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
 
-The public sandbox-launch error lump introduced by #869 is tracked separately
-in [#904](https://github.com/The-Vibe-Company/armada/issues/904). That integration
-is newer than this branch baseline; this PR does not silently import/rework it.
-Its old snapshots likewise need rebuilding, but its API error projection remains
-a follow-up. An install-stage native usage exit (2) is `skillpack_request_rejected`,
-not a missing CLI; an auth-status usage exit (2) signals an incompatible CLI.
+The public sandbox-launch path now reports the same closed missing-CLI reason
+and `golden update` action, with distinct request/package/registry/receipt/transport
+classifications. It discovers the user-local executable too. Native install-stage
+usage exit (2) is `skillpack_request_rejected`, not a missing CLI; auth-status
+usage exit (2) signals an incompatible CLI.

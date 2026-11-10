@@ -999,7 +999,7 @@ for (const harness of ["claude", "codex"] as const) {
         golden: golden("org"),
         prepare: true,
         exec: (command) => {
-          if (command.startsWith("skillpack install"))
+          if (command.includes("skillpack install"))
             return { exitCode: 0, stdout: catalogLock(harness === "claude" ? "claude-code" : "codex") };
           if (command.startsWith("exclude=")) run("sh", "-c", command);
           return { exitCode: 0 };

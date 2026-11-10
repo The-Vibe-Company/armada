@@ -66,7 +66,7 @@ export function fakeModalRuntime(input: {
       effects.runnerCalls++;
       if (packet.op === "exec" && packet.input?.command?.includes("git rev-parse --git-path info/exclude"))
         effects.skillLaunchOrder.push("exclude");
-      if (packet.op === "exec" && packet.input?.command?.startsWith("skillpack install"))
+      if (packet.op === "exec" && packet.input?.command?.includes("skillpack install"))
         effects.skillLaunchOrder.push("install");
       if (packet.op === "prompt") {
         effects.promptCalls++;
@@ -84,7 +84,7 @@ export function fakeModalRuntime(input: {
             ? preservationFailure === "output_invalid"
               ? "not-json"
               : JSON.stringify({ status: "failed", reason: preservationFailure })
-            : packet.input?.command?.startsWith("skillpack install")
+            : packet.input?.command?.includes("skillpack install")
               ? catalogLock("codex")
               : "",
           stderr: "",
