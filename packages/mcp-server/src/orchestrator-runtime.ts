@@ -559,7 +559,6 @@ export class OrchestratorRuntime {
       skillRevision: identity.skillRevision,
       skill: identity.configuration.skill,
       harness: identity.configuration.harness,
-      expectedReceipt: identity.skillReceipt,
       recordReceipt: async (receipt) => {
         await validate?.();
         await this.options.store.recordSkillReceipt(identity, receipt);
