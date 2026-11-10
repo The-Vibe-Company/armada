@@ -499,7 +499,8 @@ try {
   assert.equal(effects.epochInstalls, 1, "Child must not install a parent epoch.");
   for (const secret of [token.token, modalId, modalSecret, modelSecret, key, ...fake.privateTokens])
     assert(!logs.join("\n").includes(secret));
-  // Ordinary stop must survive every closed collector failure through real serve composition.
+  // Ordinary stop survives collector failure notes and transport/receipt failures.
+  // Archive decryption itself is covered by the core preservation tests, not this fake runner.
   const ordinary = async (action: string, body: object, status = 200) => {
     const response = await socketFetch(`${origin}/api/v1/sandbox/${action}`, {
       method: "POST",

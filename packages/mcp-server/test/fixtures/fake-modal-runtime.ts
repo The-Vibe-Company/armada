@@ -61,6 +61,8 @@ export function fakeModalRuntime(input: {
         token?: string;
       };
       effects.runnerCalls++;
+      const capturing = packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY");
+      if (capturing && preservationFailure === "unavailable") return new Response(null, { status: 503 });
       let result: unknown;
       if (packet.op === "health") result = { generation: vm.grant.generation, ready: true };
       else if (packet.op === "exec")
@@ -68,13 +70,15 @@ export function fakeModalRuntime(input: {
           detached: false,
           exitCode: 0,
           stdout: packet.input?.command?.includes("ARMADA_RECOVERY")
-            ? JSON.stringify({ status: "failed", reason: preservationFailure })
+            ? preservationFailure === "output_invalid"
+              ? "not-json"
+              : JSON.stringify({ status: "failed", reason: preservationFailure })
             : packet.input?.command?.includes("skill install --project")
               ? `Source: https://github.com/The-Vibe-Company/armada/tree/${input.skillRevision}/.agents/skills\n`
               : "",
           stderr: "",
-          timedOut: false,
-          truncated: false,
+          timedOut: !!capturing && preservationFailure === "timeout",
+          truncated: !!capturing && preservationFailure === "output_truncated",
         };
       else if (packet.op === "configureMcp") {
         assert(!vm.epoch, "Generic MCP must prepare before private epoch installation.");
