@@ -3,7 +3,8 @@ import type { Blocker, ResourceState } from "./resource-list.ts";
 import type { Tone } from "./status-tone.ts";
 
 /**
- * The Tools page (#808): one row per MCP connection, then each catalog service nobody added yet. A connection's
+ * The Tools page (#808, #896): one row per MCP connection; the catalog services are offered in a section of their
+ * own. A connection's
  * state comes from the registry; its row action is {@link connectAction}'s, for whoever may manage it.
  */
 export type ToolAction = NonNullable<ReturnType<typeof connectAction>>;
@@ -30,19 +31,28 @@ export function toolState(
   return { bucket: action ? "action" : "rest", tone, label, action };
 }
 
-/** A catalog service with no connection yet: offered at the end of the list, or waiting on the server's setup. */
-export function serviceState(service: Pick<McpCatalogService, "availability">): ResourceState {
-  return service.availability === "available"
-    ? { bucket: "rest", tone: "neutral", label: "Not added" }
-    : { bucket: "rest", tone: "warning", label: "Needs server setup" };
-}
+/**
+ * A catalog service on the Tools page's Services section, its one place (#896): whether it is added, how many of the
+ * viewer's connections came from it, and its one action. Connect adds the first account, Connect another a further
+ * one (connections are independent, so a service can be added once per account); Setup is the server's to do.
+ */
+export type ServiceOffer = {
+  tone: Tone;
+  label: string;
+  /** Connections in the viewer's list created from this service. */
+  count: number;
+  action: "connect" | "another" | "setup";
+};
 
-/** The catalog services no connection was created from: a service already connected is a row of its own. */
-export function unaddedServices<T extends Pick<McpCatalogService, "id">>(
-  services: readonly T[],
+export function serviceOffer(
+  service: Pick<McpCatalogService, "id" | "availability">,
   connections: readonly Pick<McpConnection, "catalogId">[],
-): T[] {
-  return services.filter((service) => !connections.some((connection) => connection.catalogId === service.id));
+): ServiceOffer {
+  const count = connections.filter((connection) => connection.catalogId === service.id).length;
+  if (service.availability !== "available")
+    return { tone: "warning", label: "Needs server setup", count, action: "setup" };
+  if (count === 0) return { tone: "neutral", label: "Not added", count, action: "connect" };
+  return { tone: "success", label: "Added", count, action: "another" };
 }
 
 /** Each connection the viewer can fix, named by its fix ("Reconnect Acme Sentry"); its row's panel holds the button. */

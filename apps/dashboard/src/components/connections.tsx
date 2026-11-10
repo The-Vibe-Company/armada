@@ -4,6 +4,7 @@ import {
   CircleAlertIcon,
   GlobeIcon,
   KeyRoundIcon,
+  LockIcon,
   LogInIcon,
   PencilIcon,
   PlusIcon,
@@ -28,6 +29,7 @@ import {
   updateConnectionMetadata,
 } from "@/app/actions/connections";
 import { SubmitButton } from "@/components/action-form";
+import { StateCell } from "@/components/state-cell";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -68,6 +70,7 @@ import {
   suggestedName,
   transportLabel,
 } from "@/lib/connections";
+import { serviceOffer } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
@@ -126,7 +129,7 @@ const AUTH_CHOICES: { value: ConnectionAuthType; hint: string }[] = [
 type HeaderRow = { key: number; name: string };
 
 /**
- * The custom server form, for anything the catalog does not offer, in the Tools page's New panel. Non-secret fields are controlled, so they survive a refused submission; the
+ * The custom server form, for anything the catalog does not offer, in {@link AddServerDialog}. Non-secret fields are controlled, so they survive a refused submission; the
  * token, header values and client secret are uncontrolled password fields that React empties after every
  * submission, and nothing echoes them back. A success remounts the fields, so the form starts clean.
  */
@@ -145,6 +148,30 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
   );
 }
 
+/**
+ * The Tools page's add flow (#896): a centred dialog over the list rather than a panel beside it, since adding a
+ * server is one short, focused form. Catalog services are not repeated here: each is connected from its card in the
+ * page's Services section. Every opening starts a clean form.
+ */
+export function AddServerDialog({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button data-add-server>
+          <PlusIcon /> Add server
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Add a custom server</DialogTitle>
+          <DialogDescription>Any MCP server by URL, or a command that runs in the sandbox.</DialogDescription>
+        </DialogHeader>
+        <AddConnectionForm orgId={orgId} orgName={orgName} isAdmin={isAdmin} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boolean; result: ActionResult | null }) {
   const [kind, setKind] = useState<Kind>("remote");
   const [scope, setScope] = useState<ConnectionScope>("personal");
@@ -153,52 +180,47 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
   const id = useId();
   const sharedSignIn = scope === "org" && kind === "remote" && (authType === "oauth" || authType === "auto");
 
+  const nameField = (
+    <div className="space-y-2">
+      <Label htmlFor={`${id}-name`}>Name</Label>
+      <Input
+        id={`${id}-name`}
+        name="name"
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        required
+        maxLength={120}
+        autoComplete="off"
+        placeholder={kind === "remote" ? "Internal docs" : "Filesystem"}
+      />
+    </div>
+  );
+
   return (
     <>
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Server</legend>
-        <div className="grid grid-cols-2 gap-2">
-          <ChoiceCard
-            name={`${id}-kind`}
-            checked={kind === "remote"}
-            onChange={() => setKind("remote")}
-            icon={<GlobeIcon />}
-            title="Remote URL"
-            hint="Most servers"
-          />
-          <ChoiceCard
-            name={`${id}-kind`}
-            checked={kind === "stdio"}
-            onChange={() => setKind("stdio")}
-            icon={<TerminalIcon />}
-            title="stdio command"
-            hint="Advanced"
-          />
+      <fieldset className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <legend className="float-left text-sm font-medium">Server</legend>
+        <div className="grid grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-1">
+          <KindOption name={`${id}-kind`} checked={kind === "remote"} onChange={() => setKind("remote")}>
+            <GlobeIcon /> Remote URL
+          </KindOption>
+          <KindOption name={`${id}-kind`} checked={kind === "stdio"} onChange={() => setKind("stdio")}>
+            <TerminalIcon /> stdio command
+          </KindOption>
         </div>
       </fieldset>
 
+      {kind === "remote" ? (
+        <RemoteFields idPrefix={id} authType={authType} onAuthType={setAuthType} lead={nameField} />
+      ) : (
+        <>
+          {nameField}
+          <StdioFields idPrefix={id} onName={(imported) => setName((current) => current || imported)} />
+        </>
+      )}
+
       <input type="hidden" name="scope" value={scope} />
       <ScopeChoice idPrefix={id} scope={scope} onScope={setScope} orgName={orgName} isAdmin={isAdmin} />
-
-      <div className="space-y-2">
-        <Label htmlFor={`${id}-name`}>Name</Label>
-        <Input
-          id={`${id}-name`}
-          name="name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          required
-          maxLength={120}
-          autoComplete="off"
-          placeholder={kind === "remote" ? "Linear" : "Filesystem"}
-        />
-      </div>
-
-      {kind === "remote" ? (
-        <RemoteFields idPrefix={id} authType={authType} onAuthType={setAuthType} />
-      ) : (
-        <StdioFields idPrefix={id} onName={(imported) => setName((current) => current || imported)} />
-      )}
       {sharedSignIn && <SharedIdentityWarning />}
       <DefaultCheckbox idPrefix={id} />
 
@@ -210,6 +232,39 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
   );
 }
 
+/** One side of the Server switch: a native radio drawn as a segment, so arrow keys move between the two. */
+function KindOption({
+  name,
+  checked,
+  onChange,
+  children,
+}: {
+  name: string;
+  checked: boolean;
+  onChange: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <label
+      className={cn(
+        "relative flex cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0",
+        checked
+          ? "bg-background text-foreground shadow-xs dark:bg-input/60"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <input
+        type="radio"
+        name={name}
+        checked={checked}
+        onChange={onChange}
+        className="absolute inset-0 size-full cursor-pointer appearance-none rounded-md opacity-0"
+      />
+      {children}
+    </label>
+  );
+}
+
 /** URL, transport and authentication of a remote server, shared by Add and Edit. */
 function RemoteFields({
   idPrefix: id,
@@ -217,12 +272,15 @@ function RemoteFields({
   initialTransport = "http",
   authType,
   onAuthType,
+  lead,
 }: {
   idPrefix: string;
   initialUrl?: string;
   initialTransport?: string;
   authType: ConnectionAuthType;
   onAuthType: (value: ConnectionAuthType) => void;
+  /** A field beside the URL on a wide screen (Add's name), so the short form needs no scrolling. */
+  lead?: ReactNode;
 }) {
   const [url, setUrl] = useState(initialUrl);
   const [transport, setTransport] = useState(initialTransport);
@@ -232,24 +290,27 @@ function RemoteFields({
   return (
     <>
       <input type="hidden" name="kind" value="remote" />
-      <div className="space-y-2">
-        <Label htmlFor={`${id}-url`}>Server URL</Label>
-        <Input
-          id={`${id}-url`}
-          name="url"
-          type="url"
-          inputMode="url"
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-          required
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="https://mcp.example.com/mcp"
-          aria-describedby={`${id}-url-hint`}
-        />
-        <p id={`${id}-url-hint`} className="text-xs text-muted-foreground">
-          Keys and tokens go in authentication, not the URL.
-        </p>
+      <div className={cn(lead && "grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
+        {lead}
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-url`}>Server URL</Label>
+          <Input
+            id={`${id}-url`}
+            name="url"
+            type="url"
+            inputMode="url"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            required
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="https://mcp.example.com/mcp"
+            aria-describedby={`${id}-url-hint`}
+          />
+          <p id={`${id}-url-hint`} className="text-xs text-muted-foreground">
+            Keys and tokens go in authentication, not the URL.
+          </p>
+        </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">
@@ -551,9 +612,10 @@ export function ServiceMark({ label, className }: { label: string; className?: s
 }
 
 /**
- * The curated services, one tile each. A service the deployment cannot sign in to yet says so and offers its
- * setup guide instead of Connect. A service already connected offers another account: connections are
- * independent, so the same service can be added as many times as there are accounts.
+ * The curated services, one card each, in the Tools page's Services section: the one place a known service is
+ * connected (#896). Each card says where the service stands for the viewer and its one action: Connect, Connect
+ * another account (connections are independent, so a service is added once per account), or, when this Armada
+ * server cannot sign in to it yet, what the server needs and its setup guide.
  */
 export function ServiceCatalog({
   services,
@@ -568,57 +630,60 @@ export function ServiceCatalog({
   orgName: string;
   isAdmin: boolean;
 }) {
+  const taken = connections.map((connection) => connection.name);
   return (
-    <ul className="grid gap-2">
+    <ul className="grid gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
       {services.map((service) => {
-        const count = connections.filter((connection) => connection.catalogId === service.id).length;
-        const ready = service.availability === "available";
+        const offer = serviceOffer(service, connections);
+        const setup = offer.action === "setup";
         return (
           <li
             key={service.id}
             data-service={service.id}
-            className="flex min-w-0 items-center gap-3 rounded-lg border p-3"
+            className="flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
           >
-            <ServiceMark label={service.label} />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">{service.label}</p>
-              <p
-                className={cn("text-xs text-muted-foreground", ready ? "truncate" : "line-clamp-2")}
-                title={ready ? service.url : service.setupMessage}
-              >
-                {!ready
-                  ? (service.setupMessage ?? "Needs setup on this Armada server.")
-                  : count > 0
-                    ? `${count} ${count === 1 ? "connection" : "connections"}`
-                    : hostOf(service.url)}
-              </p>
-            </div>
-            {ready ? (
-              <ConnectServiceDialog
-                service={service}
-                taken={connections.map((connection) => connection.name)}
-                another={count > 0}
-                orgId={orgId}
-                orgName={orgName}
-                isAdmin={isAdmin}
-              />
-            ) : (
-              <div className="flex shrink-0 flex-col items-end gap-1">
-                <Badge variant="outline" className={TONE.warn} data-service-setup>
-                  Setup required
-                </Badge>
-                {service.docsUrl && (
-                  <a
-                    href={service.docsUrl}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                  >
-                    Setup guide
-                  </a>
-                )}
+            <div className="flex min-w-0 items-start gap-3">
+              <ServiceMark label={service.label} />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{service.label}</p>
+                <p className="truncate text-xs text-muted-foreground" title={service.url}>
+                  {hostOf(service.url)}
+                </p>
               </div>
-            )}
+              <StateCell
+                tone={offer.tone}
+                label={offer.label}
+                className="shrink-0"
+                {...(setup ? { "data-service-setup": "" } : {})}
+              />
+            </div>
+            <p className="flex-1 text-sm text-pretty text-muted-foreground">
+              {setup
+                ? (service.setupMessage ?? "Needs setup on this Armada server.")
+                : offer.count > 0
+                  ? `${offer.count} ${offer.count === 1 ? "account" : "accounts"} in your list. Add another for a second identity.`
+                  : `Sign in once; your agents can then use ${service.label} in the sandboxes they launch.`}
+            </p>
+            <div className="flex justify-end">
+              {setup ? (
+                service.docsUrl ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={service.docsUrl} target="_blank" rel="noreferrer noopener">
+                      Setup guide
+                    </a>
+                  </Button>
+                ) : null
+              ) : (
+                <ConnectServiceDialog
+                  service={service}
+                  taken={taken}
+                  another={offer.action === "another"}
+                  orgId={orgId}
+                  orgName={orgName}
+                  isAdmin={isAdmin}
+                />
+              )}
+            </div>
           </li>
         );
       })}
@@ -759,7 +824,12 @@ function ScopeChoice({
 }) {
   return (
     <fieldset className="space-y-2">
-      <legend className="text-sm font-medium">Who uses it</legend>
+      <legend className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm font-medium">
+        Who uses it
+        <span className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-warning [&_svg]:size-3">
+          <LockIcon aria-hidden /> Cannot be changed later
+        </span>
+      </legend>
       <div className="grid gap-2 sm:grid-cols-2">
         <ChoiceCard
           name={`${idPrefix}-scope`}
@@ -779,7 +849,6 @@ function ScopeChoice({
           hint={isAdmin ? "One shared account for every member's sandboxes." : "Only an org admin adds these."}
         />
       </div>
-      <p className="text-xs text-muted-foreground">Cannot be changed later.</p>
     </fieldset>
   );
 }
