@@ -153,7 +153,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       stdout:
         body.command === "cat /proc/sys/kernel/random/boot_id"
           ? boots.get(machine.id)
-          : body.command.startsWith("skillpack install")
+          : body.command.includes("skillpack install")
             ? catalogLock(body.command.includes("claude-code") ? "claude-code" : "codex")
             : "",
       stderr: "",
