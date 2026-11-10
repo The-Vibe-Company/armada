@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { LaunchError, ProviderError, VaultError } from "@armada/core/server";
+import { lifecycleStep, modalError } from "../../provider-modal/src/errors.ts";
 import { OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
 
 test("diagnostics project only safe codes/UUIDs and retain failure identity across cleanup/publication", () => {
@@ -148,9 +149,9 @@ test("Modal lifecycle labels are allowlisted while opaque provider diagnostics s
     );
   }
   expect(lines.map((line) => JSON.parse(line).reason)).toEqual([
-    "provider_conflict_modal_boot_baseline",
-    "provider_conflict_modal_checkpoint_scrub",
-    "provider_conflict_modal_recovery_binding",
+    "provider_conflict_modal_boot_baseline_armada_refusal",
+    "provider_conflict_modal_checkpoint_scrub_armada_refusal",
+    "provider_conflict_modal_recovery_binding_armada_refusal",
     "provider_conflict",
   ]);
   expect(lines.join("\n")).not.toContain("private-provider-detail");
@@ -179,4 +180,25 @@ test("launcher causes expose only normalized codes and bounded data-property met
   safe.report("uncertain", hostile);
   expect(reads).toBe(0);
   expect(lines.join("\n")).not.toContain("private-");
+});
+
+// Transport metadata must survive lifecycle wrapping, without copying upstream payloads.
+test.each([
+  ["AlreadyExistsError", undefined, "provider_conflict_modal_checkpoint_scrub_AlreadyExistsError"],
+  ["ClientError", 6, "provider_unknown_modal_checkpoint_scrub_grpc_grpc_6"],
+  ["private-upstream-class", 6, "provider_unknown_modal_checkpoint_scrub_unknown"],
+] as const)("Modal %s is classified without upstream messages", async (name, code, expected) => {
+  const lines: string[] = [];
+  const upstream = Object.assign(new Error("synthetic-private-upstream-payload"), { name, code });
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "stop");
+  try {
+    await lifecycleStep("modal_checkpoint_scrub", async () => {
+      throw upstream;
+    });
+  } catch (error) {
+    diagnostics.report("uncertain", modalError(error));
+  }
+  expect(JSON.parse(lines[0]!).reason).toBe(expected);
+  expect(lines.join("")).not.toContain("synthetic-private-upstream-payload");
+  expect(lines.join("")).not.toContain("private-upstream-class");
 });

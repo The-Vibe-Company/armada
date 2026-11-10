@@ -979,7 +979,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             code: "conflict",
             providerCode: "modal_checkpoint_identity",
             message: "Native checkpoint requires an exact active parent identity.",
-            retryable: codes[name] === "unavailable",
+            retryable: false,
           });
         const observed = await runner.call<{
           physicalGeneration: string;
@@ -1007,7 +1007,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             code: "conflict",
             providerCode: "modal_checkpoint_observation",
             message: "Native checkpoint lacks quiescence/session/durable event acknowledgement.",
-            retryable: codes[name] === "unavailable",
+            retryable: false,
           });
         row.orchestratorCheckpoint = {
           receipt: {
@@ -1036,7 +1036,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             code: "conflict",
             providerCode: "modal_checkpoint_receipt",
             message: "Native checkpoint evidence changed.",
-            retryable: codes[name] === "unavailable",
+            retryable: false,
           });
         row.orchestratorCheckpoint.receipt = complete;
         await save(row);
