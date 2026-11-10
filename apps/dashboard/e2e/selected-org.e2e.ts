@@ -77,6 +77,8 @@ for (const mobile of [false, true]) {
     await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
     await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
     await page.goto("/credentials");
+    // Streaming briefly holds a hidden copy of the page (React's `S:` template) until it is revealed: wait for one.
+    await expect(page.locator('[data-credentials="user"]')).toHaveCount(1);
     await expect(page.locator('[data-credentials="user"]')).toBeVisible();
     // The org line names the selected org only; its model accounts and providers follow it.
     await expect(page.locator("[data-org-hosting]")).toContainText("Boat and Modal for Zenith");
