@@ -77,8 +77,11 @@ export class Client {
   }
 }
 
+// Percent-encoded (a space is %20, never "+") so names such as "Armada Internal" match exactly.
 function query(params: Record<string, string>): string {
-  return new URLSearchParams(params).toString();
+  return Object.entries(params)
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join("&");
 }
 
 export async function downloadProfile(client: Client, name: string): Promise<{ uuid: string; content: Buffer }> {
