@@ -1,7 +1,9 @@
 import type { Harness } from "./contract.ts";
 import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import type { Provider } from "./provider.ts";
+import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { sshPrivateSkillCommand } from "./ssh-executor.ts";
+import { cleanupGuestKey } from "./ssh-key-cleanup.ts";
 
 export type PrivateSkillFailure =
   | "skillpack_credential_missing"
@@ -27,10 +29,10 @@ export async function installPrivateSkill(
     harness: Harness;
     key: string | null;
   },
-): Promise<OrchestratorSkillReceipt> {
+): Promise<OrchestratorSkillReceipt & { workspaceId: string }> {
   if (!input.key) throw new PrivateSkillError("skillpack_credential_missing");
   if (
-    !/^cmp_pat_[a-f0-9]{48}$/.test(input.key) ||
+    !new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(input.key) ||
     !PRIVATE_SKILL_PATTERN.test(input.reference) ||
     input.reference.length > 256 ||
     !input.projectDir.startsWith("/") ||
@@ -40,7 +42,7 @@ export async function installPrivateSkill(
   const [slug, version] = input.reference.split("@");
   const tool = input.harness === "claude" ? "claude-code" : "codex";
   // Only fixed failure labels or the validated receipt leave the guest. Never forward CLI stderr/stdout.
-  const script = `set +x
+  const script = `${cleanupGuestKey}
 node <<'ARMADA_SKILL_INSTALL'
 const {spawnSync}=require('node:child_process'),fs=require('node:fs');
 const key=process.env.ARMADA_GIT_TOKEN;delete process.env.ARMADA_GIT_TOKEN;
@@ -56,7 +58,7 @@ try{
  const s=JSON.parse(status.stdout),workspace=s.workspace?.id;
  // Native CLI currently projects secrets without enforcing --confirm-secrets. Require a capability fence.
  if(!Array.isArray(s.token?.scopes)||s.token.scopes.length!==1||s.token.scopes[0]!=='skills:read')fail('skillpack_credential_refused');
- if(typeof workspace!=='string'||!(/^[a-f0-9-]{36}$/).test(workspace))fail('skillpack_install_failed');
+ if(typeof workspace!=='string'||!(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/).test(workspace))fail('skillpack_install_failed');
  const result=run(['install',${JSON.stringify(slug)},'--version',${JSON.stringify(version)},'--scope','project','--project',${JSON.stringify(input.projectDir)},'--tools',${JSON.stringify(tool)},'--pin','--yes',...base]);
  delete env.SKILLPACK_API_KEY;
  if(result.error||result.signal)fail('skillpack_install_failed');
@@ -64,7 +66,7 @@ try{
  const lock=JSON.parse(fs.readFileSync(${JSON.stringify(`${input.projectDir}/.companion/skills.lock.json`)},'utf8'));
  const w=lock.workspaces?.[workspace],e=w?.skills?.[${JSON.stringify(slug)}];
  if(![2,3].includes(lock.lockfileVersion)||w.apiUrl!=='https://skillpack.app/v1'||e?.version!==${JSON.stringify(version)}||e.pinned!==${JSON.stringify(version)}||!(/^[a-f0-9-]{36}$/).test(e.skillId)||!(/^sha256:[a-f0-9]{64}$/).test(e.checksum)||!e.targets?.some(t=>t.tool===${JSON.stringify(tool)}&&t.version===e.version&&t.packageChecksum===e.checksum))fail('skillpack_install_failed');
- process.stdout.write(JSON.stringify({reference:${JSON.stringify(input.reference)},version:e.version,skillId:e.skillId,checksum:e.checksum,origin:w.apiUrl}));
+ process.stdout.write(JSON.stringify({reference:${JSON.stringify(input.reference)},version:e.version,skillId:e.skillId,checksum:e.checksum,origin:w.apiUrl,workspaceId:workspace}));
 }catch{fail('skillpack_install_failed');}
 ARMADA_SKILL_INSTALL`;
   try {
@@ -76,6 +78,8 @@ ARMADA_SKILL_INSTALL`;
     )
       throw new PrivateSkillError(value.reason);
     if (
+      typeof value.workspaceId !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.workspaceId) ||
       value.reference !== input.reference ||
       value.version !== version ||
       !/^[a-f0-9-]{36}$/.test(value.skillId) ||
@@ -89,6 +93,7 @@ ARMADA_SKILL_INSTALL`;
       skillId: value.skillId,
       checksum: value.checksum,
       origin: value.origin,
+      workspaceId: value.workspaceId,
     };
   } catch (error) {
     if (error instanceof PrivateSkillError) throw error;

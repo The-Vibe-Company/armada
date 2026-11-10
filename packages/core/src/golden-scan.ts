@@ -1,5 +1,6 @@
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
+import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 
 /**
  * GitHub's real token shapes: a one- or two-letter type prefix, an underscore, then a long run of
@@ -18,8 +19,7 @@ export const GITHUB_TOKEN_PATTERN = "gh[oprsu]_[A-Za-z0-9]{36,255}|github_pat_[A
  */
 const TIMEOUT_SECONDS = 600;
 
-/** Skillpack personal access tokens contain 24 random bytes encoded as lowercase hex. */
-export const SKILLPACK_TOKEN_PATTERN = "cmp_pat_[a-f0-9]{48}";
+export { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 
 /** Where a token could land: the repos' working trees, root's home (some tooling runs as root) and /tmp. */
 const SCAN_ROOTS = "/home/user /root /tmp";

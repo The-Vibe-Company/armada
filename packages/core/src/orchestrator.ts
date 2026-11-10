@@ -28,7 +28,7 @@ export interface OrchestratorCreate {
   provider: SandboxProviderId;
   harness: Harness;
   repo?: string;
-  /** Public Skillpack catalog reference, pinned as org/slug@version. */
+  /** Exact Skillpack pin: org/slug@version for catalog, slug@version for the authenticated workspace. */
   skill?: string;
   /** Optional override; absent still uses the selected repository/golden policy. */
   size?: MachineSize;
@@ -140,6 +140,8 @@ export interface OrchestratorDetail {
 }
 
 export interface OrchestratorSkillReceipt {
+  /** Authenticated registry workspace; absent for anonymous public catalog receipts. */
+  workspaceId?: string;
   reference: string;
   version: string;
   skillId: string;

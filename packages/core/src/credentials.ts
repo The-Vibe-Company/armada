@@ -4,6 +4,7 @@ import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
 import { LaunchError } from "./launch-error.ts";
+import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
@@ -202,7 +203,7 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
   const value = raw.trim();
   if (value === "") throw new VaultError("invalid", "The value is empty.");
   if (kind === "modal") return JSON.stringify(modalPairJson(parseModalTokenPair(value)));
-  if (kind === "skillpack" && !/^cmp_pat_[a-f0-9]{48}$/.test(value)) {
+  if (kind === "skillpack" && !new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(value)) {
     throw new VaultError(
       "invalid",
       "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
