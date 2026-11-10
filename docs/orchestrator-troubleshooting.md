@@ -340,3 +340,48 @@ and events rather than guessing a new revision. The provider sandbox is resolved
 from fenced stored identity, never the abbreviated `b701bbd6` incident label.
 These commands are documentation only; this implementation session did not run
 them or touch production.
+
+## Steer after a turn finishes
+
+Steer targets an existing running turn; the server never implicitly starts a
+new one. A provider's explicit `no_running_turn` refusal means nothing was
+delivered. The steer operation settles `failed / no_running_turn`, leaves the
+parent `ready`, and preserves its conversation and continuity. Fetch detail for
+the new revision, then send the text as a normal message with a new idempotency
+key. Replaying the original steer key and payload returns the same failed
+receipt without dispatching again.
+
+This exception is deliberately limited to steer and `no_running_turn`. Other
+provider errors and the message path retain their existing conservative
+handling: prompt preparation can have side effects before returning a receipt.
+Generic `conflict` can mean Modal `request_outcome_unknown`; neither a
+non-retryable error nor current provider idleness proves historical non-delivery.
+An error after an accepted receipt is not reclassified as a refusal. Native
+continuity and publication fences remain unchanged.
+
+Ordinary sandbox steer already returns `no_running_turn` with send guidance and
+releases its mutation lease for that definite refusal. Client wording is tracked
+in #863 alongside the automatic same-intent send fallback owned by #847.
+
+### Fenced event polls
+
+`events_poll=fenced` means journal publication was rejected because the
+revision, physical generation, conversation or expected provider cursor changed
+between read and transaction. Owner reads and the background consumer can race
+for the same cursor. Finishing a turn does not itself change these fences.
+A rejected page is not acknowledged; the next poll rereads the committed cursor.
+
+The current diagnostic does not identify which check failed. Follow-up #862
+tracks closed, secret-safe reason labels; do not infer a particular mismatch
+from `fenced` alone. This publication diagnostic is independent of steer's
+delivery classification.
+
+### Historical uncertain steer receipts
+
+There is no supported in-place repair for an old receipt that persisted only
+`runtime_uncertain`, without durable provider-refusal evidence. Reconcile
+looks up the recorded request; Retry replays its receipt. Current idleness
+cannot prove what a historical request did. `orchestrator recover` retires
+compute, not an in-place repair to ready. Never edit rows or replay ambiguous
+effects to infer their outcome; evidence-backed historical repair requires a
+separately authorized recovery path.

@@ -24,7 +24,7 @@ test("real serve Boat parents dispatch turns, expose events, archive, reactivate
         .find((line) => line.startsWith("SERVE_BOAT_RECEIPT "))!
         .slice("SERVE_BOAT_RECEIPT ".length),
     );
-    expect(receipt.prompts).toBe(10);
+    expect(receipt.prompts).toBe(12);
     expect(receipt.stops).toBe(4);
     expect(receipt.sshCalls).toBeGreaterThan(0);
   } finally {

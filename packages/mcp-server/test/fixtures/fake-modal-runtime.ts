@@ -62,7 +62,7 @@ export function fakeModalRuntime(input: {
         version: number;
         requestId: string;
         op: string;
-        input?: { command?: string };
+        input?: { command?: string; conversationId?: string };
         configuration?: { revision: string; servers: object };
         token?: string;
       };
@@ -125,10 +125,11 @@ export function fakeModalRuntime(input: {
           nativeSessionId: null,
         };
       else if (packet.op === "interrupt") result = {};
+      else if (packet.op === "steer") return Response.json({ error: "no_running_turn" }, { status: 409 });
       else if (packet.op === "prompt") {
         assert(!running);
         lastPromptServers = vm.servers ?? [];
-        vm.conversation ??= crypto.randomUUID();
+        vm.conversation ??= packet.input?.conversationId ?? crypto.randomUUID();
         result = { promptId: crypto.randomUUID(), conversationId: vm.conversation, status: "finished" };
       } else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };

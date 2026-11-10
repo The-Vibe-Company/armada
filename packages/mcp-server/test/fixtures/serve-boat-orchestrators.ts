@@ -229,6 +229,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
         : [],
     });
   if (suffix === "/steer") {
+    if (!running)
+      return Response.json({ ok: false, code: "no_running_turn", message: "Nothing runs" }, { status: 409 });
     assert.equal(machine.harness, "claude");
     assert(running, "The acceptance steer must reach a running Claude turn");
     return json({ conversationId: machine.conversation, promptId: `steer-${prompts}`, mode: "native" });
@@ -319,6 +321,7 @@ async function waitForCreate(operation: { id: string; orchestratorId: string }):
 try {
   const selected = await connectionFixture(sql, key, ownerId, orgId);
   for (const harness of ["codex", "claude"] as const) {
+    const promptsBeforeHarness = prompts;
     const model = core.resolveModelChoice(harness, {}).model;
     const selectors = [
       "--skill",
@@ -337,7 +340,7 @@ try {
       models.get(harness)!,
     ];
     const allocationsBeforeRefusal = machines.size;
-    const refused = await realFetch(`${origin}/api/v1/orchestrators`, {
+    const refusedSelection = await realFetch(`${origin}/api/v1/orchestrators`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token.token}`,
@@ -356,8 +359,8 @@ try {
         connections: [selected.forbidden.id],
       }),
     });
-    assert.equal(refused.status, 404);
-    assert.equal(((await refused.json()) as { error: { code: string } }).error.code, "not_found");
+    assert.equal(refusedSelection.status, 404);
+    assert.equal(((await refusedSelection.json()) as { error: { code: string } }).error.code, "not_found");
     assert.equal(machines.size, allocationsBeforeRefusal, "Forbidden create must not allocate or enqueue a parent");
     assert.equal(
       (
@@ -422,6 +425,7 @@ try {
       sawPrompt: (ids) =>
         assert.deepEqual(lastPromptServers, ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
     });
+    revision = (await cli(["detail", id, "--org", orgId])).orchestrator.revision;
     const parentNativeId = (
       await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
         detail.orchestrator.sandboxId,
@@ -494,7 +498,7 @@ try {
     ).rows[0]?.runtime_result;
     assert.equal(receipt?.kind, "prompt_receipt");
     assert.equal(receipt.promptId, `prompt-${prompts}`);
-    assert.equal(prompts, harness === "codex" ? 4 : 9, "Owner send must dispatch to Boat");
+    assert.equal(prompts, promptsBeforeHarness + 4, "Three connection turns and the owner send must reach Boat");
     const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
     const agentEvents = page.events
       .filter((item: core.OrchestratorEvent) => item.kind === "agent")
@@ -511,6 +515,35 @@ try {
       agentEvents.some((item) => item?.kind === "prompt" && item.status === "finished"),
       JSON.stringify(page),
     );
+    const steerRevision = revision;
+    const refused = await act("steer", "too late", 1);
+    assert.equal(refused.state, "failed", JSON.stringify(refused));
+    assert.equal(refused.errorCode, "no_running_turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.state, "ready");
+    assert.equal(detail.orchestrator.blockedReason, null);
+    const conversationId = detail.orchestrator.conversationId;
+    const steerDispatches = requests.filter((request) => request.endsWith("/steer")).length;
+    await act("send", "new turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.conversationId, conversationId);
+    assert.equal(detail.orchestrator.state, "ready");
+    const replayedSteer = await cli(
+      [
+        "steer",
+        id,
+        "too late",
+        "--org",
+        orgId,
+        "--expected-revision",
+        String(steerRevision),
+        "--idempotency-key",
+        `${harness}-steer-${steerRevision}`,
+      ],
+      1,
+    );
+    assert.deepEqual(replayedSteer, refused);
+    assert.equal(requests.filter((request) => request.endsWith("/steer")).length, steerDispatches);
     await act("stop");
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
@@ -568,6 +601,11 @@ try {
     assert.equal(stops, physicalStops, "Completed retirement replay must not issue provider I/O");
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
+    assert.equal(
+      prompts,
+      promptsBeforeHarness + 6,
+      "Connection turns, ordinary turn, post-refusal turn and resumed turn must all dispatch",
+    );
   }
   const beforeFailurePrompts = prompts;
   const failed = await cli([
