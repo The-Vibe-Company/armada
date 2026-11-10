@@ -26,6 +26,7 @@ test("the owner shares a private golden with the org, and takes it back", async 
   await expect(shared.getByText("Org", { exact: true })).toBeVisible();
   // The row moved to the shared list: the confirmation is a toast, not a line under a button that is gone.
   await expect(page.locator('[data-slot="toast"]')).toContainText("Shared alice-private with the org.");
+  await page.screenshot({ path: "test-results/toast-share-golden.png", animations: "disabled" });
   await shared.getByRole("button", { name: "Make private" }).click();
   await expect(page.locator('[data-golden="alice-private"]').getByText("Private", { exact: true })).toBeVisible();
 });
