@@ -8,7 +8,7 @@ import json, os, signal, stat, subprocess, sys, threading, uuid
 args=sys.argv[2:]
 stream=any(v=="--input-format=stream-json" or v=="--input-format" and i+1<len(args) and args[i+1]=="stream-json" for i,v in enumerate(args))
 if not stream: os.execv(sys.argv[1],[sys.argv[1]]+args)
-child=subprocess.Popen([sys.argv[1]]+args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None)
+child=subprocess.Popen([sys.argv[1]]+args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None,start_new_session=True)
 pending={}
 known=set()
 last=None
@@ -18,7 +18,11 @@ def fresh():
     home=os.path.expanduser("~")
     directory=os.path.join(home,".armada")
     manifest=os.path.join(directory,"mcp-owned.json")
-    if not os.path.lexists(manifest): return None
+    if not os.path.lexists(manifest):
+        # Empty native installs remove the manifest. Only a process that has
+        # already observed managed config may retire its known dynamic servers;
+        # preserve independent authority from the last validated snapshot.
+        return None if last is None else {n:v for n,v in last.items() if n=="armada_orchestrator"}
     config=os.path.join(home,".claude.json")
     for path in (directory,manifest,config):
         s=os.lstat(path)
@@ -49,6 +53,18 @@ def receive():
         sys.stdout.buffer.write(line);sys.stdout.buffer.flush()
 
 thread=threading.Thread(target=receive,daemon=True);thread.start()
+def stop_native(sig):
+    try: os.killpg(child.pid,sig)
+    except ProcessLookupError: pass
+    try: child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try: os.killpg(child.pid,signal.SIGKILL)
+        except ProcessLookupError: pass
+        child.wait()
+def forward_signal(sig, frame):
+    stop_native(sig)
+    sys.exit(128+sig)
+for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP): signal.signal(sig,forward_signal)
 def control(request):
     request_id="armada-mcp-"+uuid.uuid4().hex
     event,result=threading.Event(),[]
@@ -71,20 +87,22 @@ try:
                 if current!=last:
                     for name in known-set(current):
                         control({"subtype":"mcp_toggle","serverName":name,"enabled":False})
-                    for name in set(current)&known:
-                        control({"subtype":"mcp_toggle","serverName":name,"enabled":True})
                     control({"subtype":"mcp_set_servers","servers":current})
-                    known |= set(current)-{"armada_orchestrator"}
+                    # Re-add before enabling: removed dynamic targets no longer
+                    # exist, and Claude refuses toggles naming an unknown server.
+                    for name in set(current)-{"armada_orchestrator"}:
+                        control({"subtype":"mcp_toggle","serverName":name,"enabled":True})
+                    known = set(current)-{"armada_orchestrator"}
                     last=current
             active=True
         child.stdin.write(line);child.stdin.flush()
     child.stdin.close()
     child.wait()
+    stop_native(signal.SIGKILL)
     thread.join()
     sys.exit(child.returncode)
 except Exception:
     print("Native MCP configuration refresh failed; no turn was submitted.",file=sys.stderr)
-    child.terminate()
-    child.wait()
+    stop_native(signal.SIGTERM)
     sys.exit(1)
 `;

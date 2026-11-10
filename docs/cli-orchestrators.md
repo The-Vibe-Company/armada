@@ -89,10 +89,10 @@ Detail's `connections` and `connections` events contain only `{id, name}` entrie
 `armada_orchestrator` and scoped internal authority are not registry connections,
 are never listed here, and cannot be removed by these commands.
 
-**Children do not inherit the parent's set.** A child uses ordinary owner-authorized
-launch defaults unless its delegated launch explicitly selects connections
-(including an explicit empty list). Parent selection grants no access to children;
-owner/grant checks still apply to every child.
+**Children do not inherit the parent's set.** A child always uses ordinary
+owner-authorized launch defaults; scoped child launch has no connection override.
+Parent selection grants no access to children; owner/grant checks still apply to
+every child.
 
 HTTP: `GET /api/v1/orchestrators/ID/connections` (query `orgId`) and
 `POST /api/v1/orchestrators/ID/connections/add|remove` (JSON `orgId`,

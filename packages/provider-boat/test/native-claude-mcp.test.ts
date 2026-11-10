@@ -35,6 +35,9 @@ for line in sys.stdin:
     if message.get("type")=="control_request" and message["request"]["subtype"].startswith("mcp_"):
         request=message["request"]
         if request["subtype"]=="mcp_toggle":
+            if request["serverName"] not in servers:
+                print(json.dumps({"type":"control_response","response":{"subtype":"error","request_id":message["request_id"],"error":"unknown server"}}),flush=True)
+                continue
             if request["enabled"]: disabled.discard(request["serverName"])
             else: disabled.add(request["serverName"])
         elif request["subtype"]=="mcp_set_servers": servers=request["servers"]
@@ -47,16 +50,18 @@ for line in sys.stdin:
   );
   chmodSync(`${path}.armada-original`, 0o755);
   configure(["armada_first"]);
-  const child = spawn("bash", ["-c", `${nativeCwdCommand(path, "claude")} --input-format stream-json`], {
-    env: { HOME: home, PATH: "/usr/bin:/bin" },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const start = () =>
+    spawn("bash", ["-c", `${nativeCwdCommand(path, "claude")} --input-format stream-json`], {
+      env: { HOME: home, PATH: "/usr/bin:/bin" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  let child = start();
   let error = "";
   child.stderr.on("data", (chunk) => {
     error += chunk;
   });
-  const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
-  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  let exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+  let lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   const send = async () => {
     child.stdin.write(`${JSON.stringify({ type: "user", message: { content: "inspect tools" } })}\n`);
     const result = await lines.next();
@@ -68,17 +73,33 @@ for line in sys.stdin:
     expect(first.tools).toEqual(["armada_first", "armada_orchestrator"]);
     configure(["armada_first", "armada_second"]);
     expect((await send()).tools).toEqual(["armada_first", "armada_orchestrator", "armada_second"]);
-    configure(["armada_second"]);
+    configure(["armada_first"]);
     const removed = await send();
-    expect(removed.tools).toEqual(["armada_orchestrator", "armada_second"]);
+    expect(removed.tools).toEqual(["armada_first", "armada_orchestrator"]);
     expect(removed.pid).toBe(first.pid);
     expect(removed.session_id).toBe(first.session_id);
+    configure(["armada_first", "armada_third"]);
+    expect((await send()).tools).toEqual(["armada_first", "armada_orchestrator", "armada_third"]);
+    configure(["armada_first", "armada_second"]);
+    expect((await send()).tools).toEqual(["armada_first", "armada_orchestrator", "armada_second"]);
+    configure([]);
+    // The real native installer removes its ownership manifest for the empty set.
+    rmSync(join(home, ".armada", "mcp-owned.json"));
+    expect((await send()).tools).toEqual(["armada_orchestrator"]);
     configure(["armada_rejected"]);
     child.stdin.write(`${JSON.stringify({ type: "user", message: { content: "must not run" } })}\n`);
     expect(await exited).toBe(1);
     expect((await lines.next()).done).toBe(true);
     expect(error).toContain("no turn was submitted");
     expect(error).not.toContain("private upstream detail");
+    configure(["armada_first"]);
+    child = start();
+    exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+    lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+    const alive = await send();
+    child.kill("SIGTERM");
+    await exited;
+    expect(() => process.kill(alive.pid, 0)).toThrow();
   } finally {
     child.kill("SIGKILL");
     await exited;

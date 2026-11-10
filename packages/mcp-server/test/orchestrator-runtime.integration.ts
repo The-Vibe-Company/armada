@@ -85,7 +85,8 @@ test("runtime receipts serialize retries, block uncertain replay, fence completi
     expect(repeated.fresh).toBe(false);
     expect(repeated.operation.state).toBe("uncertain");
     const page = await store.events(p.owner, p.org, first.identity.id);
-    expect(page.events).toHaveLength(2);
+    expect(page.events).toHaveLength(3);
+    expect(page.events.filter((event) => event.kind === "connections")).toMatchObject([{ connections: [] }]);
     if (!page.cursor) throw Error("missing retained-event cursor");
     const other = await store.create({
       ownerId: p.owner,
@@ -175,7 +176,9 @@ test("generation replacement cannot publish native history or an old operation r
     };
     expect(await store.appendEvents(message.identity, { events: [event], cursor: "provider-1" }, null)).toBe(true);
     expect(await store.appendEvents(message.identity, { events: [event], cursor: "provider-1" }, null)).toBe(false);
-    expect((await store.events(p.owner, p.org, created.identity.id)).events).toHaveLength(2);
+    const retained = (await store.events(p.owner, p.org, created.identity.id)).events;
+    expect(retained).toHaveLength(3);
+    expect(retained.filter((event) => event.kind === "connections")).toMatchObject([{ connections: [] }]);
     await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [sandboxId]);
     expect(await store.complete(message, { state: "succeeded", conversationId: "native-session" })).toBe(false);
     expect(
@@ -192,7 +195,7 @@ test("generation replacement cannot publish native history or an old operation r
         ])
       ).rows[0]?.state,
     ).toBe("pending");
-    expect((await store.events(p.owner, p.org, created.identity.id)).events).toHaveLength(2);
+    expect((await store.events(p.owner, p.org, created.identity.id)).events).toEqual(retained);
   } finally {
     await db.close();
   }

@@ -228,6 +228,15 @@ export function createOrchestratorBackendResolver(input: {
         ).rows[0];
         if (!row) throw new OrchestratorRuntimeError("conflict");
         await input.connections.prepare(provider, mapSandboxRow(row), fresh);
+        // Claude's persistent stream-json process needs its MCP control bridge
+        // even for a repository-less parent. Keep this extra installation scoped
+        // to managed parents; ordinary Claude send behavior is unchanged.
+        if (configuration.provider === "boat" && configuration.harness === "claude")
+          await provider.prepareNativeHarnessCwd?.({
+            sandboxId: current.providerSandboxId,
+            harness: "claude",
+            cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
+          });
       },
       launch: (reservation, diagnostics, hooks) =>
         launchOrchestratorParent({

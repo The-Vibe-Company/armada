@@ -602,14 +602,16 @@ export class OrchestratorRuntimeStore {
       if (ids.length > 100) throw new OrchestratorRuntimeError("invalid_request");
       if (input.action === "connections_add") {
         const port = createSqlMcpLaunchPort(tx, createSqlMcpRegistry(tx, undefined));
-        await port.validate({ userId: input.ownerId, orgId: input.orgId }, input.connections, "private");
-        // Lock selected grants across validation/binding publication. The binding
+        // Lock before validation: a concurrent delete must not turn an approved
+        // requested selection into a successful INSERT SELECT of zero rows.
+        // The binding
         // trigger rechecks effective authorization, including owner and org.
         await tx.query(
           `select g.id from public.mcp_grants g join public.mcp_connections c on c.id=g.connection_id
           where c.id=any($1::uuid[]) for share of g,c`,
           [input.connections],
         );
+        await port.validate({ userId: input.ownerId, orgId: input.orgId }, input.connections, "private");
         await tx.query(
           `insert into public.mcp_bindings(sandbox_id,connection_id,grant_id)
           select $1,c.id,g.id from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id
@@ -626,6 +628,11 @@ export class OrchestratorRuntimeStore {
       // removed/re-added lease or reuse a native configuration revision.
       await tx.query("update public.sandboxes set mcp_generation=mcp_generation+1 where id=$1", [identity.sandboxId]);
       const selected = await this.connections(identity, tx);
+      if (
+        input.action === "connections_add" &&
+        input.connections.some((id) => !selected.some((connection) => connection.id === id.toLowerCase()))
+      )
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       await tx.query(
         `update public.orchestrator_runtime set configuration=jsonb_set(configuration,'{connections}',$2::jsonb),updated_at=now()
         where orchestrator_id=$1`,
