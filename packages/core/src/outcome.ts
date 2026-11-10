@@ -112,7 +112,7 @@ async function promptEvents(
   request: { sandboxId: string; promptId: string; conversationId?: string },
 ): Promise<AgentEvent[]> {
   try {
-    return (await readPromptEvents(provider, request)).events;
+    return (await readPromptEvents(provider, request)).events.filter((event) => event.promptId === request.promptId);
   } catch {
     return [];
   } // Optional event evidence must not turn a provider-finished turn into a transport failure.
