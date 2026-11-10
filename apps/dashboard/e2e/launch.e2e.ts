@@ -209,3 +209,19 @@ test("on a phone the keyboard never covers Launch, the field being typed or an e
   await expect(page.locator('[data-slot="dialog-content"]')).not.toHaveAttribute("data-visible-viewport");
   await expectPinnedLaunch(page);
 });
+
+test("Ctrl+Enter launches from the task, as the Launch button does", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/goldens");
+  const dialog = await openLaunch(page, "shared-golden", { advanced: false });
+  const task = dialog.getByLabel("Task");
+  await task.fill("First line");
+  // Enter alone is a new line in the task, never a launch.
+  await task.press("Enter");
+  await task.pressSequentially("second line");
+  await expect(task).toHaveValue("First line\nsecond line");
+  await task.press("Control+Enter");
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  expect(await launches()).toMatchObject([
+    { golden: "shared-golden", prompt: expect.stringMatching(/^First line\r?\nsecond line$/) },
+  ]);
+});

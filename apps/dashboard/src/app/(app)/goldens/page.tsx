@@ -422,24 +422,31 @@ function CreateCard({
       />
     </div>
   );
-  if (discouraged && serverReady)
-    // Building another is possible but not the expected next step: an empty-state call, its form a click away.
-    return (
-      <section
-        aria-labelledby="create-golden-title"
-        data-create-golden="discouraged"
-        className="rounded-xl border border-dashed bg-card/50 px-6 py-8"
-      >
-        <div className="mx-auto max-w-md text-center">
+  // One tree for both states: a build that fills Boat turns this into "Create another golden" without remounting the
+  // form that follows it. Discouraged, it takes the empty-state look, its form a click away.
+  const quiet = discouraged && serverReady;
+  return (
+    <section
+      aria-labelledby="create-golden-title"
+      data-create-golden={quiet ? "discouraged" : "open"}
+      className={cn(
+        "rounded-xl border",
+        quiet ? "border-dashed bg-card/50 px-6 py-8" : "bg-card px-6 py-6 text-card-foreground shadow-xs",
+      )}
+    >
+      <div className={cn(quiet && "mx-auto max-w-md text-center")}>
+        {quiet && (
           <div
             aria-hidden="true"
             className="mx-auto mb-3 flex size-10 items-center justify-center rounded-lg border bg-background text-muted-foreground shadow-xs"
           >
             <LayersIcon className="size-5" />
           </div>
-          <h3 id="create-golden-title" className="font-medium">
-            Create another golden
-          </h3>
+        )}
+        <h3 id="create-golden-title" className={quiet ? "font-medium" : "leading-none font-semibold"}>
+          {discouraged ? "Create another golden" : "Create a golden"}
+        </h3>
+        {quiet && (
           <p className="mt-1 text-sm text-pretty text-muted-foreground">
             {boatLive > 0 ? (
               <>
@@ -450,33 +457,20 @@ function CreateCard({
               <>A removed Boat golden holds the Boat slot{modalOpen ? ": build on Modal." : "."}</>
             )}
           </p>
-        </div>
-        <div className="mt-4 [&>details>summary]:mx-auto [&>details>summary]:w-fit">
-          <Disclosure summary="Show the create form" defaultOpen={false}>
-            <div className="rounded-xl border bg-card p-4 text-left shadow-xs sm:p-6">{body}</div>
-          </Disclosure>
-        </div>
-      </section>
-    );
-  return (
-    <Card className="gap-4" aria-labelledby="create-golden-title">
-      <CardHeader>
-        <CardTitle id="create-golden-title" role="heading" aria-level={3}>
-          Create a golden
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        )}
+      </div>
+      <div className={cn("mt-4", quiet && "[&>details>summary]:mx-auto [&>details>summary]:w-fit")}>
         {!serverReady ? (
           <p className="text-sm text-muted-foreground">
             The Armada server is not configured: goldens cannot be built here.
           </p>
         ) : (
-          <Disclosure summary="Show the create form" defaultOpen>
-            {body}
+          <Disclosure summary="Show the create form" defaultOpen={!discouraged}>
+            <div className={cn(quiet && "rounded-xl border bg-card p-4 shadow-xs sm:p-6")}>{body}</div>
           </Disclosure>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
