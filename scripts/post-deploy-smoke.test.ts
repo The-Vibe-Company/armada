@@ -511,24 +511,61 @@ test("only eligible smoke jobs compete for staging compute", () => {
 });
 
 test("GitHub runtime slice requires staging assertions and disposable repository before compute", async () => {
+  const valid = {
+    ...env,
+    ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+    ARMADA_SMOKE_GITHUB_GATE: "true",
+    ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
+    ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
+    ARMADA_SMOKE_CASES: JSON.stringify(
+      ["boat", "modal"].flatMap((provider) =>
+        ["claude", "codex"].map((harness) => ({
+          ...selected,
+          provider,
+          harness,
+          disposableRepository: "https://github.com/smoke/disposable.git",
+        })),
+      ),
+    ),
+  };
   for (const overrides of [
-    {},
-    { ARMADA_SMOKE_GITHUB_GATE: "true" },
+    { ARMADA_URL: "https://production.invalid" },
+    { ARMADA_SMOKE_GITHUB_GATE: "false" },
+    { ARMADA_SMOKE_SERVER_REVISION: "invalid" },
+    { ARMADA_SMOKE_RUNTIME_REVISION: "invalid" },
     {
-      ARMADA_SMOKE_GITHUB_GATE: "true",
-      ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
-      ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
+      ARMADA_SMOKE_CASES: JSON.stringify([
+        { ...selected, disposableRepository: "https://github.com/smoke/disposable.git" },
+      ]),
     },
+    {
+      ARMADA_SMOKE_CASES: JSON.stringify(
+        Array(4).fill({ ...selected, disposableRepository: "https://github.com/smoke/disposable.git" }),
+      ),
+    },
+    { ARMADA_SMOKE_CASES: valid.ARMADA_SMOKE_CASES.replaceAll("https://github.com/", "https://secret@github.com/") },
   ]) {
     const fake = fixture();
-    expect(await postDeploySmoke({ ...env, ...overrides }, ["--github-runtime"], fake.io)).toBe(false);
+    expect(await postDeploySmoke({ ...valid, ...overrides }, ["--github-runtime"], fake.io)).toBe(false);
     expect(fake.calls).toHaveLength(0);
   }
 });
 
 test("GitHub slice validates native receipts twice and cleans scratch before sandbox even on failure", async () => {
   for (const failReceipt of [false, true]) {
+    let provider = "boat";
+    let stopping = false;
     const fake = fixture((call) => {
+      if (call.path === "sandbox/launch") {
+        provider = String(call.body.provider);
+        stopping = false;
+      }
+      if (call.path === "sandbox/stop") stopping = true;
+      if (call.path === "sandbox/status")
+        return json({
+          status: stopping ? "stopped" : "ready",
+          providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+        });
       if (failReceipt && call.path === "sandbox/exec" && String(call.body.command).startsWith('test "$(cat'))
         return json({ exitCode: 1, timedOut: false, stdout: "secret-output" });
       return undefined;
@@ -539,9 +576,17 @@ test("GitHub slice validates native receipts twice and cleans scratch before san
       ARMADA_SMOKE_GITHUB_GATE: "true",
       ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
       ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
-      ARMADA_SMOKE_CASES: JSON.stringify([
-        { ...selected, disposableRepository: "https://github.com/smoke/disposable.git" },
-      ]),
+      ARMADA_SMOKE_CASES: JSON.stringify(
+        ["boat", "modal"].flatMap((provider) =>
+          ["claude", "codex"].map((harness) => ({
+            ...selected,
+            provider,
+            harness,
+            repo: "/home/user/it's a repo",
+            disposableRepository: "https://github.com/smoke/disposable.git",
+          })),
+        ),
+      ),
     };
     const io = {
       ...fake.io,
@@ -549,8 +594,17 @@ test("GitHub slice validates native receipts twice and cleans scratch before san
     };
     expect(await postDeploySmoke(staging, ["--github-runtime"], io)).toBe(!failReceipt);
     const sends = fake.calls.filter((call) => call.path === "sandbox/send");
-    expect(sends).toHaveLength(failReceipt ? 1 : 2);
+    expect(sends).toHaveLength(failReceipt ? 4 : 8);
     expect(String(sends[0]?.body.prompt)).toContain("push origin HEAD:refs/heads/armada-runtime-smoke-");
+    expect(fake.calls.filter((call) => String(call.body.command).startsWith('test "$(cat'))).toHaveLength(
+      failReceipt ? 4 : 8,
+    );
+    if (!failReceipt)
+      for (const turn of [1, 3, 5, 7]) {
+        expect(String(sends[turn]?.body.prompt)).not.toContain("push origin");
+        expect(String(sends[turn]?.body.prompt)).toContain("ls-remote origin HEAD");
+        expect(String(sends[turn]?.body.prompt)).toContain("git -C '/home/user/it'\\''s a repo'");
+      }
     const cleanup = fake.calls.findIndex((call) =>
       String(call.body.command).includes("push origin --delete armada-runtime-smoke-"),
     );

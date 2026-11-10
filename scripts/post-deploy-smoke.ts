@@ -134,6 +134,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         !/^[a-f0-9]{40}$/.test(env.ARMADA_SMOKE_RUNTIME_REVISION ?? "")
       )
         fail("invalid_configuration");
+      const pairs = new Set(parsed.map((item) => `${item.provider}/${item.harness}`));
+      if (parsed.length !== 4 || pairs.size !== 4) fail("invalid_configuration");
       for (const item of parsed) {
         if (
           typeof item.disposableRepository !== "string" ||
