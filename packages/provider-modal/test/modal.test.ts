@@ -2559,7 +2559,10 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
   ).toBeNull();
   expect(f.log.length).toBe(effects);
   expect(f.creates).toBe(creates);
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [publicSandboxId]);
+  await db.query(
+    "update sandboxes set status='stopped',stopped_at=now(),orchestrator_native_generation='1' where id=$1",
+    [publicSandboxId],
+  );
   await db.query("update orchestrator_operations set runtime_result=$2::jsonb where id=$1", [
     operationId,
     JSON.stringify({ state: "stopped", continuity: "native", generation: String(stoppedGeneration) }),
