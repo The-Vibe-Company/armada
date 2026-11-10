@@ -349,7 +349,7 @@ function LegacyConflict({ provider, goldens }: { provider: SandboxProviderId; go
 }
 
 /**
- * The create form, in the panel the New button opens. When Boat is full it says so first and points at the
+ * The create form, in the create view the New button opens. When Boat is full it says so first and points at the
  * environments the viewer can rebuild instead; the form stays a click away (Modal, or a slot freed meanwhile).
  */
 function CreatePanel({

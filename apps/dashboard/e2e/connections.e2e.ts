@@ -100,7 +100,8 @@ for (const mobile of [false, true]) {
     const dialog = await openAdd(page);
     await expect(dialog.getByLabel("Authentication")).toHaveValue("auto");
     await expect(dialog.getByRole("option", { name: "Auto-detect (recommended)" })).toHaveCount(1);
-    await dialog.scrollIntoViewIfNeeded();
+    // On a phone the custom server form follows the service catalog in the create view.
+    if (mobile) await dialog.scrollIntoViewIfNeeded();
     await expect(dialog).toBeInViewport();
     await page.screenshot({
       path: `test-results/connections-add-${mobile ? "mobile" : "desktop"}.png`,

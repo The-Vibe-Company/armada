@@ -296,9 +296,11 @@ function ScopedGoldenForm({
                 </label>
               </div>
               <p id={`${id}-visibility-hint`} className="text-xs text-muted-foreground">
-                {isAdmin
-                  ? "Visible to every member. You can make it private later."
-                  : "Only an org admin creates org goldens."}
+                {!isAdmin
+                  ? "Only an org admin creates org goldens."
+                  : chosenVisibility === "org"
+                    ? "Visible to every member. You can make it private later."
+                    : "Only you see it. You can share it with the org later."}
               </p>
             </fieldset>
             {providers.length === 1 && providerChoice}
@@ -317,7 +319,7 @@ function ScopedGoldenForm({
 
         <fieldset className="relative space-y-3">
           <legend className="text-sm font-medium">Repositories</legend>
-          <p className="-mt-2 text-xs text-muted-foreground sm:pr-40">
+          <p className={cn("-mt-2 text-xs text-muted-foreground", mode === "create" && "sm:pr-40")}>
             owner/repo or a github.com URL. Defaults: branch main, directory /home/user/&lt;repo&gt;.
           </p>
           <ol className="space-y-3">
@@ -380,8 +382,9 @@ function ScopedGoldenForm({
             type="button"
             variant="outline"
             size="sm"
-            // After the rows for the keyboard; beside the legend on a wider screen, where it costs no line.
-            className="sm:absolute sm:-top-8 sm:right-0"
+            // After the rows for the keyboard. In the create view, which is wide, it sits beside the legend and costs
+            // no line; the rebuild form lives in the narrow row panel and keeps it below.
+            className={cn(mode === "create" && "sm:absolute sm:-top-8 sm:right-0")}
             disabled={rows.length >= MAX_GOLDEN_REPOS}
             onClick={() => setRows((current) => [...current, keyed({ url: "", branch: "", dir: "" })])}
           >
