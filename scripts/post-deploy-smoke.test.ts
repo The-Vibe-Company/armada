@@ -364,43 +364,62 @@ test("orchestrator failures clean up after uncertain resume, lost create respons
   }
 });
 
-test("disabled orchestrator pair fails without allocating an orchestrator", async () => {
+test("disabled orchestrator service reports a distinct cause before allocating compute", async () => {
   const fake = orchestratorFixture("disabled");
   expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
-  expect(fake.calls.some((call) => call.path === "orchestrators")).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
   expect(fake.receipts().at(-1)).toEqual({
     case: 0,
     step: "orchestrator_capabilities",
     pass: false,
-    code: "pair_disabled",
+    code: "orchestrator_disabled",
   });
 });
 
-test("preflights every selected orchestrator pair before allocating any compute", async () => {
-  for (const capabilities of [
-    { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: true }] },
-    { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: "true" }] },
-    { version: 2, enabled: true, pairs: [] },
-    { version: 1, enabled: true, pairs: null },
-  ]) {
-    const fake = fixture((call) => (call.path === "orchestrators/capabilities" ? json(capabilities) : undefined));
-    expect(
-      await postDeploySmoke(
-        {
-          ...env,
-          ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
-        },
-        ["--orchestrator"],
-        fake.io,
-      ),
-    ).toBe(false);
-    expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
-    expect(fake.receipts().at(-1)).toMatchObject({
-      pass: false,
-      step: "orchestrator_capabilities",
-      code: capabilities.version !== 1 || capabilities.pairs === null ? "invalid_response" : "pair_disabled",
-    });
-  }
+test.each([
+  {
+    name: "later pair absent",
+    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: true }] },
+    code: "pair_disabled",
+    index: 1,
+  },
+  {
+    name: "pair enabled flag is not boolean true",
+    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: "true" }] },
+    code: "pair_disabled",
+    index: 0,
+  },
+  {
+    name: "unsupported version",
+    capabilities: { version: 2, enabled: true, pairs: [] },
+    code: "invalid_response",
+    index: 0,
+  },
+  {
+    name: "pairs is not an array",
+    capabilities: { version: 1, enabled: true, pairs: null },
+    code: "invalid_response",
+    index: 0,
+  },
+])("preflights $name before allocating any compute", async ({ capabilities, code, index }) => {
+  const fake = fixture((call) => (call.path === "orchestrators/capabilities" ? json(capabilities) : undefined));
+  expect(
+    await postDeploySmoke(
+      {
+        ...env,
+        ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
+      },
+      ["--orchestrator"],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
+  expect(fake.receipts().at(-1)).toEqual({
+    case: index,
+    pass: false,
+    step: "orchestrator_capabilities",
+    code,
+  });
 });
 
 test("capability API failures fail closed without exposing remote bodies", async () => {

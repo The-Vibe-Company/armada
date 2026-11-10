@@ -33,6 +33,7 @@ type Code =
   | "exec_failed"
   | "provider_not_stopped"
   | "pair_disabled"
+  | "orchestrator_disabled"
   | "operation_failed"
   | "continuity_failed";
 const API_CODES = new Set<Code>([
@@ -177,10 +178,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         pairs?: { provider: string; harness: string; enabled: boolean }[];
       }>("orchestrators/capabilities");
       if (capabilities?.version !== 1 || !Array.isArray(capabilities.pairs)) fail("invalid_response");
+      if (capabilities.enabled !== true) fail("orchestrator_disabled");
       for (const [caseIndex, item] of cases.entries()) {
         index = caseIndex;
         if (
-          capabilities.enabled !== true ||
           !capabilities.pairs.some(
             (pair) => pair?.provider === item.provider && pair.harness === item.harness && pair.enabled === true,
           )
