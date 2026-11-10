@@ -70,9 +70,11 @@ export async function installPrivateSkill(
 command -v node >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE node_missing\\n' >&2; exit 91; }
 command -v flock >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE flock_missing\\n' >&2; exit 91; }
 [ -d '/home/user' ] && [ -x '/home/user' ] || { printf 'ARMADA_PRIVATE_FAILURE home_unavailable\\n' >&2; exit 91; }
-trap 'printf "ARMADA_PRIVATE_FAILURE key_cleanup_failed\\n" >&2' ERR
+armada_cleanup_pending=1
+trap 'if [ "$armada_cleanup_pending" = 1 ]; then printf "ARMADA_PRIVATE_FAILURE key_cleanup_failed\\n" >&2; fi' EXIT
 ${cleanupGuestKey}
-trap - ERR
+armada_cleanup_pending=0
+trap - EXIT
 node <<'ARMADA_SKILL_INSTALL'
 const {spawnSync}=require('node:child_process'),fs=require('node:fs');
 const key=process.env.ARMADA_GIT_TOKEN;delete process.env.ARMADA_GIT_TOKEN;

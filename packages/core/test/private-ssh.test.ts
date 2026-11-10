@@ -7,6 +7,7 @@ import { sshPrivateSkillCommand } from "../src/ssh-executor.ts";
 test.each([
   ["authorization", "skillpack_ssh_authorization_failed"],
   ["metadata", "skillpack_ssh_connection_invalid"],
+  ["storage", "skillpack_ssh_local_storage_failed"],
   ["keygen", "skillpack_ssh_keygen_failed"],
   ["Host key verification failed", "skillpack_ssh_host_key_rejected"],
   ["Permission denied (publickey)", "skillpack_ssh_authentication_failed"],

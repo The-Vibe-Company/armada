@@ -7,6 +7,7 @@ import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
 export const PRIVATE_SSH_FAILURES = [
   "skillpack_ssh_keygen_failed",
+  "skillpack_ssh_local_storage_failed",
   "skillpack_ssh_authorization_failed",
   "skillpack_ssh_connection_invalid",
   "skillpack_ssh_host_key_rejected",
@@ -236,14 +237,19 @@ export async function sshPrivateSkillCommand(
   input: { sandboxId: string; key: string; script: string },
   deps: SshExecDeps = {},
 ): Promise<string> {
-  return sshExchange(
-    provider,
-    { sandboxId: input.sandboxId, token: input.key, script: input.script },
-    deps,
-    true,
-    600_000,
-    true,
-  );
+  try {
+    return await sshExchange(
+      provider,
+      { sandboxId: input.sandboxId, token: input.key, script: input.script },
+      deps,
+      true,
+      600_000,
+      true,
+    );
+  } catch (error) {
+    if (error instanceof PrivateSshError) throw error;
+    throw new PrivateSshError("skillpack_ssh_local_storage_failed");
+  }
 }
 
 async function sshExchange(
@@ -264,9 +270,10 @@ async function sshExchange(
   const dir = await fs.mkdtemp(join(tmpdir(), "armada-ssh-"));
   const key = join(dir, "key"),
     known = join(dir, "known_hosts");
-  let step: "keygen" | "authorization" | "connection" | "remote" = "keygen";
+  let step: "keygen" | "local_storage" | "authorization" | "connection" | "remote" = "keygen";
   try {
     await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "", false, timeoutMs);
+    step = "local_storage";
     await fs.chmod(key, 0o600);
     const pub = await (deps.readPublicKey ?? ((p: string) => Bun.file(p).text()))(`${key}.pub`);
     step = "authorization";
@@ -275,7 +282,9 @@ async function sshExchange(
     const username = c.username === undefined ? "user" : c.username;
     if (username !== "user" && username !== "root") throw new GoldenError("setup_failed", "Invalid SSH username.");
     const ep = parseEndpoint(c.sshEndpoint);
-    await fs.writeFile(known, knownLine(ep.host, ep.port, c.hostKey), { mode: 0o600 });
+    const knownText = knownLine(ep.host, ep.port, c.hostKey);
+    step = "local_storage";
+    await fs.writeFile(known, knownText, { mode: 0o600 });
     // ssh joins its command argv with spaces before the remote shell parses it. Keep this one
     // shell-quoted argument so semicolons cannot escape bash -c and turn `set +x` into a command.
     // The checkout script itself carries the cleanup trap; do not exec, which would discard it.
@@ -323,13 +332,15 @@ async function sshExchange(
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
     throw new PrivateSshError(
-      step === "keygen"
-        ? "skillpack_ssh_keygen_failed"
-        : step === "authorization"
-          ? "skillpack_ssh_authorization_failed"
-          : step === "connection"
-            ? "skillpack_ssh_connection_invalid"
-            : "skillpack_ssh_remote_failed",
+      step === "local_storage"
+        ? "skillpack_ssh_local_storage_failed"
+        : step === "keygen"
+          ? "skillpack_ssh_keygen_failed"
+          : step === "authorization"
+            ? "skillpack_ssh_authorization_failed"
+            : step === "connection"
+              ? "skillpack_ssh_connection_invalid"
+              : "skillpack_ssh_remote_failed",
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });

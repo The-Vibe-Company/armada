@@ -343,6 +343,7 @@ raw SSH stderr, credentials, endpoint details or the SDK exception:
 
 | Reason | Action |
 | --- | --- |
+| `skillpack_ssh_local_storage_failed` | Check server ephemeral directory/file permissions and cleanup; the transport could not manage its local SSH material. |
 | `skillpack_ssh_keygen_failed` | Check server ephemeral storage and `ssh-keygen` availability/permissions. |
 | `skillpack_ssh_authorization_failed` | Check provider key registration and active sandbox lifecycle; the guest was not reached. |
 | `skillpack_ssh_connection_invalid` | Check provider-returned SSH username, endpoint and pinned host-key metadata. |
