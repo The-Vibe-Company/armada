@@ -644,15 +644,16 @@ export class OrchestratorRuntime {
       if (
         reservation.operation.kind === "create" &&
         reservation.createDispatchId &&
-        !reservation.createForkDispatched
+        (!reservation.createForkDispatched || reservation.createForkRefusal !== undefined)
       ) {
         diagnostics.report("failed", error);
         diagnostics.stage("failure_publication");
-        if (!(await this.options.store.failCreateBeforeFork(reservation))) {
+        const errorCode = reservation.createForkRefusal ?? "create_preallocation_failed";
+        if (!(await this.options.store.failCreateBeforeFork(reservation, errorCode))) {
           diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
           throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
         }
-        return { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" };
+        return { ...reservation.operation, state: "failed", errorCode };
       }
       const unavailable = error instanceof BestEffortConversationUnavailable;
       if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");

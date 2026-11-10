@@ -3,11 +3,13 @@ import {
   type GoldenActor,
   type Harness,
   type HarnessCredentials,
+  isNonMutatingProviderRefusal,
   type LaunchRequest,
   type LaunchStores,
   launchSandbox,
   PROVIDER_LIMITS,
   type Provider,
+  ProviderError,
   type Sql,
 } from "@armada/core/server";
 import { diagnosticStep, type OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
@@ -142,11 +144,21 @@ export async function launchOrchestratorParent(input: {
       if (key === "fork")
         return (fork: Parameters<Provider["fork"]>[0]) =>
           diagnosticStep(input.diagnostics, "fork", () =>
-            target.fork({
-              ...fork,
-              idempotencyKey: reservation.operation.id,
-              labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
-            }),
+            target
+              .fork({
+                ...fork,
+                idempotencyKey: reservation.operation.id,
+                labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
+              })
+              .catch((error: unknown) => {
+                if (
+                  isNonMutatingProviderRefusal(error) &&
+                  error instanceof ProviderError &&
+                  error.code === "payment_required"
+                )
+                  reservation.createForkRefusal = "provider_payment_required";
+                throw error;
+              }),
           );
       // Logical-ID cleanup cannot atomically compare our native incarnation.
       // Never let an old catch stop a replacement: exact recovery owns all
