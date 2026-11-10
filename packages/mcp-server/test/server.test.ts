@@ -732,6 +732,55 @@ describe("tools", () => {
         modelSelectionReason: "model_selection_unverified",
       });
     }
+    // Modal appends terminal prompt transitions; they are not the start of a turn.
+    const modalEvents = boat.sandbox("bx_1").events;
+    modalEvents.push({
+      id: "early-root",
+      at: 2,
+      kind: "message",
+      promptId: "prompt_1",
+      model: saved.model!,
+      text: "root",
+      partial: false,
+      tools: [],
+    });
+    for (let i = 0; i < 201; i++)
+      modalEvents.push({
+        id: `tool_${i}`,
+        at: 3 + i,
+        kind: "message",
+        promptId: "prompt_1",
+        responseKind: "tool_result",
+        text: "",
+        partial: false,
+        tools: [],
+      });
+    modalEvents.push(
+      {
+        id: "late-root",
+        at: 205,
+        kind: "message",
+        promptId: "prompt_1",
+        model: "different-model",
+        text: "root",
+        partial: false,
+        tools: [],
+      },
+      { id: "terminal", at: 206, kind: "prompt", promptId: "prompt_1", status: "finished", text: "work" },
+    );
+    const mixed = await readStatus(
+      { ...boat.provider, id: "modal" },
+      store,
+      { ...saved, provider: "modal" },
+      { now: new Date() },
+    );
+    expect(mixed.prompt).toMatchObject({
+      state: "finished",
+      reason: null,
+      observedModel: null,
+      modelSelectionReason: "model_selection_unverified",
+    });
+    modalEvents.splice(1);
     await db.query("delete from sandbox_turn_models where sandbox_id=$1", [launched.data.id]);
     boat.sandbox("bx_1").events.push({
       id: "legacy-response",
