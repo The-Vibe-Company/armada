@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.15.0](https://github.com/The-Vibe-Company/armada/compare/v2.14.0...v2.15.0) (2026-11-10)
+
+
+### Features
+
+* **orchestrators:** activate the production Modal Codex runtime ([#722](https://github.com/The-Vibe-Company/armada/issues/722)) ([7615aff](https://github.com/The-Vibe-Company/armada/commit/7615aff7600dbcbd8d7f6e6b8ba93a65e2c42549))
+
+
+### Bug Fixes
+
+* **api:** forward all orchestrator owner routes through the public proxy ([#726](https://github.com/The-Vibe-Company/armada/issues/726)) ([40d5fd7](https://github.com/The-Vibe-Company/armada/commit/40d5fd797d085382ab679ec93fee234bd14e4870))
+* **github:** repair managed runtime process failures ([#721](https://github.com/The-Vibe-Company/armada/issues/721)) ([791a377](https://github.com/The-Vibe-Company/armada/commit/791a37736c945794ba3d0f86cab97b2370c5bda2))
+* **orchestrators:** diagnose Modal checkpoint and boot conflicts ([#731](https://github.com/The-Vibe-Company/armada/issues/731)) ([f0cf07b](https://github.com/The-Vibe-Company/armada/commit/f0cf07b3080450f7d36b7440257d08792bf74386))
+* **orchestrators:** diagnose silent uncertain create operations ([#724](https://github.com/The-Vibe-Company/armada/issues/724)) ([22faaa7](https://github.com/The-Vibe-Company/armada/commit/22faaa703e7e8b3b30119f4302044e2671428cbf))
+* **orchestrators:** recover allocated Modal boot failures ([#725](https://github.com/The-Vibe-Company/armada/issues/725)) ([e64d887](https://github.com/The-Vibe-Company/armada/commit/e64d8878206ba29f3bc53a528e0f19f3284e0bc2))
+* **orchestrators:** repair Modal stop checkpoints and create recovery ([#729](https://github.com/The-Vibe-Company/armada/issues/729)) ([5274e48](https://github.com/The-Vibe-Company/armada/commit/5274e48b4bdf2f92c29a32201ddc89ff7e9b7ae8))
+* **orchestrators:** settle admitted creates and recover pending parents ([#727](https://github.com/The-Vibe-Company/armada/issues/727)) ([073eab5](https://github.com/The-Vibe-Company/armada/commit/073eab5cf0dd386916db48a855d79729057fd077))
+
 ## [2.14.0](https://github.com/The-Vibe-Company/armada/compare/v2.13.0...v2.14.0) (2026-11-09)
 
 
