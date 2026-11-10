@@ -37,7 +37,7 @@ export function coalesceEventMessages(events: AgentEvent[]): AgentEvent[] {
       event.conversationId === previous.conversationId &&
       event.promptId === previous.promptId &&
       event.textMode &&
-      previous.textMode
+      previous.textMode === "snapshot"
     ) {
       const tools = new Map(previous.tools.map((tool) => [tool.id, tool]));
       for (const tool of event.tools) tools.set(tool.id, tool);
@@ -59,6 +59,7 @@ export function boundEventEntries<T>(
   upstreamHasMore: boolean,
   provider: string,
   coalescer?: (events: T[]) => T[],
+  truncate?: (event: T, originalBytes: number) => T,
 ): { events: T[]; cursor?: string; olderCursor?: string; hasMore: boolean } {
   const { limit, maxBytes, backward } = eventPageOptions(request, provider);
   const selected: typeof entries = [];
@@ -77,13 +78,12 @@ export function boundEventEntries<T>(
       candidateBytes = bytes + (selected.length ? 1 : 0) + encoder.encode(JSON.stringify(entry.event)).length;
     }
     if (candidateBytes > maxBytes) {
-      if (!selected.length)
-        throw new ProviderError({
-          provider,
-          code: "invalid_request",
-          message: "An event exceeds maxBytes; increase the event page budget.",
-          retryable: false,
-        });
+      if (!selected.length) {
+        const originalBytes = encoder.encode(JSON.stringify([entry.event])).length;
+        // The soft page budget must never make a raw cursor unreadable.
+        events = [originalBytes > 1048576 && truncate ? truncate(entry.event, originalBytes) : entry.event];
+        selected.push(entry);
+      }
       break;
     }
     selected.push(entry);
@@ -109,5 +109,16 @@ export function buildEventPage(
   upstreamHasMore: boolean,
   provider: string,
 ): EventPage {
-  return boundEventEntries(entries, request, upstreamHasMore, provider, coalesceEventMessages);
+  return boundEventEntries(entries, request, upstreamHasMore, provider, coalesceEventMessages, truncateEvent);
+}
+
+/** Closed replacement for an indivisible event above the hard history limit. */
+export function truncateEvent(event: AgentEvent, originalBytes: number): AgentEvent {
+  return {
+    id: event.id.slice(0, 256),
+    at: event.at,
+    kind: "other",
+    type: "event_truncated",
+    data: { reason: "event_exceeds_hard_limit", originalBytes, limitBytes: 1048576 },
+  };
 }

@@ -25,13 +25,32 @@ upsert semantics for repeated/updated events.
 
 Count applies to raw events before coalescing. Byte bound covers UTF-8 JSON of
 the returned events array, not headers/response metadata. An indivisible event
-larger than the bound is rejected, never skipped or truncated; retry with a
-larger budget. Coalescing combines only adjacent message events with matching
-explicit message/conversation/prompt IDs and known text modes. Deltas append,
-snapshots replace, tool IDs retain latest values. The result uses the newest
-event ID and snapshot mode. Coalescing is page-local: a message can span pages,
-so output is not necessarily its full conversation text. Legacy/unidentified
-fragments and non-message events are not combined.
+larger than the requested budget is returned alone (the soft budget is exceeded).
+Above the hard 1 MiB events-array limit, it is replaced by one closed
+`kind: other, type: event_truncated` marker. Its `data.reason` is
+`event_exceeds_hard_limit`, with `originalBytes` and `limitBytes`; the payload
+is omitted, not retryable with a larger budget. The raw cursor still advances.
+Orchestrator envelopes retain their metadata and wrap this marker as an agent
+event (including for an oversized non-agent payload).
+
+Coalescing combines only adjacent message events with matching explicit
+message/conversation/prompt IDs and known text modes, **starting from a native
+snapshot**. Deltas after that snapshot append, subsequent snapshots replace,
+and tool IDs retain latest values. The result uses the newest event ID and
+snapshot mode. Delta-only runs remain raw, even with `coalesce: true`: Armada
+never manufactures a replacement snapshot from a page-local suffix. Thus no
+offset or cross-page snapshot stitching is necessary. Read older pages, put raw
+events in chronological order, then apply snapshots as replacements and deltas
+as appends; do not apply an older page directly over a newer rendered message.
+Legacy/unidentified fragments and non-message events are not combined.
+
+### Consumer change from #814 / #818
+
+Consumers may now enable coalescing without receiving partial-message synthetic
+snapshots, but must accept raw deltas in coalesced pages. Rebuild a message from
+chronologically ordered pages when prepending history. Handle `event_truncated`
+as an explicit gap, not as message text or a request to retry. The byte budget
+is soft for one event; keep a 1 MiB receive allowance plus envelope overhead.
 
 Visibility rules are unchanged. Orchestrator history first catches up retained
 events from upstream (at most 100 upstream pages, otherwise unavailable rather
@@ -41,12 +60,8 @@ CLI: `armada logs <id> --tail [n]` (default 100), optionally `--follow`/`--json`
 Tail cannot combine with `--all` or `--since`. Follow switches from the initial
 backward page to forward polling at its newest cursor.
 
-## Synthetic 2,000-event measurement
+## Historical measurement
 
-Real Boat SDK with fake fetch, 2,000 identified fragments. Baseline provider
-source from main (a16e4352), forward drain:
-**20 requests, 356449 response bytes, 2000 events, 3.93 ms**. Latest 100 raw
-events coalesced: **1 request, 501 response bytes, 1 message event, 2.88 ms**.
-Timings are local CPU, not production/network/phone latency. The after read
-intentionally loads the current window, not all 2,000 events. Reproduction
-and raw results are in ignored Ship PR artifacts.
+The #814 synthetic delta-only coalescing measurement no longer describes the
+safe contract: delta-only windows now retain raw events rather than collapsing
+them into a partial snapshot.

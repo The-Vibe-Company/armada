@@ -1282,15 +1282,26 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       [1, 2, 3, 4].map((n) => ({ sequence: n, event: event(n) })),
     );
     const tail = await f.provider.events({ sandboxId: row.id, direction: "backward", limit: 2, coalesce: true });
-    expect(tail.events).toMatchObject([{ text: "3", textMode: "delta" }, { text: "4", textMode: "delta" }]);
+    expect(tail.events).toMatchObject([
+      { text: "3", textMode: "delta" },
+      { text: "4", textMode: "delta" },
+    ]);
     expect(tail.hasMore).toBe(true);
     const older = await f.provider.events({
       sandboxId: row.id,
       direction: "backward",
       cursor: tail.olderCursor!,
       limit: 2,
+      coalesce: true,
     });
     expect(older.events.map((e) => e.id)).toEqual(["history-1", "history-2"]);
+    expect(
+      [...older.events, ...tail.events].reduce(
+        (text, event) =>
+          event.kind === "message" ? (event.textMode === "snapshot" ? event.text : text + event.text) : text,
+        "",
+      ),
+    ).toBe("1234");
     expect(older.hasMore).toBe(false);
     await appendModalEvents(db, scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
     const follow = await f.provider.events({ sandboxId: row.id, cursor: tail.cursor! });

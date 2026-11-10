@@ -211,16 +211,27 @@ test("backward pages anchor older history separately from forward follow", async
     response([]),
   );
   const tail = await boat.provider.events({ sandboxId: ID, direction: "backward", limit: 2, coalesce: true });
-  expect(tail.events).toMatchObject([{ text: "3", textMode: "delta" }, { text: "4", textMode: "delta" }]);
+  expect(tail.events).toMatchObject([
+    { text: "3", textMode: "delta" },
+    { text: "4", textMode: "delta" },
+  ]);
   expect(tail.hasMore).toBe(true);
   const older = await boat.provider.events({
     sandboxId: ID,
     direction: "backward",
     cursor: tail.olderCursor!,
     limit: 2,
+    coalesce: true,
   });
   const follow = await boat.provider.events({ sandboxId: ID, cursor: tail.cursor! });
   expect(older.events.map((e) => e.id)).toEqual(["e1", "e2"]);
+  expect(
+    [...older.events, ...tail.events].reduce(
+      (text, event) =>
+        event.kind === "message" ? (event.textMode === "snapshot" ? event.text : text + event.text) : text,
+      "",
+    ),
+  ).toBe("1234");
   expect(follow.events.map((e) => e.id)).toEqual(["e5"]);
   expect(boat.requests.map((r) => r.query.get("sort"))).toEqual(["desc", "desc", "asc"]);
   expect(boat.requests[1]?.query.get("cursor")).toBe(Buffer.from("3:e3").toString("base64url"));
