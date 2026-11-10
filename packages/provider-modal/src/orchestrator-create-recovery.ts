@@ -58,7 +58,7 @@ export function createOrchestratorCreateRecovery(input: {
       row.launchUserId !== request.ownerId ||
       !(
         expanded
-          ? ["booting", "active", "stopped", "terminate", "deleting", "deleted"]
+          ? ["booting", "active", "checkpoint", "snapshot", "stopped", "terminate", "deleting", "deleted"]
           : ["booting", "deleting", "deleted"]
       ).includes(row.phase) ||
       (expanded

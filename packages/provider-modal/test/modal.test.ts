@@ -10,7 +10,7 @@ import {
   GoldenBuildJobs,
   reserveOrchestratorOperation,
 } from "@armada/core/server";
-import type { Image, ModalClient, Sandbox } from "modal";
+import { type Image, ModalClient, type Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createManagedParentMcp } from "../../mcp-server/src/mcp-managed-parent.ts";
@@ -2841,6 +2841,108 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
     } finally {
       if (stage === "active_publication")
         await db.exec("drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()");
+    }
+  },
+);
+
+// Recovery must own cleanup even when an old initialization catch began a stop
+// whose checkpoint or snapshot failed. Exercise the public SDK's lookup/tag/poll
+// and termination paths, with only its gRPC transport replaced.
+test.each(["checkpoint", "snapshot"] as const)(
+  "registered first-create recovery terminates interrupted %s cleanup",
+  async (phase) => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const createOperationId = crypto.randomUUID();
+    const orchestratorId = crypto.randomUUID();
+    const sandboxId = crypto.randomUUID();
+    const child = await f.provider.fork({
+      from: name,
+      idempotencyKey: createOperationId,
+      labels: {
+        sandbox: sandboxId,
+        operation: createOperationId,
+        orchestrator: orchestratorId,
+        owner: scope.userId,
+        org: scope.orgId,
+        visibility: "private",
+      },
+    });
+    await f.store.lease(child.id, async (row, save) => {
+      row.phase = phase;
+      await save(row);
+    });
+    const row = await f.store.get(child.id);
+    let terminated = false;
+    let terminations = 0;
+    const client = new ModalClient({
+      tokenId: "synthetic",
+      tokenSecret: "synthetic",
+      cpClient: {
+        appGetOrCreate: async () => ({ appId: scope.binding.appId }),
+        sandboxGetFromNameV2: async (request: { sandboxName: string }) => {
+          expect(request.sandboxName).toBe(row.physicalName);
+          return { sandboxId: row.physicalId };
+        },
+        sandboxTagsGetV2: async () => ({
+          tags: [
+            { tagName: "armada_sandbox", tagValue: child.id },
+            { tagName: "armada_scope", tagValue: (await import("../src/store.ts")).scopeKey(scope) },
+            { tagName: "armada_generation", tagValue: "1" },
+          ],
+        }),
+        sandboxWaitV2: async () => (terminated ? { result: { status: 1, exitcode: 0 } } : {}),
+        sandboxTerminateV2: async () => {
+          terminations++;
+          terminated = true;
+          return {};
+        },
+      } as unknown as ModalClient["cpClient"],
+    });
+    const provider = createModalProvider({
+      scope,
+      store: f.store,
+      appName: "pinned",
+      client,
+      distribution: f.distribution,
+      runner: {
+        call: async () => {
+          throw Error("Recovery must not contact Runner");
+        },
+      },
+    });
+    const request = {
+      version: 1 as const,
+      createOperationId,
+      recoveryOperationId: crypto.randomUUID(),
+      orchestratorId,
+      ownerId: scope.userId,
+      orgId: scope.orgId,
+      providerSnapshotId: name,
+      intendedSandboxId: sandboxId,
+      originalSandbox: { sandboxId, providerSandboxId: child.id, sqlGeneration: "1", nativeGeneration: "1" },
+      target: {
+        provider: "modal" as const,
+        orgId: scope.orgId,
+        visibility: "private" as const,
+        sourceGoldenVisibility: "private" as const,
+        modal: scope.binding,
+      },
+    };
+    try {
+      expect(await provider.readOrchestratorCreateRecovery!(request)).toBeNull();
+      expect(terminations).toBe(0);
+      expect(await provider.recoverOrchestratorCreate!(request)).toMatchObject({
+        state: "terminated",
+        physicalId: row.physicalId,
+      });
+      expect((await f.store.get(child.id)).phase).toBe("deleted");
+      expect(await provider.readOrchestratorCreateRecovery!(request)).toMatchObject({ state: "terminated" });
+      expect(terminations).toBe(1);
+    } finally {
+      client.close();
     }
   },
 );
