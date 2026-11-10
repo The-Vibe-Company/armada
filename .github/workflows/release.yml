@@ -167,7 +167,7 @@ jobs:
   production:
     name: Release migrations, server and dashboard
     needs: [check, binary]
-    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    if: ${{ !cancelled() && vars.STAGING_GATED_DEPLOYS != 'true' && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
