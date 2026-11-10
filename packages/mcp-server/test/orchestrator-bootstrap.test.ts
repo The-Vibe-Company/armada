@@ -93,7 +93,7 @@ test.each([
     const receipt = await run;
     expect(calls).toEqual(["install", "receipt", "authority"]);
     if (mode === "pinned")
-      expect(commands[0]?.split(" && ")[0]).toBe(
+      expect(commands[0]?.split(" && ")[0]).toEndWith(
         "skillpack install 'example/notes' --version '1.0.0' --api-url https://skillpack.app/v1 --scope project --project '/home/user/repo'\\''$(false)' --tools codex --pin --yes --json >/dev/null",
       );
     expect(receipt).toEqual(

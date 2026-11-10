@@ -77,7 +77,15 @@ describe("createGoldenCreateService, wired to a real database", () => {
           github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
           installationApp: null,
           fetch: fakeGitHubFetch(),
-          ssh: async (_provider: Provider, input: { token: string; script: string }) => {
+          ssh: async (
+            _provider: Provider,
+            input: {
+              token: string;
+              script: string;
+              onWarning?: (warning: "skillpack_download_unavailable" | "skillpack_user_local_only") => void;
+            },
+          ) => {
+            if (providerId === "modal") input.onWarning?.("skillpack_download_unavailable");
             sshCalls.push(input);
           },
         };
@@ -207,8 +215,20 @@ describe("createGoldenCreateService, wired to a real database", () => {
         expect(completed).toMatchObject({
           state: "succeeded",
           provider: providerId,
-          result: { snapshot: "golden-bx_1" },
+          result: {
+            snapshot: "golden-bx_1",
+            warnings: providerId === "modal" ? ["skillpack_download_unavailable"] : [],
+          },
         });
+        const persistedWarning = (
+          await sql.query<{ build_warnings: string[] }>(
+            "select build_warnings from public.goldens where name=$1 and provider=$2",
+            [completed.result?.name, providerId],
+          )
+        ).rows[0];
+        expect(persistedWarning?.build_warnings).toEqual(
+          providerId === "modal" ? ["skillpack_download_unavailable"] : [],
+        );
         expect(sshCalls).toHaveLength(1);
         expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
 
@@ -597,6 +617,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       ).rows,
     ).toEqual([{ new_snapshot: committed.providerSnapshotId }]);
     failure = "";
+    let integrityFailure = false;
     const jobs = new GoldenBuildJobs({
       sql: db,
       encryptionKey: KEY,
@@ -604,7 +625,12 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
         github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
         installationApp: null,
         fetch: fakeGitHubFetch(),
-        ssh: async () => {},
+        ssh: async () => {
+          if (integrityFailure)
+            throw new GoldenError("build_failed", "closed integrity failure", {
+              safeReason: "skillpack_integrity_failed",
+            });
+        },
       },
       provider: async () => provider,
     });
@@ -612,6 +638,15 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     await jobs.runOne();
     expect((await jobs.status(actor.userId, job.jobId)).state).toBe("succeeded");
     const changed = (await store.findByName(actor.orgId, "web"))[0]!;
+    integrityFailure = true;
+    const rejectedBuild = await jobs.admit(provider, actor, { ...input, existingGolden: changed }, crypto.randomUUID());
+    await jobs.runOne();
+    expect(await jobs.status(actor.userId, rejectedBuild.jobId)).toMatchObject({
+      state: "failed",
+      failureReason: "skillpack_integrity_failed",
+      result: null,
+    });
+    expect((await store.findByName(actor.orgId, "web"))[0]?.providerSnapshotId).toBe(changed.providerSnapshotId);
     artifacts.get(changed.providerSnapshotId!)!.fingerprint = "changed-outside-managed-namespace";
     const recovered = await service.create(provider, actor, { ...input, existingGolden: changed });
     expect(recovered.snapshot).not.toBe(changed.providerSnapshotId);

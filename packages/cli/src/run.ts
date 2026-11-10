@@ -560,9 +560,18 @@ async function admitGoldenBuild(
   let current = job;
   try {
     for (let attempt = 0; attempt < Math.ceil(seconds / 2); attempt++) {
-      if (current.state === "succeeded") return current.result ?? undefined;
+      if (current.state === "succeeded") {
+        for (const warning of current.result?.warnings ?? [])
+          io.err(
+            `Warning: ${warning}. ${warning === "skillpack_download_unavailable" ? "Skillpack was not provisioned: allow GitHub release egress before rebuilding for skills use." : "Skillpack is installed in the user-local bin directory."}\n`,
+          );
+        return current.result ?? undefined;
+      }
       if (current.state === "failed" || current.state === "recovery_required")
-        throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (build_failed).`);
+        throw new GoldenError(
+          "build_failed",
+          `Build ${job.jobId}: ${current.state} (${current.failureReason ?? "build_failed"}).`,
+        );
       deadline.throwIfAborted();
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
       current = await client.request<GoldenBuildStatus>("/api/v1/golden/build/status", {
@@ -579,9 +588,15 @@ async function admitGoldenBuild(
       `Polling stopped; build ${job.jobId} may still be running. Use golden build-status ${job.jobId}; do not resubmit.`,
     );
   }
-  if (current.state === "succeeded") return current.result ?? undefined;
+  if (current.state === "succeeded") {
+    for (const warning of current.result?.warnings ?? []) io.err(`Warning: ${warning}\n`);
+    return current.result ?? undefined;
+  }
   if (current.state === "failed" || current.state === "recovery_required")
-    throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (build_failed).`);
+    throw new GoldenError(
+      "build_failed",
+      `Build ${job.jobId}: ${current.state} (${current.failureReason ?? "build_failed"}).`,
+    );
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
   else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
   return undefined;
@@ -1025,6 +1040,7 @@ function jsonGolden(row: GoldenRecord) {
     boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
+    buildWarnings: row.buildWarnings ?? [],
   };
 }
 

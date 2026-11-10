@@ -172,6 +172,7 @@ export function createOrchestratorBackendResolver(input: {
       provider,
       ...(adapter.continuity ? { continuity: adapter.continuity } : {}),
       selection: choice,
+      buildWarnings: golden.buildWarnings ?? [],
       projectDir: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
       mcpUrl: input.mcpUrl,
       consent: await input.consent(actor, configuration),

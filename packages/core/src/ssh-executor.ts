@@ -2,9 +2,11 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
 export interface SshExecDeps {
+  onWarning?: (warning: GoldenBuildWarning) => void;
   mkdtemp?: typeof mkdtemp;
   rm?: typeof rm;
   writeFile?: typeof writeFile;
@@ -289,6 +291,7 @@ async function sshExchange(
       `${input.token}\n${pub.trim()}\n${input.script}`,
       capture,
       timeoutMs,
+      deps.onWarning,
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -314,6 +317,7 @@ function command(
   stdin: string,
   capture = false,
   timeoutMs = capture ? 30_000 : 600_000,
+  onWarning?: (warning: GoldenBuildWarning) => void,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -347,13 +351,29 @@ function command(
       pending = (lines.pop() ?? "").slice(-256);
       for (const line of lines) {
         const match =
-          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
+          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|skillpack|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
             line,
           );
         if (match) {
           phase = match[1]!;
           exitCode = match[2];
         }
+        const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
+        if (warning)
+          onWarning?.(
+            warning[1] === "download_unavailable" ? "skillpack_download_unavailable" : "skillpack_user_local_only",
+          );
+        if (warning)
+          console.warn(
+            JSON.stringify({
+              event: "golden_skillpack_warning",
+              reason: warning[1],
+              action:
+                warning[1] === "user_local_only"
+                  ? "use_user_local_cli"
+                  : "allow_github_egress_and_rebuild_before_using_skills",
+            }),
+          );
       }
     });
     c.on("error", () => {
@@ -372,7 +392,14 @@ function command(
         reject(
           new GoldenError(
             "build_failed",
-            `Golden build failed during ${phase} (${reason}). Check builder connectivity, permissions and package availability; retry after correction. The previous golden is retained.`,
+            phase === "skillpack" && exitCode === "98"
+              ? "skillpack_integrity_failed: native archive checksum or self-test failed; do not use this build."
+              : `Golden build failed during ${phase} (${reason}). Check builder connectivity, permissions and package availability; retry after correction. The previous golden is retained.`,
+            {
+              ...(phase === "skillpack" && exitCode === "98"
+                ? { safeReason: "skillpack_integrity_failed" as const }
+                : {}),
+            },
           ),
         );
       }

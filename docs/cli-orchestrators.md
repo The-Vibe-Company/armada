@@ -102,7 +102,8 @@ not permission to resume initialization or adopt a newer generation.
 
 Create accepts `--skill example/notes@1.0.0` (API/MCP create: `skill`). This first
 slice requires one exact public catalog pin. Install the released native
-`skillpack` CLI in the golden beforehand; Armada does not download an installer.
+`skillpack` CLI in the golden. `armada golden create/update` provisions the pinned,
+checksum-verified native CLI automatically; rebuild older goldens with `golden update`.
 Both Claude Code and Codex receive project-local discovery files before the first
 turn. Detail includes `configuration.skill` and `skillReceipt` (origin, UUID,
 version, checksum). Missing CLI/releases, conflicts and invalid receipts block

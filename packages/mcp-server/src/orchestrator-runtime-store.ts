@@ -1158,13 +1158,21 @@ export class OrchestratorRuntimeStore {
       if (!updated.rows.length) return false;
       if (result.parentState)
         await tx.query(`update public.orchestrators set state=$2 where id=$1`, [identity.id, result.parentState]);
+      if (operation.kind === "create" && result.state === "failed" && result.parentState === "stopped")
+        await tx.query(
+          `update public.sandboxes set status='stopped',stopped_at=coalesce(stopped_at,now()),last_observed_at=now()
+           where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3`,
+          [identity.sandboxId, identity.generation, identity.providerSandboxId],
+        );
       await tx.query(
         `update public.orchestrator_runtime set updated_at=now(),blocked_reason=$2,
         last_activity_at=case when $3 then now() else last_activity_at end,
         continuity=case when $5::text is not null then $5 when $4 then 'unverified' else continuity end where orchestrator_id=$1`,
         [
           identity.id,
-          result.parentState === "blocked" ? (result.errorCode ?? null) : null,
+          (operation.kind === "create" && result.state === "failed") || result.parentState === "blocked"
+            ? (result.errorCode ?? null)
+            : null,
           result.state === "succeeded" && ["message", "steer"].includes(operation.kind),
           !!result.conversationId && current.continuity === "not_started",
           result.continuity ?? null,

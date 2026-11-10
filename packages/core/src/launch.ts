@@ -368,6 +368,7 @@ export async function launchSandbox(
               repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
               harness,
               skill,
+              golden.buildWarnings,
             ),
           );
         if (repositoryDir !== null) {

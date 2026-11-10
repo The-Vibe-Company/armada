@@ -258,7 +258,7 @@ export function createProductionOrchestrators(input: {
           throw new PrivateSkillError(
             error instanceof VaultError && error.code === "credential_refused"
               ? "skillpack_credential_refused"
-              : "skillpack_install_failed",
+              : "skillpack_credential_unreadable",
           );
         }
       },
