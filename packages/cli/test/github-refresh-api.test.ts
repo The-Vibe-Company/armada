@@ -24,7 +24,7 @@ test("GitHub repair sends only the sandbox id over the authenticated Armada API"
         now: () => new Date(),
         open: () => {},
         fetch: async (input, init) => {
-          request = new Request(input, init);
+          request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
           return Response.json({ id: "sandbox-id", login: "octocat", status: "connected" });
         },
       },
