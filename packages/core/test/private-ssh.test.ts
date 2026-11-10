@@ -43,7 +43,18 @@ test.each([
   const outcome = sshPrivateSkillCommand(
     provider,
     { sandboxId: "test", key: "synthetic", script: "unused" },
-    { spawn, chmod: async () => {}, readPublicKey: async () => "ssh-ed25519 AAAA" },
+    {
+      spawn,
+      chmod: async () => {},
+      readPublicKey: async () => "ssh-ed25519 AAAA",
+      ...(scenario === "storage"
+        ? {
+            writeFile: async () => {
+              throw Error(opaque);
+            },
+          }
+        : {}),
+    },
   );
   await expect(outcome).rejects.toMatchObject({ reason });
   await outcome.catch((error) => expect(String(error)).not.toContain(opaque));
