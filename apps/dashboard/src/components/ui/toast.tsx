@@ -2,57 +2,74 @@
 
 import { CircleAlertIcon, CircleCheckIcon, XIcon } from "lucide-react";
 import { Toast as ToastPrimitive } from "radix-ui";
-import { createContext, type ReactNode, useCallback, useContext, useRef, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { addToast, closeToast, TOAST_DURATION, type ToastInput, type ToastItem } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 type Show = (toast: ToastInput) => void;
 
-const ToastContext = createContext<Show | null>(null);
+/*
+ * The toasts of this tab, in a module store rather than a context: the `Toaster` is a leaf of the shell, so the shell
+ * and the pages under it render (and hydrate) exactly as they would without toasts.
+ */
+let toasts: ToastItem[] = [];
+let lastId = 0;
+const listeners = new Set<() => void>();
+const NONE: ToastItem[] = [];
+
+function emit(next: ToastItem[]) {
+  toasts = next;
+  for (const listener of listeners) listener();
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+const show: Show = (toast) => {
+  lastId += 1;
+  emit(addToast(toasts, { ...toast, id: lastId }));
+};
 
 /**
  * Shows a transient confirmation for an action whose result lands away from where the person is looking (a dialog
  * that closed, a row that moved or left the list). Forms keep their inline result: it stays next to the field to fix.
- * Outside a `Toaster` it does nothing, so a component that toasts still renders on its own.
+ * The function is stable, and safe to call from an action after the calling component unmounted.
  */
 export function useToast(): Show {
-  return useContext(ToastContext) ?? ignore;
+  return show;
 }
-
-function ignore() {}
 
 /**
  * The toast region of the signed-in shell. Toasts never take focus: a success is announced politely, a failure
  * assertively, the way an inline result would be. F8 moves focus to the region, Escape closes the focused toast, and
  * a toast pauses while it is hovered or focused.
  */
-export function Toaster({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const nextId = useRef(0);
-  const show = useCallback<Show>((toast) => {
-    nextId.current += 1;
-    const id = nextId.current;
-    setToasts((list) => addToast(list, { ...toast, id }));
-  }, []);
+export function Toaster() {
+  const list = useSyncExternalStore(
+    subscribe,
+    () => toasts,
+    () => NONE,
+  );
   return (
-    <ToastContext.Provider value={show}>
-      <ToastPrimitive.Provider swipeDirection="right" label="Notification">
-        {children}
-        {toasts.map((toast) => (
-          <Toast
-            key={toast.id}
-            toast={toast}
-            onOpenChange={(open) => {
-              if (!open) setToasts((list) => closeToast(list, toast.id));
-            }}
-          />
-        ))}
-        <ToastPrimitive.Viewport
-          data-slot="toast-viewport"
-          className="pointer-events-none fixed right-0 bottom-0 z-[100] flex max-h-dvh w-full flex-col gap-2 p-4 outline-none sm:max-w-sm"
+    <ToastPrimitive.Provider swipeDirection="right" label="Notification">
+      {list.map((toast) => (
+        <Toast
+          key={toast.id}
+          toast={toast}
+          onOpenChange={(open) => {
+            if (!open) emit(closeToast(toasts, toast.id));
+          }}
         />
-      </ToastPrimitive.Provider>
-    </ToastContext.Provider>
+      ))}
+      <ToastPrimitive.Viewport
+        data-slot="toast-viewport"
+        className="pointer-events-none fixed right-0 bottom-0 z-[100] flex max-h-dvh w-full flex-col gap-2 p-4 outline-none sm:max-w-sm"
+      />
+    </ToastPrimitive.Provider>
   );
 }
 
