@@ -1362,6 +1362,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
       await collectImages();
     },
+    async extendLifetime({ sandboxId, ttlSeconds }) {
+      await bound();
+      return store.lease(sandboxId, async (row) => {
+        if (row.phase !== "active" || (await (await physical(row)).poll()) !== null)
+          throw refusal("sandbox_not_ready", "Only running compute can be extended.");
+        if (!row.grantExpiresAt || Date.now() + ttlSeconds * 1000 > row.grantExpiresAt)
+          throw refusal("invalid_request", "Extension exceeds the physical Modal deadline; stop and resume first.");
+        return new Date(row.grantExpiresAt);
+      });
+    },
     async stop({ sandboxId }) {
       await bound();
       let observed: Machine | undefined;

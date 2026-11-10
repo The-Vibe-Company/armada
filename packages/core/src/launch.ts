@@ -26,6 +26,7 @@ import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
+import { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
@@ -205,7 +206,12 @@ export async function launchSandbox(
         ...(machineSize.effective ? { size: machineSize.effective } : {}),
         noEnv: true,
         env,
-        ttlSeconds,
+        // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
+        ttlSeconds: options.privateParent
+          ? ttlSeconds
+          : golden.provider === "modal"
+            ? PROVIDER_LIMITS.modal.maxTtlSeconds
+            : Math.min(PROVIDER_LIMITS.boat.maxTtlSeconds, ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS),
         labels: {
           armada: "sandbox",
           sandbox: id,
@@ -261,6 +267,16 @@ export async function launchSandbox(
           : {}),
         ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
         effectiveTtlSeconds: ttlSeconds,
+        ...(!options.privateParent && forked.expiresAt
+          ? {
+              expiresAt: new Date(
+                Math.min(
+                  Date.now() + ttlSeconds * 1000,
+                  forked.expiresAt.getTime() - SANDBOX_STOP_MARGIN_SECONDS * 1000,
+                ),
+              ).toISOString(),
+            }
+          : {}),
         model: choice.model,
         reasoningEffort: choice.reasoningEffort,
         visibility,
@@ -307,6 +323,8 @@ export async function launchSandbox(
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
       progress("initialization_mcp");
+      if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
+        throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       await stores.connections?.prepare?.(provider, record, actor);
       progress("initialization_publish");
       if (prompt === undefined) {
@@ -318,7 +336,7 @@ export async function launchSandbox(
             golden,
             launchGithub,
             ttlSeconds,
-            ready.expiresAt ?? forked.expiresAt,
+            record.expiresAt ? new Date(record.expiresAt) : (ready.expiresAt ?? forked.expiresAt),
             "ready",
             [],
             undefined,
@@ -347,7 +365,7 @@ export async function launchSandbox(
           golden,
           launchGithub,
           ttlSeconds,
-          ready.expiresAt ?? forked.expiresAt,
+          record.expiresAt ? new Date(record.expiresAt) : (ready.expiresAt ?? forked.expiresAt),
           "running",
           [receipt.conversationId],
           {
@@ -565,7 +583,7 @@ function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
       `The TTL must be a whole number of seconds from 1 to ${limits.maxTtlSeconds} (${limits.maxTtlLabel} on ${provider}).`,
     );
   }
-  return ttlSeconds;
+  return Math.min(ttlSeconds, limits.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
 }
 
 function checkPrompt(prompt: string | undefined): string | undefined {

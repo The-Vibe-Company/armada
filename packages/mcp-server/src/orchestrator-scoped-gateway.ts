@@ -40,12 +40,16 @@ const schemas = {
   read: z.object({ sandboxId: z.uuid() }).strict(),
   message: z.object({ idempotencyKey: key, sandboxId: z.uuid(), text }).strict(),
   stop: z.object({ idempotencyKey: key, sandboxId: z.uuid() }).strict(),
+  extend: z
+    .object({ idempotencyKey: key, sandboxId: z.uuid(), ttlSeconds: z.number().int().positive().max(2591700) })
+    .strict(),
 };
 const restSchemas = {
   launch: schemas.launch.omit({ idempotencyKey: true }),
   read: schemas.read,
   message: schemas.message.omit({ idempotencyKey: true }),
   stop: schemas.stop.omit({ idempotencyKey: true }),
+  extend: schemas.extend.omit({ idempotencyKey: true }),
 };
 type Method = keyof typeof schemas;
 const childMethod = (value: string): value is Method => Object.hasOwn(schemas, value);
@@ -85,6 +89,10 @@ export function createOrchestratorScopedGateway(children: ReturnType<typeof crea
     if (name === "message") {
       const input = schemas.message.parse(args);
       return children.message(token, input.idempotencyKey, input.sandboxId, input.text);
+    }
+    if (name === "extend") {
+      const input = schemas.extend.parse(args);
+      return children.extend(token, input.idempotencyKey, input.sandboxId, input.ttlSeconds);
     }
     const input = schemas.stop.parse(args);
     return children.stop(token, input.idempotencyKey, input.sandboxId);

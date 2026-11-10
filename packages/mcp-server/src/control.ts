@@ -646,6 +646,7 @@ async function dispatch(
       "sandbox/send": "send",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
+      "sandbox/extend": "extend",
       "sandbox/delete": "delete",
       "sandbox/wait": "wait",
       "sandbox/exec": "exec",
@@ -654,6 +655,14 @@ async function dispatch(
     } as Record<string, string>
   )[route];
   if (toolName) {
+    if (
+      route === "sandbox/extend" &&
+      (!Number.isSafeInteger(body.ttl_seconds) || Number(body.ttl_seconds) < 1 || Number(body.ttl_seconds) > 2592000)
+    )
+      throw new VaultError(
+        "invalid",
+        "ttl_seconds must be a positive whole number of seconds within the server maximum.",
+      );
     if (
       route === "golden/capabilities" &&
       optional(body, "provider") !== undefined &&

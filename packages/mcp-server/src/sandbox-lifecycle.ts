@@ -60,6 +60,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
       let error: string | null = null;
       let resolved = false;
       let stoppedAt: Date | undefined;
+      const expired = new Date(row.expires_at).getTime() <= Date.now();
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
@@ -69,21 +70,24 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         if (
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
-          (row.stop_requested_at !== null ||
-            row.status === "stopping" ||
-            row.status === "starting" ||
-            new Date(row.expires_at).getTime() <= Date.now())
+          (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
         ) {
           signal?.throwIfAborted();
           const owned = await sql.query<{ id: string }>(
             `update public.sandboxes
             set reconcile_lease_until=now()+interval '2 minutes',
-              stop_requested_at=coalesce(stop_requested_at,now())
+              stop_requested_at=coalesce(stop_requested_at,now()),
+              status=case when status in ('starting','failed') then status else 'stopping'::public.sandbox_status end,
+              status_reason=case when $4 and status not in ('starting','failed') then 'expired' else status_reason end
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
               and reconcile_lease_until>now() and (activity_until is null or activity_until<now()) returning id`,
-            [row.id, token, row.lifecycle_generation],
+            [row.id, token, row.lifecycle_generation, expired],
           );
           if (!owned.rows[0]) return true;
+          signal?.throwIfAborted();
+          // A best-effort preservation timeout is NOT proof the active turn settled.
+          if (["ready", "running"].includes(info.state))
+            await operation(signal, () => provider.interrupt({ sandboxId: row.provider_sandbox_id }));
           signal?.throwIfAborted();
           if (
             !(
@@ -100,8 +104,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         physicalExit = info.physicalExitConfirmed === true;
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
-        if (!terminal && new Date(row.expires_at).getTime() <= Date.now())
-          error = "Lifetime expired; provider stop is not yet confirmed. Retrying.";
+        if (!terminal && expired) error = "Lifetime expired; provider stop is not yet confirmed. Retrying.";
       } catch (caught) {
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.

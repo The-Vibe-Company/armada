@@ -12,6 +12,7 @@ import {
   type Sql,
   sandboxActivity,
 } from "@armada/core/server";
+import { createSqlData } from "./data.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import {
   createOrchestratorBackendResolver,
@@ -26,6 +27,7 @@ import type { OrchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-native.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
+import { extendSandbox } from "./sandbox-extend.ts";
 import { preserveBeforeStop } from "./work-preservation.ts";
 
 /** Real production composition. Modal Codex retains its native checkpoint lane;
@@ -89,7 +91,7 @@ export function createProductionOrchestrators(input: {
     // Never infer consent to all of the owner's accounts or organization goldens.
     async consent(_actor, configuration) {
       return {
-        scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
+        scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
         goldenIds: [configuration.goldenId],
         credentialIds: [configuration.modelAccountId],
       };
@@ -178,6 +180,15 @@ export function createProductionOrchestrators(input: {
           },
         };
       });
+    },
+    async extend(operation, ttlSeconds) {
+      const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+      const scoped = createSqlData(input.sql)({
+        via: "service",
+        userId: operation.ownerId,
+        orgs: [{ orgId: operation.orgId, role: "member" }],
+      });
+      await extendSandbox(scoped.sandboxes, saved, provider, ttlSeconds);
     },
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);

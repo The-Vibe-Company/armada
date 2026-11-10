@@ -53,6 +53,7 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
+import { extendSandbox } from "./sandbox-extend.ts";
 import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -1368,6 +1369,21 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           },
         };
       });
+    },
+  );
+
+  tool(
+    "extend",
+    {
+      title: "Extend a sandbox lifetime",
+      description:
+        "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
+      input: { id, ttl_seconds: z.number().int().positive().max(MAX_LAUNCH_TTL_SECONDS) },
+      output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
+    },
+    async (args) => {
+      const { sandbox, provider } = await live(args.id);
+      return extendSandbox(data.sandboxes, sandbox, provider, args.ttl_seconds);
     },
   );
 

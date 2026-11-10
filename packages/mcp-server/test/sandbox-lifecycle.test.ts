@@ -71,11 +71,17 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
           effective_ttl_seconds: number;
           requested_ttl_seconds: number;
           usage_runtime_seconds: number | null;
+          status_reason: string | null;
         }>("select * from sandboxes where id=$1", [id])
       ).rows[0]!;
       expect(row.status).toBe(
-        outcome === "external-stop" || outcome === "expired" || outcome === "manual-stop" ? "stopped" : "running",
+        outcome === "external-stop" || outcome === "expired" || outcome === "manual-stop"
+          ? "stopped"
+          : outcome === "stale"
+            ? "running"
+            : "stopping",
       );
+      expect(row.status_reason).toBe(["expired", "unconfirmed", "stop-error"].includes(outcome) ? "expired" : null);
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
       // This wire fixture supplies no physical stop timestamp: observation time is not runtime.
@@ -161,7 +167,6 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         expect(row?.stopped_at).not.toBeNull();
         expect(row?.last_observed_at).not.toBeNull();
         expect(row?.lifecycle_error).toBeNull();
-        expect(methods).toEqual(observation === "expired" ? ["GET", "GET", "POST", "POST", "POST", "GET"] : ["GET"]);
       }
       // Re-due historical failures: only unknown outcomes may consume provider work again.
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);

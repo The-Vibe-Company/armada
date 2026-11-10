@@ -238,6 +238,7 @@ export {
   statusReasonOf,
 } from "./sandbox.ts";
 export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
+export { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 export {
   assertProviderOf,
   createProviderRegistry,

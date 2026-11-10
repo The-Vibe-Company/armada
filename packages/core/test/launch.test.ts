@@ -180,7 +180,7 @@ describe("launch", () => {
       from: SNAPSHOT,
       noEnv: true,
       env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
-      ttlSeconds: 7200,
+      ttlSeconds: 7500,
       labels: {
         armada: "sandbox",
         sandbox: "sbx-1",
@@ -225,7 +225,7 @@ describe("launch", () => {
     expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "claude-opus-5-5", reasoningEffort: "medium" });
     expect(result.conversationId).toBeUndefined();
     expect(result.ttlSeconds).toBe(14_400);
-    expect(world.forks[0]?.ttlSeconds).toBe(14_400);
+    expect(world.forks[0]?.ttlSeconds).toBe(14_700);
     expect([...world.rows.values()][0]).toMatchObject({ status: "ready", conversationIds: [] });
   });
 
@@ -302,7 +302,7 @@ describe("launch", () => {
         "prepare",
         "prompt",
       ]);
-      expect(world.forks[0]?.ttlSeconds).toBe(7200);
+      expect(world.forks[0]?.ttlSeconds).toBe(7500);
       expect([...world.rows.values()][0]?.status).toBe("running");
     });
   }
