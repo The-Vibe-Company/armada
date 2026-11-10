@@ -191,6 +191,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     );
     return json({ promptId: `prompt-${prompts}`, conversationId, status: "queued" }, 202);
   }
+  if (suffix === "/steer")
+    return Response.json({ ok: false, code: "no_running_turn", message: "Nothing runs" }, { status: 409 });
   if (suffix.startsWith("/prompts/"))
     return json({
       promptRun: {
@@ -379,7 +381,7 @@ try {
     ).rows[0]?.runtime_result;
     assert.equal(receipt?.kind, "prompt_receipt");
     assert.equal(receipt.promptId, `prompt-${prompts}`);
-    assert.equal(prompts, harness === "codex" ? 1 : 3, "Owner send must dispatch to Boat");
+    assert.equal(prompts, harness === "codex" ? 1 : 4, "Owner send must dispatch to Boat");
     const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
     const agentEvents = page.events
       .filter((item: core.OrchestratorEvent) => item.kind === "agent")
@@ -396,6 +398,35 @@ try {
       agentEvents.some((item) => item?.kind === "prompt" && item.status === "finished"),
       JSON.stringify(page),
     );
+    const steerRevision = revision;
+    const refused = await act("steer", "too late", 1);
+    assert.equal(refused.state, "failed", JSON.stringify(refused));
+    assert.equal(refused.errorCode, "no_running_turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.state, "ready");
+    assert.equal(detail.orchestrator.blockedReason, null);
+    const conversationId = detail.orchestrator.conversationId;
+    const steerDispatches = requests.filter((request) => request.endsWith("/steer")).length;
+    await act("send", "new turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.conversationId, conversationId);
+    assert.equal(detail.orchestrator.state, "ready");
+    const replayedSteer = await cli(
+      [
+        "steer",
+        id,
+        "too late",
+        "--org",
+        orgId,
+        "--expected-revision",
+        String(steerRevision),
+        "--idempotency-key",
+        `${harness}-steer-${steerRevision}`,
+      ],
+      1,
+    );
+    assert.deepEqual(replayedSteer, refused);
+    assert.equal(requests.filter((request) => request.endsWith("/steer")).length, steerDispatches);
     await act("stop");
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");

@@ -480,6 +480,33 @@ try {
     core.createSqlMcpRegistry(sql, key).sandboxConnections(ownerId, orgId, initialized.detail.orchestrator.sandboxId),
     (error: unknown) => error instanceof core.VaultError && error.code === "not_found",
   );
+  let turnRevision = initialized.detail.orchestrator.revision;
+  async function turn(action: string, text: string, requestKey: string) {
+    const result = await cli(
+      [
+        action,
+        admitted.orchestratorId,
+        text,
+        "--org",
+        orgId,
+        "--expected-revision",
+        String(turnRevision),
+        "--idempotency-key",
+        requestKey,
+      ],
+      202,
+    );
+    turnRevision = result.revision;
+    return result;
+  }
+  assert.equal((await turn("send", "hello", "idle-send")).state, "succeeded");
+  const refused = await turn("steer", "too late", "idle-steer");
+  assert.equal(refused.state, "failed", JSON.stringify(refused));
+  assert.equal(refused.errorCode, "no_running_turn");
+  const afterRefusal = await cli(["detail", admitted.orchestratorId, "--org", orgId], 200);
+  assert.equal(afterRefusal.orchestrator.state, "ready");
+  assert.equal(afterRefusal.orchestrator.blockedReason, null);
+  assert.equal((await turn("send", "new turn", "idle-next-send")).state, "succeeded");
   // The same production bundle must keep ordinary child MCP preparation,
   // not pass children into its parent-only private preparation port.
   const epochToken = [...fake.privateTokens].find((value) => value.startsWith("armada_epoch_"));
@@ -560,10 +587,29 @@ try {
     const sandboxId = launched.sandbox.id;
     assert(sandboxId, JSON.stringify(launched));
     // A live observation lease must be a closed retryable conflict, never a 503.
-    await sql.query("update sandboxes set reconcile_lease_until=now()+interval '1 minute' where id=$1", [sandboxId]);
+    // Own both fields: an in-flight observer must not clear this fixture's
+    // deadline when it finishes under its previous lease token.
+    await sql.query(
+      "update sandboxes set reconcile_lease=$2,reconcile_lease_until=now()+interval '1 minute' where id=$1",
+      [sandboxId, crypto.randomUUID()],
+    );
     await ordinary("send", { id: sandboxId, prompt: "hello" }, 409);
-    await sql.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
-    await ordinary("send", { id: sandboxId, prompt: "hello" });
+    await sql.query("update sandboxes set reconcile_lease=null,reconcile_lease_until=null where id=$1", [sandboxId]);
+    const sent = await ordinary("send", { id: sandboxId, prompt: "hello" });
+    if (reason === failures[0]) {
+      const refused = await ordinary(
+        "steer",
+        {
+          id: sandboxId,
+          text: "too late",
+          conversation_id: sent.conversationId,
+        },
+        409,
+      );
+      assert.equal(refused.error.code, "no_running_turn");
+      // The refused mutation must release its lease, not strand ordinary send.
+      await ordinary("send", { id: sandboxId, prompt: "new turn", conversation_id: sent.conversationId });
+    }
     const stopped = await ordinary("stop", { id: sandboxId });
     assert.equal(stopped.status, "stopped");
     const row = (
