@@ -165,16 +165,16 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     let working = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: true)
     #expect(working.canSteer)
     // Any open operation (here an unknown-outcome message) blocks every new command.
-    let settling = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil,
+    let settling = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, revision: 3,
                                         operations: [("message", "uncertain", 3)], agentWorking: true)
     #expect(!settling.canMessage && !settling.canSteer && !settling.canStop)
     #expect(settling.open == .init(kind: "message", uncertain: true))
     #expect(settling.composerNote?.contains("settling") == true)
     // Create is asynchronous: never send before it has succeeded.
-    let creating = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil,
+    let creating = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil, revision: 3,
                                         operations: [("create", "pending", 3)], agentWorking: false)
     #expect(creating.phase == .creating && !creating.canMessage && !creating.canRecover)
-    let uncertainCreate = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil,
+    let uncertainCreate = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil, revision: 3,
                                                operations: [("create", "uncertain", 3)], agentWorking: false)
     #expect(uncertainCreate.canRecover)
     let blocked = OrchestratorControls(state: "blocked", continuity: "unverified", blockedReason: "wait_cap_exhausted", revision: 3,
