@@ -169,7 +169,25 @@ const taskOutcome = z.discriminatedUnion("state", [
   z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
 ]);
 
+const sandboxUsage = z
+  .object({
+    computeSeconds: z.number().nullable(),
+    turnCount: z.number().nullable(),
+    turns: z.array(
+      z.object({
+        promptId: z.string(),
+        model: z.string().nullable(),
+        inputTokens: z.number().nullable(),
+        outputTokens: z.number().nullable(),
+        cachedTokens: z.number().nullable(),
+      }),
+    ),
+  })
+  .nullable()
+  .optional();
+
 const sandboxListMetadata = z.object({
+  usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   providerSandboxId: z.string().nullable(),
   boatId: z.string().nullable(),
@@ -200,6 +218,7 @@ const prompt = z.object({
 });
 
 const status = {
+  usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
   golden: z.string(),
@@ -996,6 +1015,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await provider.get(found.providerSandboxId);
+      if (machine.state === "stopped" && found.stoppedAt === null) {
+        await data.sandboxes.update(found.id, {
+          status: "stopped",
+          stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
+          ...(machine.stoppedAt ? {} : { usageRuntimeUnknown: true }),
+          ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
+        });
+      }
       await context.launchCredentials.assertTurn?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
@@ -1306,11 +1333,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           signal.throwIfAborted();
           await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
           let terminal = false;
+          let stoppedAt: Date | undefined;
           try {
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);
             terminal = observed.state === "stopped";
+            stoppedAt = observed.stoppedAt;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
             terminal = true;
@@ -1323,7 +1352,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
               status,
               stopRequested: !terminal,
               ...(status === "failed" ? { statusReason: found.statusReason } : {}),
-              ...(terminal ? { stoppedAt: context.now().toISOString() } : {}),
+              ...(terminal
+                ? {
+                    stoppedAt: (stoppedAt ?? context.now()).toISOString(),
+                    usageRuntimeUnknown: !stoppedAt && found.stoppedAt === null,
+                  }
+                : {}),
             },
           };
         },

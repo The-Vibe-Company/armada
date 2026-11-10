@@ -48,6 +48,56 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
     ]);
     expect(events.filter((e) => e.kind === "message" && e.text === "redirect delivered once")).toHaveLength(1);
     expect(events.filter((e) => e.kind === "other" && e.type === "turn/completed")).toHaveLength(2);
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: null, outputTokens: null, cachedTokens: null },
+      },
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: null, outputTokens: null, cachedTokens: null },
+      },
+    ]);
+  } finally {
+    await driver.close();
+  }
+});
+
+nativeTest("Codex usage snapshot includes all native turns restarted by steer within one Armada prompt", async () => {
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  let turn: Turn | undefined;
+  let steering: Promise<void> | undefined;
+  const events: DriverEvent[] = [];
+  try {
+    turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "initial" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => {
+        events.push(event);
+        if (event.kind === "message" && event.partial && !steering) steering = turn?.steer("redirect");
+      },
+    });
+    expect(await turn.done).toBe("finished");
+    await steering;
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: 100, outputTokens: 20, cachedTokens: 30 },
+      },
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: 200, outputTokens: 40, cachedTokens: 60 },
+      },
+    ]);
   } finally {
     await driver.close();
   }

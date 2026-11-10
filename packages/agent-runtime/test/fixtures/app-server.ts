@@ -118,6 +118,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     }
+    notify("thread/tokenUsage/updated", {
+      threadId: thread,
+      turnId: `turn-${turn}`,
+      tokenUsage: {
+        total: { inputTokens: 100 * turn, outputTokens: 20 * turn, cachedInputTokens: 30 * turn },
+        last: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 10 },
+      },
+    });
     notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: "text", delta: "partial" });
     if (
       params.input[0]?.type === "text" &&

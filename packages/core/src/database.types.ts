@@ -2441,6 +2441,9 @@ export type Database = {
           task_outcome: Json | null;
           task_prompt_id: string | null;
           preservation_note: string | null;
+          usage_runtime_seconds: number | null;
+          usage_running_since: string | null;
+          usage_turns: Json | null;
         };
         Insert: {
           id?: string;
@@ -2487,6 +2490,9 @@ export type Database = {
           task_outcome?: Json | null;
           task_prompt_id?: string | null;
           preservation_note?: string | null;
+          usage_runtime_seconds?: number | null;
+          usage_running_since?: string | null;
+          usage_turns?: Json | null;
         };
         Update: {
           id?: string;
@@ -2533,6 +2539,9 @@ export type Database = {
           task_outcome?: Json | null;
           task_prompt_id?: string | null;
           preservation_note?: string | null;
+          usage_runtime_seconds?: number | null;
+          usage_running_since?: string | null;
+          usage_turns?: Json | null;
         };
         Relationships: [
           {
