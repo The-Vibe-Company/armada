@@ -48,7 +48,11 @@ export function turnModelEvidence(
     request.requestedModel !== null &&
     observedModel !== null &&
     responses.every((event) => event.kind === "message" && event.model !== undefined);
-  const mismatch = decisive && observedModel !== request.requestedModel;
+  // A concrete response ID cannot disprove a native alias selection without an authoritative alias map.
+  const nativeAlias =
+    request.requestedModel !== null &&
+    ["sonnet", "opus", "haiku", "opusplan", "default"].includes(request.requestedModel);
+  const mismatch = decisive && !nativeAlias && observedModel !== request.requestedModel;
   const verified = decisive && observedModel === request.requestedModel;
   const modelSelectionReason = mismatch ? "model_selection_mismatch" : verified ? null : "model_selection_unverified";
   return {

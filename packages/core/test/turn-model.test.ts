@@ -138,3 +138,9 @@ test.each([
   expect(evidence.modelSelectionMessage).not.toContain("Work may already have occurred");
   expect(evidence.modelSelectionMessage).not.toContain("Do not retry automatically");
 });
+
+test("a concrete model does not falsely fail an unresolved native alias", () => {
+  expect(
+    turnModelEvidence([message("claude-sonnet-5")], { promptId: "turn", requestedModel: "sonnet", complete: true }),
+  ).toMatchObject({ observedModel: "claude-sonnet-5", modelSelectionReason: "model_selection_unverified" });
+});
