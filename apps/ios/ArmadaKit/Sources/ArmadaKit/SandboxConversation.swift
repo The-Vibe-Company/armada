@@ -140,13 +140,19 @@ extension ArmadaClient {
     /// One page of events in chronological order. Forward (the default) reads after `cursor`, from
     /// the start when nil. Backward reads the latest page when `cursor` is nil, otherwise the page
     /// before it (`olderCursor` of an earlier backward read); its `hasMore` means older events exist
-    /// and its `cursor` is the forward frontier to follow from (#812). `maxBytes` raises the page's
-    /// byte budget (server default 256 KiB): a single larger event is refused (400), never skipped.
-    public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false, maxBytes: Int? = nil) async throws -> SandboxEventPage {
+    /// and its `cursor` is the forward frontier to follow from (#812). A page whose single event
+    /// exceeds the default byte budget (256 KiB) is refused (400), never skipped: it is read once
+    /// more with `largestEventPageBytes`.
+    public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false) async throws -> SandboxEventPage {
         struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String?; let maxBytes: Int? }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
-        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor,
-                                                direction: backward ? "backward" : nil, maxBytes: maxBytes))
+        let id = try sandboxID(id), org = try sandboxOrganization()
+        do {
+            return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil, maxBytes: nil))
+        } catch ArmadaError.http(400) {
+            return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil,
+                                                    maxBytes: Self.largestEventPageBytes))
+        }
     }
 
     /// The largest byte budget an event page may ask for (#812): one event larger than this cannot be read.

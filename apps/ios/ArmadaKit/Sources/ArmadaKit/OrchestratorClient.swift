@@ -57,14 +57,20 @@ extension ArmadaClient {
         return result
     }
     /// `backward` reads the latest page (or the one before `cursor`), as `sandboxEvents` does (#812).
-    public func orchestratorEvents(id: String, cursor: String? = nil, limit: Int = 100, backward: Bool = false,
-                                   maxBytes: Int? = nil) async throws -> OrchestratorEventPage {
+    /// A page refused for its byte budget (one event over 256 KiB) is read once more with
+    /// `largestEventPageBytes`, as `sandboxEvents` does.
+    public func orchestratorEvents(id: String, cursor: String? = nil, limit: Int = 100, backward: Bool = false) async throws -> OrchestratorEventPage {
         guard (1...500).contains(limit) else { throw ArmadaError.invalidResponse }
         var query = pageQuery(try selectedOrganization(), cursor, limit)
         if backward { query.append(URLQueryItem(name: "direction", value: "backward")) }
-        if let maxBytes { query.append(URLQueryItem(name: "maxBytes", value: String(maxBytes))) }
-        let result: OrchestratorEventPage = try await authenticatedRequest("orchestrators/" + safeID(id) + "/events",
-            method: "GET", query: query)
+        let route = try "orchestrators/" + safeID(id) + "/events"
+        let result: OrchestratorEventPage
+        do {
+            result = try await authenticatedRequest(route, method: "GET", query: query)
+        } catch ArmadaError.invalidRequest {
+            query.append(URLQueryItem(name: "maxBytes", value: String(Self.largestEventPageBytes)))
+            result = try await authenticatedRequest(route, method: "GET", query: query)
+        }
         guard result.version == 1 else { throw ArmadaError.invalidResponse }
         // Return producer order and opaque cursor exactly; never synthesize events.
         return result

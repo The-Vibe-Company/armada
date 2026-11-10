@@ -48,14 +48,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         do {
-            let page: ArmadaKit.OrchestratorEventPage
-            do {
-                page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100, backward: backward)
-            } catch ArmadaError.invalidRequest {
-                // One event larger than the default page budget is refused, never skipped (#812).
-                page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100, backward: backward,
-                                                           maxBytes: ArmadaClient.largestEventPageBytes)
-            }
+            let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100, backward: backward)
             let supported = page.events.filter { event in
                 switch event.body {
                 case .unknown: return false
@@ -229,14 +222,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         try await requireOrganization(orgID)
         do {
-            let page: ArmadaKit.SandboxEventPage
-            do {
-                page = try await client.sandboxEvents(id: id, cursor: cursor, backward: backward)
-            } catch ArmadaError.invalidRequest {
-                // One event larger than the default page budget is refused, never skipped (#812).
-                page = try await client.sandboxEvents(id: id, cursor: cursor, backward: backward,
-                                                      maxBytes: ArmadaClient.largestEventPageBytes)
-            }
+            let page = try await client.sandboxEvents(id: id, cursor: cursor, backward: backward)
             // A sandbox stream has no orchestrator revision; every event is an agent event.
             return OrchestratorEventPage(
                 events: page.events.map { OrchestratorEvent(id: $0.id, at: Date(timeIntervalSince1970: $0.at / 1_000), revision: 0, body: .agent(Self.agentEvent($0))) },
