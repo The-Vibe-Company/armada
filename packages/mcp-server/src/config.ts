@@ -9,6 +9,8 @@ export interface ServerConfig {
   orchestratorSkillRevision: string | undefined;
   /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
   githubRuntimeEnabled: boolean;
+  /** Experimental legacy Boat hydration at prompt boundaries; explicit repair is independent. */
+  githubLegacyAutoPrepareEnabled: boolean;
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
@@ -103,6 +105,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     orchestratorPairs,
     orchestratorSkillRevision,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",
+    githubLegacyAutoPrepareEnabled: env.ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED === "true",
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),

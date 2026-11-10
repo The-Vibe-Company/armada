@@ -27,6 +27,22 @@ new one-hour minimum remaining lifetime. Unexpectedly short freshly issued token
 are reported as unavailable rather than injected. Rotation is persisted first so
 its refresh token is never replayed.
 
+## Automatic preparation: default off
+
+`ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED=true` is the trusted server opt-in for
+legacy Boat next-prompt preparation. It is **off by default**; only exact `true`
+enables it. Keep it off until the coordinator's real-Boat image/SSH/sudo check
+below passes. Restart all server replicas after changing it. This is independent
+of `ARMADA_GITHUB_RUNTIME_ENABLED`; when the managed runtime is enabled, its path
+takes precedence. The one-hour launch safety guard and explicit repair command do
+not require either flag.
+
+When opted in, installation is best-effort. SSH, sudo, Python, filesystem or lock
+failure logs only a fixed `github_legacy_hydration_failed` event and sandbox ID,
+never the exception/cause/token, then lets the prompt proceed. Explicit repair
+remains strict and reports failure. The installer waits at most five seconds for
+another install's lock, within its 45-second subprocess budget.
+
 ## Legacy recovery, without the runtime gate or relaunch
 
 Run as the sandbox's owner:
@@ -51,7 +67,8 @@ wrappers so even already-running agents' inherited stale `GH_TOKEN` is overridde
 on the next tool invocation. The token lives in ephemeral `/run`, outside the
 persisted home and golden snapshot. If the file is absent or expired, wrappers
 pass through the inherited environment; unsafe ownership/symlinks still fail closed.
-Before each authorized Boat prompt (including after resume), Armada resolves the
+With the legacy automatic flag enabled, before each authorized Boat prompt
+(including after resume), Armada resolves the
 stored sandbox owner and privately hydrates the current token automatically.
 Use the explicit repair command to repair an already-running turn before retrying
 Git/gh without sending a new prompt.
@@ -60,7 +77,8 @@ environment directly, and already-started network requests are not updated.
 
 The one-hour launch minimum avoids handing a new sandbox a nearly expired token;
 it is not a promise against revocation or another refresh. Legacy environments
-recover at the next prompt, not instantly inside an already-running turn. For
+can recover at the next prompt only when the opt-in is enabled, not instantly
+inside an already-running turn. With the default-off setting, use explicit repair. For
 automatic per-command renewal,
 the existing managed GitHub runtime remains separately opt-in via
 `ARMADA_GITHUB_RUNTIME_ENABLED=true`: next-prompt and resume reconciliation install
@@ -74,8 +92,9 @@ not the legacy repair command.
 Automatic preparation does not prevent local/model work when GitHub is unavailable,
 revoked or not configured: it injects no new access material and lets the prompt
 proceed. Explicit `armada github refresh` instead returns the closed failure so a
-caller does not mistake it for a successful repair. Owner membership failures and
-unsafe filesystem/private-transport failures remain fatal to preparation. This
+caller does not mistake it for a successful repair. Owner membership refusal remains closed. Automatic installation/transport failures
+are best-effort as described above; explicit repair still fails closed for unsafe
+filesystem/private-transport failures. This
 availability policy does not make a stale inherited token valid.
 
 ## Operator production check (not run by this PR)
@@ -84,7 +103,8 @@ availability policy does not make a stale inherited token valid.
 2. Launch twelve idle sandboxes as one owner, mixing concurrent and sequential
    launches. Run `gh api user --jq .login` in each; record status and login only.
 3. Launch a thirteenth, then recheck all thirteen. Every login must still match.
-4. In an isolated staging account, exercise expiry-driven renewal. Confirm the
+4. In an isolated staging account, enable the legacy automatic flag for the
+   coordinator check, verify actual image/SSH/sudo behavior, and exercise expiry-driven renewal. Confirm the
    next prompt automatically repairs every older running Boat sandbox, without
    relaunching or twelve manual repair commands. Also check the explicit refresh
    command for an already-active turn,
@@ -94,3 +114,12 @@ availability policy does not make a stale inherited token valid.
 5. A rejected or short-lived launch token must produce a non-connected GitHub
    status/message, never a successful GitHub setup claim. Provider/model launch
    may still succeed.
+
+## Repeated-install optimization
+
+An expiry-only server cache is deliberately not used: `/run` can be cleared on
+resume/reboot while the owner token remains unchanged. Boat metadata does not
+currently give this path a trusted physical-generation acknowledgement, so caching
+“already hydrated” could skip the repair that is needed most. A generation-bound
+acknowledged cache is a follow-up optimization; it is not required to enable the
+experimental flag after the real-image check.

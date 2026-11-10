@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   createSqlSandboxStore,
   createSqlVaultStore,
@@ -9,7 +9,7 @@ import {
 import { createLegacyGitHubPreparation, refreshLegacyGitHub } from "../src/github-legacy.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
-test("a near-boundary launch rotates once and every sibling gets valid GitHub access at its next prompt", async () => {
+test("opted-in next-prompt preparation repairs siblings and never blocks prompts on install failure", async () => {
   const { db, people } = await database();
   try {
     const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!;
@@ -95,6 +95,29 @@ test("a near-boundary launch rotates once and every sibling gets valid GitHub ac
       ).toBe(200);
     }
     expect(rotations).toBe(1);
+    // The automatic before-prompt callback must complete even if SSH/sudo/install refuses.
+    // Explicit repair uses the same failure but remains strict; logs contain only a fixed event.
+    const installError = new Error(`private transport detail ${valid}`);
+    const failedHydrate = async () => {
+      throw installError;
+    };
+    const log = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const bestEffort = createLegacyGitHubPreparation({ sql: db, github, hydrate: failedHydrate });
+      await expect(bestEffort(provider, sandboxes[0]!.id)).resolves.toBeUndefined();
+      expect(log.mock.calls).toEqual([
+        [JSON.stringify({ event: "github_legacy_hydration_failed", sandboxId: "bx_legacy_0" })],
+      ]);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(valid);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(installError.message);
+      await expect(refreshLegacyGitHub(provider, "bx_legacy_0", people.owner, github, failedHydrate)).rejects.toBe(
+        installError,
+      );
+      expect(log).toHaveBeenCalledTimes(1);
+    } finally {
+      log.mockRestore();
+    }
+
     // Optional GitHub failure must not prevent dispatch of local/model work; explicit repair
     // remains strict. Neither path may hydrate unavailable or revoked access material.
     hydrated.clear();

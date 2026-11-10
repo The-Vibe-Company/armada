@@ -131,7 +131,15 @@ try:
     lock='/run/armada-github/install.lock'
     regular(lock,True)
     fd=os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
-    fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    deadline=time.monotonic()+5
+    while True:
+        try:
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            remaining=deadline-time.monotonic()
+            if remaining<=0: raise
+            time.sleep(min(0.05,remaining))
     # The lock remains open until process exit, including every atomic replacement.
     directory('/home')
     owner=os.lstat('/home/user')

@@ -14,8 +14,9 @@ setting on every replica.
 When off, launch, send, steer and exec do not prepare the managed GitHub runtime.
 No managed-runtime wrapper, broker or credential socket is installed, and the
 internal GitHub credential-acquisition route is not mounted. The separate legacy
-Boat recovery path in #879 can install file-backed git/gh wrappers before a prompt
-or through `armada github refresh`; it does not install this broker or enable its
+Boat recovery path in #879 can install file-backed git/gh wrappers through
+`armada github refresh`, or before prompts only with the separate default-off
+`ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED=true` opt-in. It does not install this broker or enable its
 route. See [legacy lifecycle/recovery](github-token-lifecycle.md). This gate does
 not disable GitHub OAuth, golden checkout, MCP bindings or model authentication.
 The #703 implementation and migration `20261110121300_github_runtime.sql` remain.

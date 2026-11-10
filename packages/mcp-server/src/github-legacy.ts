@@ -21,7 +21,14 @@ export async function refreshLegacyGitHub(
       access.status === "connected" ? "GitHub expiry is unavailable." : access.message,
     );
   }
-  await hydrate(provider, providerSandboxId, access.token, access.expiresAt);
+  try {
+    await hydrate(provider, providerSandboxId, access.token, access.expiresAt);
+  } catch (error) {
+    if (unavailable !== "skip") throw error;
+    // Do not log the exception/cause: SSH/provider diagnostics can contain access material.
+    console.warn(JSON.stringify({ event: "github_legacy_hydration_failed", sandboxId: providerSandboxId }));
+    return null;
+  }
   return { login: access.identity.login };
 }
 

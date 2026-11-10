@@ -965,7 +965,7 @@ function githubLine(result: LaunchResult, now: Date): string {
         : "launch token remaining lifetime unknown";
     const repair =
       result.sandbox.provider === "boat"
-        ? `Next prompt repairs GitHub automatically; for a running legacy sandbox use armada github refresh ${result.sandbox.id}.`
+        ? `Use armada github refresh ${result.sandbox.id} for a running legacy sandbox; automatic next-prompt repair is experimental and off by default.`
         : "Reconnect GitHub if needed and resume to re-resolve credentials.";
     return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
   }

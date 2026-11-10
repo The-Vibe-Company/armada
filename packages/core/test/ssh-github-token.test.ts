@@ -143,6 +143,9 @@ interface PythonResult {
   stderr?: string;
   seen?: string[];
   mutations?: unknown[];
+  writes?: number;
+  attempts?: number;
+  elapsed?: number;
 }
 
 function python(harness: string, input: unknown): PythonResult {
@@ -234,7 +237,7 @@ from unittest.mock import patch
 from contextlib import ExitStack
 p=json.load(sys.stdin)
 class InstallationStarted(BaseException): pass
-seen=[];mutations=[];result={}
+seen=[];mutations=[];result={};clock=[0.0];attempts=[0];writes=[0]
 def info(mode,uid=0):
     return SimpleNamespace(st_mode=mode,st_uid=uid,st_gid=uid,st_nlink=1,st_size=1024)
 def lstat(path):
@@ -249,20 +252,28 @@ def lstat(path):
     if path in ['/run','/usr','/usr/bin','/usr/local','/usr/local/bin','/usr/local/lib','/run/armada-github','/home']:
         return info(stat.S_IFDIR|0o755)
     raise FileNotFoundError()
-def begin(*args,**kwargs): raise InstallationStarted()
+def begin(*args,**kwargs):
+    writes[0]+=1
+    raise InstallationStarted()
+def flock(*args):
+    attempts[0]+=1
+    busy=p.get('busy',0)
+    if busy=='forever' or attempts[0]<=busy: raise BlockingIOError()
+def sleep(duration): clock[0]+=duration
 def mutation(*args,**kwargs): mutations.append(args)
 payload=json.dumps({'token':'synthetic-install-token','expiresAt':200000}).encode()
 with ExitStack() as stack:
     for target,value in [
       ('os.getuid',lambda: 0),('os.lstat',lstat),('os.open',lambda *args: 99),
-      ('os.chmod',lambda *args: None),('fcntl.flock',lambda *args: None),
+      ('os.chmod',lambda *args: None),('fcntl.flock',flock),
+      ('time.monotonic',lambda: clock[0]),('time.sleep',sleep),
       ('tempfile.mkstemp',begin),('os.rename',mutation),('os.replace',mutation),
       ('time.time',lambda: 100),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
         stack.enter_context(patch(target,value))
     try: exec(compile(p['script'],'installer','exec'),{'__name__':'__main__'})
     except InstallationStarted: result['action']='install'
     except SystemExit as error: result.update(action='exit',code=error.code)
-result.update(seen=seen,mutations=mutations)
+result.update(seen=seen,mutations=mutations,writes=writes[0],attempts=attempts[0],elapsed=clock[0])
 print(json.dumps(result))
 `;
 
@@ -285,4 +296,22 @@ test("installer refuses symlink and non-root-owned code paths before replacing a
       expect(result.mutations).toEqual([]);
     }
   }
+});
+
+test("installer waits through transient lock contention but fails at its deadline before credential or executable writes", () => {
+  const recovered = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, busy: 2 });
+  expect(recovered.action).toBe("install");
+  expect(recovered.attempts).toBe(3);
+  expect(recovered.elapsed).toBeGreaterThan(0);
+  expect(recovered.elapsed).toBeLessThanOrEqual(5);
+  expect(recovered.writes).toBe(1);
+
+  const timedOut = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, busy: "forever" });
+  expect(timedOut.action).toBe("exit");
+  expect(timedOut.code).toBe(1);
+  expect(timedOut.attempts).toBeGreaterThan(1);
+  expect(timedOut.elapsed).toBe(5);
+  expect(timedOut.writes).toBe(0);
+  expect(timedOut.mutations).toEqual([]);
+  expect(timedOut.seen).not.toContain("/home");
 });

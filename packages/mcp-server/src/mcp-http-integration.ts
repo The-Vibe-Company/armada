@@ -41,6 +41,8 @@ export function createMcpHttpIntegration(options: {
   sql: Sql;
   /** Trusted server opt-in, never a request parameter. Defaults off. */
   githubRuntimeEnabled?: boolean;
+  /** Default off until the coordinator verifies the legacy installer on a real Boat image. */
+  githubLegacyAutoPrepareEnabled?: boolean;
   github?: import("@armada/core/server").GitHubResolveDeps;
   encryptionKey: string | undefined;
   publicUrl: string;
@@ -71,7 +73,7 @@ export function createMcpHttpIntegration(options: {
         })
       : undefined;
   const prepareLegacyGitHub =
-    options.githubRuntimeEnabled !== true && options.github
+    options.githubLegacyAutoPrepareEnabled === true && options.githubRuntimeEnabled !== true && options.github
       ? createLegacyGitHubPreparation({ sql, github: options.github, hydrate: sshHydrateGitHubToken })
       : undefined;
   const lifecycle = createMcpLifecycle({
