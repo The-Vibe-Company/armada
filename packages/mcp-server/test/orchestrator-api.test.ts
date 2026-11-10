@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { MODEL_CATALOG, ProviderError } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
 import { orchestratorHttp } from "../src/orchestrator-api.ts";
@@ -37,7 +37,11 @@ test("shared boundary rejects malformed optional configuration and unknown mutat
     model: "model",
     modelAccountId: "account",
   };
+  const create = spyOn(service, "create");
   for (const changed of [
+    { skill: "--evil" },
+    { skill: "example/armada-tools@1.0.0" },
+    { skill: "example/notes" },
     { repo: {} },
     { reasoningEffort: 42 },
     { idleSeconds: -1 },
@@ -50,6 +54,8 @@ test("shared boundary rejects malformed optional configuration and unknown mutat
       "invalid_request",
     );
   }
+  expect(create).not.toHaveBeenCalled(); // No reservation or launch before synchronous validation.
+  create.mockRestore();
   await expect(
     callOrchestrator(
       service,

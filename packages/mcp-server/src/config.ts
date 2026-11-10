@@ -81,7 +81,8 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
 
   const orchestratorPairs = orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS);
   const orchestratorSkillRevision = env.ARMADA_ORCHESTRATOR_SKILL_REVISION?.trim() || undefined;
-  if (orchestratorPairs.includes("modal:codex") && !/^[a-f0-9]{40}$/.test(orchestratorSkillRevision ?? ""))
+
+  if (orchestratorSkillRevision && !/^[a-f0-9]{40}$/.test(orchestratorSkillRevision))
     throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
   return {
     port,
