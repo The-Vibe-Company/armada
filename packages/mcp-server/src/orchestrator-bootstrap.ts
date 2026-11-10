@@ -1,4 +1,5 @@
 import { ORCHESTRATOR_SKILL_PATTERN, type OrchestratorSkillReceipt, type Provider } from "@armada/core";
+import { parseSkillReceipt, skillInstallCommand } from "@armada/core/server";
 import type { OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 
 const toolReference = `---
@@ -8,7 +9,7 @@ description: Armada launcher tool reference, not an orchestration method.
 The delegated MCP connection exposes launch, read, message and stop (not the
 owner API). Use the tool schemas exposed by that connection:
 - launch: {idempotencyKey, selection:{goldenId,harness,credentialId,
-  credentialVersion,model,prompt?,repo?,size?,reasoningEffort?}}.
+  credentialVersion,model,prompt?,repo?,size?,reasoningEffort?,skills?}}.
   Select only authorized golden/account references; retain the returned child ID.
 - read: {sandboxId}. Poll this to observe child status/results; no wait tool exists.
 - message: {idempotencyKey,sandboxId,text}. Send another turn to an owned child.
@@ -53,13 +54,12 @@ export async function bootstrapOrchestrator(
   let receipt: OrchestratorSkillReceipt | null = null;
   let validatingReceipt = false;
   try {
-    const [reference, version] = skill?.split("@") ?? [];
     const result = await provider.exec({
       sandboxId,
       cwd: projectDir,
       timeoutSeconds: 300,
       command: skill
-        ? `skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${request.harness === "claude" ? "claude-code" : "codex"} --pin --yes --json >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
+        ? `${skillInstallCommand(skill, projectDir, request.harness ?? "codex")} >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
         : referenceCommand,
     });
     if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0) {
@@ -78,34 +78,7 @@ export async function bootstrapOrchestrator(
     }
     if (skill) {
       validatingReceipt = true;
-      const lock = JSON.parse(result.stdout);
-      const [org, slug] = reference!.split("/");
-      const workspace = lock.workspaces?.[`catalog:${org}`];
-      const entry = workspace?.skills?.[slug!];
-      if (
-        ![2, 3].includes(lock.lockfileVersion) ||
-        entry?.version !== version ||
-        entry?.catalogReference !== reference ||
-        entry?.pinned !== version ||
-        typeof entry?.skillId !== "string" ||
-        !/^[a-f0-9-]{36}$/.test(entry.skillId) ||
-        !/^sha256:[a-f0-9]{64}$/.test(entry?.checksum) ||
-        workspace?.apiUrl !== "https://skillpack.app/v1" ||
-        !entry.targets?.some(
-          (target: { tool: string; version: string; packageChecksum: string }) =>
-            target.tool === (request.harness === "claude" ? "claude-code" : "codex") &&
-            target.version === version &&
-            target.packageChecksum === entry.checksum,
-        )
-      )
-        throw new Error("invalid_receipt");
-      receipt = {
-        reference: skill,
-        version: version!,
-        skillId: entry.skillId,
-        checksum: entry.checksum,
-        origin: workspace.apiUrl,
-      };
+      receipt = parseSkillReceipt(result.stdout, skill, request.harness ?? "codex");
     }
   } catch (error) {
     if (validatingReceipt) request.diagnostics?.captureReason("skill_provenance_missing");

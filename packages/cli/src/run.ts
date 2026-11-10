@@ -113,7 +113,7 @@ Usage:
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
-                [--connections <id,...> | --no-connections] [--org <org>]
+                [--skill org/slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
@@ -797,6 +797,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+        skills: values(args, "--skill"),
         ...(connections === undefined ? {} : { connections: connections.split(",") }),
         credentialId: single(args, "--credential-id"),
         golden: name,
@@ -945,6 +946,7 @@ function launchText(result: LaunchResult): string {
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),
+    `Skills: ${JSON.stringify(sandbox.skills ?? [])}`,
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (sandbox.credentialId)
@@ -978,6 +980,7 @@ function jsonLaunch(result: LaunchResult) {
     repositoryDir: sandbox.repositoryDir ?? null,
     harness: sandbox.harness,
     model: sandbox.model,
+    skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,

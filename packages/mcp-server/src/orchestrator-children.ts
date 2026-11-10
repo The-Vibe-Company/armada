@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Harness, type LaunchRequest, parseMachineSize, type Sql } from "@armada/core/server";
+import { type Harness, type LaunchRequest, parseMachineSize, type Sql, validateSkillPins } from "@armada/core/server";
 import { ChildLaunchNotAllocated } from "./orchestrator-child-launch.ts";
 import type { ChildAuthority } from "./orchestrator-lifecycle-contract.ts";
 import { orchestratorRuntimeOperations } from "./orchestrator-runtime-operation.ts";
@@ -12,6 +12,7 @@ export interface ChildLaunchSelection {
   model: string;
   size?: NonNullable<LaunchRequest["size"]>;
   reasoningEffort?: string;
+  skills?: string[];
   repo?: string;
   prompt?: string;
 }
@@ -69,6 +70,7 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
         "credentialVersion",
         "model",
         "reasoningEffort",
+        "skills",
         "repo",
         "prompt",
         "size",
@@ -85,6 +87,7 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
         )
       )
         throw new Error("Invalid child launch selection.");
+      validateSkillPins(selected.skills ?? []);
       if (selected.size !== undefined) parseMachineSize(selected.size);
     }
     // Canonical field inventory, not user JSON key order; omit absent optional fields explicitly.
@@ -100,6 +103,7 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
             input.selection.repo ?? null,
             input.selection.prompt ?? null,
             input.selection.size ?? null,
+            input.selection.skills ?? [],
           ]
         : [input.sandboxId, input.action === "message" ? input.text : null];
     const digest = createHash("sha256")

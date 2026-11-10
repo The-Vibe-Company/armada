@@ -45,6 +45,7 @@ export {
 export { reserveOrchestratorOperation } from "./orchestrator-operations.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
+export * from "./skillpack.ts";
 export {
   type SshExecDeps,
   shellQuote,
@@ -54,5 +55,4 @@ export {
   sshStdinCheckout,
 } from "./ssh-executor.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
-
 export { preserveWork, type WorkPreservation } from "./work-preservation.ts";

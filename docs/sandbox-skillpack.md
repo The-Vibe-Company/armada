@@ -1,10 +1,30 @@
-## Design before implementation
-Closes #867.
+# Skillpack skills at sandbox launch
 
-Launch-first slice, as explicitly allowed by the issue. Investigated Armada #839's bootstrap, launch/store/API/MCP/child paths and read-only Skillpack runtime/internal/cli/install.go and public.go. Reuse the existing exact public catalog pin pattern, native install command and lock receipt validation in one shared server-only core module; the orchestrator bootstrap calls that same module. Repeatable CLI --skill becomes skills[] across API, MCP and delegated child selection. Install sequentially in the selected repository (or golden root) before first turn; persist verified receipts on sandbox status/detail. Invalid refs fail before allocation; install/provenance failures sanitize diagnostics and use existing failed-launch cleanup.
+`armada launch GOLDEN --agent codex --skill example/notes@1.0.0 --skill example/other@2.0.0`
+installs public catalog exact pins before the first turn, including idle launches.
+API/MCP launch accepts `skills: string[]`; delegated child launch accepts the
+same array in `selection`. At most 20 distinct slugs are accepted; ambiguous
+versions or cross-organization slug collisions are rejected before allocation.
 
-Goldens must already provide native skillpack on PATH, as #839 requires. No downloaded script, credential path, private skills or custom origins. Golden defaults/official pinned-checksummed CLI installation are a separate follow-up (linked below). No golden config field is added in this slice, so existing config validation remains unchanged.
+The golden must contain the native Skillpack CLI on PATH. Armada uses the same
+official-origin native installer and lock receipt validator as orchestrator create
+(#839), installs for the chosen harness into the selected repository or golden
+root, and records verified UUID/version/checksum/origin receipts in sandbox
+detail/status. No skills means no CLI requirement. Existing files/defaults are
+left to Skillpack's managed conflict rules; this does not remove snapshot skills.
+Partial installation or invalid provenance fails the launch, stops the machine,
+and starts no agent. Guest diagnostics are not returned.
 
-## Validation / deployed check
-Pending implementation and independent review.
-Coordinator deployed check: launch a public exact pin with a compatible Skillpack-equipped golden on Boat and Modal, confirm status receipt and first-turn discovery; unavailable pins must leave a failed/stopped sandbox with no first turn. No deployment or migration application performed here.
+Only currently advertised public catalog exact releases work. Private skills,
+share tokens, custom origins and Skillpack credential injection are unsupported;
+#841 owns that future credential contract. Skills are untrusted instructions,
+not an isolation boundary. Golden default configuration, build-time installation
+and a pinned/checksummed official CLI bootstrap are deferred to #868, as allowed
+by #867's launch-first scope. No golden config field is accepted in this slice.
+
+## Deployment
+Apply `20261110190000_sandbox_skills.sql` before server rollout. No secret changes.
+Coordinator deployed check (not performed in development): on Boat and Modal,
+launch a compatible Skillpack-equipped golden with a currently public pin,
+inspect status receipts and ask the first turn to read the installed skill.
+An unavailable release must fail/stop without a first turn.
