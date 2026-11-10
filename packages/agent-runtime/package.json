@@ -9,8 +9,8 @@
   },
   "dependencies": {
     "@armada/core": "workspace:*",
-    "@anthropic-ai/claude-agent-sdk": "0.3.319",
+    "@anthropic-ai/claude-agent-sdk": "0.3.322",
     "@openai/codex": "0.167.0",
-    "@anthropic-ai/claude-code": "2.1.319"
+    "@anthropic-ai/claude-code": "2.1.322"
   }
 }

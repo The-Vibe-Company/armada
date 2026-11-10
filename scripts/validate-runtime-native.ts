@@ -4,7 +4,7 @@ import { join } from "node:path";
 if (process.platform !== "linux" || Bun.version !== "1.4.2")
   throw new Error("Native validation requires Linux and Bun 1.4.2.");
 for (const [name, expected] of [
-  ["claude", "2.1.319 (Claude Code)"],
+  ["claude", "2.1.322 (Claude Code)"],
   ["codex", "codex-cli 0.167.0"],
 ]) {
   const result = Bun.spawnSync([join(import.meta.dir, "../packages/agent-runtime/dist", name!), "--version"]);

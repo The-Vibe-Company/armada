@@ -6,11 +6,11 @@ Owned by #510–512; no provider/server/SQL-registry integration is included.
 
 `bun install --frozen-lockfile` with Bun 1.4.2, then
 `cd packages/agent-runtime && bun run build` on the target Linux architecture.
-`dist/` contains `main.js`, native `claude` 2.1.319, native `codex` 0.167.0,
+`dist/` contains `main.js`, native `claude` 2.1.322, native `codex` 0.167.0,
 and a version manifest. Codex retains its complete native resource tree
 (`codex-runtime/`, including code-mode host, bubblewrap and ripgrep); `codex`
 is an internal symlink to that tree. Add `dist/codex-runtime/codex-path` to
-the Codex environment PATH. The SDK is 0.3.319. The JS bundle has no unpublished
+the Codex environment PATH. The SDK is 0.3.322. The JS bundle has no unpublished
 workspace imports. Install Bun 1.4.2 separately. Start `bun main.js` with
 bootstrap JSON on a private stdin pipe, closing it after the document; detach
 with the placement supervisor. Never pass credentials as arguments.
@@ -178,7 +178,7 @@ run against authenticated Claude in this worker environment.
 
 ## Secret-bearing MCP transport
 
-Claude SDK 0.3.319 serializes `mcpServers` options into native argv. The runner
+Claude SDK 0.3.322 serializes `mcpServers` options into native argv. The runner
 therefore **does not pass that SDK option**. It supplies the official native
 `--mcp-config` file input through `extraArgs`, retaining `strictMcpConfig` and
 empty `settingSources`. `PrivateMcpFile` atomically creates a 0700 per-turn
