@@ -155,6 +155,31 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     #expect(events.count == 3)
 }
 
+@Test func theLatestPageIsReadBackwardAndOlderPagesFromItsOlderCursor() async throws {
+    let (client, transport) = try await signedIn([
+        .init(status: 200, body: #"{"events":[],"cursor":"frontier","olderCursor":"o9","hasMore":true,"settled":true}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"o9-next","olderCursor":"o1","hasMore":false,"settled":true}"#),
+        .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"An event exceeds maxBytes; increase the event page budget."}}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"frontier","hasMore":false,"settled":true}"#)
+    ])
+    let latest = try await client.sandboxEvents(id: sandboxID, backward: true)
+    #expect(latest.cursor == "frontier")
+    #expect(latest.olderCursor == "o9")
+    let older = try await client.sandboxEvents(id: sandboxID, cursor: latest.olderCursor, backward: true)
+    #expect(older.olderCursor == "o1")
+    #expect(!older.hasMore)
+    let requests = Array(await transport.requests.dropFirst(2))
+    #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "direction": "backward"])
+    #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a", "cursor": "o9", "direction": "backward"])
+    // A page refused because one event exceeds the default budget is read again with the largest.
+    let next = try await client.sandboxEvents(id: sandboxID, cursor: "frontier")
+    #expect(next.cursor == "frontier")
+    let retried = Array(await transport.requests.suffix(2))
+    #expect(try body(retried[0]) == ["id": sandboxID, "org": "org-a", "cursor": "frontier"])
+    let raised = try JSONSerialization.jsonObject(with: retried[1].httpBody ?? Data()) as? NSDictionary
+    #expect(raised == ["id": sandboxID, "org": "org-a", "cursor": "frontier", "maxBytes": 1_048_576])
+}
+
 @Test func closedInterruptionReasonsOfferManualResendWithoutBlockingAdmission() throws {
     for reason in ["interrupted_by_provider_move", "interrupted_by_harness_exit", "future_reason"] {
         let json = detail(status: "ready", settled: true, prompt: "interrupted")

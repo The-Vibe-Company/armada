@@ -158,10 +158,10 @@ enum PreviewData {
         let capabilities = #"""
         {"version":1,"enabled":true,"reason":null,
          "pairs":[
-          {"provider":"boat","harness":"claude","enabled":false,"reason":"boat_native_checkpoint_restore_unavailable"},
-          {"provider":"boat","harness":"codex","enabled":false,"reason":"boat_native_checkpoint_restore_unavailable"},
-          {"provider":"modal","harness":"claude","enabled":false,"reason":"native_resume_driver_unavailable"},
-          {"provider":"modal","harness":"codex","enabled":true,"reason":null}],
+          {"provider":"boat","harness":"claude","enabled":false,"continuity":"best_effort","reason":"boat_native_checkpoint_restore_unavailable"},
+          {"provider":"boat","harness":"codex","enabled":false,"continuity":"best_effort","reason":"boat_native_checkpoint_restore_unavailable"},
+          {"provider":"modal","harness":"claude","enabled":false,"continuity":"native","reason":"native_resume_driver_unavailable"},
+          {"provider":"modal","harness":"codex","enabled":true,"continuity":"native","reason":null}],
          "harnesses":[
           {"harness":"claude","defaultModel":"claude-opus-5-5","defaultReasoningEffort":"medium","reasoningEfforts":["low","medium","high","xhigh","max"],
            "models":[{"id":"claude-opus-5-5","label":"Claude Opus 5.5","reasoningEfforts":["low","medium","high","xhigh","max"]}],
@@ -172,21 +172,23 @@ enum PreviewData {
            "accountKinds":["openai","codex_auth"]}]}
         """#
         let goldens = #"""
-        [{"id":"golden-gpu","name":"gpu","orgId":"preview","provider":"modal","providerSnapshotId":"snap","config":{"repos":[{"dir":"armada"}]}},
-         {"id":"golden-main","name":"main","orgId":"preview","provider":"boat","providerSnapshotId":"snap","config":{"repos":[{"dir":"armada"},{"dir":"website"}]}},
-         {"id":"golden-new","name":"new-stack","orgId":"preview","provider":"modal","providerSnapshotId":null,"config":{"repos":[]}}]
+        [{"id":"golden-gpu","name":"gpu","orgId":"preview","visibility":"org","ownerId":"preview-user","provider":"modal","providerSnapshotId":"snap",
+          "config":{"repos":[{"url":"https://github.com/example/armada","branch":"main","dir":"armada"}]}},
+         {"id":"golden-main","name":"main","orgId":"preview","visibility":"org","ownerId":"preview-user","provider":"boat","providerSnapshotId":"snap",
+          "config":{"repos":[{"url":"https://github.com/example/armada","branch":"main","dir":"armada"},{"url":"https://github.com/example/website","branch":"main","dir":"website"}]}},
+         {"id":"golden-new","name":"new-stack","orgId":"preview","visibility":"private","ownerId":"preview-user","provider":"modal","providerSnapshotId":null,"config":{"repos":[]}}]
         """#
         let decoder = JSONDecoder()
         // Preview fixtures only; a malformed literal is a programming error caught when the preview renders.
         let decodedCapabilities = try! decoder.decode(ArmadaKit.OrchestratorCapabilities.self, from: Data(capabilities.utf8))
-        let decodedGoldens = try! decoder.decode([ArmadaKit.GoldenSummary].self, from: Data(goldens.utf8))
+        let decodedGoldens = try! decoder.decode([ArmadaKit.LaunchGolden].self, from: Data(goldens.utf8))
         return CreateOptions(catalog: ArmadaKit.OrchestratorCreateCatalog(
             capabilities: decodedCapabilities,
             goldens: decodedGoldens,
             accounts: [
-                ArmadaKit.ModelAccount(id: "account-codex", name: "My Codex login", kind: "codex_auth", scope: .user, isDefault: true),
-                ArmadaKit.ModelAccount(id: "account-openai", name: "Team OpenAI key", kind: "openai", scope: .org, isDefault: false),
-                ArmadaKit.ModelAccount(id: "account-claude", name: "My Claude subscription", kind: "claude_oauth", scope: .user, isDefault: true),
+                ArmadaKit.LaunchAccount(id: "account-codex", name: "My Codex login", kind: "codex_auth", scope: .user, isDefault: true, status: "active", expiresAt: nil),
+                ArmadaKit.LaunchAccount(id: "account-openai", name: "Team OpenAI key", kind: "openai", scope: .org, isDefault: false, status: "active", expiresAt: nil),
+                ArmadaKit.LaunchAccount(id: "account-claude", name: "My Claude subscription", kind: "claude_oauth", scope: .user, isDefault: true, status: "active", expiresAt: nil),
             ]
         ))
     }()
@@ -212,7 +214,7 @@ enum PreviewData {
             )
         }
 
-        func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+        func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
             OrchestratorEventPage(events: cursor == nil ? PreviewData.events(for: id) : [], cursor: "end", hasMore: false)
         }
 
@@ -263,7 +265,7 @@ enum PreviewData {
             )
         }
 
-        func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+        func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
             guard PreviewData.sandboxes.contains(where: { $0.id == id && $0.canOpen }) else { throw .noAccess }
             return OrchestratorEventPage(
                 events: cursor == nil ? Array(PreviewData.events(for: PreviewData.leadID).prefix(3)) : [],

@@ -241,6 +241,29 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value == "opaque+/=?&prior")
 }
 
+@Test func theLatestOrchestratorPageIsReadBackwardWithItsOlderCursor() async throws {
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"An event exceeds maxBytes; increase the event page budget."}}"#),
+        .init(status: 200, body: #"{"version":1,"events":[],"cursor":"frontier","olderCursor":"before","hasMore":true}"#)
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let result = try await client.orchestratorEvents(id: "parent-a", backward: true)
+    #expect(result.cursor == "frontier")
+    #expect(result.olderCursor == "before")
+    let url = await transport.requests.last!.url!
+    let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    #expect(query.first(where: { $0.name == "direction" })?.value == "backward")
+    #expect(!query.contains { $0.name == "cursor" })
+    // The first read was refused for its byte budget; the retry asked for the largest one.
+    #expect(query.first(where: { $0.name == "maxBytes" })?.value == "1048576")
+    let first = await transport.requests.dropLast().last!.url!
+    #expect(URLComponents(url: first, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "maxBytes" } == false)
+}
+
 @Test func structuredInitialRejectionAllowsExplicitRepair() async throws {
     let transport = ScriptedTransport([
         .init(status: 200, body: login),

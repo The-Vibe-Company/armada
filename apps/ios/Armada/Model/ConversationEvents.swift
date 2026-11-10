@@ -74,7 +74,10 @@ struct OrchestratorEvent: Identifiable, Hashable, Sendable {
 
 struct OrchestratorEventPage: Sendable {
     let events: [OrchestratorEvent]
-    /// Opaque, poll-safe cursor to continue from. Nil only on an empty first read.
+    /// Opaque, poll-safe forward cursor: the live frontier. Nil only on an empty first read.
     let cursor: String?
+    /// Relative to the read's direction: newer events (forward) or older ones (backward).
     let hasMore: Bool
+    /// Backward reads only: continues before the oldest event of the page.
+    var olderCursor: String? = nil
 }

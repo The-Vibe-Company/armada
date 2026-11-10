@@ -132,7 +132,7 @@ struct CreateOrchestratorView: View {
                         Picker("Golden", selection: goldenBinding(options)) {
                             Text("Choose").tag(String?.none)
                             ForEach(catalog(options).goldens) { golden in
-                                Text(golden.isReady ? "\(golden.name) · \(ProviderID(rawValue: golden.provider.rawValue).label)" : "\(golden.name) · no snapshot")
+                                Text(golden.isReady ? "\(golden.name) · \(ProviderID(rawValue: golden.provider).label)" : "\(golden.name) · no snapshot")
                                     .tag(Optional(golden.id))
                                     .selectionDisabled(!golden.isReady)
                             }
@@ -140,7 +140,7 @@ struct CreateOrchestratorView: View {
                         .accessibilityIdentifier("create.golden")
                         if let golden = selectedGolden(options) {
                             LabeledContent("Provider") {
-                                ProviderBadge(provider: ProviderID(rawValue: golden.provider.rawValue))
+                                ProviderBadge(provider: ProviderID(rawValue: golden.provider))
                             }
                         }
                     }
@@ -152,11 +152,11 @@ struct CreateOrchestratorView: View {
                     DisclosureGroup("More Options", isExpanded: $showsMore) {
                         Picker("Repository", selection: $draft.repository) {
                             Text("None").tag(String?.none)
-                            ForEach(selectedGolden(options)?.repositories ?? [], id: \.self) { repository in
+                            ForEach(selectedGolden(options).map { catalog(options).repositories(of: $0) } ?? [], id: \.self) { repository in
                                 Text(repository).tag(Optional(repository))
                             }
                         }
-                        .disabled(selectedGolden(options)?.repositories.isEmpty ?? true)
+                        .disabled(selectedGolden(options).map { catalog(options).repositories(of: $0).isEmpty } ?? true)
                         Picker("Stop when idle for", selection: $draft.idleSeconds) {
                             Text("Default (\(IdlePolicy.label(IdlePolicy.defaultSeconds)))").tag(Int?.none)
                             ForEach(IdlePolicy.choices.filter { $0 != IdlePolicy.defaultSeconds }, id: \.self) { seconds in
@@ -200,7 +200,7 @@ struct CreateOrchestratorView: View {
             } else {
                 Picker("Agent", selection: harnessBinding(options)) {
                     ForEach(enabled) { offer in
-                        Text(HarnessName.label(offer.harness.rawValue)).tag(Optional(offer.harness))
+                        Text(Self.offerLabel(offer)).tag(Optional(offer.harness))
                     }
                 }
                 .accessibilityIdentifier("create.agent")
@@ -227,7 +227,7 @@ struct CreateOrchestratorView: View {
     private func modelFields(_ options: CreateOptions, harness: ArmadaKit.ArmadaHarness) -> some View {
         let models = catalog(options).catalog(for: harness)
         if let models, !models.models.isEmpty, !customModel {
-            Picker("Model", selection: $draft.model) {
+            Picker("Model", selection: modelBinding(options)) {
                 ForEach(models.models) { choice in
                     Text(choice.label).tag(choice.id)
                 }
@@ -261,15 +261,16 @@ struct CreateOrchestratorView: View {
         }
     }
 
+    /// The account picker appears only when there is a choice (the person's accounts before the
+    /// org's, as the server resolves them); a single account is shown as text.
     @ViewBuilder
     private func accountField(_ options: CreateOptions, harness: ArmadaKit.ArmadaHarness) -> some View {
         let accounts = catalog(options).accounts(for: harness)
-        if accounts.isEmpty {
-            Text("No \(HarnessName.label(harness.rawValue)) model account is available to you. Add one from the dashboard or the CLI.")
-                .font(.footnote)
-                .foregroundStyle(ArmadaTheme.textSecondary)
-        } else {
+        if catalog(options).offersAccountChoice(for: harness) {
             Picker("Model account", selection: $draft.accountId) {
+                if catalog(options).defaultAccount(for: harness) == nil {
+                    Text("Choose").tag(String?.none)
+                }
                 ForEach(accounts) { account in
                     VStack(alignment: .leading) {
                         Text(account.name)
@@ -279,12 +280,33 @@ struct CreateOrchestratorView: View {
                 }
             }
             .accessibilityIdentifier("create.account")
+        } else if let account = accounts.first {
+            LabeledContent("Model account", value: "\(account.name) · \(Self.accountDetail(account))")
+                .accessibilityIdentifier("create.account")
+        } else {
+            Text("No \(HarnessName.label(harness.rawValue)) model account is available to you or the organization. Add one from the dashboard or the CLI.")
+                .font(.footnote)
+                .foregroundStyle(ArmadaTheme.textSecondary)
         }
     }
 
-    private static func accountDetail(_ account: ArmadaKit.ModelAccount) -> String {
+    private static func accountDetail(_ account: ArmadaKit.LaunchAccount) -> String {
         let scope = account.scope == .user ? "Personal" : "Organization"
         return account.isDefault ? "\(scope) · Default" : scope
+    }
+
+    /// The agent's name and, when the server reports it, whether a resume is guaranteed.
+    private static func offerLabel(_ offer: ArmadaKit.OrchestratorCreateCatalog.PairOffer) -> String {
+        let name = HarnessName.label(offer.harness.rawValue)
+        return offer.continuityLabel.map { "\(name) · \($0)" } ?? name
+    }
+
+    /// A model change keeps the effort when the model accepts it.
+    private func modelBinding(_ options: CreateOptions) -> Binding<String> {
+        Binding(
+            get: { draft.model },
+            set: { model in catalog(options).adopt(model: model, into: &draft) }
+        )
     }
 
     private func goldenBinding(_ options: CreateOptions) -> Binding<String?> {
@@ -325,9 +347,8 @@ struct CreateOrchestratorView: View {
         )
     }
 
-    private func selectedGolden(_ options: CreateOptions?) -> ArmadaKit.GoldenSummary? {
-        guard let options, let id = draft.goldenId else { return nil }
-        return options.catalog.goldens.first { $0.id == id }
+    private func selectedGolden(_ options: CreateOptions?) -> ArmadaKit.LaunchGolden? {
+        options?.catalog.golden(draft.goldenId)
     }
 
     private func loadOptions() async {
