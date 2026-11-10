@@ -624,6 +624,7 @@ describe("tools", () => {
       const resent = await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
       expect(resent.isError).not.toBe(true);
       boat.finish("bx_1", "prompt_2", "failed");
+      await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [launched.data.id, message]);
       boat.sandbox("bx_1").info.state = "stopped";
       const stopped = await call(mcp, "status", { id: launched.data.id });
       expect(stopped.data.status).toBe("stopped");
