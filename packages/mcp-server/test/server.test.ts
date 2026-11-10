@@ -289,6 +289,7 @@ describe("tools", () => {
     const { tools } = await mcp.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual(
       [
+        "delete",
         "exec",
         "work_recovery",
         "golden_build_status",
