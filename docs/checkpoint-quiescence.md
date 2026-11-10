@@ -25,6 +25,31 @@ survivor; count covers all remaining writers (capped at 4096). No raw process na
 command line, executable path, PID or environment is logged. An opaque orphan may
 still refuse; these fields distinguish it from recognized platform control work.
 
+## Ordinary Modal stop (additional production evidence)
+
+The 07:40–07:43Z report on #732 shows the same privileged-writer scrub refusal
+on an ordinary sandbox, after runner checkpoint failures classified as gRPC and
+Armada refusal. Both ordinary and orchestrator stops use the same bootstrap seal,
+runner checkpoint, process scrub and filesystem snapshot sequence. This repair
+therefore applies to fresh ordinary forks as well as managed parents. Successful
+ordinary stop must retain a new recovery image without
+`checkpoint_failed_disk_not_retained`; its existing bounded fallback is not a
+successful disk-retention validation and remains unchanged.
+
+The preceding gRPC classification alone does not identify a transport cause or
+prove that the runner checkpoint committed. Do not bypass its durable watermark
+ACK requirement, retry an uncertain RPC blindly, or interpret a later scrub log
+as proof that the earlier runner attempt succeeded. If a fresh post-deployment
+ordinary stop still fails at the runner stage, capture the closed stage/reason
+and investigate that separately; do not count fallback termination as this
+ticket's successful smoke.
+
+For an ordinary sandbox, verify first stop reports stopped with no disk-loss
+note, then trigger the supported resume through exec and verify a filesystem
+marker survives, then stop again with no disk-loss note. Run the orchestrator
+smoke below separately. These live provider checks have not been performed in
+this development session.
+
 ## Deployment prerequisites
 
 Deploy the updated server and rebuilt runtime artifact through the normal

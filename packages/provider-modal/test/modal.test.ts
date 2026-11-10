@@ -2879,6 +2879,55 @@ test("receipt-bound removed-owner cleanup can drain only its exact Modal machine
   }
 });
 
+test("ordinary stop retains its new disk checkpoint across resume with generation-bound sealed controls", async () => {
+  const f = fixture();
+  f.distribution.captureProcessBaseline = async (_sb, row) => ({
+    version: 1,
+    physicalId: row.physicalId!,
+    generation: row.generation,
+    namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
+    processes: [{ pid: 1, start: "1" }],
+    admissionState: "pending",
+  });
+  f.onRpc(async (row, op) =>
+    op === "health" ? { generation: String(row.generation), ready: true, pid: 123 } : undefined,
+  );
+  f.distribution.sealProcessBaseline = async (_sb, row, managedRunnerPid) => {
+    if (!row.processBaseline) throw Error("Missing baseline");
+    return { ...row.processBaseline, admissionState: "sealed", managedRunnerPid };
+  };
+  const machine = await runningFork(f);
+  for (const generation of [1, 2]) {
+    const before = await f.store.get(machine.id);
+    expect(before.golden).toBe(false);
+    expect(before.orchestratorCheckpoint).toBeUndefined();
+    expect(before.processBaseline).toMatchObject({
+      physicalId: before.physicalId,
+      generation,
+      admissionState: "sealed",
+      managedRunnerPid: 123,
+    });
+    const start = f.log.length;
+    await f.provider.stop({ sandboxId: machine.id });
+    const stopped = await f.store.get(machine.id);
+    expect(stopped.phase).toBe("stopped");
+    expect(stopped.recoveryImageId).toBeString();
+    expect(stopped.info.stopNote).toBeUndefined();
+    expect(f.log.slice(start)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
+    // Idempotent stop must not spend the ordinary fallback budget or discard this disk.
+    await f.provider.stop({ sandboxId: machine.id });
+    expect((await f.store.get(machine.id)).recoveryImageId).toBe(stopped.recoveryImageId);
+    if (generation === 1) {
+      await f.provider.exec({ sandboxId: machine.id, command: "pwd" });
+      const resumed = await f.store.get(machine.id);
+      expect(resumed.phase).toBe("active");
+      expect(resumed.imageId).toBe(stopped.recoveryImageId);
+      expect(resumed.physicalId).not.toBe(before.physicalId);
+      expect(resumed.ordinaryStopAttempted).toBeUndefined();
+    }
+  }
+});
+
 test.each([
   ["pending", 123, true, "sealed"],
   ["pending", undefined, true, "legacy"],
