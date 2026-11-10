@@ -610,6 +610,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           message: "Boat events lack a stable pagination boundary.",
         });
       }
+      // Boat can advance an empty forward page over filtered journal records.
+      if (!raw.length && !backward && response.pageInfo?.nextCursor) page.cursor = response.pageInfo.nextCursor;
       return page;
     },
 
