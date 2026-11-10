@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   createSqlVaultStore,
+  DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
+  HARNESS_KINDS,
+  HARNESSES,
+  MACHINE_SIZES,
+  MODEL_CATALOG,
+  PROVIDER_LIMITS,
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
@@ -505,6 +511,32 @@ describe("control API", () => {
       expect(response?.headers.get("cache-control")).toBe("no-store");
       expect(await response?.json()).toEqual({
         error: { code: "unknown", message: "The provider failed." },
+      });
+    });
+  });
+
+  test("launch/options publishes the server's harness, model, size and TTL catalogs to a signed-in caller", async () => {
+    await withServer(async ({ options }) => {
+      const call = (init: RequestInit) =>
+        handleControlRequest(new Request("https://armada.test/api/v1/launch/options", init), options);
+      expect((await call({ method: "POST" }))?.status).toBe(401);
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
+      const response = await call({ method: "POST", headers, body: "{}" });
+      expect(response?.status).toBe(200);
+      const body = await response?.json();
+      expect(body.harnesses.map((harness: { id: string }) => harness.id)).toEqual([...HARNESSES]);
+      for (const harness of body.harnesses) {
+        const catalog = MODEL_CATALOG[harness.id as keyof typeof MODEL_CATALOG];
+        expect(harness.defaultModel).toBe(catalog.defaultModel);
+        expect(harness.models).toEqual(catalog.models);
+        expect(harness.credentialKinds).toEqual(HARNESS_KINDS[harness.id as keyof typeof HARNESS_KINDS]);
+      }
+      expect(body.machineSizes).toEqual([...MACHINE_SIZES]);
+      expect(body.ttl).toEqual({
+        defaultSeconds: DEFAULT_LAUNCH_TTL_SECONDS,
+        maxSeconds: { boat: PROVIDER_LIMITS.boat.maxTtlSeconds, modal: PROVIDER_LIMITS.modal.maxTtlSeconds },
       });
     });
   });
