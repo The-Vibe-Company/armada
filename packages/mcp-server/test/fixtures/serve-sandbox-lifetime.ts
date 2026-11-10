@@ -85,7 +85,9 @@ class ModalClient extends modal.Client {
         const id = options.tags.armada_sandbox;
         assert(id);
         physicalIds.set(sb.sandboxId, id);
-        effects.push({ id, op: "allocate" });
+        const timeoutMs: unknown = Reflect.get(options, "timeoutMs");
+        assert.equal(typeof timeoutMs, "number");
+        effects.push({ id, op: "allocate", ttlSeconds: Number(timeoutMs) / 1000 });
         return auditedNative(sb);
       },
       fromId: async (id) => auditedNative(await sdk.fromId(id)),
@@ -304,6 +306,7 @@ async function start() {
       ARMADA_AUTH_SECRET: "synthetic-lifetime-auth-secret",
       ARMADA_PUBLIC_URL: "https://lifetime.invalid",
       ARMADA_ENCRYPTION_KEY: key,
+      ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS: "1800",
     },
     { log: (line) => logs.push(line), logError: (line) => logs.push(line) },
   );
@@ -397,6 +400,12 @@ try {
         assert.equal(
           effects.find((item) => item.id === before.provider_sandbox_id && item.op === "allocate")?.ttlSeconds,
           420,
+        );
+      if (provider === "modal")
+        assert.equal(
+          effects.find((item) => item.id === before.provider_sandbox_id && item.op === "allocate")?.ttlSeconds,
+          2220,
+          "A two-minute Modal launch must have only the configured 30-minute headroom plus five-minute preservation margin, not a 24h timer",
         );
       const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
       const deniedBefore = effects.length;
@@ -519,6 +528,10 @@ try {
       assert(native.recoveryImageId, "Expiry must retain the verified disk checkpoint");
     } else assert.equal(boats.get(scenario.nativeId)?.state, "archived");
     await request("extend", { id: scenario.id, ttl_seconds: 1200 }, 400);
+    // Model an expiry stop still being confirmed when its owner explicitly retries stop.
+    await sql.query("update sandboxes set status='stopping',stopped_at=null where id=$1", [scenario.id]);
+    await request("stop", { id: scenario.id });
+    assert.equal((await row(scenario.id)).status_reason, "expired", "Explicit stop must not erase the expiry reason");
     if (scenario.active) {
       const resumed = await request<{ conversationId: string }>("send", {
         id: scenario.id,

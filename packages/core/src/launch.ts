@@ -26,7 +26,7 @@ import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
-import { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
+import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
@@ -126,6 +126,8 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted server policy: extra physical Modal seconds reserved for extension. */
+  extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
   onInitialization?: (stage: LaunchInitializationStage) => void;
   /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
@@ -166,6 +168,13 @@ export async function launchSandbox(
   const ttlSeconds = options.privateParent
     ? checkedTtl
     : Math.min(checkedTtl, PROVIDER_LIMITS[golden.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
+  const extensionHeadroom = options.extensionHeadroomSeconds ?? DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
+  if (
+    !Number.isSafeInteger(extensionHeadroom) ||
+    extensionHeadroom < 0 ||
+    extensionHeadroom > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
+  )
+    throw new LaunchError("invalid_request", "Invalid server sandbox extension headroom policy.");
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
@@ -215,7 +224,10 @@ export async function launchSandbox(
         ttlSeconds: options.privateParent
           ? ttlSeconds
           : golden.provider === "modal"
-            ? PROVIDER_LIMITS.modal.maxTtlSeconds
+            ? Math.min(
+                PROVIDER_LIMITS.modal.maxTtlSeconds,
+                ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS + extensionHeadroom,
+              )
             : Math.min(PROVIDER_LIMITS.boat.maxTtlSeconds, ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS),
         labels: {
           armada: "sandbox",

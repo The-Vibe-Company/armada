@@ -34,6 +34,7 @@ import { preserveBeforeStop } from "./work-preservation.ts";
  * Boat is explicitly best-effort ordinary archival/activation. Deployment intent
  * alone never upgrades either pair's continuity guarantees. */
 export function createProductionOrchestrators(input: {
+  extensionHeadroomSeconds?: number;
   sql: Sql;
   providers: ProviderRegistry;
   credentials: NamedOrchestratorCredentials;
@@ -137,6 +138,9 @@ export function createProductionOrchestrators(input: {
         sql,
         operation,
         selection: chosen,
+        ...(input.extensionHeadroomSeconds === undefined
+          ? {}
+          : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
         stores: {
           ...stores,
           goldens: new Proxy(stores.goldens, {

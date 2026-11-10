@@ -16,6 +16,7 @@ import {
   type LaunchStores,
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
+  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   type MemberRole,
   MODEL_CATALOG,
   type ModelChoice,
@@ -1378,7 +1379,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       title: "Extend a sandbox lifetime",
       description:
         "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
-      input: { id, ttl_seconds: z.number().int().positive().max(MAX_LAUNCH_TTL_SECONDS) },
+      input: { id, ttl_seconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) },
       output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
     },
     async (args) => {
@@ -1410,7 +1411,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       return sandboxActivity(
         data.sandboxes,
         found,
-        { status: found.status === "failed" ? "failed" : "stopping", stoppedAt: null, stopRequested: true },
+        {
+          status: found.status === "failed" ? "failed" : "stopping",
+          stoppedAt: null,
+          stopRequested: true,
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
+        },
         async (signal) => {
           signal.throwIfAborted();
           if (
@@ -1438,7 +1444,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             patch: {
               status,
               stopRequested: !terminal,
-              ...(status === "failed" ? { statusReason: found.statusReason } : {}),
+              ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
               ...(terminal
                 ? {
                     stoppedAt: (stoppedAt ?? context.now()).toISOString(),

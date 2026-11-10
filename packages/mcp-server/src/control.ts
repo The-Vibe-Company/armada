@@ -14,7 +14,13 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { API_FAILURE_STATUS, goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
+import {
+  API_FAILURE_STATUS,
+  goldenForSettings,
+  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
+  parseMachineSize,
+  parseMachineSizePolicy,
+} from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -657,7 +663,9 @@ async function dispatch(
   if (toolName) {
     if (
       route === "sandbox/extend" &&
-      (!Number.isSafeInteger(body.ttl_seconds) || Number(body.ttl_seconds) < 1 || Number(body.ttl_seconds) > 2592000)
+      (!Number.isSafeInteger(body.ttl_seconds) ||
+        Number(body.ttl_seconds) < 1 ||
+        Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
     )
       throw new VaultError(
         "invalid",

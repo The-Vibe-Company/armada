@@ -1,9 +1,10 @@
 # Sandbox lifetime investigation (#851)
 
-Investigation of main before implementation. This is a proposed design, not a
-claim that extension or expiry recovery is implemented.
+The baseline below records main before implementation. The initial delivery
+section describes the implemented extension/expiry scope; the proposed design
+also includes recovery and client-warning follow-ups that are not claimed here.
 
-## Current behaviour
+## Baseline behaviour before implementation
 
 | Provider / harness | Enforcement and Armada row | Retention and prompt after expiry |
 | --- | --- | --- |
@@ -74,19 +75,29 @@ This PR implements points 1 and 2 of #851. Recovery/error closure is tracked in
 #854; the expiring-soon projection is tracked in #855. Existing retained-stop
 resume remains available, but this PR does not claim the complete recovery matrix.
 
-Ordinary launches now reserve five minutes between their logical lifetime and
-Boat's hard stop. Modal uses its 24-hour physical maximum and rejects extensions
-that cannot fit before that machine's existing grant deadline with five minutes
-left for preservation. Requested maximum launch lifetimes are capped to leave
-this margin; the launch response reports the effective TTL. Managed parents keep
-their separate lifecycle policy. Existing machines cannot gain missing Modal
-headroom retroactively. A stopped/resumed Modal worker receives a fresh physical
-machine through the existing restore path.
+Ordinary launches reserve a five-minute stop margin between the logical expiry
+and the provider's hard deadline. Boat uses logical TTL + 300 seconds and resets
+its live timer when extended. For ordinary Modal launches, including coordinator
+children, the physical launch timeout is:
 
-Operational tradeoff: if Armada is unavailable, Modal's provider timer may leave
-compute running for up to 24 hours, rather than the shorter logical lifetime.
-The provider timer remains a hard cost bound, not a work-preserving stop. Server
-outages lasting beyond the reserved margin cannot guarantee a clean checkpoint.
+`min(24 hours, effective logical TTL + 300 seconds + server extension headroom)`
+
+The server setting `ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS` defaults to 3600
+seconds and accepts whole seconds from 0 through 86100. Requested maximum launch
+lifetimes are capped to leave the stop margin; the launch response reports the
+effective TTL. Managed parents retain their separate lifecycle policy.
+
+Modal extensions must fit before the existing physical/grant deadline minus
+300 seconds. A longer request is refused, never implemented by replacing the
+running machine. Existing Modal machines cannot gain missing physical headroom
+retroactively. A stopped/resumed Modal worker receives a fresh physical machine
+through the existing restore path.
+
+Operational tradeoff: during an Armada outage, the worst-case compute cost is
+bounded by the physical launch timeout above, not always 24 hours. A high logical
+TTL or configured headroom can reach the 24-hour provider cap. The provider timer
+remains a hard cost bound, not a work-preserving stop. Server outages lasting
+beyond the reserved stop margin cannot guarantee a clean checkpoint.
 
 Deploy the additive constraint migration before the new server. Existing parent
 epochs do not acquire `worker:extend`; stop/resume a parent to install a fresh

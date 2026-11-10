@@ -1,4 +1,4 @@
-import { MACHINE_SIZES, VERSION } from "@armada/core";
+import { MACHINE_SIZES, MAX_SANDBOX_EXTENSION_TTL_SECONDS, VERSION } from "@armada/core";
 import { OrchestratorAuthorityDenied } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -41,7 +41,11 @@ const schemas = {
   message: z.object({ idempotencyKey: key, sandboxId: z.uuid(), text }).strict(),
   stop: z.object({ idempotencyKey: key, sandboxId: z.uuid() }).strict(),
   extend: z
-    .object({ idempotencyKey: key, sandboxId: z.uuid(), ttlSeconds: z.number().int().positive().max(2591700) })
+    .object({
+      idempotencyKey: key,
+      sandboxId: z.uuid(),
+      ttlSeconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS),
+    })
     .strict(),
 };
 const restSchemas = {

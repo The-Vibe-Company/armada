@@ -199,6 +199,9 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         expect(row?.stopped_at).not.toBeNull();
         expect(row?.last_observed_at).not.toBeNull();
         expect(row?.lifecycle_error).toBeNull();
+        expect(methods).toEqual(
+          observation === "expired" ? ["GET", "POST", "GET", "GET", "POST", "POST", "POST", "GET"] : ["GET"],
+        );
       }
       // Re-due historical failures: only unknown outcomes may consume provider work again.
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);

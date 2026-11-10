@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
 import { type Harness, type LaunchRequest, parseMachineSize, type Sql } from "@armada/core/server";
 import { ChildLaunchNotAllocated } from "./orchestrator-child-launch.ts";
 import type { ChildAuthority } from "./orchestrator-lifecycle-contract.ts";
@@ -62,7 +63,9 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
   ) {
     if (
       input.action === "extend" &&
-      (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1 || input.ttlSeconds > 2591700)
+      (!Number.isSafeInteger(input.ttlSeconds) ||
+        input.ttlSeconds < 1 ||
+        input.ttlSeconds > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
     )
       throw new Error("Invalid extension duration.");
     if (!/^[ -~]{1,128}$/.test(key) || (input.action === "message" && !input.text.trim()))
