@@ -139,8 +139,11 @@ test.each([
   expect(evidence.modelSelectionMessage).not.toContain("Do not retry automatically");
 });
 
-test("a concrete model does not falsely fail an unresolved native alias", () => {
-  expect(
-    turnModelEvidence([message("claude-sonnet-5")], { promptId: "turn", requestedModel: "sonnet", complete: true }),
-  ).toMatchObject({ observedModel: "claude-sonnet-5", modelSelectionReason: "model_selection_unverified" });
-});
+test.each(["sonnet", "best", "fable", "sonnet[1m]", "opus[1m]", "claude-sonnet-5[1m]"])(
+  "a concrete model does not falsely fail unresolved native selection %s",
+  (requestedModel) => {
+    expect(
+      turnModelEvidence([message("claude-sonnet-5")], { promptId: "turn", requestedModel, complete: true }),
+    ).toMatchObject({ observedModel: "claude-sonnet-5", modelSelectionReason: "model_selection_unverified" });
+  },
+);

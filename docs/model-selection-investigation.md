@@ -94,3 +94,9 @@ run a controlled Boat Claude turn spawning a different-model subagent, capture
 redacted `armada logs --all --json` plus status, and verify that only the main
 response establishes observed model. No such provider check was run here.
 Native Modal Claude's SDK parent metadata is handled separately.
+
+Native aliases and `[1m]` context modifiers are not literal concrete response IDs.
+Without an authoritative resolution map they remain neutrally unverified, not
+unhonoured selections. Alias/context examples follow the official
+[Claude model configuration](https://code.claude.com/docs/en/model-config#model-aliases);
+exact `claude-fable-5-2` remains an exact requested ID for the recording regression.
