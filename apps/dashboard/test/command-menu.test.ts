@@ -15,7 +15,7 @@ test("a label that starts with the query ranks before a word, a keyword and a su
   // A keyword only: "mcp" finds Tools.
   expect(labels("mcp")).toEqual(["Tools"]);
   // A substring anywhere, last.
-  expect(labels("ials")).toEqual(["Credentials"]);
+  expect(labels("ness")).toEqual(["Harness"]);
 });
 
 test("nothing matches an unknown word", () => {

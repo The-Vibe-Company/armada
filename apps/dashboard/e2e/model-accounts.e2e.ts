@@ -38,13 +38,13 @@ function account(id: number, name: string, extra: Row = {}): Row {
 }
 
 async function addAccount(page: Page, name: string, token: string, makeDefault: boolean) {
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /Claude subscription/ }).check();
   await dialog.getByLabel("Name").fill(name);
   await dialog.getByLabel("OAuth token").fill(token);
   if (makeDefault) await dialog.getByLabel(/Make it the default/).check();
-  await dialog.getByRole("button", { name: "Add account" }).click();
+  await dialog.getByRole("button", { name: "Add subscription" }).click();
   await expect(dialog).toHaveCount(0);
 }
 
@@ -56,7 +56,7 @@ async function openLaunch(page: Page) {
 test("two accounts of one service: the deliberate default is preselected, and the chosen one is sent by id", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   const claude = page.locator('[data-harness="claude"]');
   // The org's migrated Anthropic key is the only Claude Code account: launches use it until Alice adds hers.
   await expect(claude.getByText("Launch preselects Anthropic API key, the org's only account.")).toBeVisible();
@@ -106,11 +106,12 @@ test("rename and default keep the account's id; removing the default leaves the 
   page,
 }) => {
   await mock("/__test/accounts", { seed: [account(1, "Work", { is_default: true }), account(2, "Home")] });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   const claude = page.locator('[data-harness="claude"]');
   const home = claude.locator('[data-account="Home"]');
 
-  await home.getByRole("button", { name: "Rename Home" }).click();
+  await home.getByRole("button", { name: "More actions for Home" }).click();
+  await page.getByRole("menuitem", { name: "Rename" }).click();
   await page.getByRole("dialog").getByLabel("Name").fill("Side project");
   await page.getByRole("dialog").getByRole("button", { name: "Save name" }).click();
   const side = claude.locator('[data-account="Side project"]');
@@ -119,7 +120,11 @@ test("rename and default keep the account's id; removing the default leaves the 
   await side.getByRole("button", { name: "Make default, Side project" }).click();
   await expect(claude.locator("[data-launch-uses]")).toHaveText("Launch preselects Side project, your default.");
 
-  await claude.locator('[data-account="Side project"]').getByRole("button", { name: "Remove Side project" }).click();
+  await claude
+    .locator('[data-account="Side project"]')
+    .getByRole("button", { name: "More actions for Side project" })
+    .click();
+  await page.getByRole("menuitem", { name: "Remove" }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
     "New launches can no longer use it. Sandboxes launched with it keep their files and conversations, but new messages to them are refused; a new launch needs another usable account.",
   );
@@ -163,11 +168,11 @@ test("several accounts and no default: the launch asks who is billed and the ser
 });
 
 test("a member sees the org's accounts but only manages their own", async ({ page }) => {
-  await signIn(page, "bob@example.com", "/credentials");
+  await signIn(page, "bob@example.com", "/harness");
   const org = page.locator('[data-account="Anthropic API key"]');
   await expect(org).toContainText("Acme");
   await expect(org.getByRole("button")).toHaveCount(0);
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
   // Only an admin adds an org account: a member has no scope choice.
   await expect(page.getByRole("dialog").getByRole("radio", { name: /Acme/ })).toHaveCount(0);
 });
@@ -177,13 +182,14 @@ test("replacing a token keeps the account and names the version seen; a replacem
 }) => {
   const work = account(41, "Work", { is_default: true });
   await mock("/__test/accounts", { seed: [work] });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   // A second tab read the same version before the first one replaced the token.
   const stale = await page.context().newPage();
-  await stale.goto("/credentials");
+  await stale.goto("/harness");
 
   const replace = async (on: Page, token: string) => {
-    await on.getByRole("button", { name: "Replace token, Work" }).click();
+    await on.getByRole("button", { name: "More actions for Work" }).click();
+    await on.getByRole("menuitem", { name: "Replace token" }).click();
     const dialog = on.getByRole("dialog");
     // #612 pins a sandbox to the account version it launched with: a replacement refuses new messages to those
     // sandboxes and keeps their files and conversations.
@@ -217,7 +223,7 @@ test("replacing a token keeps the account and names the version seen; a replacem
 test("the launch select names the org on an org account, so equal names still say who is billed", async ({ page }) => {
   // A personal account named like the org's migrated one.
   await mock("/__test/accounts", { seed: [account(42, "Anthropic API key", { kind: "anthropic", is_default: true })] });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   const select = (await openLaunch(page)).getByLabel("Account");
   await expect(select.locator("option:checked")).toHaveText("Anthropic API key (default)");
   await expect(select.locator('optgroup[label="Acme"] option')).toHaveText(["Anthropic API key (Acme)"]);
@@ -297,9 +303,9 @@ test("a refused launch keeps the chosen account: the retry bills who the person 
 
 test("a server older than named accounts is said plainly, and launches send no account", async ({ page }) => {
   await mock("/__test/accounts", { legacy: true });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   await expect(page.locator('[data-accounts="legacy"]')).toContainText("This Armada server predates named accounts");
-  await expect(page.getByRole("button", { name: "Add account" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add a subscription", exact: true })).toHaveCount(0);
 
   const dialog = await openLaunch(page);
   await expect(dialog.getByLabel("Account")).toHaveCount(0);
@@ -357,7 +363,7 @@ test("usage reads as reported: current windows, last-known after a token change,
       [String(account(7, "").id)]: report(7, {}),
     },
   });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   const card = (name: string) => page.locator(`[data-account="${name}"]`);
 
   await expect(card("Fresh").locator('[data-usage="fresh"]')).toContainText("65% left");
@@ -410,7 +416,7 @@ test("native credits render as the producer sent them: every meter, exact balanc
       ]),
     ),
   });
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/harness");
   const card = (name: string) => page.locator(`[data-account="${name}"]`);
   const credits = (name: string) => card(name).locator("[data-credits] li");
 
@@ -454,8 +460,8 @@ test("native credits render as the producer sent them: every meter, exact balanc
 test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays behind a disclosure", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/credentials");
-  await page.getByRole("button", { name: "Add account" }).click();
+  await signIn(page, "alice@example.com", "/harness");
+  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
   await dialog.getByLabel("Name").fill("Bob's $HOME");
@@ -472,7 +478,7 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
   // A server that does not report a terminal sign-in offers paste only, never a command it did not name.
   await mock("/__test/accounts", { authCapabilities: null });
   await page.reload();
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
   await page
     .getByRole("dialog")
     .getByRole("radio", { name: /ChatGPT subscription/ })
@@ -483,8 +489,8 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
 
 test("on a phone the terminal sign-in stays inside the add dialog, even for a long name", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await signIn(page, "alice@example.com", "/credentials");
-  await page.getByRole("button", { name: "Add account" }).click();
+  await signIn(page, "alice@example.com", "/harness");
+  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
   await dialog.getByLabel("Name").fill("A very long account name for the team that shares one ChatGPT plan");

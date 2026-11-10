@@ -5,12 +5,14 @@ const config: NextConfig = {
   transpilePackages: ["@armada/core"],
   reactStrictMode: true,
   poweredByHeader: false,
-  // #808 renamed the Build pages for what they hold. Old links, bookmarks and the OAuth return keep working, query
-  // included (Next carries it over).
+  // Pages renamed for what they hold: the Build pages (#808) and Credentials, now Harness (#805). Old links, bookmarks
+  // and the OAuth return keep working, query included (Next carries it over).
   async redirects() {
     return [
       { source: "/goldens", destination: "/environments", permanent: false },
       { source: "/connections", destination: "/tools", permanent: false },
+      { source: "/credentials", destination: "/harness", permanent: true },
+      { source: "/credentials/:path*", destination: "/harness", permanent: true },
     ];
   },
   experimental: {

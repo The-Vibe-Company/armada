@@ -6,11 +6,11 @@ test.beforeEach(reset);
 const SECRET = "boat-personal-super-secret-key";
 
 test("a personal hosting key is stored encrypted and never shown again", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/settings");
   const mine = page.locator('[data-credentials="user"]');
   await mine.getByLabel("Kind").selectOption("boat");
   await mine.getByLabel("Value", { exact: true }).fill(SECRET);
-  await mine.getByRole("button", { name: "Save credential" }).click();
+  await mine.getByRole("button", { name: "Save key" }).click();
   await expect(mine.getByText("boat.dev API key saved.")).toBeVisible();
 
   await expect(mine.getByRole("img", { name: "Value hidden" })).toHaveCount(1);
@@ -30,26 +30,36 @@ test("a personal hosting key is stored encrypted and never shown again", async (
 });
 
 test("a value with spaces is refused before anything is stored", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/settings");
   const mine = page.locator('[data-credentials="user"]');
   await mine.getByLabel("Value", { exact: true }).fill("two words");
-  await mine.getByRole("button", { name: "Save credential" }).click();
+  await mine.getByRole("button", { name: "Save key" }).click();
   await expect(mine.locator('p[role="alert"]')).toContainText("no spaces");
 });
 
-test("an org's Boat and Modal are its sandbox providers in Settings: Credentials shows and offers neither", async ({
+test("personal provider keys sit in Settings under the org's providers; Harness offers no provider key", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/credentials");
-  // The real page, not its loading state, before anything is checked as absent.
-  await expect(page.locator('[data-credentials="user"]')).toBeVisible();
-  // No org hosting card: its model keys are named accounts above, its Boat and Modal are providers in Settings.
-  await expect(page.locator('[data-credentials="Acme (org)"]')).toHaveCount(0);
+  await signIn(page, "alice@example.com", "/settings");
+  const providers = page.locator('[data-settings="providers"]');
+  const personal = page.locator('[data-settings="personal-keys"]');
+  await expect(providers).toBeVisible();
+  await expect(personal.getByRole("heading", { name: "Your personal provider keys" })).toBeVisible();
+  // Right after the organization's provider rows, before GitHub.
+  const order = await page
+    .locator("[data-settings]")
+    .evaluateAll((cards) => cards.map((card) => card.getAttribute("data-settings")));
+  expect(order).toEqual(["providers", "personal-keys", "github"]);
   await expect(
-    page.locator("[data-org-hosting]").getByRole("link", { name: "sandbox providers in Settings" }),
-  ).toHaveAttribute("href", "/settings");
-  // A person's own hosting keys stay here.
-  await expect(page.locator('[data-credentials="user"]').locator("li", { hasText: "boat.dev API key" })).toHaveCount(1);
+    personal.locator('[data-credentials="user"]').locator("li", { hasText: "boat.dev API key" }),
+  ).toHaveCount(1);
+
+  await page.goto("/harness");
+  await expect(page.getByRole("heading", { name: "Harness", level: 1 })).toBeVisible();
+  await expect(page.locator("[data-harness]")).toHaveCount(2);
+  await expect(page.locator("[data-credentials]")).toHaveCount(0);
+  await expect(page.locator("[data-modal-token]")).toHaveCount(0);
+  await expect(page.getByText("boat.dev API key")).toHaveCount(0);
 });
 
 const MODAL_ID = "ak-e2eModalTokenId1234";
@@ -58,7 +68,7 @@ const MODAL_SECRET = "as-e2eModalTokenSecret5678";
 test("a Modal token is saved from its two fields as one encrypted pair, never shown again, and removed", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/settings");
   const mine = page.locator('[data-credentials="user"]');
   await expect(mine.getByLabel("Kind")).toBeVisible();
   await expect(mine.getByLabel("Kind").locator("option", { hasText: "Modal" })).toHaveCount(0);
@@ -91,7 +101,7 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
 test("a Modal token pair the server would refuse is reported without echoing it and nothing is stored", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/credentials");
+  await signIn(page, "alice@example.com", "/settings");
   const modal = page.locator('[data-credentials="user"] [data-modal-token]');
   // The halves swapped: the id must start with ak- and the secret with as-.
   await modal.getByLabel("Token ID").fill(MODAL_SECRET);
@@ -110,10 +120,10 @@ test("a Modal token pair the server would refuse is reported without echoing it 
 });
 
 for (const email of ["alice@example.com", "bob@example.com"])
-  test(`an org Modal token forged into Credentials is refused for ${email.split("@")[0]}, never stored`, async ({
+  test(`an org Modal token forged into the personal keys is refused for ${email.split("@")[0]}, never stored`, async ({
     page,
   }) => {
-    await signIn(page, email, "/credentials");
+    await signIn(page, email, "/settings");
     await expect(page.locator('[data-credentials="user"] [data-modal-token]')).toBeVisible();
     await expect(page.locator('[data-credentials="Acme (org)"] [data-modal-token]')).toHaveCount(0);
     // Their own form, pointed at the org: hosting for an org is connected in Settings, checked by the server first.

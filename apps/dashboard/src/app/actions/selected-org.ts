@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, fail, formString } from "@/lib/action";
 import { SELECTED_ORG_COOKIE } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { HARNESS_PATH } from "@/lib/model-accounts";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
@@ -30,8 +31,8 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
         ? `/orgs/${id}`
         : section === "environments" || section === "goldens"
           ? "/environments"
-          : section === "credentials"
-            ? "/credentials"
+          : section === "harness" || section === "credentials"
+            ? HARNESS_PATH
             : section === "tools" || section === "connections"
               ? "/tools"
               : section === "settings"

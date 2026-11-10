@@ -46,9 +46,9 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         do {
-            let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100)
+            let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100, backward: backward)
             let supported = page.events.filter { event in
                 switch event.body {
                 case .unknown: return false
@@ -58,7 +58,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
                 default: return true
                 }
             }
-            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore)
+            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore, olderCursor: page.olderCursor)
         } catch {
             throw Self.readFailure(error)
         }
@@ -73,8 +73,9 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             throw .unavailable(ArmadaKit.OrchestratorExplanation.text(for: capabilities.reason ?? "native_conformance_required"))
         }
         do {
-            async let goldens = client.goldens()
-            async let accounts = client.modelAccounts()
+            // The New sandbox form's reads (#750): the same goldens and named accounts.
+            async let goldens = client.launchGoldens()
+            async let accounts = client.launchAccounts()
             return CreateOptions(catalog: ArmadaKit.OrchestratorCreateCatalog(
                 capabilities: capabilities, goldens: try await goldens, accounts: try await accounts
             ))
@@ -195,6 +196,23 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         _ = try? await client.reconcileOrchestratorOperation(id)
     }
 
+    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement {
+        guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
+        let progress: ArmadaKit.OrchestratorCreateProgress
+        do {
+            progress = try await client.followOrchestratorCreate(id)
+        } catch {
+            if error is CancellationError { throw .offline }
+            throw Self.readFailure(error)
+        }
+        switch progress {
+        case .ready: return .ready
+        case .failed(let reason): return .failed(reason)
+        // Not settled: the list keeps showing it in progress.
+        case .creating: throw .offline
+        }
+    }
+
     // MARK: Sandboxes
 
     func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage {
@@ -219,15 +237,16 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         try await requireOrganization(orgID)
         do {
-            let page = try await client.sandboxEvents(id: id, cursor: cursor)
+            let page = try await client.sandboxEvents(id: id, cursor: cursor, backward: backward)
             // A sandbox stream has no orchestrator revision; every event is an agent event.
             return OrchestratorEventPage(
                 events: page.events.map { OrchestratorEvent(id: $0.id, at: Date(timeIntervalSince1970: $0.at / 1_000), revision: 0, body: .agent(Self.agentEvent($0))) },
                 cursor: page.cursor,
-                hasMore: page.hasMore
+                hasMore: page.hasMore,
+                olderCursor: page.olderCursor
             )
         } catch {
             throw Self.sandboxReadFailure(error)
