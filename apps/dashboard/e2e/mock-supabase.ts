@@ -2024,9 +2024,8 @@ function control(url: URL, body: Row): Response {
         ],
         ["Old Wiki", "org", { url: "https://wiki.acme.test/mcp", authType: "none", status: "disabled" }],
       ];
-      tools.forEach(([name, scope, fields], index) =>
-        state.connections.push(mcpConnection(id(170 + index), name, ACME, scope, ALICE, fields)),
-      );
+      for (const [index, [name, scope, fields]] of tools.entries())
+        state.connections.push(mcpConnection(id(170 + index), name, ACME, scope, ALICE, fields));
     }
     if (body.sizePolicies) {
       // The server has #653's column: every golden reads `size_policy`; the Boat org golden has defaults.
