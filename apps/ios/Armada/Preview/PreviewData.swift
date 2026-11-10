@@ -1,4 +1,5 @@
 #if DEBUG
+import ArmadaKit
 import Foundation
 
 /// In-memory data for `#Preview` blocks only. It is compiled into Debug builds solely so Xcode
@@ -152,38 +153,43 @@ enum PreviewData {
         )
     }
 
-    static let createOptions = CreateOptions(
-        goldens: [
-            GoldenChoice(id: "golden-main", name: "main", provider: .boat, isReady: true, repositories: ["armada", "website"]),
-            GoldenChoice(id: "golden-gpu", name: "gpu", provider: .modal, isReady: true, repositories: ["armada"]),
-            GoldenChoice(id: "golden-new", name: "new-stack", provider: .boat, isReady: false, repositories: []),
-        ],
-        accounts: [
-            ModelAccountChoice(id: "account-claude", name: "My Claude subscription", detail: "Personal", harness: .claude, isDefault: true),
-            ModelAccountChoice(id: "account-claude-team", name: "Team Anthropic key", detail: "Organization", harness: .claude, isDefault: false),
-            ModelAccountChoice(id: "account-codex", name: "My Codex login", detail: "Personal", harness: .codex, isDefault: true),
-        ],
-        catalog: [
-            .claude: HarnessModels(
-                defaultModel: "claude-opus-5-5",
-                defaultReasoningEffort: "medium",
-                reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
-                models: [
-                    ModelChoice(id: "claude-opus-5-5", label: "Claude Opus 5.5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"]),
-                    ModelChoice(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"]),
-                ]
-            ),
-            .codex: HarnessModels(
-                defaultModel: "gpt-6.1-sol",
-                defaultReasoningEffort: "medium",
-                reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-                models: [
-                    ModelChoice(id: "gpt-6.1-sol", label: "GPT-6.1 Sol", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]),
-                    ModelChoice(id: "gpt-6.1-terra", label: "GPT-6.1 Terra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]),
-                ]
-            ),
-        ]
-    )
+    /// The server's capabilities shape: one enabled pair and disabled ones with their reasons.
+    static let createOptions: CreateOptions = {
+        let capabilities = #"""
+        {"version":1,"enabled":true,"reason":null,
+         "pairs":[
+          {"provider":"boat","harness":"claude","enabled":false,"reason":"boat_native_checkpoint_restore_unavailable"},
+          {"provider":"boat","harness":"codex","enabled":false,"reason":"boat_native_checkpoint_restore_unavailable"},
+          {"provider":"modal","harness":"claude","enabled":false,"reason":"native_resume_driver_unavailable"},
+          {"provider":"modal","harness":"codex","enabled":true,"reason":null}],
+         "harnesses":[
+          {"harness":"claude","defaultModel":"claude-opus-5-5","defaultReasoningEffort":"medium","reasoningEfforts":["low","medium","high","xhigh","max"],
+           "models":[{"id":"claude-opus-5-5","label":"Claude Opus 5.5","reasoningEfforts":["low","medium","high","xhigh","max"]}],
+           "accountKinds":["claude_oauth","anthropic"]},
+          {"harness":"codex","defaultModel":"gpt-6.1-sol","defaultReasoningEffort":"medium","reasoningEfforts":["low","medium","high","xhigh","max","ultra"],
+           "models":[{"id":"gpt-6.1-sol","label":"GPT-6.1 Sol","reasoningEfforts":["low","medium","high","xhigh","max","ultra"]},
+                     {"id":"gpt-6.1-terra","label":"GPT-6.1 Terra","reasoningEfforts":["low","medium","high","xhigh","max","ultra"]}],
+           "accountKinds":["openai","codex_auth"]}]}
+        """#
+        let goldens = #"""
+        [{"id":"golden-gpu","name":"gpu","orgId":"preview","provider":"modal","providerSnapshotId":"snap","config":{"repos":[{"dir":"armada"}]}},
+         {"id":"golden-main","name":"main","orgId":"preview","provider":"boat","providerSnapshotId":"snap","config":{"repos":[{"dir":"armada"},{"dir":"website"}]}},
+         {"id":"golden-new","name":"new-stack","orgId":"preview","provider":"modal","providerSnapshotId":null,"config":{"repos":[]}}]
+        """#
+        let decoder = JSONDecoder()
+        // Preview fixtures only; a malformed literal is a programming error caught when the preview renders.
+        let decodedCapabilities = try! decoder.decode(ArmadaKit.OrchestratorCapabilities.self, from: Data(capabilities.utf8))
+        let decodedGoldens = try! decoder.decode([ArmadaKit.GoldenSummary].self, from: Data(goldens.utf8))
+        return CreateOptions(catalog: ArmadaKit.OrchestratorCreateCatalog(
+            capabilities: decodedCapabilities,
+            goldens: decodedGoldens,
+            accounts: [
+                ArmadaKit.ModelAccount(id: "account-codex", name: "My Codex login", kind: "codex_auth", scope: .user, isDefault: true),
+                ArmadaKit.ModelAccount(id: "account-openai", name: "Team OpenAI key", kind: "openai", scope: .org, isDefault: false),
+                ArmadaKit.ModelAccount(id: "account-claude", name: "My Claude subscription", kind: "claude_oauth", scope: .user, isDefault: true),
+            ]
+        ))
+    }()
 
     /// Static preview services. Mutations are acknowledged but change nothing.
     struct Services: OrchestratorService, SandboxService {

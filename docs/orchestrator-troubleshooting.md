@@ -222,3 +222,70 @@ running. Do not mistake that pending receipt for successful preparation. Explici
 owner recovery can abort a never-conversed registered pending first create, fence
 late original callbacks, and settle it only after exact termination proof. Do not
 use a fresh create key to get around a pending receipt.
+
+## Boat best-effort lifecycle (#763)
+
+Boat parents use ordinary archival, not Modal native checkpoints. Their continuity
+must remain `unverified` after resume. The owner lifecycle regression must boot
+`startServer` without substituting the orchestrator factory and drive the CLI;
+backend-only fakes cannot validate the provider hooks installed by production.
+
+An owner can retire a Boat parent blocked by an uncertain stop, including after
+resume. Read detail first and use that revision with a fresh recovery key:
+
+```sh
+armada orchestrator detail ID --org ORG --json
+armada orchestrator recover ID --org ORG --expected-revision REVISION \
+  --idempotency-key RETIREMENT_KEY --json
+```
+
+Use the same key and original revision to retry an uncertain retirement. Recovery
+confirms ordinary archival and publishes `stopped`, but permanently fences resume;
+it does not claim conversation continuity or reactivate compute. This also covers
+the #763 smoke parents `d31da303-bb66-4959-9a93-59366d9fdc4c` and
+`96f80008-d49f-423c-b468-f7d6c48db77d` (their reported blocked revision was 3;
+read current detail rather than assuming it is unchanged).
+
+A successful send receipt proves Boat accepted the prompt, not that a harness
+started it. If events stay empty, retain sanitized prompt ID, conversation ID,
+Boat prompt status and provider event response/cursor for diagnosis. Never include
+credentials or guest output containing secrets. The production-composition test
+proves request dispatch, event publication and reconnect against documented Boat
+responses; it cannot explain an upstream accepted-but-never-delivered turn.
+
+### Boat pull ownership and closed observations
+
+Boat `/prompt` is posted synchronously by owner send. The accepted receipt now
+persists `promptId`, `conversationId` and normalized status in the message
+operation's `runtime_result` (`kind=prompt_receipt`). It is not a harness-execution
+acknowledgement. Legacy message receipts have no prompt ID and cannot be repaired
+retroactively from a conversation alone.
+
+Previously managed Boat parents had no background event consumer: owner
+`orchestrator events` was the only puller. The server now registers a fair Boat
+pull lane alongside create/lifecycle/child workers. It consumes the same provider
+cursor and atomic journal/activity transaction as owner reconnects. Polling never
+renews owner activity by itself; only new meaningful agent events do. The real
+serve regression verifies cursor/activity publication **before** any owner events
+request. This repairs missing unattended activity, not proof that the historical
+150-second upstream-empty response had the same cause.
+
+Closed JSON observations (`event=orchestrator_runtime_observation`) contain only
+Armada UUIDs plus these labels, never prompt text, tokens or raw provider errors:
+
+- `kind=prompt_dispatch`: `accepted` (HTTP receipt returned) or `not_confirmed`
+  (dispatch/preparation failed or acknowledgement lost; not proof of no effect).
+- `kind=prompt_status`: `queued`, `running`, `finished`, `failed`, `interrupted`,
+  `unknown`, `unavailable`. Boat `sending` is normalized to `queued`.
+- `kind=events_poll`: `empty`, `published`, `fenced` (another cursor/incarnation
+  won), `failed`. Failure records retain the existing closed reason classifier.
+
+Compare these labels during the next production smoke; an accepted/queued turn
+with empty polls is distinct from failed polls or missing dispatch.
+
+Terminal retirement first attempts normal native credential preservation. If
+SSH/native capture fails, it durably withholds the unsynchronized native tail
+before a private cloud-only archival fallback. Already-published redacted SQL
+history remains readable. The permanent stop fence prevents activation, and
+withheld history is never upgraded on retry. Already-archived native-auth parents
+can likewise be retired without trying to reactivate them for SSH sampling.
