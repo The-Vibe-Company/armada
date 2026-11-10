@@ -525,7 +525,11 @@ describe("control API", () => {
       };
       const response = await call({ method: "POST", headers, body: "{}" });
       expect(response?.status).toBe(200);
-      const body = await response?.json();
+      const body = (await response?.json()) as {
+        harnesses: { id: string; defaultModel: string; models: unknown; credentialKinds: unknown }[];
+        machineSizes: unknown;
+        ttl: unknown;
+      };
       expect(body.harnesses.map((harness: { id: string }) => harness.id)).toEqual([...HARNESSES]);
       for (const harness of body.harnesses) {
         const catalog = MODEL_CATALOG[harness.id as keyof typeof MODEL_CATALOG];
