@@ -31,12 +31,12 @@ jobs:
       - name: Check staging configuration
         id: config
         env:
-          ARMADA_URL: ${{ secrets.ARMADA_SMOKE_ORIGIN }}
+          ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
           ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
           ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
         run: |
           if [[ -z "$ARMADA_URL" || -z "$ARMADA_TOKEN" || -z "$ARMADA_SMOKE_CASES" ]]; then
-            echo "::notice::Staging smoke is not configured; set ARMADA_SMOKE_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES in the staging environment. No API calls made."
+            echo "::notice::Staging smoke is not configured; set variable ARMADA_ORIGIN and secrets ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES in the staging environment. No API calls made."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
@@ -52,7 +52,7 @@ jobs:
       - name: Exercise deployed staging API
         if: steps.config.outputs.enabled == 'true'
         env:
-          ARMADA_URL: ${{ secrets.ARMADA_SMOKE_ORIGIN }}
+          ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
           ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
           ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
           ARMADA_SMOKE: create_real_compute

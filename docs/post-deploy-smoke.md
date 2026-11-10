@@ -6,11 +6,28 @@ deploy, apply migrations, or contact a provider/database directly.
 
 ## Configure staging
 
-Create a GitHub environment named **staging**, with these environment secrets:
+The GitHub environment **staging** uses the following exact configuration names.
+Set these at environment scope, not to production values:
+
+| Kind | Name | Purpose |
+| --- | --- | --- |
+| Variable | `ARMADA_ORIGIN` | `https://armada-mcp-staging.up.railway.app`; smoke API origin |
+| Secret | `SUPABASE_PROJECT_ID` | Separate staging Supabase project reference; migrations only |
+| Secret | `SUPABASE_DB_PASSWORD` | Staging database password; migrations only |
+| Secret | `SUPABASE_ACCESS_TOKEN` | Supabase management token authorized for staging; migrations only |
+| Secret | `ARMADA_SMOKE_TOKEN` | Staging Armada bearer token; smoke only |
+| Secret | `ARMADA_SMOKE_CASES` | JSON array with staging org, golden and model account identifiers; smoke only |
+
+The project reference, database password and origin variable are already configured.
+The owner must still add the access token, smoke token and cases. Each job checks
+its own required configuration and emits a clear no-op notice if any is missing.
+Migration credentials are never passed to the smoke script.
+
+Smoke-specific values:
 
 | Secret | Value |
 | --- | --- |
-| `ARMADA_SMOKE_ORIGIN` | Explicit HTTPS origin of the staging Armada API (no path/query/userinfo) |
+| `ARMADA_ORIGIN` (variable) | Explicit HTTPS origin of the staging Armada API (no path/query/userinfo); mapped to the script's `ARMADA_URL` |
 | `ARMADA_SMOKE_TOKEN` | Armada token scoped to a dedicated smoke user/org with launch, interior access and stop permission |
 | `ARMADA_SMOKE_CASES` | JSON array described below, including golden names/IDs and model account IDs |
 
@@ -52,13 +69,33 @@ accounts and GitHub connection on staging beforehand. For private repositories,
 the token's user must have access. No provider/database credentials belong in
 this workflow.
 
+## Staging migrations
+
+The **Database migrations** workflow runs an independent `Staging migrations`
+job on main pushes that change `supabase/migrations/**`, and on main manual
+dispatches with `mode=migrate`. It uses the separate staging project, links it,
+lists applied versions, previews with `supabase db push --linked --dry-run`, then
+applies pending migrations with `--yes` on push or when manual `dry_run=false`.
+Manual dispatch defaults to preview-only. History/repair remain production-only.
+
+All three `SUPABASE_*` secrets above are required before checkout, CLI setup or
+any database connection. Missing configuration produces notices and successful
+no-op completion. Staging has its own concurrency group and no dependency on or
+from production, so missing staging secrets cannot block production. Production
+conditions, commands and release-synchronized behavior are unchanged.
+
+Railway's `staging` environment auto-deploys main and has its own database and
+encryption key. This migration job is independent of that deployment; it does
+not provide a schema-before-deploy gate. Continue to use additive, compatible
+migrations. The workflow does not deploy the server or configure Railway.
+
 ## Run
 
 From a trusted checkout with Bun installed, set environment variables without
 putting the token in shell history or command arguments:
 
 ```sh
-export ARMADA_URL='https://your-staging-origin.example'
+export ARMADA_URL='https://armada-mcp-staging.up.railway.app'
 read -rs ARMADA_TOKEN; export ARMADA_TOKEN; echo
 export ARMADA_SMOKE_CASES="$(cat /path/to/staging-cases.json)"
 export ARMADA_SMOKE=create_real_compute
