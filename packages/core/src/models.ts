@@ -5,7 +5,8 @@ import { LaunchError } from "./launch-error.ts";
  * The models Armada suggests at launch, per harness, and the defaults. The model is a harness choice: it does
  * not depend on the sandbox provider or the golden. The ids and efforts below come from the harnesses' own
  * catalogs: Codex CLI 0.167.0 `codex debug models` (efforts per model), and Claude Code 2.1.319's model
- * selector (Opus 5.5 and Sonnet 5.5; efforts from its `--effort` levels).
+ * selector (Opus 5.5 and Sonnet 5.5); Fable 5.2 requires 2.1.321+ (see README).
+ * Claude efforts follow https://code.claude.com/docs/en/model-config#adjust-effort-level.
  *
  * The list is a set of suggestions, not the whole of what a harness runs. Another well-formed id is passed
  * to the provider unchanged, with an effort from the harness's vocabulary; the provider or the harness
@@ -38,6 +39,7 @@ export const MODEL_CATALOG: Readonly<Record<Harness, HarnessModels>> = {
     reasoningEfforts: CLAUDE_EFFORTS,
     models: [
       { id: "claude-opus-5-5", label: "Claude Opus 5.5", reasoningEfforts: CLAUDE_EFFORTS },
+      { id: "claude-fable-5-2", label: "Claude Fable 5.2", reasoningEfforts: CLAUDE_EFFORTS },
       { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoningEfforts: CLAUDE_EFFORTS },
     ],
   },

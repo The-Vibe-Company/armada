@@ -126,6 +126,22 @@ armada send <sandbox-id> "Push the branch"   # resumes the stopped sandbox
 
 `armada --help` lists every command. Without flags, Claude Code runs `claude-opus-5-5` and Codex `gpt-6.1-sol`, both at `medium` effort.
 
+### Claude Fable 5.2
+
+Claude Code also offers **Claude Fable 5.2** (`claude-fable-5-2`) at `low`, `medium`, `high`, `xhigh` or `max` effort. Defaults stay unchanged. Use the full ID, not the moving `fable` alias.
+
+**Runtime prerequisite:** [Anthropic requires Claude Code 2.1.321+](https://code.claude.com/docs/en/model-config#work-with-fable). Armada currently pins Claude Code 2.1.319 and Agent SDK 0.3.319. Before production use, upgrade the Claude Code executable to at least 2.1.321 in the Boat golden and rebuild/snapshot it. The managed runtime also needs its Claude Code pin upgraded in `packages/agent-runtime/{package.json,build.ts}`, `scripts/{prepare-runtime.ts,validate-runtime-native.ts}`, and Modal distribution/manifest checks, with regenerated runtime artifacts (and a compatible SDK verified). This catalogue-only change does not perform that runtime rollout.
+
+Fable is offered to API-key accounts and eligible subscription accounts using `claude_oauth`, subject to Anthropic entitlement, organization restrictions and usage credits; see [availability](https://www.anthropic.com/claude-fable-and-mythos-5-2#availability). Selection does not grant access. Armada preserves existing provider/harness failures for unavailable models or accounts, without substituting another model. Malformed IDs are rejected locally; other well-formed IDs remain provider-validated, not a new closed allowlist.
+
+The shared catalogue feeds CLI help, MCP tool descriptions, dashboard sandbox/turn and orchestrator pickers, launch-options, and orchestrator capabilities (including Boat × Claude). iOS reads both server catalogues: no iOS release is needed. MCP clients need refreshed tool discovery; the server and dashboard need rebuilding, and CLI help needs a new binary (existing CLI versions already forward `--model`).
+
+Production check (coordinator, after the runtime upgrade):
+```sh
+armada launch <golden> --agent claude --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
+```
+Inspect the returned turn/model metadata as well as the answer; also create a Boat × Claude orchestrator with that model. An account without access must retain the existing failed-turn refusal, not silently launch another model.
+
 ## Bring your MCP servers
 
 Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. A personal connection attaches to private sandboxes; an admin shares one with the whole organization with `--scope org`.

@@ -645,6 +645,11 @@ describe("control API", () => {
         expect(harness.models).toEqual(catalog.models);
         expect(harness.credentialKinds).toEqual(HARNESS_KINDS[harness.id as keyof typeof HARNESS_KINDS]);
       }
+      expect(body.harnesses.find((harness) => harness.id === "claude")?.models).toContainEqual({
+        id: "claude-fable-5-2",
+        label: "Claude Fable 5.2",
+        reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      });
       expect(body.machineSizes).toEqual([...MACHINE_SIZES]);
       expect(body.ttl).toEqual({
         defaultSeconds: DEFAULT_LAUNCH_TTL_SECONDS,
