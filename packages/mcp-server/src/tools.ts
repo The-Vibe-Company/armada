@@ -1064,30 +1064,55 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         orgId: found.orgId,
         role: member.role,
       });
-      return sandboxActivity(data.sandboxes, found, { clearTaskOutcome: true }, async () => {
-        const receipt = await provider.steer({
-          sandboxId: found.providerSandboxId,
-          text: args.text,
-          ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-        });
-        return {
-          patch: {
-            status: "running",
-            // Boat returns a steer-record ID; resolve the actual run from events.
-            taskPromptId: "",
-            conversationIds: found.conversationIds.includes(receipt.conversationId)
-              ? found.conversationIds
-              : [...found.conversationIds, receipt.conversationId],
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        { clearTaskOutcome: true },
+        async () => {
+          const receipt = await provider.steer({
+            sandboxId: found.providerSandboxId,
+            text: args.text,
+            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+          });
+          return {
+            patch: {
+              status: "running",
+              // Boat returns a steer-record ID; resolve the actual run from events.
+              taskPromptId: "",
+              conversationIds: found.conversationIds.includes(receipt.conversationId)
+                ? found.conversationIds
+                : [...found.conversationIds, receipt.conversationId],
+            },
+            result: {
+              id: found.id,
+              promptId: receipt.promptId,
+              conversationId: receipt.conversationId,
+              delivery,
+              mode: receipt.mode ?? null,
+            },
+          };
+        },
+        {
+          failurePatch(error) {
+            // A definite refusal admitted no work, so the next send need not wait
+            // for lease expiry. Unknown/transport errors retain the bounded lease.
+            if (
+              error instanceof ProviderError &&
+              [
+                "no_running_turn",
+                "invalid_request",
+                "unauthorized",
+                "forbidden",
+                "not_found",
+                "provider_not_configured",
+                "sandbox_not_ready",
+              ].includes(error.code)
+            )
+              return {};
+            throw error;
           },
-          result: {
-            id: found.id,
-            promptId: receipt.promptId,
-            conversationId: receipt.conversationId,
-            delivery,
-            mode: receipt.mode ?? null,
-          },
-        };
-      });
+        },
+      );
     },
   );
 
