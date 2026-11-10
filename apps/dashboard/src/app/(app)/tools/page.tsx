@@ -128,7 +128,7 @@ export default async function ToolsPage({ searchParams }: Props) {
         subtitle: "A service to sign in to, or any MCP server.",
         content: (
           <div className="space-y-6">
-            <PanelSection title="Services">
+            <PanelSection title="Services" aria-label="Services">
               {catalog.state === "ready" ? (
                 services.length > 0 ? (
                   <ServiceCatalog services={services} connections={list.connections} {...org} />

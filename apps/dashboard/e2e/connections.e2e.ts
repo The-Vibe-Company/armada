@@ -17,40 +17,81 @@ async function mockState(): Promise<MockState> {
   return (await (await fetch(`${MOCK}/__test/state`)).json()) as MockState;
 }
 
+/** A connection's row in the Tools list, and its detail panel (hidden until the row is selected). */
 const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`);
+const panelOf = (page: Page, name: string) => page.locator(`[data-connection-panel="${name}"]`);
 
-async function openAdd(page: Page) {
-  await page.getByRole("button", { name: "Custom server" }).click();
-  const dialog = page.getByRole("dialog", { name: "Add a custom server" });
-  await expect(dialog).toBeVisible();
-  return dialog;
+/** Selects a connection's row, unless its panel already shows, and returns the panel. */
+async function panel(page: Page, name: string) {
+  const open = panelOf(page, name);
+  if (!(await open.isVisible())) await card(page, name).locator("[data-select-item]").click();
+  await expect(open).toBeVisible();
+  return open;
 }
 
-/** Opens a connection's menu and picks one of its actions. */
+/** Opens the New panel and returns its custom server form. */
+async function openAdd(page: Page) {
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const form = page.locator("form[data-add-connection]");
+  await expect(form).toBeVisible();
+  return form;
+}
+
+/** Opens a connection's panel and runs one of its actions. */
 async function menu(page: Page, name: string, item: string) {
-  await card(page, name)
-    .getByRole("button", { name: `More actions for ${name}` })
-    .click();
-  await page.getByRole("menuitem", { name: item }).click();
+  await (await panel(page, name)).getByRole("button", { name: item, exact: true }).click();
+}
+
+/** Opens the New panel and returns its catalog of services. */
+async function openServices(page: Page) {
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const services = page.getByRole("region", { name: "Services" });
+  await expect(services).toBeVisible();
+  return services;
 }
 
 test.beforeEach(reset);
 
 for (const mobile of [false, true]) {
-  test(`personal and org connections are listed apart, scoped to the viewer (${mobile ? "mobile" : "desktop"})`, async ({
+  test(`personal and org tools share one list, scoped to the viewer, what needs a fix first (${mobile ? "mobile" : "desktop"})`, async ({
     page,
   }) => {
     if (mobile) await page.setViewportSize({ width: 390, height: 844 });
     await signIn(page, "alice@example.com", "/tools");
-    const personal = page.getByRole("region", { name: "Your connections" });
-    const shared = page.getByRole("region", { name: "Acme connections" });
-    await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("alice@linear.test");
-    await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("Linear");
-    await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("21 tools");
-    await expect(shared.locator('[data-connection="Acme Docs"]')).toContainText("Connected");
-    await expect(shared.locator('[data-connection="Acme Sentry"]')).toContainText("Needs reconnect");
-    await expect(shared.locator('[data-connection="Acme Sentry"]')).toContainText("refresh token was revoked");
+    const linear = card(page, "Alice Linear");
+    await expect(linear).toContainText("Personal");
+    await expect(linear).toContainText("Linear");
+    // The identity and tool count are the row's fact: the panel shows them on a narrow screen.
+    const facts = mobile ? await panel(page, "Alice Linear") : linear;
+    await expect(facts).toContainText("alice@linear.test");
+    await expect(facts).toContainText("21 tools");
+    if (mobile) await page.keyboard.press("Escape");
+    await expect(card(page, "Acme Docs")).toContainText("Org");
+    await expect(card(page, "Acme Docs")).toContainText("Connected");
+    await expect(card(page, "Acme Sentry")).toContainText("Needs reconnect");
+    await expect(card(page, "Acme Sentry")).toContainText("refresh token was revoked");
     await expect(page.getByText("Bob Notes")).toHaveCount(0);
+    // Needs a fix first, then ready, then the services nobody added.
+    await expect(page.getByRole("list", { name: "Tools" }).locator(":scope > li")).toHaveText([
+      /^A?Acme Search/,
+      /^A?Acme Sentry/,
+      /^R?Repo Files/,
+      /^A?Acme Docs/,
+      /^L?Alice Linear/,
+      /^N?Notion/,
+      /^S?Slack/,
+    ]);
+    // The strip names each fix and opens the row's panel, where its button is.
+    const strip = page.locator("[data-readiness]");
+    await expect(strip.getByRole("link")).toHaveText([
+      /^Configure Repo Files/,
+      /^Retry Acme Search/,
+      /^Reconnect Acme Sentry/,
+    ]);
+    await strip.getByRole("link", { name: /^Reconnect Acme Sentry/ }).click();
+    await expect(panelOf(page, "Acme Sentry").getByRole("button", { name: "Reconnect", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(panelOf(page, "Acme Sentry")).toBeHidden();
     await page.screenshot({ path: `test-results/connections-${mobile ? "mobile" : "desktop"}.png`, fullPage: true });
 
     const dialog = await openAdd(page);
@@ -62,7 +103,7 @@ for (const mobile of [false, true]) {
       animations: "disabled",
     });
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Custom server" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
   });
 }
 
@@ -70,9 +111,12 @@ test("a member manages personal connections only and cannot add org ones", async
   await signIn(page, "bob@example.com", "/tools");
   await expect(card(page, "Bob Notes")).toBeVisible();
   await expect(card(page, "Alice Linear")).toHaveCount(0);
-  await expect(card(page, "Acme Docs")).toContainText("Managed by the org's admins.");
-  await expect(card(page, "Acme Docs").getByRole("button")).toHaveCount(0);
-  await expect(card(page, "Acme Docs").getByRole("switch")).toHaveCount(0);
+  // Only the row's select target: no action, and the panel holds no control either.
+  await expect(card(page, "Acme Docs").getByRole("button")).toHaveCount(1);
+  const docs = await panel(page, "Acme Docs");
+  await expect(docs).toContainText("Managed by the org's admins.");
+  await expect(docs.getByRole("button")).toHaveCount(0);
+  await expect(docs.getByRole("switch")).toHaveCount(0);
   const dialog = await openAdd(page);
   await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeDisabled();
   await expect(dialog.getByText("Only an org admin adds these.")).toBeVisible();
@@ -99,6 +143,8 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
   await expect(notice).toContainText("Signed in as service@oauth.test");
   await expect(card(page, "Acme Tracker")).toContainText("OAuth");
   await expect(card(page, "Acme Tracker")).toContainText("9 tools");
+  // Back from the sign-in, the panel shows the connection it was for.
+  await expect(panelOf(page, "Acme Tracker")).toBeVisible();
 
   const calls = (await mockState()).controlCalls;
   expect(calls.find((call) => call.operation === "create")?.body).toEqual({
@@ -143,7 +189,7 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
 
 test("a callback without a dashboard session goes to sign-in and keeps nothing of the code", async ({ page }) => {
   await page.goto("/auth/mcp/callback?state=pending-state-1&code=one-time-code&iss=https%3A%2F%2Fissuer.test");
-  await expect(page).toHaveURL(/\/login\?next=%2Fconnections$/);
+  await expect(page).toHaveURL(/\/login\?next=%2Ftools$/);
   expect(page.url()).not.toContain("one-time-code");
   expect((await mockState()).controlCalls.filter((call) => call.operation === "oauth/callback")).toEqual([]);
 });
@@ -152,7 +198,9 @@ test("disabling a connection takes it out of launches until it is enabled again"
   await signIn(page, "alice@example.com", "/tools");
   const docs = card(page, "Acme Docs");
   await menu(page, "Acme Docs", "Disable");
-  await expect(docs.getByRole("status")).toContainText("Acme Docs is disabled. New launches cannot select it.");
+  await expect(panelOf(page, "Acme Docs").getByRole("status")).toContainText(
+    "Acme Docs is disabled. New launches cannot select it.",
+  );
   await expect(docs).toContainText("Disabled");
   await docs.screenshot({ path: "test-results/connection-disabled.png", animations: "disabled" });
   expect((await mockState()).controlCalls.find((call) => call.operation === "set-enabled")?.body).toEqual({
@@ -168,13 +216,13 @@ test("disabling a connection takes it out of launches until it is enabled again"
 
   await page.goto("/tools");
   await menu(page, "Acme Docs", "Enable");
-  await expect(docs.getByRole("status")).toContainText("Acme Docs is enabled.");
+  await expect(panelOf(page, "Acme Docs").getByRole("status")).toContainText("Acme Docs is enabled.");
   await expect(docs).toContainText("Connected");
 
   // A member gets no Disable control on an org connection.
   await page.context().clearCookies();
   await signIn(page, "bob@example.com", "/tools");
-  await expect(card(page, "Acme Docs").getByRole("button", { name: "More actions for Acme Docs" })).toHaveCount(0);
+  await expect((await panel(page, "Acme Docs")).getByRole("button", { name: "Disable" })).toHaveCount(0);
 });
 
 test("a bearer token is write-only: refused tokens are reported, and the field never keeps the value", async ({
@@ -200,8 +248,10 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
   await page.keyboard.press("Escape");
 
   const row = card(page, "Internal API");
+  const details = panelOf(page, "Internal API");
   await expect(row).toContainText("Needs reconnect");
-  await expect(row).toContainText("project_ref=abcd");
+  await expect(row).toContainText("api.internal.test");
+  await expect(await panel(page, "Internal API")).toContainText("project_ref=abcd");
   await expect(page.locator("body")).not.toContainText("bad-token");
   const state = await mockState();
   expect(state.controlCalls.find((call) => call.operation === "create")?.body.authentication).toBe("bad-token");
@@ -218,7 +268,7 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
   await edit.getByLabel("Bearer token").fill("good-token");
   await edit.getByRole("button", { name: "Save and reconnect" }).click();
   await expect(edit).toBeHidden();
-  await expect(row.getByRole("status")).toContainText("Saved. Internal API is connected.");
+  await expect(details.getByRole("status")).toContainText("Saved. Internal API is connected.");
   const update = (await mockState()).controlCalls.find((call) => call.operation === "update");
   expect(update?.body).toEqual({
     org: ACME,
@@ -235,7 +285,7 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
   await menu(page, "Internal API", "Revoke access");
   await page.getByRole("alertdialog").getByRole("button", { name: "Revoke access" }).click();
   await expect(row).toContainText("Not connected");
-  await expect(row.getByRole("status")).toContainText("Access revoked");
+  await expect(details.getByRole("status")).toContainText("Access revoked");
   await menu(page, "Internal API", "Delete");
   await page.getByRole("button", { name: "Delete connection" }).click();
   await expect(row).toHaveCount(0);
@@ -270,15 +320,17 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await expect(dialog.getByLabel("Name")).toHaveValue("");
   await page.keyboard.press("Escape");
   const files = card(page, "files");
-  await expect(files).toContainText("npx -y @modelcontextprotocol/server-filesystem@2026.1.14 /workspace");
+  await expect(files).toContainText("npx");
   await expect(files).toContainText("stdio (in sandbox)");
   await expect(files.locator("[data-connection-status]")).toHaveText("Configured for launch");
-  await files.getByRole("button", { name: "More actions for files" }).click();
-  await expect(page.getByRole("menuitem", { name: "Edit server" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Check" })).toHaveCount(0);
+  const filesPanel = await panel(page, "files");
+  await expect(filesPanel).toContainText("npx -y @modelcontextprotocol/server-filesystem@2026.1.14 /workspace");
+  await expect(filesPanel.getByRole("button", { name: "Edit server" })).toBeVisible();
+  await expect(filesPanel.getByRole("button", { name: "Check", exact: true })).toHaveCount(0);
+  // Escape closes the panel and gives the focus back to its row.
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("menu")).toBeHidden();
-  await expect(files.getByRole("button", { name: "More actions for files" })).toBeFocused();
+  await expect(filesPanel).toBeHidden();
+  await expect(files.locator("[data-select-item]")).toBeFocused();
   const created = (await mockState()).controlCalls.find((call) => call.operation === "create");
   expect(created?.body).toEqual({
     org: ACME,
@@ -296,7 +348,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await edit.getByLabel("Arguments, one per line").fill("-y\n@modelcontextprotocol/server-filesystem@2026.2.1\n/srv");
   await edit.getByRole("button", { name: "Save", exact: true }).click();
   await expect(edit).toBeHidden();
-  await expect(files.getByRole("status")).toContainText("Saved. files is configured for launch.");
+  await expect(filesPanel.getByRole("status")).toContainText("Saved. files is configured for launch.");
   expect((await mockState()).controlCalls.find((call) => call.operation === "update")?.body).toMatchObject({
     scope: "personal",
     transport: "stdio",
@@ -394,9 +446,9 @@ test("switching organization switches the connections and their launch choices",
   await expect(card(page, "Zenith Search")).toBeVisible();
   await expect(card(page, "Acme Docs")).toHaveCount(0);
   await expect(card(page, "Alice Linear")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Custom server" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
   // Alice is only a member in Zenith: its org connections are read-only for her.
-  await expect(card(page, "Zenith Search")).toContainText("Managed by the org's admins.");
+  await expect(await panel(page, "Zenith Search")).toContainText("Managed by the org's admins.");
   const lists = (await mockState()).controlCalls.filter((call) => call.operation === "list");
   expect(lists.at(-1)?.body).toEqual({ org: ZENITH });
 });
@@ -417,7 +469,10 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   page,
 }) => {
   await signIn(page, "alice@example.com", "/tools");
-  const services = page.getByRole("region", { name: "Services" });
+  // A service nobody added is a row at the end of the list; Slack's says what the server still needs.
+  await expect(page.locator('[data-service-row="slack"]')).toContainText("Needs server setup");
+  await expect(page.locator('[data-service-row="slack"]').getByRole("link", { name: "Setup guide" })).toBeVisible();
+  const services = await openServices(page);
   const slack = services.locator('[data-service="slack"]');
   await expect(slack).toContainText("Setup required");
   await expect(slack).toContainText("Registered confidential OAuth client required");
@@ -442,9 +497,11 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   // Two accounts of one service are two connections: each keeps its own nickname and its verified account.
   await expect(card(page, "Work Linear")).toContainText("Signed in as service@oauth.test");
   await expect(card(page, "Alice Linear")).toContainText("Signed in as alice@linear.test");
+  await expect(card(page, "Work Linear")).toContainText("Default");
   await expect(
-    card(page, "Work Linear").getByRole("switch", { name: "Include Work Linear by default" }),
+    (await panel(page, "Work Linear")).getByRole("switch", { name: "Include Work Linear by default" }),
   ).toHaveAttribute("aria-checked", "true");
+  await openServices(page);
   await expect(services.locator('[data-service="linear"]')).toContainText("2 connections");
   await page.screenshot({ path: "test-results/connections-catalog-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -501,9 +558,9 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   // A server without the catalog still lists every connection and offers a custom server.
   await fetch(`${MOCK}/__test/fail-catalog`, { method: "POST" });
   await page.goto("/tools");
-  await expect(page.locator("[data-catalog-unavailable]")).toContainText("does not offer the service catalog yet");
   await expect(card(page, "Work Linear")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Custom server" })).toBeVisible();
+  await openAdd(page);
+  await expect(page.locator("[data-catalog-unavailable]")).toContainText("does not offer the service catalog yet");
 });
 
 test("rename and include-by-default change metadata only, and an unreachable server offers Retry", async ({ page }) => {
@@ -515,19 +572,20 @@ test("rename and include-by-default change metadata only, and an unreachable ser
   await dialog.getByRole("button", { name: "Rename" }).click();
   await expect(dialog).toBeHidden();
   const linear = card(page, "Personal Linear");
-  await expect(linear.getByRole("status")).toContainText("Renamed to Personal Linear.");
+  const linearPanel = panelOf(page, "Personal Linear");
+  await expect(linearPanel.getByRole("status")).toContainText("Renamed to Personal Linear.");
   await expect(linear).toContainText("Connected");
   await expect(linear).toContainText("Signed in as alice@linear.test");
-  await expect(linear.getByRole("button", { name: "More actions for Personal Linear" })).toBeFocused();
+  await expect(linearPanel.getByRole("button", { name: "Rename" })).toBeFocused();
 
-  const docs = card(page, "Acme Docs");
+  const docs = await panel(page, "Acme Docs");
   const toggle = docs.getByRole("switch", { name: "Include Acme Docs by default" });
   await expect(toggle).toHaveAttribute("aria-checked", "false");
   await toggle.focus();
   await page.keyboard.press("Space");
   await expect(docs.getByRole("status")).toContainText("Acme Docs is included in new launches by default.");
   await expect(toggle).toHaveAttribute("aria-checked", "true");
-  await expect(docs).toContainText("Connected");
+  await expect(card(page, "Acme Docs")).toContainText("Connected");
   await docs.screenshot({ path: "test-results/connection-default.png", animations: "disabled" });
   // Neither change went through the full replace, the enable switch or a new sign-in, which would drop the grant.
   const calls = (await mockState()).controlCalls.filter((call) =>
@@ -589,7 +647,7 @@ test("a default that is not connected holds the launch until it is reconnected o
   await signIn(page, "alice@example.com", "/tools");
   // One connected and one disconnected org default, and a personal default that is not configured.
   for (const name of ["Acme Docs", "Acme Sentry", "Repo Files"]) {
-    const toggle = card(page, name).getByRole("switch", { name: `Include ${name} by default` });
+    const toggle = (await panel(page, name)).getByRole("switch", { name: `Include ${name} by default` });
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-checked", "true");
   }
