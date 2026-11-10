@@ -111,29 +111,34 @@ test("real shell: pinned Bun persists for a fresh shell", () => {
   }
 });
 
-test("real shell: the baseline does not install claude/codex when they are already present", () => {
-  const base = mkdtempSync(join(tmpdir(), "armada-baseline-"));
-  try {
-    const home = join(base, "home");
-    const bin = join(base, "bin");
-    mkdirSync(join(home, "web"), { recursive: true });
-    fakeBin(bin, ["npm", "curl", "bunx", "bun", "claude", "codex"]);
+test.each(["2.1.319", "2.1.322"])(
+  "real shell: baseline upgrades old Claude but preserves the current pin and installed Codex (%s)",
+  (version) => {
+    const base = mkdtempSync(join(tmpdir(), "armada-baseline-"));
+    try {
+      const home = join(base, "home");
+      const bin = join(base, "bin");
+      mkdirSync(join(home, "web"), { recursive: true });
+      fakeBin(bin, ["npm", "curl", "bunx", "bun", "claude", "codex"]);
 
-    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
-    const script = goldenScript(prepared).replace(/\/home\/user/g, home);
-    const block = extract(script, 'bun_pin=""', "npm install --global @openai/codex");
+      writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "${version} (Claude Code)"\n`, { mode: 0o755 });
+      const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
+      const script = goldenScript(prepared).replace(/\/home\/user/g, home);
+      const block = extract(script, 'bun_pin=""', "npm install --global @openai/codex");
 
-    const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home },
-      encoding: "utf8",
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout).not.toContain("claude-code");
-    expect(result.stdout).not.toContain("@openai/codex");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
+      const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home },
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      if (version === "2.1.322") expect(result.stdout).not.toContain("claude-code");
+      else expect(result.stdout).toContain("install --global @anthropic-ai/claude-code@2.1.322");
+      expect(result.stdout).not.toContain("@openai/codex");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
 
 /** Just the cleanup trap, lifted verbatim out of the real build script, for isolated shell tests. */
 function cleanupScript(): string {
