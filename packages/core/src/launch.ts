@@ -524,12 +524,23 @@ async function run(
   secrets: readonly string[],
   repository?: { dir: string; sandboxId: string },
 ): Promise<void> {
-  const result = await provider.exec({
+  const request = {
     sandboxId,
     command: spec.command,
     cwd: spec.cwd,
     timeoutSeconds: spec.timeoutSeconds,
-  });
+  };
+  let result = await provider.exec(request);
+  // Production has shown intermittent refusals with either selector path. Retry only
+  // a completed Git ownership rejection once; keep the same user and ownership guard.
+  if (
+    repository !== undefined &&
+    !result.detached &&
+    !result.timedOut &&
+    result.exitCode === 128 &&
+    result.stderr.includes("detected dubious ownership in repository")
+  )
+    result = await provider.exec(request);
   if (result.detached) throw new LaunchError("init_failed", `${label} started in the background.`);
   if (result.timedOut) {
     throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
