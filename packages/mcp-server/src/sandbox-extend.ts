@@ -7,6 +7,7 @@ import {
   type SandboxStore,
   sandboxActivity,
 } from "@armada/core/server";
+import { ToolError } from "./tools.ts";
 
 /** Caller resolves owner/admin interior access (or scoped own-child authority) before entry. */
 export async function extendSandbox(
@@ -20,13 +21,15 @@ export async function extendSandbox(
   const refuse = (message: string): never => {
     throw new ProviderError({ provider: provider.id, code: "invalid_request", retryable: false, message });
   };
+  if (ttlSeconds > max) throw new ToolError("extension_maximum", "Requested lifetime exceeds the provider maximum.");
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > max)
     refuse(`TTL must be a whole number of seconds from 1 to ${max}.`);
-  if (!["ready", "running"].includes(sandbox.status)) refuse("Only running or idle sandboxes can be extended.");
+  if (!["ready", "running"].includes(sandbox.status))
+    throw new ToolError("extension_state", "Only running or idle sandboxes can be extended.");
   if (!provider.extendLifetime) refuse("Provider does not support lifetime extension.");
   const requested = new Date(Date.now() + ttlSeconds * 1000);
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
-    refuse("The requested deadline must extend the existing lifetime.");
+    throw new ToolError("extension_state", "The requested deadline must extend the existing lifetime.");
   const result = await sandboxActivity(store, sandbox, {}, async (signal) => {
     signal.throwIfAborted();
     const hard = await provider.extendLifetime!({

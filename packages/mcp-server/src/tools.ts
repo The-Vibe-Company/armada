@@ -1383,7 +1383,21 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
     },
     async (args) => {
-      const { sandbox, provider } = await live(args.id);
+      await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
+        if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
+          throw new ToolError(
+            error.code === "forbidden" ? "extension_not_allowed" : "extension_not_found",
+            error.message,
+          );
+        throw error;
+      });
+      const sandbox = await data.sandboxes.get(args.id);
+      if (!sandbox) throw new ToolError("extension_not_found", "Sandbox not found or not accessible.");
+      const provider = await context.provider(sandbox).catch((error) => {
+        if (error instanceof ProviderError && error.code === "forbidden")
+          throw new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
+        throw error;
+      });
       return extendSandbox(
         data.sandboxes,
         sandbox,
