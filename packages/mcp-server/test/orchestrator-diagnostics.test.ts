@@ -106,6 +106,22 @@ test("unknown/hostile codes and failed synchronous/asynchronous log sinks cannot
   new OrchestratorDiagnostics(async () => {
     throw Error("untrusted-secret-code");
   }, "stop").report("uncertain");
+  expect(() =>
+    diagnostics.report(
+      "uncertain",
+      new ProviderError({
+        provider: "modal",
+        code: "conflict",
+        retryable: false,
+        message: "safe",
+        details: {
+          get processCategory() {
+            throw Error("untrusted-secret-code");
+          },
+        },
+      }),
+    ),
+  ).not.toThrow();
   await Promise.resolve();
 });
 

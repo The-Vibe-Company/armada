@@ -320,19 +320,23 @@ function reason(error: unknown): string {
 
 /** The provider transports only closed process categories via exit status. */
 function processFailure(error: unknown): { processCategory?: string; processFailure?: string } {
-  if (!(error instanceof ProviderError)) return {};
-  const category = error.details?.processCategory;
-  const failure = error.details?.processFailure;
-  return typeof category === "string" &&
-    ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
-    ? {
-        processCategory: category,
-        ...(typeof failure === "string" &&
-        ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
-          ? { processFailure: failure }
-          : {}),
-      }
-    : {};
+  try {
+    if (!(error instanceof ProviderError)) return {};
+    const category = error.details?.processCategory;
+    const failure = error.details?.processFailure;
+    return typeof category === "string" &&
+      ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
+      ? {
+          processCategory: category,
+          ...(typeof failure === "string" &&
+          ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
+            ? { processFailure: failure }
+            : {}),
+        }
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 /** Per-operation state, not global mutable tracing. Keep only a safe classification
