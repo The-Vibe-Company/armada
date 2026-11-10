@@ -58,7 +58,6 @@ import {
   parseCredentialKind,
   parseGoldenConfig,
   parseRole,
-  promptOutcome,
   removeCredential,
   removeMember,
   resolveBoatKey,
@@ -1107,9 +1106,10 @@ async function readLogs(
   const info = await target.provider.get(target.providerSandboxId);
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
-  const outcome = latest
-    ? await promptOutcome(target.provider, { sandboxId: target.providerSandboxId, promptId: latest })
-    : null;
+  const prompt =
+    follow && latest && info.state !== "stopped" && info.state !== "failed"
+      ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
+      : null;
   return {
     ...(olderCursor ? { olderCursor } : {}),
     events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
@@ -1119,7 +1119,7 @@ async function readLogs(
       !follow ||
       info.state === "stopped" ||
       info.state === "failed" ||
-      (latest === null ? info.state !== "running" && info.state !== "starting" : outcome?.state !== "running"),
+      (latest === null ? info.state !== "running" && info.state !== "starting" : prompt?.done === true),
   };
 }
 

@@ -593,7 +593,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       const normalized = options.sanitizeEvents
         ? await options.sanitizeEvents(provider, request.sandboxId, raw.map(normalizeEvent))
         : raw.map(normalizeEvent);
-      return buildEventPage(
+      const page = buildEventPage(
         raw.map((event, index) => ({
           cursor: eventCursor(event) ?? response.pageInfo?.nextCursor ?? request.cursor ?? "",
           event: normalized[index]!,
@@ -602,6 +602,15 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         response.pageInfo?.hasMore === true,
         "boat",
       );
+      if ((backward || page.hasMore) && raw.some((event) => !eventCursor(event))) {
+        throw new ProviderError({
+          provider: "boat",
+          code: "invalid_request",
+          retryable: false,
+          message: "Boat events lack a stable pagination boundary.",
+        });
+      }
+      return page;
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {

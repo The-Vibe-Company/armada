@@ -63,11 +63,20 @@ export function boundEventEntries<T>(
   const { limit, maxBytes, backward } = eventPageOptions(request, provider);
   const selected: typeof entries = [];
   let events: T[] = [];
+  let bytes = 2;
+  const encoder = new TextEncoder();
   for (const entry of entries.slice(0, limit)) {
-    const candidate = [...selected, entry];
-    let candidateEvents = (backward ? candidate.toReversed() : candidate).map((item) => item.event);
-    if (request.coalesce && coalescer) candidateEvents = coalescer(candidateEvents);
-    if (new TextEncoder().encode(JSON.stringify(candidateEvents)).length > maxBytes) {
+    const coalescing = request.coalesce && coalescer;
+    let candidateEvents: T[] = [];
+    let candidateBytes: number;
+    if (coalescing) {
+      const candidate = [...selected, entry];
+      candidateEvents = coalescer((backward ? candidate.toReversed() : candidate).map((item) => item.event));
+      candidateBytes = encoder.encode(JSON.stringify(candidateEvents)).length;
+    } else {
+      candidateBytes = bytes + (selected.length ? 1 : 0) + encoder.encode(JSON.stringify(entry.event)).length;
+    }
+    if (candidateBytes > maxBytes) {
       if (!selected.length)
         throw new ProviderError({
           provider,
@@ -78,7 +87,10 @@ export function boundEventEntries<T>(
       break;
     }
     selected.push(entry);
-    events = candidateEvents;
+    bytes = candidateBytes;
+    if (coalescing) events = candidateEvents;
+    else if (backward) events.unshift(entry.event);
+    else events.push(entry.event);
   }
   const oldest = backward ? selected.at(-1) : selected[0];
   const newest = backward ? selected[0] : selected.at(-1);

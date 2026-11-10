@@ -227,3 +227,18 @@ test("backward pages anchor older history separately from forward follow", async
   expect(boat.requests[2]?.query.get("cursor")).toBe(Buffer.from("4:e4").toString("base64url"));
   expect(await boat.provider.events({ sandboxId: ID, direction: "backward" })).toEqual({ events: [], hasMore: false });
 });
+
+test("history refuses missing raw anchors rather than skipping events at a byte boundary", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [{ type: "response", data: { content: "hello" } }],
+      pageInfo: { nextCursor: "page-end", hasMore: false, limit: 100 },
+    },
+  });
+  await expect(boat.provider.events({ sandboxId: ID, direction: "backward" })).rejects.toThrow(
+    "stable pagination boundary",
+  );
+});
