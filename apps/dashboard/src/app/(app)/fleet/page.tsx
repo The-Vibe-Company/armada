@@ -154,7 +154,7 @@ function NeedsSection({
   return (
     <section aria-labelledby={id} data-needs={attention} className="space-y-3">
       <h2 id={id} className="flex items-baseline gap-2 text-base font-semibold">
-        {ATTENTION_TITLES[attention]}
+        {ATTENTION_TITLES[attention]}{" "}
         <span className="text-sm font-normal tabular-nums text-muted-foreground">{rows.length}</span>
       </h2>
       <ul className="space-y-3">
@@ -171,8 +171,7 @@ function WorkingStrip({ rows, now }: { rows: FleetRow[]; now: Date }) {
   return (
     <section aria-labelledby="working" data-working className="space-y-2">
       <h2 id="working" className="flex items-baseline gap-2 text-sm font-semibold text-muted-foreground">
-        Working
-        <span className="font-normal tabular-nums">({rows.length})</span>
+        Working <span className="font-normal tabular-nums">({rows.length})</span>
       </h2>
       <ul className="divide-y rounded-xl border bg-card text-sm shadow-xs">
         {rows.map((row) => {
@@ -310,8 +309,7 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
 
       {row.state.kind === "interrupted" && (
         <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-interruption>
-          {row.state.interruption ?? "The turn was interrupted."}{" "}
-          {row.resend ? "Resending the same prompt picks the work up." : null}
+          {row.state.interruption ?? "The turn was interrupted. Sending the same prompt again picks the work up."}
         </p>
       )}
 

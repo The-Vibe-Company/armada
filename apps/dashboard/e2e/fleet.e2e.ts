@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { BUSY, BUSY_LABELS, seedBusyFleet } from "./busy-fleet";
 import { IDS, LABELS, MOCK, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
@@ -6,106 +7,134 @@ test.beforeEach(reset);
 const post = (path: string, body: unknown) =>
   fetch(`${MOCK}/__test/${path}`, { method: "POST", body: JSON.stringify(body) });
 
-const LONG =
-  "I fixed the flaky parser test by pinning the clock, then ran the whole suite twice to be sure. " +
-  "Everything passes. The branch is pushed and the pull request is open; it needs a reviewer before it can merge, " +
-  "and the changelog entry is waiting for your wording.";
-
 const rows = (page: Page) => page.locator("[data-board-row]");
 const row = (page: Page, id: string) => page.locator(`[data-board-row="${id}"]`);
+const section = (page: Page, attention: string) => page.locator(`[data-needs="${attention}"]`);
+const toolCalls = async () =>
+  (
+    (await (await fetch(`${MOCK}/__test/state`)).json()) as {
+      toolCalls: { name: string; args: Record<string, unknown> }[];
+    }
+  ).toolCalls;
 
-test("the board puts what needs the operator first and acts on each agent", async ({ page }) => {
-  // Bob's sandbox (Alice is an admin, so she may open it): its turn finished and its deadline is close.
-  await post("sandbox-lifecycle", {
-    id: IDS.bobSecret,
-    fields: { expires_at: new Date(Date.now() + 20 * 60_000).toISOString(), conversation_ids: ["conv-b"] },
-  });
-  await post("sandbox-events", {
-    sandbox: IDS.bobSecret,
-    events: [
-      { id: "b1", at: 1, kind: "prompt", text: "Fix the parser", status: "finished", promptId: "p1" },
-      { id: "b2", at: 2, kind: "message", text: LONG, partial: false, tools: [], promptId: "p1" },
-    ],
-  });
-  // The failed sandbox was last seen an hour ago: it is still on the board.
-  await post("sandbox-lifecycle", {
-    id: IDS.failed,
-    fields: { last_observed_at: new Date(Date.now() - 3600_000).toISOString() },
-  });
-  await post("sandbox-lifecycle", {
-    id: IDS.running,
-    fields: { expires_at: new Date(Date.now() + 3 * 3600_000).toISOString() },
-  });
-
+test("on a busy organization, Needs you holds only what needs a decision", async ({ page }) => {
+  await seedBusyFleet();
+  await page.setViewportSize({ width: 1280, height: 900 });
   await signIn(page, "alice@example.com", "/fleet");
-  await expect(page.getByRole("heading", { name: "Fleet" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fleet", level: 1 })).toBeVisible();
+  const segments = page.getByRole("navigation", { name: "Board view" });
+  await expect(segments.getByRole("link", { name: /Needs you/ })).toHaveAttribute("aria-current", "page");
 
-  // Failed first, then the finished one about to expire, then the one still working.
-  await expect(rows(page)).toHaveCount(3);
-  expect(await rows(page).evaluateAll((items) => items.map((item) => item.getAttribute("data-state")))).toEqual([
-    "failed",
-    "finished",
-    "working",
-  ]);
-  await expect(rows(page).first()).toContainText(LABELS.failed);
-  await expect(row(page, IDS.failed).locator("[data-failure]")).toContainText("Usage limit reached");
-  await expect(row(page, IDS.failed).getByRole("link", { name: "Manage credentials" })).toHaveAttribute(
+  // One section per need, in order; the 175 stopped sandboxes, the box moves and the crashes are not there.
+  expect(
+    await page.locator("[data-needs]").evaluateAll((items) => items.map((item) => item.getAttribute("data-needs"))),
+  ).toEqual(["ready", "blocked", "failed", "interrupted", "unconcluded", "expiring"]);
+  await expect(rows(page)).toHaveCount(7);
+  await expect(page.getByText(/bx_done_|bx_moved_|bx_crash_|bx_launch_interrupted/)).toHaveCount(0);
+
+  const ready = row(page, BUSY.ready);
+  await expect(ready.locator("[data-work-item]")).toHaveText("acme/web#801");
+  await expect(ready).toContainText("replaces 1 earlier run");
+  await expect(ready.getByRole("link", { name: "PR #805" })).toHaveAttribute(
     "href",
-    "/credentials",
+    "https://github.com/acme/web/pull/805",
   );
-  await expect(row(page, IDS.bobSecret).locator('[data-expiry="urgent"]')).toContainText(/Expires soon: \d+ min left/);
-  await expect(row(page, IDS.running).locator('[data-expiry="normal"]')).toContainText("h");
-  await expect(row(page, IDS.running).locator("[data-latest-message]")).toHaveText("Looking at the test suite.");
-  await expect(page.getByText("2 agents need you.")).toBeVisible();
+  await expect(section(page, "ready").locator("[data-board-row]")).toHaveCount(2);
+  await expect(row(page, BUSY.blocked).locator('[data-outcome-detail="blocked"]')).toContainText("staging Stripe key");
+  await expect(row(page, BUSY.blocked).getByPlaceholder("Answer the agent")).toBeVisible();
 
-  // The latest message is cut, and opens in place.
-  const message = row(page, IDS.bobSecret).locator("[data-latest-message]");
-  await expect(message).not.toContainText("changelog entry");
-  await row(page, IDS.bobSecret).getByRole("button", { name: "Show more" }).click();
-  await expect(message).toContainText("changelog entry");
-  await row(page, IDS.bobSecret).getByRole("button", { name: "Show less" }).click();
-
-  await page.screenshot({ path: "test-results/fleet-desktop.png", fullPage: true, animations: "disabled" });
-
-  // Open the conversation.
+  // The only failure is the real one; the box move is a calm interruption with a one-click resend.
+  await expect(page.locator("[data-failure]")).toHaveCount(1);
+  await expect(row(page, BUSY.failed).locator("[data-failure]")).toContainText("Usage limit reached");
+  const interrupted = row(page, BUSY.interrupted);
+  await expect(interrupted.locator("[data-failure]")).toHaveCount(0);
+  await expect(interrupted.locator("[data-interruption]")).toContainText("moved to a new machine");
   await expect(
-    row(page, IDS.bobSecret).getByRole("link", { name: `Open the conversation of ${LABELS.bobSecret}` }),
-  ).toHaveAttribute("href", `/sandboxes/${IDS.bobSecret}`);
-  // A working agent is steered from its conversation, not from the board.
-  await expect(row(page, IDS.running).getByRole("textbox")).toHaveCount(0);
+    row(page, BUSY.unconcluded).getByRole("button", { name: `Tell ${BUSY_LABELS.unconcluded} to continue` }),
+  ).toBeVisible();
+  await expect(row(page, BUSY.expiring).locator('[data-expiry="urgent"]')).toBeVisible();
 
-  // A follow-up prompt, inline: the agent goes back to work and the row moves down.
-  await row(page, IDS.bobSecret)
-    .getByRole("textbox", { name: `Follow-up prompt for ${LABELS.bobSecret}` })
-    .fill("Write the changelog entry");
-  await row(page, IDS.bobSecret).getByRole("button", { name: "Send" }).click();
-  await expect(row(page, IDS.bobSecret)).toHaveAttribute("data-state", "working");
-  const state = (await (await fetch(`${MOCK}/__test/state`)).json()) as {
-    toolCalls: { name: string; args: Record<string, unknown> }[];
-  };
-  expect(state.toolCalls).toContainEqual({
+  // The live agents that need nothing: one quiet line each.
+  const working = page.locator("[data-working]");
+  await expect(working.getByRole("heading")).toHaveText("Working (2)");
+  await expect(working.locator(`[data-working-row="${BUSY.working}"]`)).toContainText("acme/web#812");
+  await expect(working.locator(`[data-working-row="${BUSY.working}"]`)).toContainText(
+    "Bash: bun test test/parser.test.ts",
+  );
+  await expect(working.locator(`[data-working-row="${BUSY.working}"] [data-elapsed]`)).toHaveText(/^4\d min$/);
+
+  await page.screenshot({ path: "test-results/fleet-needs-you-desktop.png", fullPage: true, animations: "disabled" });
+
+  // Resend the interrupted prompt: the same text goes back to the same sandbox, and the row leaves Needs you.
+  await interrupted
+    .getByRole("button", { name: `Resend the interrupted prompt to ${BUSY_LABELS.interrupted}` })
+    .click();
+  await expect(row(page, BUSY.interrupted)).toHaveCount(0);
+  await expect(working.locator(`[data-working-row="${BUSY.interrupted}"]`)).toBeVisible();
+  expect(await toolCalls()).toContainEqual({
     name: "send",
-    args: { id: IDS.bobSecret, prompt: "Write the changelog entry" },
+    args: { id: BUSY.interrupted, prompt: "Deliver issue #811 in acme/web: read the issue, implement it, open a PR." },
   });
 
-  // Stop, after confirming.
-  await row(page, IDS.running).getByRole("button", { name: "Stop" }).click();
-  await page.getByRole("button", { name: "Stop sandbox" }).click();
-  await expect(row(page, IDS.running)).toHaveAttribute("data-state", "stopped");
-  await expect(rows(page).last()).toHaveAttribute("data-board-row", IDS.running);
+  // Dismiss the failure: it leaves Needs you, stays in All, and comes back on Restore.
+  await row(page, BUSY.failed)
+    .getByRole("button", { name: `Dismiss ${BUSY_LABELS.failed} from Needs you` })
+    .click();
+  await expect(row(page, BUSY.failed)).toHaveCount(0);
+  await expect(section(page, "failed")).toHaveCount(0);
+  await page.reload();
+  await expect(row(page, BUSY.failed)).toHaveCount(0);
+  await segments.getByRole("link", { name: /All/ }).click();
+  await expect(page).toHaveURL(/view=all/);
+  await expect(row(page, BUSY.failed)).toHaveAttribute("data-dismissed", "");
+  await expect(row(page, BUSY.failed)).toContainText("Dismissed");
+  await row(page, BUSY.failed)
+    .getByRole("button", { name: `Bring ${BUSY_LABELS.failed} back to Needs you` })
+    .click();
+  await expect(row(page, BUSY.failed)).not.toHaveAttribute("data-dismissed", "");
+  await segments.getByRole("link", { name: /Needs you/ }).click();
+  await expect(row(page, BUSY.failed)).toBeVisible();
 
   // At phone width, in the dark theme, nothing overflows.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Change theme" }).last().click();
   await page.getByRole("menuitem", { name: "Dark" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await expect(rows(page).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-  await page.screenshot({ path: "test-results/fleet-mobile-dark.png", fullPage: true, animations: "disabled" });
+  await page.screenshot({
+    path: "test-results/fleet-needs-you-mobile-dark.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+});
+
+test("an empty Needs you is a good state, and Continue sends the agent back to work", async ({ page }) => {
+  await post("sandbox-events", {
+    sandbox: IDS.bobSecret,
+    events: [
+      { id: "b1", at: 1, kind: "prompt", text: "Fix the parser", status: "finished", promptId: "p1" },
+      { id: "b2", at: 2, kind: "message", text: "I pinned the clock.", partial: false, tools: [], promptId: "p1" },
+    ],
+  });
+  await signIn(page, "alice@example.com", "/fleet");
+  const bob = row(page, IDS.bobSecret);
+  await expect(bob.locator('[data-board-state="finished"]')).toHaveText("No outcome reported");
+  await bob.getByRole("button", { name: `Tell ${LABELS.bobSecret} to continue` }).click();
+  await expect(page.locator("[data-nothing-needed]")).toHaveText("Nothing needs you. 2 agents working.");
+  const sent = (await toolCalls()).find((call) => call.name === "send");
+  expect(sent?.args).toMatchObject({
+    id: IDS.bobSecret,
+    prompt: expect.stringContaining("Continue where you stopped"),
+  });
+
+  // All: every agent on the board, and the stale failure of two days ago is not one of them.
+  await page.getByRole("navigation", { name: "Board view" }).getByRole("link", { name: /All/ }).click();
+  await expect(rows(page)).toHaveCount(2);
+  await expect(row(page, IDS.failed)).toHaveCount(0);
 });
 
 test("a member's board holds only the sandboxes they may open", async ({ page }) => {
-  await signIn(page, "bob@example.com", "/fleet");
+  await signIn(page, "bob@example.com", "/fleet?view=all");
   await expect(rows(page)).toHaveCount(1);
   await expect(row(page, IDS.bobSecret)).toBeVisible();
   await expect(page.getByText(LABELS.running)).toHaveCount(0);
@@ -150,63 +179,24 @@ async function reportOutcomes() {
   });
 }
 
-test("the board shows blocked and ready to merge above the rest, and Needs me keeps only those", async ({ page }) => {
+test("a stopped sandbox stays on the board while it holds an outcome, and leaves once it holds nothing", async ({
+  page,
+}) => {
   await reportOutcomes();
-  await post("sandbox-lifecycle", {
-    id: IDS.failed,
-    fields: {
-      last_observed_at: new Date(Date.now() - 3600_000).toISOString(),
-      // Stopping a failed sandbox preserves its work and keeps it failed.
-      preservation_note: "unpushed work could not be preserved (size_limit)",
-    },
-  });
   await signIn(page, "alice@example.com", "/fleet");
-
-  await expect(rows(page)).toHaveCount(3);
-  expect(await rows(page).evaluateAll((items) => items.map((item) => item.getAttribute("data-state")))).toEqual([
-    "failed",
-    "blocked",
-    "ready",
-  ]);
-  await expect(row(page, IDS.failed).locator('[data-preservation="failed"]')).toHaveText(
-    "Unpushed work could not be preserved (size_limit)",
-  );
+  // Bob's agent reported ready to merge, though no work item is named: it is its own row.
+  const ready = row(page, IDS.bobSecret);
+  await expect(ready.locator('[data-board-state="ready"]')).toHaveText("Ready to merge");
+  await expect(ready.locator('[data-outcome-detail="ready"] code')).toHaveText(SHA.slice(0, 7));
   const blocked = row(page, IDS.running);
   await expect(blocked.locator('[data-board-state="blocked"]')).toHaveText("Blocked");
-  await expect(blocked.locator('[data-outcome-detail="blocked"]')).toContainText("The staging API key is missing");
   await expect(blocked.locator('[data-preservation="preserved"]')).toContainText("Unpushed work preserved");
   await expect(blocked.locator("code")).toHaveText(`armada recovery ${IDS.running} > armada-recovery.json`);
 
-  const ready = row(page, IDS.bobSecret);
-  await expect(ready.locator('[data-board-state="ready"]')).toHaveText("Ready to merge");
-  await expect(ready.getByRole("link", { name: "PR #768" })).toHaveAttribute(
-    "href",
-    "https://github.com/acme/web/pull/768",
-  );
-  await expect(ready.locator('[data-outcome-detail="ready"] code')).toHaveText(SHA.slice(0, 7));
-  await page.screenshot({ path: "test-results/fleet-outcome-desktop.png", fullPage: true, animations: "disabled" });
-
-  // Needs me: all three need Alice now.
-  const segments = page.getByRole("navigation", { name: "Board view" });
-  await segments.getByRole("link", { name: /Needs me/ }).click();
-  await expect(page).toHaveURL(/view=needs-me/);
-  await expect(segments.getByRole("link", { name: /Needs me/ })).toHaveAttribute("aria-current", "page");
-  await expect(rows(page)).toHaveCount(3);
-
-  // Once Bob's agent starts a new turn the server clears its outcome: a plain finished turn does not need Alice.
-  await post("sandbox-lifecycle", { id: IDS.bobSecret, fields: { task_outcome: null, task_prompt_id: null } });
-  await page.reload();
-  await expect(rows(page)).toHaveCount(2);
-  await expect(row(page, IDS.bobSecret)).toHaveCount(0);
-  await segments.getByRole("link", { name: /All/ }).click();
-  await expect(rows(page)).toHaveCount(3);
-  await expect(row(page, IDS.bobSecret)).toHaveAttribute("data-state", "finished");
-
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/fleet?view=needs-me");
-  await expect(rows(page)).toHaveCount(2);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-  await page.screenshot({ path: "test-results/fleet-outcome-mobile.png", fullPage: true, animations: "disabled" });
+  // Once the outcome is cleared and the turn ended normally, a stopped sandbox holds nothing for Alice.
+  await post("sandbox-lifecycle", { id: IDS.running, fields: { task_outcome: null, task_prompt_id: null } });
+  await page.goto("/fleet?view=all");
+  await expect(row(page, IDS.running)).toHaveCount(0);
 });
 
 test("the list and the conversation header show the outcome and the preservation receipt", async ({ page }) => {
