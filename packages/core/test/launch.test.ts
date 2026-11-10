@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type AgentEvent,
   type CredentialSource,
@@ -25,6 +28,7 @@ import {
   type SandboxRecord,
   type SandboxStore,
 } from "../src/index.ts";
+import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
@@ -968,3 +972,57 @@ test("launch resolves defaults once, respects exact and empty overrides, and fai
   ).rejects.toThrow("Reconnect");
   expect(world.forks).toEqual([]);
 });
+
+for (const harness of ["claude", "codex"] as const) {
+  test(`${harness} launch artifacts stay out of worker Git staging without changing tracked skills`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "armada-skill-exclude-"));
+    const run = (...args: string[]) => {
+      const result = Bun.spawnSync(args, { cwd: dir });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString();
+    };
+    try {
+      run("git", "init", "--quiet");
+      if (harness === "codex") rmSync(join(dir, ".git/info"), { recursive: true });
+      else writeFileSync(join(dir, ".git/info/exclude"), "*.log"); // Existing file lacks a final LF.
+      mkdirSync(join(dir, ".companion"), { recursive: true });
+      writeFileSync(
+        join(dir, ".companion/skills.lock.json"),
+        catalogLock(harness === "claude" ? "claude-code" : "codex"),
+      );
+      writeFileSync(join(dir, ".companion/skills.lock.json.lock"), "");
+      for (const tool of harness === "claude" ? [".agents", ".claude"] : [".agents"]) {
+        mkdirSync(join(dir, tool, "skills/notes"), { recursive: true });
+        writeFileSync(join(dir, tool, "skills/notes/SKILL.md"), "installed skill");
+      }
+      mkdirSync(join(dir, ".agents/skills/owned"), { recursive: true });
+      writeFileSync(join(dir, ".agents/skills/owned/SKILL.md"), "owned skill");
+      run("git", "add", ".agents/skills/owned/SKILL.md");
+      writeFileSync(join(dir, "worker.ts"), "worker change");
+      const world = setup({
+        golden: golden("org"),
+        prepare: true,
+        exec: (command) => {
+          if (command.startsWith("skillpack install"))
+            return { exitCode: 0, stdout: catalogLock(harness === "claude" ? "claude-code" : "codex") };
+          if (command.startsWith("exclude=")) run("sh", "-c", command);
+          return { exitCode: 0 };
+        },
+      });
+      world.stores.sandboxes.recordSkills = async () => {};
+      await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness,
+        repo: "web",
+        skills: [catalogReference],
+      });
+      run("git", "add", "-A");
+      expect(run("git", "diff", "--cached", "--name-only").trim().split("\n")).toEqual([
+        ".agents/skills/owned/SKILL.md",
+        "worker.ts",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

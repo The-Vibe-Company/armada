@@ -1,6 +1,11 @@
 "use client";
 
-import type { MachineSize, OrchestratorDetail } from "@armada/core";
+import {
+  type MachineSize,
+  type OrchestratorDetail,
+  type SandboxUsageSummary,
+  summarizeSandboxUsage,
+} from "@armada/core";
 import {
   AlertTriangleIcon,
   ChevronRightIcon,
@@ -574,6 +579,31 @@ function Composer({
   );
 }
 
+function UsageFacts({ title, usage }: { title: string; usage: SandboxUsageSummary | undefined }) {
+  const rows: [string, number | null | undefined][] = [
+    ["Compute seconds", usage?.computeSeconds],
+    ["Turns", usage?.turnCount],
+    ["Input tokens", usage?.inputTokens],
+    ["Output tokens", usage?.outputTokens],
+    ["Cached tokens", usage?.cachedTokens],
+    ["Cache write tokens", usage?.cacheWriteTokens],
+    ["Reasoning tokens", usage?.reasoningTokens],
+  ];
+  return (
+    <div>
+      <h3 className="mb-1 font-medium">{title}</h3>
+      <dl className="space-y-1">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="tabular-nums">{value == null ? "Unknown" : value.toLocaleString()}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 /** The quiet column: facts, workers, waits, problems and authority, each folded until opened. */
 function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: OrchestratorFeedEvent[]; facts: Facts }) {
   const [now, setNow] = useState(() => Date.now());
@@ -625,6 +655,17 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
           </div>
         ))}
       </dl>
+      <section className="space-y-3 rounded-lg border p-4 text-xs" aria-label="Measured usage">
+        <h2 className="text-sm font-medium">Measured usage</h2>
+        <UsageFacts title="Own usage" usage={summarizeSandboxUsage(detail.usage?.own)} />
+        <UsageFacts title="Child aggregate usage" usage={detail.usage?.children} />
+        <p className="text-muted-foreground">
+          Compute is Armada-observed elapsed time, not provider-billed seconds. Unknown means measurement is unavailable
+          or incomplete. Token fields are reported separately, not a unique-token total: cached and cache-write tokens
+          are included in Codex input, while Claude reports cache read/write separately from input. Reasoning is part of
+          output.
+        </p>
+      </section>
       <Fold title="Workers" count={children.length} empty="No workers launched yet.">
         <ul className="space-y-1">
           {children.map((child) => (

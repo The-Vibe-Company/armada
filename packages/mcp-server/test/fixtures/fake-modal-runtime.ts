@@ -31,6 +31,8 @@ export function fakeModalRuntime(input: {
     terminations: 0,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [] as string[],
     mcpConfigurations: 0,
     epochInstalls: 0,
   };
@@ -62,6 +64,14 @@ export function fakeModalRuntime(input: {
         token?: string;
       };
       effects.runnerCalls++;
+      if (packet.op === "exec" && packet.input?.command?.includes("git rev-parse --git-path info/exclude"))
+        effects.skillLaunchOrder.push("exclude");
+      if (packet.op === "exec" && packet.input?.command?.startsWith("skillpack install"))
+        effects.skillLaunchOrder.push("install");
+      if (packet.op === "prompt") {
+        effects.promptCalls++;
+        effects.skillLaunchOrder.push("prompt");
+      }
       const capturing = packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY");
       if (capturing && preservationFailure === "unavailable") return new Response(null, { status: 503 });
       let result: unknown;

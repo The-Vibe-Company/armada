@@ -2476,6 +2476,7 @@ export type Database = {
           usage_runtime_seconds: number | null;
           usage_running_since: string | null;
           usage_turns: Json | null;
+          skills: Json;
         };
         Insert: {
           id?: string;
@@ -2525,6 +2526,7 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
         };
         Update: {
           id?: string;
@@ -2574,6 +2576,7 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
         };
         Relationships: [
           {

@@ -1214,6 +1214,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,

@@ -290,7 +290,16 @@ export {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
-export { reportedTurnUsage, type SandboxUsage, type TurnTokenUsage } from "./sandbox-usage.ts";
+export {
+  reportedTurnUsage,
+  type SandboxUsage,
+  type SandboxUsageSummary,
+  summarizeSandboxUsage,
+  sumSandboxUsage,
+  type TokenUsageTotals,
+  type TurnTokenUsage,
+  withUsageTotals,
+} from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
