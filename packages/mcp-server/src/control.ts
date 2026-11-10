@@ -58,7 +58,6 @@ import {
   parseCredentialKind,
   parseGoldenConfig,
   parseRole,
-  promptOutcome,
   removeCredential,
   removeMember,
   resolveBoatKey,
@@ -1064,17 +1063,37 @@ async function readLogs(
   cursor: string | null;
   hasMore: boolean;
   settled: boolean;
+  olderCursor?: string;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
   const target = await options.logs(caller, id);
+  if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")
+    throw new VaultError("invalid", "Invalid event direction.");
+  for (const key of ["limit", "maxBytes"])
+    if (body[key] !== undefined && typeof body[key] !== "number")
+      throw new VaultError("invalid", "Invalid event pagination.");
+  if (body.coalesce !== undefined && typeof body.coalesce !== "boolean")
+    throw new VaultError("invalid", "Invalid coalesce option.");
+  const backward = body.direction === "backward";
   const all = body.all === true;
+  if (backward && all) throw new VaultError("invalid", "Backward reads cannot drain all pages.");
+  let olderCursor: string | undefined;
   const follow = body.follow === true;
   const maxPages = 100;
   let cursor = optional(body, "cursor");
   let hasMore = false;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await target.provider.events({ sandboxId: target.providerSandboxId, ...(cursor ? { cursor } : {}) });
+    const page = await target.provider.events({
+      sandboxId: target.providerSandboxId,
+      ...(cursor ? { cursor } : {}),
+      ...(backward ? { direction: "backward" as const } : {}),
+      ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+      ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
+      ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
+      ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
+    });
+    olderCursor = page.olderCursor;
     events.push(...page.events);
     hasMore = page.hasMore;
     const next = page.cursor ?? cursor;
@@ -1087,10 +1106,12 @@ async function readLogs(
   const info = await target.provider.get(target.providerSandboxId);
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
-  const outcome = latest
-    ? await promptOutcome(target.provider, { sandboxId: target.providerSandboxId, promptId: latest })
-    : null;
+  const prompt =
+    follow && latest && info.state !== "stopped" && info.state !== "failed"
+      ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
+      : null;
   return {
+    ...(olderCursor ? { olderCursor } : {}),
     events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,
     hasMore,
@@ -1098,7 +1119,7 @@ async function readLogs(
       !follow ||
       info.state === "stopped" ||
       info.state === "failed" ||
-      (latest === null ? info.state !== "running" && info.state !== "starting" : outcome?.state !== "running"),
+      (latest === null ? info.state !== "running" && info.state !== "starting" : prompt?.done === true),
   };
 }
 
