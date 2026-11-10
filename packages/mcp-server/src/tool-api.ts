@@ -6,6 +6,7 @@ export class ToolApiError extends Error {
     super(message);
   }
   get status(): number {
+    if (this.code === "unknown") return 502;
     if (this.code === "not_found") return 404;
     if (this.code === "forbidden") return 403;
     if (["credential_binding_required", "credential_binding_unsafe", "conflict", "no_running_turn"].includes(this.code))
