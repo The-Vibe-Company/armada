@@ -34,7 +34,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
         return { id: "bx_recovery", name: "recovery", state: "ready" as const, providerState: "running", labels: {} };
       },
       async exec(request: Parameters<typeof boat.provider.exec>[0]) {
-        if (request.command.includes("fs.readSync("))
+        if (request.command.includes("fs.readSync(fd,data,"))
           return {
             detached: false as const,
             exitCode: 0,
