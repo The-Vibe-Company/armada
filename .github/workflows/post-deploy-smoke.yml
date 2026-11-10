@@ -1,0 +1,63 @@
+name: Post-deploy smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      orchestrator:
+        description: Also exercise the orchestrator lifecycle
+        type: boolean
+        default: false
+  deployment_status:
+
+permissions:
+  contents: read
+
+# Never cancel a runner while it owns live compute.
+concurrency:
+  group: post-deploy-smoke-staging
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'deployment_status' &&
+       github.event.deployment_status.state == 'success' &&
+       github.event.deployment.environment == 'staging')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: staging
+    steps:
+      - name: Check staging configuration
+        id: config
+        env:
+          ARMADA_URL: ${{ secrets.ARMADA_SMOKE_ORIGIN }}
+          ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
+          ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
+        run: |
+          if [[ -z "$ARMADA_URL" || -z "$ARMADA_TOKEN" || -z "$ARMADA_SMOKE_CASES" ]]; then
+            echo "::notice::Staging smoke is not configured; set ARMADA_SMOKE_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES in the staging environment. No API calls made."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Use reviewed default-branch code, never an arbitrary deployment payload ref.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.config.outputs.enabled == 'true'
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+        if: steps.config.outputs.enabled == 'true'
+      - name: Exercise deployed staging API
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          ARMADA_URL: ${{ secrets.ARMADA_SMOKE_ORIGIN }}
+          ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
+          ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
+          ARMADA_SMOKE: create_real_compute
+          ORCHESTRATOR: ${{ inputs.orchestrator }}
+        run: |
+          args=()
+          if [[ "$ORCHESTRATOR" == true ]]; then args+=(--orchestrator); fi
+          bun scripts/post-deploy-smoke.ts "${args[@]}"
