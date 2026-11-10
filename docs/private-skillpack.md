@@ -326,3 +326,47 @@ and `golden update` action, with distinct request/package/registry/receipt/trans
 classifications. It discovers the user-local executable too. Native install-stage
 usage exit (2) is `skillpack_request_rejected`, not a missing CLI; auth-status
 usage exit (2) signals an incompatible CLI.
+
+## Private SSH transport diagnostics (#914)
+
+Boat supplies a provider-pinned endpoint and user identity. Modal authorizes an
+Ed25519 key via its SDK, starts port 2222 behind a TCP tunnel and returns the
+actual host key: workers log in as `user`, golden builders as `root`. Do not
+switch workers to root or disable host-key checking. Modal's provider-managed
+SSH authorizations live in `/run/armada-ssh` and expire after 15 minutes, not in
+`~/.ssh`; the server's ephemeral private key is always destroyed after the
+exchange. The home-key cleanup script must not be mistaken for proof that this
+separate root-owned provider store was edited.
+
+Private installs now log a closed sub-step reason at `skills_transport`, never
+raw SSH stderr, credentials, endpoint details or the SDK exception:
+
+| Reason | Action |
+| --- | --- |
+| `skillpack_ssh_keygen_failed` | Check server ephemeral storage and `ssh-keygen` availability/permissions. |
+| `skillpack_ssh_authorization_failed` | Check provider key registration and active sandbox lifecycle; the guest was not reached. |
+| `skillpack_ssh_connection_invalid` | Check provider-returned SSH username, endpoint and pinned host-key metadata. |
+| `skillpack_ssh_host_key_rejected` | Reconcile the provider's actual host key; do not disable pinning. |
+| `skillpack_ssh_authentication_failed` | Check provider authorization, worker user and key expiry. |
+| `skillpack_ssh_unreachable` | Check the provider tunnel and server egress to its SSH port. |
+| `skillpack_ssh_timeout` | Check SSH liveness and guest command completion. |
+| `skillpack_ssh_node_missing` | Rebuild with Node on the SSH user's PATH. |
+| `skillpack_ssh_flock_missing` | Rebuild with `flock` on the SSH user's PATH. |
+| `skillpack_ssh_home_unavailable` | Repair the worker home directory and traversal permissions. |
+| `skillpack_ssh_key_cleanup_failed` | Check the worker's `.ssh` directory and cleanup lock ownership; no private install ran. |
+| `skillpack_ssh_remote_failed` | The remote command failed without an accepted protocol marker; check guest shell prerequisites without forwarding raw output. |
+| `skillpack_ssh_output_invalid` | The private response was malformed, oversized or not a supported receipt; inspect guest startup-output pollution without sharing it. |
+
+Tests previously substituted both SSH executables and guest home paths, so they
+did not prove a real Modal worker SSH session. A local disposable Docker check
+with the actual Modal SSH preparation and NNP can reach private CLI scope
+validation as a non-root worker; this does not substitute for a staging rerun.
+The staging cause in #914 is not inferred from that local check.
+
+A failed private **create**, before authority installation or a conversation,
+disposes its fresh Modal allocation instead of attempting a native checkpoint.
+Only an acknowledged `deleted` receipt produces a terminal `stopped` parent and
+a deleted sandbox row. Pending/failed disposal remains visibly blocked with the
+original install reason; do not claim a terminal outcome without physical proof.
+Boat retains its confirmed-stop path. Existing conversations and resumes are
+never discarded by this cleanup path.

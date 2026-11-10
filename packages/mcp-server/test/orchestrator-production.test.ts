@@ -65,6 +65,11 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       if (stopUnconfirmed) throw new Error(privateText);
       return placement.provider.stop(request);
     },
+    async delete(request) {
+      if (stopUnconfirmed) throw new Error(privateText);
+      await placement.provider.stop(request);
+      return { status: "deleted" };
+    },
     async prompt(request) {
       childPreparation.push("prompt");
       return placement.provider.prompt(request);
@@ -509,7 +514,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           )
         ).rows[0];
         if (!stopUnconfirmed) {
-          expect(sandbox?.status).toBe("stopped");
+          expect(sandbox?.status).toBe("deleted");
           expect(sandbox?.stopped_at).not.toBeNull();
         }
       }

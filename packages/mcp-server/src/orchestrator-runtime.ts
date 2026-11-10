@@ -660,6 +660,7 @@ export class OrchestratorRuntime {
       const refused = error instanceof PromptRefused;
       const privateFailure = error instanceof PrivateSkillError;
       let privateCreateStopped = false;
+      let discardedCreate = false;
       if (privateFailure && reservation.operation.kind === "create") {
         // Skills precede authority installation and the first conversation. Stop the
         // failed allocation; never claim a terminal parent while it may still run.
@@ -669,8 +670,17 @@ export class OrchestratorRuntime {
           const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
           await backend.revalidate(identity);
           if (identity.providerSandboxId && !identity.conversationId) {
-            await backend.provider.stop({ sandboxId: identity.providerSandboxId });
-            privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+            if (identity.configuration.provider === "modal") {
+              // A pre-turn failed create has no native session/checkpoint to save.
+              // Stop attempts to checkpoint on Modal and can fail for that reason.
+              // Dispose only this fresh, fenced allocation; never discard a resume.
+              discardedCreate =
+                (await backend.provider.delete({ sandboxId: identity.providerSandboxId })).status === "deleted";
+              privateCreateStopped = discardedCreate;
+            } else {
+              await backend.provider.stop({ sandboxId: identity.providerSandboxId });
+              privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+            }
           }
         } catch {
           // Preserve the installation reason. Unconfirmed cleanup stays blocked.
@@ -695,6 +705,7 @@ export class OrchestratorRuntime {
         published = await this.options.store.complete(reservation, {
           state,
           parentState: refused ? "ready" : privateCreateStopped ? "stopped" : "blocked",
+          ...(discardedCreate ? { discardedCreate: true } : {}),
           errorCode,
           ...(lost
             ? { continuity: "lost" as const }
