@@ -12,6 +12,23 @@ export type PromptOutcome =
   | { state: "interrupted"; reason?: "interrupted_by_provider_move" | "interrupted_by_harness_exit" }
   | { state: "failed"; reason: string };
 
+/** Closed, resendable turn interruptions. Boat's raw failed events and normalized events share this mapping. */
+export function turnInterruptionReason(
+  message: string | undefined,
+): "interrupted_by_provider_move" | "interrupted_by_harness_exit" | undefined {
+  if (
+    message === "interrupted_by_provider_move" ||
+    message === "The box moved to a new machine while this prompt was running. Send it again."
+  )
+    return "interrupted_by_provider_move";
+  if (
+    message === "interrupted_by_harness_exit" ||
+    (message && /^Codex app-server exited with signal .+; the next prompt starts a fresh process[.]?$/.test(message))
+  )
+    return "interrupted_by_harness_exit";
+  return undefined;
+}
+
 /**
  * Events that were read again carry the same id and a newer body: a streaming answer is rewritten
  * in place. The last body of each id wins and the order of first sight is kept.
@@ -35,12 +52,8 @@ export async function promptOutcome(
   if (state.status === "interrupted" || state.status === "failed") {
     const reason = (await promptEvents(provider, request)).find((event) => event.kind === "prompt" && event.reason);
     const message = reason?.kind === "prompt" ? reason.reason : undefined;
-    // Boat currently reports these recoverable interruptions as failed prompt events.
-    // Match only its documented remedies; arbitrary turn errors remain failures.
-    if (message === "The box moved to a new machine while this prompt was running. Send it again.")
-      return { state: "interrupted", reason: "interrupted_by_provider_move" };
-    if (message && /^Codex app-server exited with signal .+; the next prompt starts a fresh process[.]?$/.test(message))
-      return { state: "interrupted", reason: "interrupted_by_harness_exit" };
+    const interruption = turnInterruptionReason(message);
+    if (interruption) return { state: "interrupted", reason: interruption };
     if (state.status === "interrupted") return { state: "interrupted" };
     return {
       state: "failed",

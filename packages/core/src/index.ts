@@ -168,7 +168,7 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export * from "./orchestrator.ts";
-export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
+export { dedupeEvents, type PromptOutcome, promptOutcome, turnInterruptionReason } from "./outcome.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
