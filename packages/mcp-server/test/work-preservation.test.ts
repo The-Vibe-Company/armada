@@ -118,7 +118,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
         );
         const closedReason = `${reason}_provider_unavailable_http_502`;
         const note = (await owner.get(id))?.preservationNote;
-        expect(note).toContain(`(${closedReason})`);
+        expect(note).toContain(
+          `(${method === "get" ? "observe_failed" : method === "quiesce" ? "quiesce_failed" : "exec_failed"})`,
+        );
         expect(note).not.toContain("PRIVATE");
         const line = String(log.mock.calls.at(-1)?.[0]);
         expect(JSON.parse(line)).toMatchObject({
@@ -144,6 +146,21 @@ test("recovery receipts retain encrypted versions and only current interior owne
 
     const archive = Buffer.from("recovery fixture one: private repository material").toString("base64");
     boat.setExecOutput({ stdout: captured(archive) });
+    const commands = boat.execs.length;
+    const pending = {
+      ...provider,
+      quiesce: async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "sandbox_not_ready",
+          retryable: true,
+          message: "Interruption pending",
+        });
+      },
+    };
+    expect(await preserveBeforeStop(sql, pending, id, "bx_recovery")).toBe("pending");
+    expect(boat.execs).toHaveLength(commands);
+    expect((await owner.get(id))?.preservationNote).toBeNull();
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
     const first = (
       await db.query<{ id: string; archive_enc: Uint8Array<ArrayBuffer> }>(
@@ -169,7 +186,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
     boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
     expect((await owner.get(id))?.preservationNote).toBe(
-      "unpushed work could not be preserved (capture_collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
@@ -259,7 +276,7 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
     expect(row?.preservation_note).toBe(
-      "unpushed work could not be preserved (observe_timeout_timeout_no_status). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (timeout). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(interrupts).toBe(0);
     expect(execs).toBe(0);

@@ -2,25 +2,31 @@ import {
   decryptSecret,
   encryptSecret,
   type Provider,
+  ProviderError,
   preserveWork,
   type Sql,
   workPreservationError,
 } from "@armada/core/server";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
-  return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass}_${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
+  return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
 }
 function failureNote(reason: string): string {
   return `unpushed work could not be preserved (${reason}). Resume the sandbox and push or copy any local work before stopping again.`;
 }
 
 /** Never return command output or SDK errors: archives may contain credentials. */
-export async function preserveBeforeStop(sql: Sql, provider: Provider, id: string, providerId: string): Promise<void> {
+export async function preserveBeforeStop(
+  sql: Sql,
+  provider: Provider,
+  id: string,
+  providerId: string,
+): Promise<"pending" | void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   const progress = { stage: "observe" };
   try {
-    await Promise.race([
+    return await Promise.race([
       captureAndStore(sql, provider, id, providerId, () => expired, progress),
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
@@ -37,7 +43,7 @@ export async function preserveBeforeStop(sql: Sql, provider: Provider, id: strin
             }),
           );
           void sql
-            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, failureNote(reason)])
+            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, failureNote("timeout")])
             .catch(() => {});
           resolve();
         }, 20_000);
@@ -55,7 +61,7 @@ async function captureAndStore(
   providerId: string,
   expired: () => boolean,
   progress: { stage: string },
-): Promise<void> {
+): Promise<"pending" | void> {
   let reason = "failed";
   let stage = "observe";
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
@@ -104,13 +110,30 @@ async function captureAndStore(
         stage = result.diagnostic.stage;
         diagnostic = result.diagnostic;
       }
-      reason = closedFailure(stage, reason, diagnostic);
       note = failureNote(reason);
+      reason = closedFailure(stage, reason, diagnostic);
     }
   } catch (error) {
+    if (
+      stage === "quiesce" &&
+      error instanceof ProviderError &&
+      error.code === "sandbox_not_ready" &&
+      error.retryable
+    ) {
+      // Interruption is accepted but not yet settled. Keep the stop request queued:
+      // the lifecycle worker retries quiescence and capture before stopping compute.
+      if (expired()) return "pending";
+      await sql
+        .query(
+          "update public.sandboxes set preservation_note=null where id=$1::uuid and preservation_note like 'unpushed work could not be preserved%'",
+          [id],
+        )
+        .catch(() => {});
+      return "pending";
+    }
     diagnostic = workPreservationError(error);
+    note = failureNote(stage === "capture" ? "capture_failed" : `${stage}_failed`);
     reason = closedFailure(stage, reason, diagnostic);
-    note = failureNote(reason);
   }
   if (expired()) return;
   if (!note.startsWith("unpushed work preserved"))

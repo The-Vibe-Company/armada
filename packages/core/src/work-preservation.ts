@@ -33,7 +33,7 @@ const ERROR_CLASSES = [
   "rate_limited",
   "unavailable",
   "unknown",
-] as const;
+] as const satisfies readonly ProviderError["code"][];
 export function workPreservationError(error: unknown): { errorClass: string; providerStatus: number | null } {
   if (error instanceof ProviderError)
     return {

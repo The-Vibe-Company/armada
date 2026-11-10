@@ -1492,8 +1492,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           signal.throwIfAborted();
           if (
             !(found.status === "stopping" && found.preservationNote?.startsWith("unpushed work could not be preserved"))
-          )
-            await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
+          ) {
+            const preservation = await data.sandboxes
+              .preserveWork?.(found.id, provider, found.providerSandboxId)
+              .catch(() => {});
+            signal.throwIfAborted();
+            if (preservation === "pending")
+              return {
+                result: { id: found.id, status: "stopping" as const },
+                patch: { status: "stopping" as const, stopRequested: true },
+              };
+          }
           let terminal = false;
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;

@@ -39,7 +39,7 @@ export interface ServerSandboxStore extends SandboxStore {
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
-  preserveWork?(id: string, provider: Provider, providerId: string): Promise<void>;
+  preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
@@ -322,7 +322,7 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async preserveWork(id, provider, providerId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        await preserveBeforeStop(sql, provider, id, providerId);
+        return preserveBeforeStop(sql, provider, id, providerId);
       },
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

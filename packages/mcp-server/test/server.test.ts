@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore, mutateCredentialAccount } from "@armada/core/server";
+import { createSqlVaultStore, mutateCredentialAccount, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
@@ -928,6 +929,42 @@ describe("tools", () => {
     const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
     expect(ran.data).toMatchObject({ exitCode: 0, stdout: "CLAUDE_CODE_OAUTH_TOKEN=***\nok\n" });
     expectNoSecret(ran.text);
+  });
+
+  test("a mid-turn stop queues until interruption settles, then captures before stopping", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    let pending = true;
+    boat.provider.quiesce = async () => {
+      if (pending)
+        throw new ProviderError({
+          provider: "boat",
+          code: "sandbox_not_ready",
+          retryable: true,
+          message: "Interruption pending",
+        });
+    };
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const commands = boat.execs.length;
+    const stop = await call(mcp, "stop", { id: launched.data.id });
+    expect(stop.isError).not.toBe(true);
+    expect(stop.data.status).toBe("stopping");
+    expect(boat.stops).toHaveLength(0);
+    expect(boat.execs).toHaveLength(commands);
+    pending = false;
+    await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [launched.data.id]);
+    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    expect(boat.stops).toEqual(["bx_1"]);
+    expect(boat.execs.length).toBeGreaterThan(commands);
+    const row = (
+      await db.query<{ status: string; preservation_note: string | null; stop_requested_at: Date | null }>(
+        "select status::text, preservation_note, stop_requested_at from sandboxes where id=$1",
+        [launched.data.id],
+      )
+    ).rows[0];
+    expect(row).toMatchObject({ status: "stopped", preservation_note: null, stop_requested_at: null });
   });
 
   test("stop without a provider timestamp retains observed compute time", async () => {
