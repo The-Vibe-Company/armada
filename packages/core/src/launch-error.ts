@@ -15,6 +15,7 @@ export const LAUNCH_FAILURE_REASONS = [
   "github_setup_timeout",
   "github_setup_nonzero",
   "native_auth_write_failed",
+  "repository_ownership_mismatch",
   "visibility_not_persisted",
 ] as const;
 export type LaunchFailureReason = (typeof LAUNCH_FAILURE_REASONS)[number];

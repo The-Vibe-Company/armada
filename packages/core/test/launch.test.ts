@@ -420,6 +420,63 @@ describe("launch", () => {
       launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/git pull of web failed \(exit 128\)\.\nfatal: not possible to fast-forward/);
     expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+  });
+
+  test.each([
+    { repo: undefined, transient: true },
+    { repo: "example/web", transient: true },
+    { repo: undefined, transient: false },
+    { repo: "example/web", transient: false },
+  ])("ownership rejection retries once, then succeeds or cleans up (%j)", async ({ repo, transient }) => {
+    let rejectedPulls = 0;
+    const world = setup({
+      golden: golden("org"),
+      prepare: true,
+      exec: (command) =>
+        command.includes("'pull'") && (!transient || rejectedPulls++ === 0)
+          ? {
+              exitCode: 128,
+              stderr: "fatal: detected dubious ownership in repository at '/home/user/web'\n" + "x".repeat(2500),
+            }
+          : { exitCode: 0 },
+    });
+    const failure = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      ...(repo === undefined ? {} : { repo }),
+      prompt: "go",
+    }).catch((error: unknown) => error as LaunchError);
+    expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
+      2,
+    );
+    if (transient) {
+      expect(failure).not.toBeInstanceOf(LaunchError);
+      expect([...world.rows.values()][0]?.status).toBe("running");
+      expect(world.execs.filter((exec) => exec.command === "pnpm i")).toHaveLength(1);
+      expect(world.prompts).toHaveLength(1);
+      expect(world.stopped).toEqual([]);
+      return;
+    }
+    expect(failure).toBeInstanceOf(LaunchError);
+    const error = failure as LaunchError;
+    expect(error.code).toBe("init_failed");
+    expect(error.safeReason).toBe("repository_ownership_mismatch");
+    expect(error.cause).toBeInstanceOf(LaunchError);
+    expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
+    expect(error.sandboxId).toBeString();
+    expect(error.message).toContain(`sandbox ${error.sandboxId}:`);
+    expect(error.message).not.toContain("bx_1");
+    expect(error.message).not.toContain("selected machine size");
+    expect(error.message).toContain("checkout ownership");
+    expect(error.message).toContain("Report this golden and sandbox ID");
+    expect(error.message).not.toContain("rebuild");
+    expect(error.message).not.toContain("fatal:");
+    expect(error.message).not.toContain("safe.directory");
+    expect(world.rows.get(error.sandboxId ?? "")).toMatchObject({ status: "failed", statusReason: error.message });
+    expect(world.stopped).toEqual(["bx_1"]);
+    expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.prompts).toEqual([]);
   });
 
   test("a refused first prompt leaves a failed sandbox and says so", async () => {
