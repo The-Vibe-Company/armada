@@ -214,7 +214,7 @@ enum PreviewData {
             )
         }
 
-        func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+        func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
             OrchestratorEventPage(events: cursor == nil ? PreviewData.events(for: id) : [], cursor: "end", hasMore: false)
         }
 
@@ -265,7 +265,7 @@ enum PreviewData {
             )
         }
 
-        func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+        func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
             guard PreviewData.sandboxes.contains(where: { $0.id == id && $0.canOpen }) else { throw .noAccess }
             return OrchestratorEventPage(
                 events: cursor == nil ? Array(PreviewData.events(for: PreviewData.leadID).prefix(3)) : [],

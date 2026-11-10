@@ -35,7 +35,7 @@ struct OrchestratorListView: View {
                 }
             }
             .navigationDestination(for: OrchestratorRoute.self) { route in
-                OrchestratorConversationView(orchestratorID: route.id)
+                OrchestratorConversationView(orchestratorID: route.id, listed: model?.items.first { $0.id == route.id })
             }
             .sheet(isPresented: $showingCreate) {
                 if let model {

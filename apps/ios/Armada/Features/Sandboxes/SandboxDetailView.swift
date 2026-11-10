@@ -107,7 +107,13 @@ struct SandboxConversationView: View {
         .task(id: sandbox.id) {
             // Keep pending prompts and the draft when the screen reappears.
             if model?.sandboxID != sandbox.id {
-                model = SandboxConversationModel(service: app.sandboxes, sandboxID: sandbox.id, orgID: sandbox.orgID) {
+                model = SandboxConversationModel(
+                    service: app.sandboxes,
+                    sandboxID: sandbox.id,
+                    orgID: sandbox.orgID,
+                    listedStatus: sandbox.status,
+                    memory: app.conversations
+                ) {
                     app.sessionEnded()
                 }
             }
@@ -118,8 +124,9 @@ struct SandboxConversationView: View {
     @ViewBuilder
     private func screen(_ model: SandboxConversationModel) -> some View {
         switch model.phase {
-        case .loading:
-            SurfaceStateView(state: .loading("Opening the conversation…"))
+        case .loading, .loaded:
+            // Shown at once: the conversation is read beside the turn's state, never after it.
+            conversation(model)
         case .unavailable(let reason):
             SurfaceStateView(state: .unavailable(reason))
         case .noAccess:
@@ -130,8 +137,6 @@ struct SandboxConversationView: View {
             ))
         case .failed(let message):
             SurfaceStateView(state: .failure(message, retry: { Task { await model.open() } }))
-        case .loaded:
-            conversation(model)
         }
     }
 
@@ -141,12 +146,15 @@ struct SandboxConversationView: View {
             items: model.feed.conversation.items,
             documents: model.feed.documents,
             pending: model.pending,
-            emptyTitle: model.isDeleted ? "Conversation unavailable" : "No messages yet",
+            emptyTitle: model.isDeleted ? "Conversation unavailable" : model.feed.hasLoaded ? "No messages yet" : "Loading conversation…",
             emptyMessage: model.isDeleted
                 ? "This sandbox was deleted, so its conversation can no longer be read."
-                : "Prompts you send and the agent's replies appear here.",
+                : model.feed.hasLoaded ? "Prompts you send and the agent's replies appear here." : "Reading the latest messages from Armada.",
             onRetryPending: nil,
-            onDismissPending: { model.dismiss($0) }
+            onDismissPending: { model.dismiss($0) },
+            hasOlder: model.feed.hasOlder,
+            olderPagesRead: model.feed.olderPagesRead,
+            onLoadOlder: { Task { await model.loadOlder() } }
         )
         .refreshable { await model.refresh() }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -167,7 +175,7 @@ struct SandboxConversationView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                SandboxHeader(title: sandbox.displayLabel, state: model.state)
+                SandboxHeader(title: sandbox.displayLabel, state: model.state, listedStatus: model.shownStatus)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -224,6 +232,8 @@ struct SandboxConversationView: View {
 private struct SandboxHeader: View {
     let title: String
     let state: SandboxState?
+    /// The list row's status, shown until the interior state is read.
+    let listedStatus: SandboxStatus?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -234,6 +244,8 @@ private struct SandboxHeader: View {
                 .truncationMode(.middle)
             if let state {
                 StatusDot(tone: state.isWorking ? .live : state.status.tone)
+            } else if let listedStatus {
+                StatusDot(tone: listedStatus.tone)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -242,7 +254,7 @@ private struct SandboxHeader: View {
     }
 
     private var label: String? {
-        guard let state else { return nil }
+        guard let state else { return listedStatus?.label }
         return state.isWorking ? "Working" : state.status.label
     }
 }

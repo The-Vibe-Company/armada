@@ -244,5 +244,7 @@ public struct OrchestratorEventPage: Decodable, Sendable {
     public let version: Int
     public let events: [OrchestratorEvent]
     public let cursor: String?
+    /// Backward reads only: continues before the oldest event of the page.
+    public let olderCursor: String?
     public let hasMore: Bool
 }
