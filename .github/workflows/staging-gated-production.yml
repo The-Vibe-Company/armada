@@ -1,14 +1,20 @@
-name: Staging-gated production
+name: Pinned staging smoke
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Validated release commit from Release
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-# Lock the WHOLE staging -> smoke -> production chain. A newer merge cannot
+# Lock staging deployment and smoke together. A newer merge cannot
 # replace staging under an active smoke. GitHub may replace pending runs.
 concurrency:
   group: staging-gated-production
@@ -25,14 +31,14 @@ jobs:
         run: |
           if [[ "$ENABLED" != true ]]; then
             echo "::notice::Staging-gated deployments disabled; existing deployment behavior unchanged. See docs/releasing.md."
-          elif [[ "$RELEASE_SYNCED" == true ]]; then
-            echo "::error::STAGING_GATED_DEPLOYS and RELEASE_SYNCED_DEPLOYS are mutually exclusive."
+          elif [[ "$RELEASE_SYNCED" != true ]]; then
+            echo "::error::STAGING_GATED_DEPLOYS requires RELEASE_SYNCED_DEPLOYS=true; production is release-only."
             exit 1
           fi
 
   staging:
     needs: configuration
-    if: github.ref == 'refs/heads/main' && vars.STAGING_GATED_DEPLOYS == 'true'
+    if: vars.STAGING_GATED_DEPLOYS == 'true' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 85
     environment: staging
@@ -48,14 +54,14 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
-      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Validate configuration before any mutation
         run: |
@@ -66,8 +72,6 @@ jobs:
             echo "::error::Smoke origin must match the deployed staging server; production blocked."
             exit 1
           }
-          latest=$(git ls-remote origin refs/heads/main | cut -f1)
-          [[ "$latest" == "$RELEASE_SHA" ]] || { echo "::error::Superseded commit; run the latest main pipeline."; exit 1; }
           echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
@@ -91,48 +95,3 @@ jobs:
       - name: Report blocked production
         if: failure()
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
-  production:
-    needs: staging
-    if: github.ref == 'refs/heads/main' && vars.STAGING_GATED_DEPLOYS == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    environment: production
-    concurrency:
-      group: production-supabase-migrations
-      cancel-in-progress: false
-    env:
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
-      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
-      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
-      RELEASE_SHA: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Validate configuration before any mutation
-        run: |
-          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL; do
-            [[ -n "${!key:-}" ]] || { echo "::error::Missing production configuration: $key; production blocked."; exit 1; }
-          done
-          latest=$(git ls-remote origin refs/heads/main | cut -f1)
-          [[ "$latest" == "$RELEASE_SHA" ]] || { echo "::error::Superseded commit; run the latest main pipeline."; exit 1; }
-          echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
-      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
-        with:
-          version: 2.75.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - name: Install pinned deployment clients
-        run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - name: Migrate then deploy pinned server and dashboard
-        run: bash scripts/release/deploy-production.sh

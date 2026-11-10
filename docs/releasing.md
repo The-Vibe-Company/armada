@@ -210,102 +210,122 @@ with a verified schema-compatible prior release. To abandon cutover, freeze
 changes, finish/stop in-flight work, disable the repository variable and restore
 the original host autodeploy settings together; changing only one risks drift.
 
-## Staging-gated production (owner opt-in)
+## Staging-gated releases (owner opt-in)
 
-This mode replaces release-sync. Repository variable **STAGING_GATED_DEPLOYS=true**
-enables **Staging-gated production** on each main push or main dispatch. Leave it
-absent/false until cutover; disabled runs emit a notice and make no remote calls.
-Never combine it with RELEASE_SYNCED_DEPLOYS=true.
+**Production is release-only, not per-merge.** Set both repository Actions variables
+**RELEASE_SYNCED_DEPLOYS=true** and **STAGING_GATED_DEPLOYS=true** after the owner
+cutover below. With neither set, existing behavior remains unchanged and the new
+staging workflow emits a disabled notice. Release-sync alone retains #714's
+release-only deployment behavior without the new smoke gate. The staging gate
+without release-sync is invalid and fails explicitly before deployment/publication.
 
-### Findings and chosen mechanism
+### Investigation and design
 
-Provider Git auto-deploys, independent migration jobs and deployment-event smoke
-cannot enforce ordering. Waiting for generic CI does not bind smoke to an
-unchanging staging deployment. Hooks building moving main have the same race.
-We reuse the release uploader with an archived full triggering SHA for both
-environments. This promotes the same **commit**, not the same image: Railway
-and Vercel rebuild with environment-specific settings. See
-[Railway upload](https://docs.railway.com/cli/up) and
-[Vercel deploy](https://vercel.com/docs/cli/deploy).
+Railway/Vercel Git deployments, independent migrations and deployment-event smoke
+do not form a production gate. Generic CI or hooks building moving main cannot bind
+a smoke to the promoted source. The #714 release uploader is reusable: it archives
+one validated SHA, waits for its Railway deployment ID and health, then uploads the
+same source to Vercel. This promotes the **same commit**, not the same image; builds
+use environment-specific settings.
 
-One workflow-level lock covers staging migrations → staging server/dashboard →
-smoke → production migrations → production server/dashboard. Migrations precede
-deployments (stronger than requiring them before smoke) and must remain compatible
-with old running code. Missing staging configuration fails before mutation; any
-staging failure visibly blocks production. Missing production configuration fails
-before production mutation. Opt-in is fail-closed, never a fallback to ungated
-deploys. With the variable absent, all legacy behavior remains unchanged.
+- Main pushes continuously run **Pinned staging smoke**: staging migrations →
+  staging server → staging dashboard → sandbox smoke, all from the triggering SHA.
+- A release (Release Please release creation, version tag push or existing tagged
+  recovery) validates its tag/SHA and binaries, then **calls the same staging
+  workflow with that exact validated SHA**. Only that successful dependency admits
+  production migrations → server → dashboard → npm. A skipped/no-op smoke cannot
+  authorize production. Ordinary main merges never enter production or publish npm.
+- Release re-smokes rather than trusting a historical check name, mutable branch,
+  latest deployment or cached attestation. This also covers tags created by
+  GITHUB_TOKEN (which do not trigger separate push workflows) and commits whose
+  ordinary staging run was replaced in GitHub's pending queue.
+- One non-cancelling lock serializes all staging deploy/smoke runs, including
+  release calls. Close merges cannot replace staging during a release smoke.
+  Release's existing release-production lock serializes releases through npm;
+  production shares the migration lock. Later main runs may update staging after
+  the release smoke completes, but production uploads only the already-smoked SHA.
+  A tagged recovery deliberately re-deploys that release SHA to staging; dispatch
+  current main afterward if staging must immediately return to its tip.
+- Missing configuration fails closed in opted-in mode; failed staging visibly blocks
+  production and npm. Manual smoke remains diagnostic only. Independent staging
+  migrations/deployment-event smoke and standalone production migration applies
+  are disabled in gate mode; history/repair/preview remain operator tools.
 
-The lock is never cancelled by newer pushes. GitHub may replace pending runs;
-every surviving run uploads only its own SHA. Superseded runs/retries are rejected
-by a main-tip check before either environment is mutated. If main moves during
-smoke, production may reject that run: dispatch current main instead. This is
-deliberately conservative. No external/manual writer may change staging during
-smoke. Legacy deployment-event smoke and standalone staging migrations are disabled.
-Manual smoke dispatch (including orchestrator mode) remains available for diagnostics;
-it never authorizes a production promotion.
-Production history/repair/preview remain operator tools, not an alternate apply
-path. npm releases remain independent; release-sync deployment is disabled.
+Existing smoke lifecycle expansion remains tracked by #819/#826/#827. This ticket
+gates on the existing sandbox smoke contract, not an unimplemented quality claim.
+Migrations must stay additive/compatible with old running code.
 
-### Owner cutover (no agent changes settings or deploys)
+### Exact owner cutover (no agent performs these operations)
 
-1. Freeze merges and drain all migration, release, smoke and host deployment runs.
+1. Freeze merges and drain release, migration, smoke and host deployment runs.
    Record known-good Railway deployment IDs, Vercel URLs and source SHAs for both
-   environments; confirm database history/backups with the operator.
-2. GitHub Settings → Environments: allow **main only** for staging and production.
-   Restrict configuration/dispatch rights to release owners. Require production
-   reviewers if desired (normal deploys then also await approval). Keep npm intact.
-3. Populate the full production secret table above in **each** environment using
-   matching values. Staging ARMADA_SERVER_URL must equal staging ARMADA_ORIGIN.
-   Supabase access tokens come from authorized account access-token settings;
-   project ref/password from that project's settings. Railway IDs come from its
-   project settings; create a project token scoped to that environment. Vercel
-   token comes from account Settings → Tokens; team/project IDs from project
-   Settings. Use the existing separate staging dashboard project with the staging
-   domain as its production domain: Vercel CLI --prod is project-local.
-4. Configure staging ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES as
-   in [the smoke runbook](post-deploy-smoke.md). Mint the bearer for a dedicated
-   staging Armada user; cases name existing staging goldens/model accounts.
-   Cover all enabled pairs. This gate uses the existing sandbox smoke contract;
-   expanded lifecycle coverage belongs to the smoke runner, not deployment logic.
-5. Disable Railway Git auto-deploy for **both** server environments, retaining
-   runtime variables, domains, root Dockerfile and /healthz checks. On **both**
-   Vercel projects use the protected non-developing production branch technique
-   above to stop main domain promotion, retaining PR previews and workspace build
-   settings. Disable other hooks/automation that can promote main. A parallel
-   host deploy defeats the lock.
-6. Set repository RELEASE_SYNCED_DEPLOYS=false, then STAGING_GATED_DEPLOYS=true
-   **last**. No new repository secrets are needed. Dispatch on main; release the
-   freeze only after verification. If incomplete, keep the gate variable off and
-   restore prior settings under the freeze. Merging alone does not establish an
-   operational gate.
+   environments; verify database history/backups with the database operator.
+2. GitHub Settings → Environments: allow **main and version tags v*** for staging
+   and production (tag-triggered reusable staging calls need staging tag access).
+   Deny arbitrary branches. Restrict dispatch/configuration to release owners;
+   optional production reviewers add approval before production mutation. Keep
+   npm OIDC protections unchanged.
+3. In **each** environment populate the exact secret table under release-sync
+   above, with its own values: SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_ID,
+   SUPABASE_DB_PASSWORD, RAILWAY_TOKEN, RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
+   RAILWAY_SERVICE_ID, ARMADA_SERVER_URL, VERCEL_TOKEN, VERCEL_ORG_ID,
+   VERCEL_PROJECT_ID. Supabase token: authorized account access-token settings;
+   project reference/password: matching project settings. Railway IDs: project
+   settings; token: project token scoped to that environment. Vercel token:
+   account Settings → Tokens; team/project IDs: matching project Settings.
+   Staging uses its existing separate dashboard project; CLI --prod means that
+   project's staging domain, not the production dashboard.
+4. In staging configure variable ARMADA_ORIGIN and secrets ARMADA_SMOKE_TOKEN,
+   ARMADA_SMOKE_CASES per [smoke setup](post-deploy-smoke.md). Mint the bearer for a
+   dedicated staging Armada user; cases reference staging goldens/model accounts
+   covering enabled pairs. ARMADA_SERVER_URL must match ARMADA_ORIGIN.
+5. Railway: disable production Git auto-deploy from main (disconnect its source if
+   needed). Also disable staging Git auto-deploy because the serialized workflow
+   now owns it. Keep domains/runtime variables, root Dockerfile and /healthz checks.
+   Vercel: on both dashboard projects move the production branch to a protected
+   non-developing branch such as production-disabled as described above; keep
+   PR previews, apps/dashboard root, workspace inclusion and environment variables.
+   Disable other hooks/writers that can promote main; an independent writer defeats
+   the staging lock. No deploy hook tokens are needed.
+6. Set repository RELEASE_SYNCED_DEPLOYS=true then STAGING_GATED_DEPLOYS=true
+   **last**, under the freeze. Dispatch main staging, then cut/recover a reviewed
+   release and verify below before lifting the freeze. Merely merging this PR does
+   not stop today's production Git auto-deploys. If incomplete, leave variables
+   off and restore prior host settings under the freeze.
 
 ### Coordinator proof, emergency override and rollback
 
-Before declaring cutover complete, record production IDs and migration history.
-On a throwaway main change, deliberately fail a staging smoke assertion (or use
-an invalid staging golden in the staging cases secret). Verify staging red with
-“production ... blocked”, production skipped, production deployment IDs/history
-unchanged. Restore the case/revert the throwaway commit; rerun current main,
-verify green and compare full SHAs in Railway upload messages and Vercel
-githubCommitSha metadata to the Actions triggering SHA. Make two close merges:
-no production run may deploy a SHA other than its own successfully smoked SHA.
-The owner performs these deployed checks; local tests cannot prove host settings.
-Never intentionally fail production.
+Record production IDs/history. Verify an ordinary main merge updates staging but
+does not mutate production or publish npm. Cut a throwaway release with deliberately
+failing staging smoke (e.g. invalid staging golden): release staging must be red,
+production and npm skipped, production IDs/history unchanged. Restore the case;
+recover that same validated tag, verify green and compare full SHA in staging and
+production Railway messages, Vercel githubCommitSha metadata and release Actions.
+Make two close main merges including a release: no production source may differ
+from its release's successful staging-call SHA. Owner performs these deployed
+checks; local lint/tests cannot prove platform settings. Never intentionally fail
+production. Use a forward hotfix release if a newer stable tag supersedes recovery.
 
-There is no casual skip-smoke input. Emergency override: owner freezes merges,
-drains the pipeline and records incident approval; sets STAGING_GATED_DEPLOYS=false,
-keeps host Git deploys **disabled**, temporarily sets RELEASE_SYNCED_DEPLOYS=true,
-then dispatches the existing release-sync recovery path for a reviewed latest
-stable hotfix tag. Follow its approvals, prerequisites and partial-release
-recovery above. This explicitly bypasses staging smoke: record why, SHA and run
-URL. Restore release-sync false and staging gate true before lifting the freeze.
-Never dispatch standalone migrations concurrently.
+Emergency override: owner freezes/drains writers and records incident approval,
+keeps RELEASE_SYNCED_DEPLOYS=true and all host Git deploys **disabled**, temporarily
+sets STAGING_GATED_DEPLOYS=false, then recovers a reviewed latest stable hotfix tag
+through Release. This explicitly bypasses smoke, not the release boundary or
+migration/server/dashboard/npm ordering. Record why, SHA and run URL; restore the
+gate variable before lifting the freeze. No standalone migration applies in parallel.
 
-Rollback: freeze/drain writers, then owner restores the recorded known-good
-Railway deployment and Vercel production deployment through provider rollback
-controls. Verify compatibility with applied schema first; never roll back migration
-history or automatically run destructive down migrations. Prefer a forward fix or
-revert on main through the gate. Old workflow retries are not rollback (superseded
-SHAs are rejected). A partial failure can leave new schema/server with old dashboard;
-retain additive compatibility and use the partial-release guidance above.
+Rollback: freeze/drain writers; owner restores recorded known-good Railway and
+Vercel deployments through provider rollback controls after checking compatibility
+with applied schema. Never automatically undo migration history/down-migrate.
+Prefer a new forward fix/revert release. Follow partial-release recovery above if
+schema/server advanced but dashboard/npm did not.
+
+### iOS TestFlight
+
+TestFlight remains independent: main pushes changing apps/ios (or manual main
+dispatch) verify, archive and upload to the Armada Internal tester group, using
+the testflight environment. It neither triggers nor authorizes server/dashboard
+production, migrations or npm and is not a release dependency. Its existing
+APP_STORE_CONNECT_API_* and IOS_DISTRIBUTION_CERTIFICATE_* secrets remain in that
+environment (see apps/ios/README.md); no new iOS credentials/settings are required.
+Changing TestFlight's beta cadence or coupling its app binary to release tags is
+outside this small deployment-gate PR.

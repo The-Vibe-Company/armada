@@ -113,6 +113,15 @@ jobs:
             echo "dist_tag=$dist_tag"
             echo "publish=$publish"
           } >> "$GITHUB_OUTPUT"
+      - name: Validate deployment mode
+        env:
+          GATED: ${{ vars.STAGING_GATED_DEPLOYS }}
+          RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
+        run: |
+          if [[ "$GATED" == true && "$RELEASE_SYNCED" != true ]]; then
+            echo "::error::Staging gate requires release-synchronized production."
+            exit 1
+          fi
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
@@ -164,10 +173,19 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  staging-smoke:
+    name: Smoke exact release commit on staging
+    needs: [check, binary]
+    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && vars.STAGING_GATED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    uses: ./.github/workflows/staging-gated-production.yml
+    with:
+      source_sha: ${{ needs.check.outputs.sha }}
+    secrets: inherit
+
   production:
     name: Release migrations, server and dashboard
-    needs: [check, binary]
-    if: ${{ !cancelled() && vars.STAGING_GATED_DEPLOYS != 'true' && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    needs: [check, binary, staging-smoke]
+    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.staging-smoke.result == 'success' || (vars.STAGING_GATED_DEPLOYS != 'true' && needs.staging-smoke.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
