@@ -134,6 +134,33 @@ refusal and every other failure unconfirmed; the app then shows the prompt as
 not confirmed and lets the transcript show whether it arrived. Stop is safe to
 repeat. Unknown `other` events without `data` keep their page and cursor.
 
+## Launching a sandbox (#750)
+
+`launchCatalog()` reads `launch/options` (the server's harness, model, effort,
+credential-kind, machine-size and TTL catalogs, added for this app), `golden/list`
+and `creds/list` for the selected `org`. `SandboxLaunchCatalog` derives what the form
+offers: goldens of that org (ready first), models and efforts per harness, the account
+the server would resolve (user default, only user account, org default, only org
+account; several without a default is `ambiguous` and the person chooses), repository
+and size choices, and TTL presets within the golden's provider limit. Nothing is
+hardcoded: an unknown harness or model is offered with its raw id.
+`SandboxLaunchDraft.request(catalog:)` mirrors the server's checks and builds the body of
+`sandbox/launch-sized-v1` (`sizePolicyVersion: 1`, the route `armada launch --sized` and
+the dashboard use); omitted optionals keep the server defaults.
+
+`launchSandbox(_:)` has no idempotency key: it is sent once with a ten-minute timeout and
+never retried. `SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the
+form keeps every field), `start_failed`/`init_failed`/`prompt_failed` to
+`failedAfterStart` (a failed sandbox may be listed), a provider's non-allocating fork
+refusals (503 `unauthorized`, `payment_required`, `provider_not_configured`,
+`not_found`) to `refused`, a failure before the request leaves the device (offline,
+session refresh) to `notSent`, and lost answers, other 5xx (including `unavailable`,
+shared by a refused account and a provider outage) and unknown codes to `unconfirmed`
+(check the list before launching again). Each code selects
+local text adapted from the dashboard's failure help; only validation codes add the
+server's own message, on one line of at most 300 characters. Sandbox delete is not
+offered: `/api/v1` has no delete route for a sandbox.
+
 ## Orchestrators on the phone (#751)
 
 Create sources use the CLI's routes for the selected organization: `goldens()`
@@ -151,8 +178,9 @@ kind runs the harness, and validates a `Draft` into the exact `OrchestratorCreat
 `OrchestratorControls` derives what may be done from state, continuity and open
 operations (the dashboard's rule): nothing new while any operation is open;
 message only when ready; steer only while a turn runs; stop when ready or blocked;
-resume only a stopped native conversation; recover a blocked orchestrator or an
-uncertain first create. `OrchestratorCreateProgress` says when a create has
+resume only a stopped native conversation; recover only what the server can
+settle at the current revision (an open or pre-machine-failed create, an uncertain
+stop) or an uncertain first create. `OrchestratorCreateProgress` says when a create has
 settled: nothing is sent before. `OrchestratorPolling` gives the next detail or
 list read (transitional states and open operations only; failures back off to a
 minute). `OrchestratorExplanation` turns request codes, receipt `errorCode`s,

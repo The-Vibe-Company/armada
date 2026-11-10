@@ -65,6 +65,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["creds", "accounts", "remove"],
     ["creds", "accounts", "usage"],
     ["creds", "accounts", "auth-capabilities"],
+    ["launch", "options"],
     ["sandbox", "bind-credential"],
     ["org", "provider", "disconnect"],
     ["mcp", "set-enabled"],

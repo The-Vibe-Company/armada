@@ -52,7 +52,7 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
-import { latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -352,7 +352,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
   const statusOf = async (sandboxId: string, promptId: string | undefined): Promise<StatusReport> => {
     const found = await visible(sandboxId);
-    const provider = found.status === "deleted" ? null : await context.provider(found);
+    const provider =
+      found.status === "deleted" ||
+      found.status === "starting" ||
+      isInterruptedLaunch(found) ||
+      (found.status === "failed" && found.stoppedAt !== null)
+        ? null
+        : await context.provider(found);
     return readStatus(provider, data.sandboxes, found, {
       ...(promptId ? { promptId } : {}),
       now: context.now(),
@@ -928,7 +934,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const found = await visible(args.id);
-      const provider = found.status === "deleted" ? null : await context.provider(found);
+      const provider =
+        found.status === "deleted" ||
+        found.status === "starting" ||
+        (found.status === "failed" && found.stoppedAt !== null)
+          ? null
+          : await context.provider(found);
       // Empty is a successful-steer marker, not a provider run ID. Null remains
       // unreportable after an ambiguous admission or for legacy rows.
       const target =
@@ -1267,10 +1278,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         async (signal) => {
           signal.throwIfAborted();
           await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
-          await provider.stop({ sandboxId: found.providerSandboxId });
+          let terminal = false;
+          try {
+            await provider.stop({ sandboxId: found.providerSandboxId });
+            signal.throwIfAborted();
+            const observed = await provider.get(found.providerSandboxId);
+            terminal = observed.state === "stopped";
+          } catch (error) {
+            if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+            terminal = true;
+          }
           signal.throwIfAborted();
-          const observed = await provider.get(found.providerSandboxId);
-          const terminal = observed.state === "stopped";
           const status: SandboxStatus = found.status === "failed" ? "failed" : terminal ? "stopped" : "stopping";
           return {
             result: { id: found.id, status },

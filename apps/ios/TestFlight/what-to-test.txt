@@ -3,6 +3,12 @@ Armada private beta — candidate checklist (publish only after root validates t
 Check sign-in, refresh and sign-out using your authorized Armada account.
 Check organization selection and that private resources stay private.
 Check orchestrator listing and chat only where enabled by the real backend.
+Check New Sandbox (+ on the Sandboxes tab): pick a golden (its provider is shown), the
+agent, model, effort and, when you have several, the model account; optionally the
+repository, machine size and lifetime under More Options; write the first prompt and
+Launch. You should land in the new sandbox's conversation and see the first turn run.
+Check that a refused launch keeps every field and explains why, and that stop and
+sending a new prompt (which resumes a stopped sandbox) work from the conversation.
 Orchestrators tab: each row shows its state (starting, ready, needs attention with a
 plain reason, stopped), name, agent, model, provider and last activity.
 New Orchestrator: only provider and agent pairs the server enables can be chosen; a
