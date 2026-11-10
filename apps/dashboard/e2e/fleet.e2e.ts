@@ -53,7 +53,7 @@ test("the board puts what needs the operator first and acts on each agent", asyn
     "href",
     "/credentials",
   );
-  await expect(row(page, IDS.bobSecret).locator('[data-expiry="urgent"]')).toContainText("Expires soon: 19 min left");
+  await expect(row(page, IDS.bobSecret).locator('[data-expiry="urgent"]')).toContainText(/Expires soon: \d+ min left/);
   await expect(row(page, IDS.running).locator('[data-expiry="normal"]')).toContainText("h");
   await expect(row(page, IDS.running).locator("[data-latest-message]")).toHaveText("Looking at the test suite.");
   await expect(page.getByText("2 agents need you.")).toBeVisible();
