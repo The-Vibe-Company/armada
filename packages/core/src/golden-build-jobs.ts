@@ -509,7 +509,11 @@ export class GoldenBuildJobs {
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
-            error instanceof GoldenError ? (error.safeReason ?? null) : error instanceof ProviderError && error.code === "payment_required" ? "provider_payment_required" : null,
+            error instanceof GoldenError
+              ? (error.safeReason ?? null)
+              : error instanceof ProviderError && error.code === "payment_required"
+                ? "provider_payment_required"
+                : null,
           ],
         );
       });

@@ -11,4 +11,5 @@ export interface GoldenBuildStatus {
 }
 
 /** Closed remediation, safe for every client surface. */
-export const PROVIDER_PAYMENT_REQUIRED_MESSAGE = "The provider account cannot create machines: add billing or credits on the provider, then retry.";
+export const PROVIDER_PAYMENT_REQUIRED_MESSAGE =
+  "The provider account cannot create machines: add billing or credits on the provider, then retry.";

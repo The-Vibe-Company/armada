@@ -388,3 +388,39 @@ test("queued rebuild rechecks current target visibility before credentials or bu
     await s.close();
   }
 });
+
+test("billing refusal fails without recovery, exposes a closed reason and frees capacity", async () => {
+  const s = await fixture();
+  try {
+    s.boat.provider.createGolden = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "payment_required",
+        message: "unsafe upstream payload",
+        retryable: false,
+      });
+    };
+    const token = await s.token(s.people.admin);
+    const admitted = await s.http(token, "golden/create", {
+      name: "billing-refused",
+      org: s.people.org,
+      repos: ["acme/web"],
+      idempotencyKey: crypto.randomUUID(),
+    });
+    const job = (await admitted.json()) as GoldenBuildStatus;
+    expect(admitted.status).toBe(202);
+    await s.builds.runOne();
+    const status = await s.http(token, "golden/build/status", { jobId: job.jobId });
+    expect(await status.json()).toMatchObject({
+      state: "failed",
+      failureReason: "provider_payment_required",
+      result: null,
+    });
+    const mcp = await call(await s.client(token), "golden_build_status", { jobId: job.jobId });
+    expect(mcp.data).toMatchObject({ state: "failed", failureReason: "provider_payment_required" });
+    expect((await s.db.query("select 1 from golden_backend_slots")).rows).toEqual([]);
+    expect((await s.db.query("select 1 from goldens where name='billing-refused'")).rows).toEqual([]);
+  } finally {
+    await s.close();
+  }
+});

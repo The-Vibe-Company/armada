@@ -102,7 +102,10 @@ async function fromResponse(response: Response, cause: unknown): Promise<Provide
   return new ProviderError({
     provider: PROVIDER_ID,
     code,
-    message: code === "payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : envelope.message ?? `boat.dev answered ${status}${providerCode ? ` (${providerCode})` : ""}.`,
+    message:
+      code === "payment_required"
+        ? PROVIDER_PAYMENT_REQUIRED_MESSAGE
+        : (envelope.message ?? `boat.dev answered ${status}${providerCode ? ` (${providerCode})` : ""}.`),
     status,
     ...(providerCode ? { providerCode } : {}),
     retryable,

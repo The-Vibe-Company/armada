@@ -1,4 +1,3 @@
-import { PROVIDER_PAYMENT_REQUIRED_MESSAGE } from "@armada/core";
 import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
@@ -14,6 +13,7 @@ import {
   LaunchError,
   type LaunchResult,
   MODEL_CATALOG,
+  PROVIDER_PAYMENT_REQUIRED_MESSAGE,
   type Provider,
   ProviderError,
   ProviderRoutingError,
@@ -571,7 +571,7 @@ async function admitGoldenBuild(
       if (current.state === "failed" || current.state === "recovery_required")
         throw new GoldenError(
           "build_failed",
-          `Build ${job.jobId}: ${current.state} (${current.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : current.failureReason ?? "build_failed"}).`,
+          `Build ${job.jobId}: ${current.state} (${current.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : (current.failureReason ?? "build_failed")}).`,
         );
       deadline.throwIfAborted();
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
@@ -596,7 +596,7 @@ async function admitGoldenBuild(
   if (current.state === "failed" || current.state === "recovery_required")
     throw new GoldenError(
       "build_failed",
-      `Build ${job.jobId}: ${current.state} (${current.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : current.failureReason ?? "build_failed"}).`,
+      `Build ${job.jobId}: ${current.state} (${current.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : (current.failureReason ?? "build_failed")}).`,
     );
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
   else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);

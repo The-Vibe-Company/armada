@@ -10,7 +10,15 @@ type Case = [
 
 const cases: Case[] = [
   ["bad key", errorBody(401, "unauthorized", "Unauthorized"), { code: "unauthorized", retryable: false }],
-  ["billing", errorBody(402, "billing_required", "Add credit"), { code: "payment_required", retryable: false }],
+  [
+    "billing",
+    errorBody(402, "billing_required", "Add credit"),
+    {
+      code: "payment_required",
+      retryable: false,
+      message: "The provider account cannot create machines: add billing or credits on the provider, then retry.",
+    },
+  ],
   ["suspended org", errorBody(403, "org_suspended", "Suspended"), { code: "forbidden", retryable: false }],
   ["unknown snapshot", errorBody(404, "snapshot_not_found", "No such snapshot"), { code: "not_found" }],
   ["bad request", errorBody(400, "invalid_name", "Bad name"), { code: "invalid_request", retryable: false }],

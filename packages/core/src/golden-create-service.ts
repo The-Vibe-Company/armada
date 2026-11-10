@@ -370,7 +370,9 @@ export class GoldenCreateService {
           cleanupSafe = false;
         }
       }
-      this.deps.execution?.cleaned(cleanupSafe && (stopped || (!builder && (phase === "authorization" || refusedBuilder))));
+      this.deps.execution?.cleaned(
+        cleanupSafe && (stopped || (!builder && (phase === "authorization" || refusedBuilder))),
+      );
     }
   }
 }
