@@ -22,8 +22,11 @@ The #908 coordinator reports static owner-token copies failing at shared rotatio
 Boat session `cost-state` usage (#883), a requested/observed model mismatch (#890),
 and preservation returning `unavailable` without a stage (#902). These are supplied
 observations, not experiments performed for this design. Modal already has usage
-in its managed runtime. #899 supplies pinned, checksum-verified golden tool
-provisioning, not an existing general helper installer.
+in its managed runtime. [PR #899](https://github.com/The-Vibe-Company/armada/pull/899)
+is **open, not merged** as of this revision: its pinned, checksum-verified golden
+tool provisioning is an implementation prerequisite for slice 0, not functionality
+already available on main or an existing general helper installer. This design
+can merge independently; implementation must recheck that prerequisite.
 
 The reporter document correctly preferred one-shot extraction over a reporting
 **daemon**. That remains the smallest reporting solution. Its narrower conclusion
@@ -201,7 +204,7 @@ Never grant automatic merge, force push, production deploy or general vault acce
 
 ## Installation, compatibility and upgrades
 
-Extend #899's **mechanism**, not its Skillpack binary: release-manifest exact
+After open PR #899 lands, extend its **mechanism**, not its Skillpack binary: release-manifest exact
 helper version, OS/architecture and SHA-256 verification before execution,
 atomic install, bounded receipt (version/digest/protocol/capabilities), normal
 worker executability on root and no-sudo images. No credentials/contact loop at
@@ -237,13 +240,35 @@ accepted. None requires waiting for another PR to merge this design. Every smoke
 below is later operator-authorized staging work with disposable identities/repos,
 never production access or migration application by this design author.
 
-1. **Automatic GitHub refresh, no owner action per renewal.** Finish the existing
-   gated runtime (#822/#825/#830), package its tools with the pinned helper golden
-   receipt, keep legacy repair as explicit fallback for unupgraded workers.
+0. **Install the inert helper in goldens.** Depends on open, unmerged PR #899's
+   provisioning mechanism. Add the helper's own exact version/digest pin and
+   receipt; install no workload identity or running broker in the golden.
+   Staging: config-preserving rebuild of one Boat and one Modal golden; verify
+   installed binary SHA-256 against the release manifest and persisted
+   version/digest/protocol receipt. Cover root-built and no-sudo images and
+   execute as the normal worker user. A bad digest must never execute.
+   Run the pre-snapshot scan and verify no runtime grants, tokens, auth caches
+   or private spools are captured; refuse publication on scan/scrub uncertainty.
+   Launch from an old golden without the helper: report a clear closed
+   `unsupported` reason and rebuild action, and refuse a requested helper-only
+   feature without claiming installation succeeded.
+1. **Automatic GitHub refresh, no owner action per renewal.** After slice 0,
+   finish the existing gated runtime (#822/#825/#830). The golden contains only
+   inert helper tools/receipt, not an activated broker. On Boat keep today's
+   launch-time (and authorized preparation/recovery) pinned SSH/private-stdin
+   broker installation/configuration in the worker; no broker process, sockets
+   or capability is baked into the golden. On Modal the broker stays inside the
+   launched Runner process with private runtime bootstrap, not a second golden
+   service. Keep legacy repair as explicit fallback for unupgraded workers.
    Staging: both Boat/Modal × Claude/Codex; same native PID/start time/conversation
    before and after server-cache expiry, remote read and scratch push from inside
-   a turn and a second turn; broker missing/stalled/restarted; ordinary local Git
-   survives, no token in native logs. Use the full existing runtime smoke, not
+   a turn and a second turn. Broker missing/stalled/restarted checks apply to
+   **Boat only** with today's isolated broker process. Modal needs #825's missing
+   staging-only Runner control to close/stall/reopen only `githubSocket` while
+   retaining Journal/native processes; a Runner restart is not broker survival
+   evidence. Until that control exists and passes, Modal fault coverage is
+   unsupported, not passed, and general enablement remains blocked. Ordinary
+   local Git survives; no token in native logs. Use the full existing runtime smoke, not
    just `gh auth status`; stop/resume denies old grants. Gate remains off until
    all evidence passes and owner accepts the exposure model. No new refresher.
 2. **Boat usage/observed model (#883/#890), shared typed report lane.** Implement
