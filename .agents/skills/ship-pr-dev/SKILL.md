@@ -1,14 +1,11 @@
 ---
 name: ship-pr-dev
-description: "Ship PR: credit-aware autonomous pull request readiness workflow.
-  Use when the user asks to ship work, prepare a branch for review, create or
-  update a PR, make CI green, clean up a branch before PR, or produce a PR a
-  human can confidently merge. This skill may edit code, run checks, commit,
-  push, create/update a PR, and iterate on CI, but it keeps Git ownership in the
-  coordinator, delegates bounded work to cheaper host-native workers, uses
-  review-code-dev v2 (Alibaba OCR delegation) as the only independent read-only
-  review gate, waits for all visible latest-SHA CI to be green, runs
-  capture-learning-tools report-only, and never merges."
+description: >
+  Deliver a scoped PR: implement, author self-check, verify, push and finish
+  latest-SHA CI. Use for shipping work, preparing a branch, creating/updating
+  a PR or fixing CI. End READY FOR REVIEW; the coordinator alone launches the
+  independent reviewer and owns merge readiness. Never merge or grant workers
+  Armada launch authority.
 metadata: {}
 allowed-tools: Bash Read Edit Write Glob Grep Agent
 ---
