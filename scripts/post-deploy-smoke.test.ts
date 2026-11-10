@@ -252,7 +252,9 @@ function orchestratorFixture(failure?: "resume" | "create_response" | "turn" | "
       return json({
         version: 1,
         enabled: failure !== "disabled",
-        pairs: [{ provider: "modal", harness: "codex", enabled: true }],
+        ...(failure === "disabled"
+          ? { reason: "native_conformance_required" }
+          : { pairs: [{ provider: "modal", harness: "codex", enabled: true }] }),
       });
     if (call.path.startsWith("orchestrators?") && call.init.method === "GET") {
       const cursor = new URL(`https://smoke.invalid/${call.path}`).searchParams.get("cursor");
@@ -364,16 +366,74 @@ test("orchestrator failures clean up after uncertain resume, lost create respons
   }
 });
 
-test("disabled orchestrator pair fails without allocating an orchestrator", async () => {
+test("disabled orchestrator service reports a distinct cause before allocating compute", async () => {
   const fake = orchestratorFixture("disabled");
   expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
-  expect(fake.calls.some((call) => call.path === "orchestrators")).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
   expect(fake.receipts().at(-1)).toEqual({
     case: 0,
     step: "orchestrator_capabilities",
     pass: false,
-    code: "pair_disabled",
+    code: "orchestrator_disabled",
   });
+});
+
+test.each([
+  {
+    name: "later pair absent",
+    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: true }] },
+    code: "pair_disabled",
+    index: 1,
+  },
+  {
+    name: "pair enabled flag is not boolean true",
+    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: "true" }] },
+    code: "pair_disabled",
+    index: 0,
+  },
+  {
+    name: "unsupported version",
+    capabilities: { version: 2, enabled: true, pairs: [] },
+    code: "invalid_response",
+    index: 0,
+  },
+  {
+    name: "pairs is not an array",
+    capabilities: { version: 1, enabled: true, pairs: null },
+    code: "invalid_response",
+    index: 0,
+  },
+])("preflights $name before allocating any compute", async ({ capabilities, code, index }) => {
+  const fake = fixture((call) => (call.path === "orchestrators/capabilities" ? json(capabilities) : undefined));
+  expect(
+    await postDeploySmoke(
+      {
+        ...env,
+        ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
+      },
+      ["--orchestrator"],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
+  expect(fake.receipts().at(-1)).toEqual({
+    case: index,
+    pass: false,
+    step: "orchestrator_capabilities",
+    code,
+  });
+});
+
+test("capability API failures fail closed without exposing remote bodies", async () => {
+  const fake = fixture((call) =>
+    call.path === "orchestrators/capabilities"
+      ? json({ error: { code: "forbidden", message: "secret" } }, 403)
+      : undefined,
+  );
+  expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(1);
+  expect(fake.receipts()).toEqual([{ case: 0, step: "orchestrator_capabilities", pass: false, code: "forbidden" }]);
+  expect(fake.lines.join("")).not.toContain("secret");
 });
 
 test("waits for readiness and retries only rejected sends with bounded injected backoff", async () => {

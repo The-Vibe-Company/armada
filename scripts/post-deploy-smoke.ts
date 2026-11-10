@@ -33,6 +33,7 @@ type Code =
   | "exec_failed"
   | "provider_not_stopped"
   | "pair_disabled"
+  | "orchestrator_disabled"
   | "operation_failed"
   | "continuity_failed";
 const API_CODES = new Set<Code>([
@@ -165,6 +166,34 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (i + 1 < POLLS) await io.sleep(1000);
     }
     fail("poll_limit_exceeded");
+  }
+  // Validate the entire selected matrix before any billable mutation. A later
+  // disabled case must not be discovered after earlier cases have allocated.
+  if (orchestrator) {
+    let index = 0;
+    try {
+      const capabilities = await request<{
+        version: number;
+        enabled: boolean;
+        pairs?: { provider: string; harness: string; enabled: boolean }[];
+      }>("orchestrators/capabilities");
+      if (capabilities?.version !== 1) fail("invalid_response");
+      if (capabilities.enabled !== true) fail("orchestrator_disabled");
+      if (!Array.isArray(capabilities.pairs)) fail("invalid_response");
+      for (const [caseIndex, item] of cases.entries()) {
+        index = caseIndex;
+        if (
+          !capabilities.pairs.some(
+            (pair) => pair?.provider === item.provider && pair.harness === item.harness && pair.enabled === true,
+          )
+        )
+          fail("pair_disabled");
+        report(index, "orchestrator_capabilities");
+      }
+    } catch (error) {
+      report(index, "orchestrator_capabilities", error);
+      return false;
+    }
   }
   let passed = true;
   for (const [index, item] of cases.entries()) {
@@ -348,21 +377,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       orchestratorStopped = true;
     }
     try {
-      await step("orchestrator_capabilities", async () => {
-        const capabilities = await request<{
-          version: number;
-          enabled: boolean;
-          pairs?: { provider: string; harness: string; enabled: boolean }[];
-        }>(`${root}/capabilities`);
-        if (
-          capabilities?.version !== 1 ||
-          !capabilities.enabled ||
-          !capabilities.pairs?.some(
-            (pair) => pair.provider === item.provider && pair.harness === item.harness && pair.enabled,
-          )
-        )
-          fail("pair_disabled");
-      });
       await step("orchestrator_create", async () => {
         createAttempted = true;
         const operation = await request<OrchestratorOperation>(
