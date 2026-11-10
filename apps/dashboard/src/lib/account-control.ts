@@ -1,9 +1,9 @@
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import {
   type AccountScope,
-  accountsFromList,
   type AccountUsage,
   type AuthCapabilities,
+  accountsFromList,
   type ModelAccount,
   parseAccount,
   parseAuthCapabilities,
