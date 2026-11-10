@@ -202,6 +202,15 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     stops++;
     if (failStop) {
       failStop = false;
+      machine.state = "archived";
+      machine.events.push({
+        id: `tail-${stops}`,
+        timestamp: (machine.events.at(-1)?.timestamp ?? 0) + 1,
+        type: "response",
+        conversationId: machine.conversation!,
+        taskId: `prompt-${prompts}`,
+        data: { content: "unread archival tail", is_streaming: false },
+      });
       return json({ code: "invalid_request", message: "synthetic ambiguity" }, 400);
     }
     machine.state = "archived";

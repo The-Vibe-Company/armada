@@ -7,6 +7,7 @@ import {
 } from "@armada/core/server";
 import type { BoatProvider } from "@armada/provider-boat";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
+import { mirrorStoppedHistory } from "./orchestrator-stop-history.ts";
 
 type Input = { ownerId: string; orgId: string; id: string; expectedRevision: number; key: string };
 type Recovery = {
@@ -161,8 +162,12 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
     try {
       await sql.transaction((tx) => bound(tx, operation));
       const source = (
-        await sql.query<{ source_golden_visibility: "org" | "private" }>(
-          `select source_golden_visibility from public.sandboxes where id=$1 and provider_sandbox_id=$2 and lifecycle_generation=$3`,
+        await sql.query<{
+          source_golden_visibility: "org" | "private";
+          orchestrator_native_generation: string | null;
+          conversation_id: string | null;
+        }>(
+          `select s.source_golden_visibility,s.orchestrator_native_generation,r.conversation_id from public.sandboxes s join public.orchestrators o on o.sandbox_id=s.id join public.orchestrator_runtime r on r.orchestrator_id=o.id where s.id=$1 and s.provider_sandbox_id=$2 and s.lifecycle_generation=$3`,
           [b.sandboxId, b.providerSandboxId, b.generation],
         )
       ).rows[0];
@@ -190,7 +195,22 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
         throw new OrchestratorRuntimeError("unavailable");
       if ((await provider.get(b.providerSandboxId)).state !== "stopped")
         await (provider as BoatProvider).stopBestEffort(b.providerSandboxId);
-      stopped = (await provider.get(b.providerSandboxId)).state === "stopped";
+      const archived = (await provider.get(b.providerSandboxId)).state === "stopped";
+      if (archived)
+        await mirrorStoppedHistory(
+          sql,
+          provider,
+          {
+            orchestratorId: input.id,
+            sandboxId: b.sandboxId,
+            providerSandboxId: b.providerSandboxId,
+            generation: b.generation,
+            physicalGeneration: source.orchestrator_native_generation,
+          },
+          operation.id,
+          source.conversation_id,
+        );
+      stopped = archived;
     } catch {
       /* Preserve the retirement fence and let the same key retry archival. */
     }

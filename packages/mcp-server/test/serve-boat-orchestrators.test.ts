@@ -25,7 +25,7 @@ test("real serve Boat parents dispatch turns, expose events, archive, reactivate
         .slice("SERVE_BOAT_RECEIPT ".length),
     );
     expect(receipt.prompts).toBe(4);
-    expect(receipt.stops).toBe(6);
+    expect(receipt.stops).toBe(4);
     expect(receipt.sshCalls).toBeGreaterThan(0);
   } finally {
     clearTimeout(timer);
