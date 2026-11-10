@@ -12,11 +12,6 @@ on:
 permissions:
   contents: read
 
-# Never cancel a runner while it owns live compute.
-concurrency:
-  group: post-deploy-smoke-staging
-  cancel-in-progress: false
-
 jobs:
   smoke:
     if: >-
@@ -24,6 +19,11 @@ jobs:
       (github.event_name == 'deployment_status' &&
        github.event.deployment_status.state == 'success' &&
        github.event.deployment.environment == (vars.ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT || 'armada / staging'))
+    # Skipped deployment events must not evict a queued staging smoke.
+    # Never cancel a runner while it owns live compute.
+    concurrency:
+      group: post-deploy-smoke-staging
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: staging

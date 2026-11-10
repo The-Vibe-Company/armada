@@ -1,4 +1,10 @@
-import { API_FAILURE_STATUS, MACHINE_SIZES, ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
+import {
+  API_FAILURE_STATUS,
+  MACHINE_SIZES,
+  ORCHESTRATOR_DEFAULTS,
+  type OrchestratorCreate,
+  ProviderError,
+} from "@armada/core";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { type OrchestratorPair, orchestratorCapabilities } from "./orchestrator-activation.ts";
@@ -43,7 +49,7 @@ export async function callOrchestrator(
   const fields: Record<string, string[]> = {
     list: ["orgId", "cursor", "limit"],
     detail: ["orgId", "id"],
-    events: ["orgId", "id", "cursor", "limit"],
+    events: ["orgId", "id", "cursor", "limit", "direction", "maxBytes", "coalesce"],
     message: ["orgId", "id", "expectedRevision", "text"],
     steer: ["orgId", "id", "expectedRevision", "text"],
     stop: ["orgId", "id", "expectedRevision"],
@@ -113,7 +119,10 @@ export async function callOrchestrator(
   if (action === "events") {
     if (
       (args.cursor !== undefined && typeof args.cursor !== "string") ||
-      (args.limit !== undefined && typeof args.limit !== "number")
+      (args.limit !== undefined && typeof args.limit !== "number") ||
+      (args.direction !== undefined && args.direction !== "forward" && args.direction !== "backward") ||
+      (args.maxBytes !== undefined && typeof args.maxBytes !== "number") ||
+      (args.coalesce !== undefined && typeof args.coalesce !== "boolean")
     )
       throw new OrchestratorRuntimeError("invalid_request");
     return service.events(
@@ -122,6 +131,11 @@ export async function callOrchestrator(
       args.id,
       args.cursor as string | undefined,
       args.limit as number | undefined,
+      {
+        ...(args.direction ? { direction: args.direction as "forward" | "backward" } : {}),
+        ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}),
+        ...(typeof args.coalesce === "boolean" ? { coalesce: args.coalesce } : {}),
+      },
     );
   }
   if (
@@ -179,6 +193,11 @@ export async function orchestratorHttp(
       args = parsed as Record<string, unknown>;
     } else args = Object.fromEntries(url.searchParams);
     if (args.limit !== undefined) args.limit = Number(args.limit);
+    if (args.maxBytes !== undefined) args.maxBytes = Number(args.maxBytes);
+    if (args.coalesce !== undefined) {
+      if (args.coalesce !== "true" && args.coalesce !== "false") throw new OrchestratorRuntimeError("invalid_request");
+      args.coalesce = args.coalesce === "true";
+    }
     if (parts[0] && !["capabilities", "reconcile"].includes(parts[0])) args.id = parts[0];
     const result = await callOrchestrator(
       service,
@@ -224,6 +243,7 @@ export function orchestratorFailureCode(error: unknown) {
     if (error.admission === "unknown") return "outcome_unknown" as const;
     return error.code === "unavailable" ? ("dependency_unavailable" as const) : error.code;
   }
-  if (error instanceof SyntaxError) return "invalid_request" as const;
+  if (error instanceof SyntaxError || (error instanceof ProviderError && error.code === "invalid_request"))
+    return "invalid_request" as const;
   return apiFailureCode(error) ?? "dependency_unavailable";
 }

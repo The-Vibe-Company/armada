@@ -125,6 +125,7 @@ test("rename and default keep the account's id; removing the default leaves the 
   );
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove account" }).click();
   await expect(claude.locator('[data-account="Side project"]')).toHaveCount(0);
+  await expect(page.locator('[data-slot="toast"]')).toContainText("Removed Side project.");
   // Work is now the only personal account: launches use it, and say why.
   await expect(claude.locator("[data-launch-uses]")).toHaveText("Launch preselects Work, your only account.");
   const ids = ((await mock("/__test/accounts")).calls as { route: string; body: Row }[])

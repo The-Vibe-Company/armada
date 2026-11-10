@@ -56,17 +56,83 @@ work root uses installed XcodeBuildMCP (inspect its help/session defaults first)
 Record the Git SHA, selected Xcode/SDK, simulator/device and source-bound rendered
 receipts. Linux cannot validate Apple builds or UI.
 
-## Root-only packaging (Mac; never run from worker/CI)
+## TestFlight from CI
+
+`.github/workflows/testflight.yml` publishes every push to `main` that changes
+`apps/ios/**`, and any manual run (Actions → TestFlight → Run workflow). It never
+runs on pull requests or forks. It runs `scripts/verify.sh`, generates the project,
+archives Release for `generic/platform=iOS`, exports an App Store IPA, uploads it
+with `altool`, waits for App Store Connect to process it, sets its What to Test
+(en-US) from `TestFlight/what-to-test.txt` and adds it to the TestFlight group
+**Armada Internal**. The logic is in `scripts/testflight/` at the repository root.
+
+- **Version.** Marketing version from `project.yml`; build number
+  `1000 + run number`, so it never collides with the hand-uploaded builds 1–3.
+  Re-running a run reuses its number: start a new run instead after an upload.
+- **Export compliance.** `Config/Info.plist` declares
+  `ITSAppUsesNonExemptEncryption = false`, so no build waits for an answer. The
+  app only uses HTTPS through `URLSession`, the Keychain and a CryptoKit SHA-256
+  hash for the login challenge; revisit the key if it ever adds its own encryption.
+  The workflow fails if App Store Connect does not record the build as exempt.
+- **Signing.** The existing iPhone Distribution certificate (a .p12) is imported
+  into a temporary keychain; the **Armada App Store** profile is downloaded by name
+  through the App Store Connect API each run. Nothing is created per run, and
+  renewing the profile in the portal needs no secret change. Manual style and the
+  profile apply to the app target only, through `Config/Signing.xcconfig`, which the
+  workflow writes and deletes and git ignores. Automatic or cloud-managed signing
+  was not chosen: archiving with it needs a development profile, which failed for
+  lack of registered devices.
+- **Cleanup.** An `always()` step deletes the keychain, the key and certificate
+  files under `$RUNNER_TEMP`, the installed profile and `Signing.xcconfig`.
+  The .p12 password reaches `security import -P` on the command line, as in
+  GitHub's signing guide (`security` takes it no other way); the hosted runner
+  is single-use, and the password is never printed.
+
+### One-time setup (owner)
+
+1. Settings → Environments → **New environment** `testflight`; under Deployment
+   branches and tags choose **Selected branches** and add `main` only.
+2. App Store Connect → Users and Access → Integrations → App Store Connect API →
+   Team Keys: generate a key with the **App Manager** role (it uploads builds,
+   edits What to Test, manages groups and reads profiles; use **Admin** if the
+   profile download is refused). Download the .p8 once. Add to the environment:
+   - `APP_STORE_CONNECT_API_KEY_ID`: the key ID shown next to the key.
+   - `APP_STORE_CONNECT_API_ISSUER_ID`: the Issuer ID above the key list.
+   - `APP_STORE_CONNECT_API_PRIVATE_KEY`: the full contents of `AuthKey_<id>.p8`,
+     header lines included.
+3. On the Mac holding the distribution identity: Keychain Access → My Certificates
+   → the **iPhone Distribution** certificate used by builds 1–3 → Export as a
+   .p12 with a new strong password, then add:
+   - `IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64`: `base64 -i Distribution.p12 | pbcopy`
+     and paste. Delete the .p12 file afterwards.
+   - `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`: that password.
+4. The profile **Armada App Store** must stay active, of type App Store, for
+   `co.thevibecompany.armada` with that certificate.
+
+With any secret missing the workflow prints a notice and succeeds without
+building. A successful first run shows each step green; the log ends with
+`Build 1.0.0 (<1000 + run>) added to "Armada Internal".` (or "already receives
+every build" if the group has access to all builds) and the run summary reads
+`Armada 1.0.0 (<build>) is on TestFlight in "Armada Internal".` In App Store
+Connect → TestFlight the build shows as ready to test with no missing compliance,
+the What to Test text and the group, and internal testers get it in TestFlight.
+
+## Manual fallback (owner's Mac)
+
+Builds 1–3 of 1.0.0 were made this way. Use it only when the workflow cannot run.
 
 Prerequisites: real #690/#691 integration; green quality and full CI at the
 same SHA; source-bound simulator/device/auth/API validation; original app icon;
-privacy/support URLs and beta review contact approved; encryption/export
-compliance reviewed (not predeclared here); separate Armada App Store record
-registered by root; valid Armada distribution provisioning in Mac Keychain.
+privacy/support URLs and beta review contact approved; export compliance
+declared by `ITSAppUsesNonExemptEncryption` (see above); Armada App Store record
+`6832706228`; valid Armada distribution provisioning in Mac Keychain.
 Do not reuse any Companion App Store ID or provisioning profile.
 
 Generate with `cd apps/ios && xcodegen generate --spec project.yml`.
-Choose a new monotonically increasing build number and reviewed marketing version.
+Use the marketing version from `project.yml` and a build number higher than every
+build uploaded for it (App Store Connect refuses a lower one). CI numbers are
+`1000 + run number`, so a hand-picked number above the next run's makes CI uploads
+fail until runs catch up: prefer a manual workflow run whenever it can work.
 After confirming signing settings on the Mac, root may archive/export:
 
 ```sh
@@ -85,4 +151,5 @@ provisioning/network mutation flags are included. Root resolves any required
 signing/profile setup deliberately on the Mac. Inspect exported bundle ID,
 version, team, entitlements and production URL before any upload. Generated
 projects, archives, IPA, signing keys/profiles and derived output stay ignored.
-See `TestFlight/PLAN.md` for discovery and the gated distribution plan.
+The signed IPA is uploaded with `asc publish testflight` and added to
+**Armada Internal**; see `TestFlight/PLAN.md`.

@@ -7,6 +7,7 @@ import type {
   OrchestratorOperation,
   OrchestratorState,
 } from "@armada/core";
+import { boundEventEntries, coalesceEventMessages } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
@@ -337,10 +338,12 @@ export class OrchestratorRuntimeStore {
     id: string,
     cursor?: string,
     limit = 100,
+    options: { direction?: "forward" | "backward"; maxBytes?: number; coalesce?: boolean } = {},
   ): Promise<OrchestratorEventPage> {
     await this.read(ownerId, orgId, id);
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new OrchestratorRuntimeError("invalid_request");
-    let after = "0";
+    const backward = options.direction === "backward";
+    let after = backward ? "9223372036854775807" : "0";
     if (cursor) {
       try {
         const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString());
@@ -362,25 +365,41 @@ export class OrchestratorRuntimeStore {
       revision: number | string;
       created_at: Date | string;
     }>(
-      `select sequence,event,revision,created_at from public.orchestrator_runtime_events where orchestrator_id=$1 and sequence>$2 order by sequence limit $3`,
+      `select sequence,event,revision,created_at from public.orchestrator_runtime_events where orchestrator_id=$1 and sequence${backward ? "<" : ">"}$2 order by sequence ${backward ? "desc" : "asc"} limit $3`,
       [id, after, limit + 1],
     );
-    const page = result.rows.slice(0, limit);
-    const last = page.at(-1);
-    return {
-      version: 1,
-      events: page.map((row) => ({
-        ...row.event,
-        id: String(row.sequence),
-        orchestratorId: id,
-        at: new Date(row.created_at).toISOString(),
-        revision: Number(row.revision),
+    const encode = (after: string) => Buffer.from(JSON.stringify({ ownerId, orgId, id, after })).toString("base64url");
+    const page = boundEventEntries<OrchestratorEventPage["events"][number]>(
+      result.rows.map((row) => ({
+        cursor: encode(String(row.sequence)),
+        event: {
+          ...row.event,
+          id: String(row.sequence),
+          orchestratorId: id,
+          at: new Date(row.created_at).toISOString(),
+          revision: Number(row.revision),
+        },
       })),
-      cursor: Buffer.from(JSON.stringify({ ownerId, orgId, id, after: last ? String(last.sequence) : after })).toString(
-        "base64url",
-      ),
-      hasMore: result.rows.length > limit,
-    };
+      { ...options, limit, ...(cursor ? { cursor } : {}) },
+      result.rows.length > limit,
+      "orchestrator",
+      (events) => {
+        const merged: typeof events = [];
+        for (const event of events) {
+          const previous = merged.at(-1);
+          if (event.kind === "agent" && previous?.kind === "agent") {
+            const pair = coalesceEventMessages([previous.event, event.event]);
+            if (pair.length === 1) {
+              merged[merged.length - 1] = { ...event, event: pair[0]! };
+              continue;
+            }
+          }
+          merged.push(event);
+        }
+        return merged;
+      },
+    );
+    return { version: 1, ...page, cursor: page.cursor ?? (backward ? null : encode(after)) };
   }
 
   async operations(ownerId: string, orgId: string, id: string): Promise<OrchestratorOperation[]> {

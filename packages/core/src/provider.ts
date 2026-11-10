@@ -407,11 +407,20 @@ export interface EventsRequest {
   /** From the previous page's `cursor`; absent reads from the start. */
   cursor?: string;
   conversationId?: string;
+  /** Backward reads start at the end; cursor then anchors an exclusive older boundary. */
+  direction?: "forward" | "backward";
+  /** Raw events inspected, before optional page-local coalescing (1..1000; default 100). */
   limit?: number;
+  /** UTF-8 JSON events-array budget (256..1048576; default 262144). Oversized events are refused. */
+  maxBytes?: number;
+  /** Coalesce consecutive, explicitly identified message fragments within this page only. */
+  coalesce?: boolean;
 }
 
 export interface EventPage {
   events: AgentEvent[];
+  /** Exclusive oldest boundary for the next backward read. Events are always chronological. */
+  olderCursor?: string;
   /** Where to continue: equals the request's cursor when nothing was new. Absent only on an empty first read. */
   cursor?: string;
   /** More events are already waiting: read again without pausing. */

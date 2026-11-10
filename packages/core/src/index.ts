@@ -56,6 +56,7 @@ export type {
   SandboxStatus,
   ServiceToken,
 } from "./database.types.ts";
+export { boundEventEntries, buildEventPage, coalesceEventMessages, eventPageOptions } from "./event-history.ts";
 export {
   exchangeGitHubCode,
   fetchGitHubInstallations,
@@ -168,7 +169,7 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export * from "./orchestrator.ts";
-export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
+export { dedupeEvents, type PromptOutcome, promptOutcome, turnInterruptionReason } from "./outcome.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,

@@ -1255,6 +1255,47 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       journal.close();
     }
   });
+  test("tail history, older history and live follow stitch without gaps or duplicates", async () => {
+    const f = fixture();
+    const row = await f.provider.createGolden({});
+    expect(await f.provider.events({ sandboxId: row.id, direction: "backward" })).toEqual({
+      events: [],
+      hasMore: false,
+    });
+    const event = (n: number): AgentEvent => ({
+      id: `history-${n}`,
+      at: n,
+      kind: "message",
+      conversationId: "history",
+      promptId: "p",
+      messageId: "m",
+      textMode: "delta",
+      text: String(n),
+      partial: true,
+      tools: [],
+    });
+    await appendModalEvents(
+      db,
+      scope,
+      row.id,
+      "1",
+      [1, 2, 3, 4].map((n) => ({ sequence: n, event: event(n) })),
+    );
+    const tail = await f.provider.events({ sandboxId: row.id, direction: "backward", limit: 2, coalesce: true });
+    expect(tail.events).toMatchObject([{ text: "34", textMode: "snapshot" }]);
+    expect(tail.hasMore).toBe(true);
+    const older = await f.provider.events({
+      sandboxId: row.id,
+      direction: "backward",
+      cursor: tail.olderCursor!,
+      limit: 2,
+    });
+    expect(older.events.map((e) => e.id)).toEqual(["history-1", "history-2"]);
+    expect(older.hasMore).toBe(false);
+    await appendModalEvents(db, scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
+    const follow = await f.provider.events({ sandboxId: row.id, cursor: tail.cursor! });
+    expect(follow.events.map((e) => e.id)).toEqual(["history-5"]);
+  });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();
     const row = await f.provider.createGolden({});

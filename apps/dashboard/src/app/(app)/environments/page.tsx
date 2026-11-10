@@ -696,7 +696,13 @@ function VisibilityControl({ golden, viewerId, isAdmin }: { golden: Golden; view
       ) : next === "org" && !isAdmin ? (
         <span className="text-xs text-muted-foreground">Org admins share goldens</span>
       ) : (
-        <ActionForm action={setGoldenVisibility} className="flex flex-col items-end gap-1">
+        <ActionForm
+          action={setGoldenVisibility}
+          successToast={
+            next === "org" ? `Shared ${golden.name} with the org.` : `${golden.name} is now private to you.`
+          }
+          className="flex flex-col items-end gap-1"
+        >
           <input type="hidden" name="golden" value={golden.id} />
           <input type="hidden" name="visibility" value={next} />
           <SubmitButton variant="outline" size="sm">

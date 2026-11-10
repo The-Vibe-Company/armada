@@ -24,6 +24,8 @@ test("the owner shares a private golden with the org, and takes it back", async 
 
   await panel.getByRole("button", { name: "Share with org" }).click();
   await expect(row.getByText("Org", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="toast"]')).toContainText("Shared alice-private with the org.");
+  await page.screenshot({ path: "test-results/toast-share-golden.png", animations: "disabled" });
   // The panel stays open on the same environment while the page refreshes.
   await panel.getByRole("button", { name: "Make private" }).click();
   await expect(row.getByText("Private", { exact: true })).toBeVisible();

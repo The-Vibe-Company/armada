@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type AgentEvent, type EventPage, ProviderError, type Sql } from "@armada/core";
+import {
+  type AgentEvent,
+  buildEventPage,
+  type EventPage,
+  eventPageOptions,
+  ProviderError,
+  type Sql,
+} from "@armada/core";
 import { authorizeModalCleanup, cleanupIngestAllowed } from "./cleanup.ts";
 import { refusal } from "./errors.ts";
 import type { IngestPayload, Machine, ModalStore, SavedImage, Scope } from "./ports.ts";
@@ -182,16 +189,13 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async events(input): Promise<EventPage> {
       await get(input.sandboxId);
-      const limit = input.limit ?? 100;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 1000 || (input.cursor && !/^\d+$/.test(input.cursor)))
-        throw refusal("invalid_request", "Invalid event pagination.");
+      const { limit, backward } = eventPageOptions(input, "modal");
+      if (input.cursor && !/^\d+$/.test(input.cursor)) throw refusal("invalid_request", "Invalid event pagination.");
       const result = await sql.query<{ cursor: string; event: AgentEvent }>(
-        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and cursor>$3::bigint and ($4::text is null or event->>'conversationId'=$4) order by public.modal_events.cursor limit $5`,
-        [key, input.sandboxId, input.cursor ?? "0", input.conversationId ?? null, limit + 1],
+        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and ($3::bigint is null or cursor${backward ? "<" : ">"}$3::bigint) and ($4::text is null or event->>'conversationId'=$4) order by public.modal_events.cursor ${backward ? "desc" : "asc"} limit $5`,
+        [key, input.sandboxId, input.cursor ?? (backward ? null : "0"), input.conversationId ?? null, limit + 1],
       );
-      const page = result.rows.slice(0, limit);
-      const cursor = page.at(-1)?.cursor ?? input.cursor;
-      return { events: page.map((x) => x.event), hasMore: result.rows.length > limit, ...(cursor ? { cursor } : {}) };
+      return buildEventPage(result.rows.slice(0, limit), input, result.rows.length > limit, "modal");
     },
   };
 }
