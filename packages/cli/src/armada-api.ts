@@ -81,7 +81,9 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       } catch (error) {
         throw new AuthError(
           signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-            ? "The server did not answer in time; the operation may have been accepted."
+            ? `The server did not answer in time; the operation may have been accepted.${
+                path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+              }`
             : path === "/api/v1/sandbox/launch"
               ? "Launch outcome unknown. Run armada list to check before retrying."
               : "Armada could not reach the server.",
@@ -103,7 +105,9 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         } catch (error) {
           throw new AuthError(
             signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-              ? "The server did not answer in time; the operation may have been accepted."
+              ? `The server did not answer in time; the operation may have been accepted.${
+                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                }`
               : path === "/api/v1/sandbox/launch"
                 ? "Launch outcome unknown. Run armada list to check before retrying."
                 : "Armada could not reach the server.",
