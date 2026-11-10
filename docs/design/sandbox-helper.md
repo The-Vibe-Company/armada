@@ -243,6 +243,8 @@ never production access or migration application by this design author.
 0. **Install the inert helper in goldens.** Depends on open, unmerged PR #899's
    provisioning mechanism. Add the helper's own exact version/digest pin and
    receipt; install no workload identity or running broker in the golden.
+   At launch, the server verifies that receipt and negotiates the installed
+   protocol/capabilities before admitting any helper-dependent operation.
    Staging: config-preserving rebuild of one Boat and one Modal golden; verify
    installed binary SHA-256 against the release manifest and persisted
    version/digest/protocol receipt. Cover root-built and no-sudo images and
