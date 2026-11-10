@@ -20,7 +20,9 @@ No token-count-limit hypothesis is needed. This PR performed no production acces
 The regression in `packages/core/test/github.test.ts` models GitHub's invalidation
 rule. Twelve concurrent plus twelve sequential resolutions share a healthy token;
 a resolution six minutes before expiry must renew it, and the fake GitHub rejects
-old copies. That case fails with the former five-minute margin and passes with the
+old copies. `packages/mcp-server/test/github-legacy.test.ts` then proves that all
+twelve older Boat workers acquire the valid replacement before their next prompt,
+without manual repair commands. That case fails with the former five-minute margin and passes with the
 new one-hour minimum remaining lifetime. Unexpectedly short freshly issued tokens
 are reported as unavailable rather than injected. Rotation is persisted first so
 its refresh token is never replayed.
@@ -36,7 +38,9 @@ armada github refresh <sandbox>
 The HTTP operation and MCP `github_refresh` tool use the same owner-only policy.
 This repairs **running legacy Boat sandboxes** even with
 `ARMADA_GITHUB_RUNTIME_ENABLED` disabled. It reuses the owner's current validated
-token, renewing only near expiry or after rejection. It does not reconnect the
+token, renewing only after expiry or explicit rejection. Repair and next-prompt
+preparation do not apply the one-hour new-launch margin, so repairing one worker
+does not proactively rotate a still-valid token held by its siblings. It does not reconnect the
 account, change the model credential, restart the agent, or relaunch the machine.
 A stopped sandbox must first be resumed normally. An org admin cannot inject their
 identity into somebody else's sandbox.
@@ -45,14 +49,19 @@ Private pinned SSH/stdin carries the token; never paste one into `exec`, prompts
 argv, logs or repository files. The repair installs token-aware `gh` and `git`
 wrappers so even already-running agents' inherited stale `GH_TOKEN` is overridden
 on the next tool invocation. The token lives in ephemeral `/run`, outside the
-persisted home and golden snapshot; wrappers fail closed when it is absent or
-expired. Run the repair again after a reboot or subsequent owner-token rotation.
+persisted home and golden snapshot. If the file is absent or expired, wrappers
+pass through the inherited environment; unsafe ownership/symlinks still fail closed.
+Before each authorized Boat prompt (including after resume), Armada resolves the
+stored sandbox owner and privately hydrates the current token automatically.
+Use the explicit repair command to repair an already-running turn before retrying
+Git/gh without sending a new prompt.
 Absolute preserved `.armada-original` binaries, custom clients that read the old
 environment directly, and already-started network requests are not updated.
 
 The one-hour launch minimum avoids handing a new sandbox a nearly expired token;
 it is not a promise against revocation or another refresh. Legacy environments
-still need this explicit repair after rotation. For automatic on-demand renewal,
+recover at the next prompt, not instantly inside an already-running turn. For
+automatic per-command renewal,
 the existing managed GitHub runtime remains separately opt-in via
 `ARMADA_GITHUB_RUNTIME_ENABLED=true`: next-prompt and resume reconciliation install
 its broker, whose wrappers fetch validated credentials on demand. This PR neither
@@ -67,7 +76,9 @@ not the legacy repair command.
    launches. Run `gh api user --jq .login` in each; record status and login only.
 3. Launch a thirteenth, then recheck all thirteen. Every login must still match.
 4. In an isolated staging account, exercise expiry-driven renewal. Confirm the
-   legacy refresh command repairs older running sandboxes without relaunching,
+   next prompt automatically repairs every older running Boat sandbox, without
+   relaunching or twelve manual repair commands. Also check the explicit refresh
+   command for an already-active turn,
    including agents whose inherited environment is stale. Recheck `gh api user`
    and a git credential operation. With managed runtime enabled, also test
    next-prompt and resume recovery. Do not force rotation in production.

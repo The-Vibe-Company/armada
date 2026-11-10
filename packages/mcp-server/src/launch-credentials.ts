@@ -14,6 +14,7 @@ import {
 } from "@armada/core";
 
 import { sshHydrateAuthState, sshHydrateGitHubToken, VaultError } from "@armada/core/server";
+import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
@@ -42,19 +43,15 @@ export function launchCredentials(
   return {
     async refreshGitHub(actor, provider, sandboxId) {
       if (!github) throw new VaultError("unavailable", "GitHub authorization is not configured.");
-      if (provider.id !== "boat" || provider.configureGitHub)
-        throw new VaultError("unavailable", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-      const access = await resolveGitHubAccess(
-        { ...github, encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
+      const repaired = await refreshLegacyGitHub(
+        provider,
+        sandboxId,
         actor.userId,
+        { ...github, encryptionKey },
+        sshHydrateGitHubToken,
       );
-      if (access.status !== "connected" || !access.expiresAt)
-        throw new VaultError(
-          "unavailable",
-          access.status === "connected" ? "GitHub expiry is unavailable." : access.message,
-        );
-      await sshHydrateGitHubToken(provider, sandboxId, access.token, access.expiresAt);
-      return { login: access.identity.login };
+      if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
+      return repaired;
     },
     async admit(actor, credentials, sandboxId) {
       if (!credentials.codexAuthJson) return;

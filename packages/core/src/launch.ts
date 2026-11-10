@@ -106,6 +106,8 @@ export interface LaunchStores {
 
 /** What a launch did about GitHub. A launch without a connection still succeeds, and says so here. */
 export interface GitHubLaunchInfo {
+  /** Advertised expiry of the injected token, not a guarantee against owner rotation. */
+  tokenExpiresAt?: string;
   status: GitHubStatus;
   /** The account git and gh act as in the sandbox. */
   login?: string;
@@ -305,6 +307,8 @@ export async function launchSandbox(
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
           : { status: github.status, message: github.message };
+      if (github.status === "connected" && github.expiresAt)
+        launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
       await setup(provider, ready.id, golden, secrets, progress);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)

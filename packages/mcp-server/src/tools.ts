@@ -392,7 +392,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Repair sandbox GitHub access",
       description:
-        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Does not reconnect or rotate a healthy token. Only the sandbox owner may request this.",
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
       input: { id },
       output: { id: z.string(), login: z.string(), status: z.literal("connected") },
     },
@@ -405,6 +405,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
       if (!context.launchCredentials.refreshGitHub)
         throw new ToolError("unavailable", "GitHub repair is not configured.");
+      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
       const result = await context.launchCredentials.refreshGitHub(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         provider,
@@ -746,6 +747,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .object({
               status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
               login: z.string().nullable(),
+              tokenExpiresAt: z.string().nullable(),
               message: z.string().nullable(),
             })
             .describe(
@@ -805,6 +807,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           github: {
             status: result.github.status,
             login: result.github.login ?? null,
+            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
             message: result.github.message ?? null,
           },
         };

@@ -331,7 +331,7 @@ export interface GitHubResolveDeps {
  * Throws only for a missing or malformed encryption key and for a database failure.
  */
 export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: string): Promise<GitHubAccess> {
-  const minimumLifetimeMs = Math.max(ACCESS_TOKEN_EXPIRY_MARGIN_MS, deps.minimumLifetimeMs ?? 0);
+  const minimumLifetimeMs = Math.max(0, deps.minimumLifetimeMs ?? ACCESS_TOKEN_EXPIRY_MARGIN_MS);
   const request = { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.now ? { now: deps.now } : {}) };
   return deps.store.withGitHubConnectionRefresh(userId, async (store, connection) => {
     // A waiter may acquire the lock after the token it observed at request time has expired.

@@ -817,7 +817,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       signal: AbortSignal.timeout(10 * 60_000),
     }),
   );
-  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
+  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result, auth.now()));
   if (
     size !== undefined &&
     (result.sandbox.machineSize?.requested !== size ||
@@ -930,7 +930,7 @@ function parseTtl(value: string): number {
   return Number(match[1]) * unit;
 }
 
-function launchText(result: LaunchResult): string {
+function launchText(result: LaunchResult, now: Date): string {
   const { sandbox, golden } = result;
   const lines = [
     `Launched ${sandbox.harness} sandbox from golden ${golden.name}.`,
@@ -952,7 +952,7 @@ function launchText(result: LaunchResult): string {
     lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
-  lines.push(githubLine(result));
+  lines.push(githubLine(result, now));
   if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
   lines.push(
     result.expiresAt
@@ -962,10 +962,20 @@ function launchText(result: LaunchResult): string {
   return `${lines.join("\n")}\n`;
 }
 
-function githubLine(result: LaunchResult): string {
+function githubLine(result: LaunchResult, now: Date): string {
   const { github } = result;
-  if (github.status === "connected")
-    return `GitHub: git and gh act as ${github.login} (shared token; expires within 8 hours).`;
+  if (github.status === "connected") {
+    const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
+    const lifetime =
+      expiry && Number.isFinite(expiry.getTime())
+        ? `launch token expires at ${expiry.toISOString()} (~${Math.max(0, Math.floor((expiry.getTime() - now.getTime()) / 60_000))} minutes remaining)`
+        : "launch token remaining lifetime unknown";
+    const repair =
+      result.sandbox.provider === "boat"
+        ? `Next prompt repairs GitHub automatically; for a running legacy sandbox use armada github refresh ${result.sandbox.id}.`
+        : "Reconnect GitHub if needed and resume to re-resolve credentials.";
+    return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
+  }
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 
@@ -992,6 +1002,7 @@ function jsonLaunch(result: LaunchResult) {
     github: {
       status: result.github.status,
       login: result.github.login ?? null,
+      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
       message: result.github.message ?? null,
     },
   };

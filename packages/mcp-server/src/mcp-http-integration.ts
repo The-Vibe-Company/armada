@@ -10,6 +10,7 @@ import {
   type Provider,
   parsePinnedMcpStdio,
   type Sql,
+  sshHydrateGitHubToken,
   VaultError,
 } from "@armada/core/server";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -25,6 +26,7 @@ import {
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
 import { createSqlData } from "./data.ts";
+import { createLegacyGitHubPreparation } from "./github-legacy.ts";
 import { createGitHubRuntime } from "./github-runtime.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
@@ -67,6 +69,10 @@ export function createMcpHttpIntegration(options: {
           origin: new URL(options.publicUrl).origin,
           providerForSandbox: options.providerForSandbox,
         })
+      : undefined;
+  const prepareLegacyGitHub =
+    options.githubRuntimeEnabled !== true && options.github
+      ? createLegacyGitHubPreparation({ sql, github: options.github, hydrate: sshHydrateGitHubToken })
       : undefined;
   const lifecycle = createMcpLifecycle({
     sql,
@@ -634,6 +640,7 @@ export function createMcpHttpIntegration(options: {
     beforePrompt: async (...args: Parameters<typeof lifecycle.beforePrompt>) => {
       const sandboxId = (await managedMcp.beforePrompt(...args)) ?? (await lifecycle.beforePrompt(...args));
       await refreshActiveExpiries(sandboxId);
+      await prepareLegacyGitHub?.(args[0], sandboxId);
     },
     beforeSnapshot: async (...args: Parameters<typeof lifecycle.beforeSnapshot>) => {
       await lifecycle.beforeSnapshot(...args);

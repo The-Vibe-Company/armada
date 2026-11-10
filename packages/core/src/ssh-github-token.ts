@@ -1,5 +1,5 @@
 import type { Provider } from "./provider.ts";
-import { sshStdinCheckout } from "./ssh-executor.ts";
+import { type SshExecDeps, sshStdinCheckout } from "./ssh-executor.ts";
 
 /** Private repair for a running legacy Boat sandbox, never a golden or a persisted credential. */
 export async function sshHydrateGitHubToken(
@@ -7,6 +7,7 @@ export async function sshHydrateGitHubToken(
   sandboxId: string,
   token: string,
   expiresAt: Date,
+  deps: SshExecDeps = {},
 ): Promise<void> {
   const expiry = expiresAt.getTime();
   if (
@@ -17,25 +18,27 @@ export async function sshHydrateGitHubToken(
   )
     throw Error("Invalid private GitHub token hydration.");
   try {
-    await sshStdinCheckout(provider, {
-      sandboxId,
-      token: JSON.stringify({ token, expiresAt: expiry }),
-      script: BOOTSTRAP,
-    });
+    await sshStdinCheckout(
+      provider,
+      { sandboxId, token: JSON.stringify({ token, expiresAt: expiry }), script: BOOTSTRAP, timeoutMs: 60_000 },
+      deps,
+    );
   } catch {
     throw Error("Private GitHub token hydration failed.");
   }
 }
 
 // Root-owned code, with only the ephemeral owner-private file holding credential bytes.
-const CLIENT = `import os,sys,json,stat,time
+export const GITHUB_TOKEN_CLIENT = `import os,sys,json,stat,time
 TOKEN_UID=__TOKEN_UID__
 def directory(path):
     st=os.lstat(path)
     if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022: raise ValueError()
 def credential():
-    directory('/run');directory('/run/armada-github')
-    fd=os.open('/run/armada-github/token.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        directory('/run');directory('/run/armada-github')
+        fd=os.open('/run/armada-github/token.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except FileNotFoundError: return None
     try:
         st=os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=TOKEN_UID or st.st_nlink!=1 or stat.S_IMODE(st.st_mode)!=0o600 or st.st_size>32768: raise ValueError()
@@ -43,16 +46,13 @@ def credential():
     finally: os.close(fd)
     token=value['token'];expiry=value['expiresAt']
     if not isinstance(token,str) or not 1<=len(token)<=16384 or any(ord(c)<33 or ord(c)>126 for c in token): raise ValueError()
-    if not isinstance(expiry,(int,float)) or not time.time()*1000<expiry<float('inf'): raise ValueError()
-    return token
+    if not isinstance(expiry,(int,float)) or not 0<expiry<float('inf'): raise ValueError()
+    return token if time.time()*1000<expiry else None
 try:
     mode=sys.argv[1]
-    token=None
-    if mode=='git':
-        # Local status/commit must remain usable even when network credentials expire.
-        try: token=credential()
-        except Exception: pass
-    else: token=credential()
+    # Missing ephemeral state after resume is not an unsafe credential file.
+    # Preserve inherited auth and normal local Git behavior until the next refresh.
+    token=credential()
     if mode=='credential':
         if len(sys.argv)!=3 or sys.argv[2]!='get': sys.exit(0)
         fields={}
@@ -60,7 +60,8 @@ try:
             if not line.strip(): break
             key,sep,value=line.rstrip('\\n').partition('=')
             if sep: fields[key]=value
-        if fields.get('protocol')=='https' and fields.get('host')=='github.com':
+        if token is None: token=os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+        if token and fields.get('protocol')=='https' and fields.get('host')=='github.com':
             sys.stdout.write('username=x-access-token\\npassword='+token+'\\n\\n')
         sys.exit(0)
     if mode not in ('git','gh'): raise ValueError()
@@ -68,12 +69,11 @@ try:
     st=os.lstat(executable)
     if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022: raise ValueError()
     env=dict(os.environ)
-    env.pop('GH_TOKEN',None);env.pop('GITHUB_TOKEN',None)
-    if token is not None: env['GH_TOKEN']=token;env['GITHUB_TOKEN']=token
-    env['GH_HOST']='github.com'
-    env.pop('GH_ENTERPRISE_TOKEN',None);env.pop('GITHUB_ENTERPRISE_TOKEN',None)
     env.pop('ARMADA_GIT_TOKEN',None)
-    if mode=='git':
+    if token is not None:
+        env['GH_TOKEN']=token;env['GITHUB_TOKEN']=token;env['GH_HOST']='github.com'
+        env.pop('GH_ENTERPRISE_TOKEN',None);env.pop('GITHUB_ENTERPRISE_TOKEN',None)
+    if mode=='git' and token is not None:
         count=int(env.get('GIT_CONFIG_COUNT','0'))
         if not 0<=count<=1024: raise ValueError()
         # Reset stale global credential helpers only for github.com, without changing HOME.
@@ -86,8 +86,8 @@ except Exception:
     sys.exit(1)
 `;
 
-const INSTALLER = `import os,sys,json,stat,time,tempfile,fcntl
-CLIENT=${JSON.stringify(CLIENT)}
+export const GITHUB_TOKEN_INSTALLER = `import os,sys,json,stat,time,tempfile,fcntl
+CLIENT=${JSON.stringify(GITHUB_TOKEN_CLIENT)}
 def directory(path,create=False):
     try: st=os.lstat(path)
     except FileNotFoundError:
@@ -188,7 +188,7 @@ trap cleanup_github_token EXIT
 import os,subprocess,sys
 try:
     payload=os.environ.pop('ARMADA_GIT_TOKEN')
-    command=['/usr/bin/python3','-I','-c',${JSON.stringify(INSTALLER)}]
+    command=['/usr/bin/python3','-I','-c',${JSON.stringify(GITHUB_TOKEN_INSTALLER)}]
     if os.getuid()!=0: command=['/usr/bin/sudo','-n']+command
     result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/user'},timeout=45)
     sys.exit(0 if result.returncode==0 else 1)
