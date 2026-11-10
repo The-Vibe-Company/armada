@@ -440,7 +440,7 @@ describe("launch", () => {
     const failure = await launchSandbox(world.provider, world.stores, owner, {
       golden: "web",
       harness: "claude",
-      repo,
+      ...(repo === undefined ? {} : { repo }),
       prompt: "go",
     }).catch((error: unknown) => error as LaunchError);
     expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
