@@ -3,6 +3,13 @@
 Design proposal for [#878](https://github.com/The-Vibe-Company/armada/issues/878),
 inspected against main at `2fce2ef6bc993d0516e1642f3f0ca42f198b8270`.
 No behavior, installation, migration, or deployment changes are made here.
+**Follow-up decision:** [One sandbox helper (#908)](sandbox-helper.md) revisits
+this document's narrower no-daemon recommendation for GitHub renewal, usage,
+liveness and preservation together. It recommends one inert installed package
+with on-demand commands and existing supervision, not a universal reporting
+daemon. Read its prerequisite, security and delivery-slice boundaries before
+implementing this proposal.
+
 Armada remains a launcher: reports inform owners and orchestrators; they do not
 schedule tasks, judge work, merge branches, or implement orchestration policy.
 
