@@ -18,8 +18,8 @@ import { sandboxRepositoryDir } from "./repository-context.ts";
  * first. Everything here is pure; the page reads the rows as the signed-in user and the events through the server.
  */
 
-/** A stopped sandbox stays on the board this long after it stopped, then only the Sandboxes list shows it. */
-export const STOPPED_KEPT_MS = 24 * 60 * 60 * 1000;
+/** A stopped or failed sandbox stays on the board this long after it ended, then only the Sandboxes list shows it. */
+export const ENDED_KEPT_MS = 24 * 60 * 60 * 1000;
 
 /** Under this much time left, a live sandbox's deadline is highlighted and it moves up the board. */
 export const EXPIRY_WARNING_SECONDS = 30 * 60;
@@ -69,16 +69,28 @@ export type BoardState = {
   kind: BoardStateKind;
   label: string;
   /** For a failure: the known explanation's title and hint, or the reason as reported. */
-  failure: { title: string; hint: string | null } | null;
+  failure: { title: string; hint: string | null; fix: { href: string; label: string } | null } | null;
 };
 
 /**
  * The sandbox's status says whether the machine is up; the latest turn says what the agent is doing on it. A failed
  * machine or turn is failed; a live machine whose turn ended waits for the operator; a stopped one is out of the way.
- * Without the events (the server unreachable) a live machine is shown from its status alone.
+ * Without the events (the server unreachable) a live machine is shown from its status alone. A failed sandbox is
+ * explained by its failed turn, else the reason the server recorded on the sandbox, else its last lifecycle error.
  */
-export function boardState(status: SandboxStatus, turn: TurnSummary | null, lifecycleError: string | null): BoardState {
-  if (status === "failed") return failed(turn?.status === "failed" ? turn.reason : lifecycleError, "Sandbox failed");
+export function boardState(
+  status: SandboxStatus,
+  turn: TurnSummary | null,
+  recorded: { statusReason: string | null; lifecycleError: string | null } = {
+    statusReason: null,
+    lifecycleError: null,
+  },
+): BoardState {
+  if (status === "failed")
+    return failed(
+      (turn?.status === "failed" ? turn.reason : null) ?? recorded.statusReason ?? recorded.lifecycleError,
+      "Sandbox failed",
+    );
   if (status === "stopped" || status === "deleted") return { kind: "stopped", label: "Stopped", failure: null };
   if (status === "stopping") return { kind: "stopped", label: "Stopping", failure: null };
   if (status === "starting") return { kind: "working", label: "Starting", failure: null };
@@ -106,7 +118,9 @@ function failed(reason: string | null, fallback: string): BoardState {
   return {
     kind: "failed",
     label: "Failed",
-    failure: help ? { title: help.title, hint: help.hint } : { title: reason ?? fallback, hint: null },
+    failure: help
+      ? { title: help.title, hint: help.hint, fix: help.fix ?? null }
+      : { title: reason ?? fallback, hint: null, fix: null },
   };
 }
 
@@ -155,12 +169,19 @@ export function sortBoard<T extends Rankable>(rows: readonly T[]): T[] {
   );
 }
 
-/** Whether a sandbox belongs on the board: anything not deleted, and a stopped one only for a day after it stopped. */
-export function onBoard(row: { status: SandboxStatus; stoppedAt: string | null }, now: Date): boolean {
-  if (row.status === "deleted") return false;
-  if (row.status !== "stopped") return true;
-  const stopped = row.stoppedAt ? Date.parse(row.stoppedAt) : Number.NaN;
-  return !Number.isNaN(stopped) && now.getTime() - stopped < STOPPED_KEPT_MS;
+/**
+ * Whether a sandbox belongs on the board: every live one, and a stopped or failed one for a day after it ended. A
+ * failed sandbox records no failure time: its stop, else Armada's last observation of it, else its launch stands in.
+ */
+export function onBoard(
+  row: { status: SandboxStatus; stoppedAt: string | null; lastObservedAt?: string | null; createdAt: string },
+  now: Date,
+): boolean {
+  if (isActiveStatus(row.status)) return true;
+  if (row.status !== "stopped" && row.status !== "failed") return false;
+  const ended = row.status === "stopped" ? row.stoppedAt : (row.stoppedAt ?? row.lastObservedAt ?? row.createdAt);
+  const at = ended ? Date.parse(ended) : Number.NaN;
+  return !Number.isNaN(at) && now.getTime() - at < ENDED_KEPT_MS;
 }
 
 /** The start of a message, cut at a word near the limit; `truncated` says whether there is more to show. */
@@ -213,7 +234,7 @@ type SandboxRow = Pick<
   Sandbox,
   "id" | "status" | "harness" | "model" | "created_at" | "owner_id" | "provider_sandbox_id"
 > &
-  object;
+  Partial<Pick<Sandbox, "status_reason">>;
 
 /** A row from the sandbox, its golden (if still readable) and what its events say (null when they were not read). */
 export function fleetRow(
@@ -234,7 +255,10 @@ export function fleetRow(
     golden: golden?.name ?? null,
     repository: golden ? repositoryLabel(golden.config, sandboxRepositoryDir(sandbox)) : null,
     mine: sandbox.owner_id === viewerId,
-    state: boardState(sandbox.status, turn, lifecycle.lifecycleError),
+    state: boardState(sandbox.status, turn, {
+      statusReason: sandbox.status_reason ?? null,
+      lifecycleError: lifecycle.lifecycleError,
+    }),
     expiry: expiryView(sandbox.status, lifecycle.expiresAt, now),
     message: turn?.message ?? null,
     eventsRead: turn !== null,

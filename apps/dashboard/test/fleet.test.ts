@@ -61,33 +61,40 @@ describe("summarizeEvents", () => {
 
 describe("boardState", () => {
   test("a failed sandbox or turn is failed, with the known explanation", () => {
-    expect(boardState("failed", turn("failed", "usage_limit"), null)).toMatchObject({
+    expect(boardState("failed", turn("failed", "usage_limit"))).toMatchObject({
       kind: "failed",
       failure: { title: "Usage limit reached" },
     });
-    expect(boardState("running", turn("failed", "something odd"), null)).toMatchObject({
+    expect(boardState("running", turn("failed", "something odd"))).toMatchObject({
       kind: "failed",
       failure: { title: "something odd", hint: null },
     });
-    expect(boardState("failed", null, "The provider lost the machine.").failure?.title).toBe(
-      "The provider lost the machine.",
-    );
-    expect(boardState("failed", null, null).failure?.title).toBe("Sandbox failed");
+    expect(
+      boardState("failed", null, { statusReason: null, lifecycleError: "The provider lost the machine." }).failure
+        ?.title,
+    ).toBe("The provider lost the machine.");
+    // The reason the server recorded on the sandbox explains a launch failure, with its fix.
+    expect(boardState("failed", null, { statusReason: "auth_expiry", lifecycleError: "later" }).failure).toEqual({
+      title: "Credential expired",
+      hint: expect.any(String),
+      fix: { href: "/credentials", label: "Replace the credential" },
+    });
+    expect(boardState("failed", null).failure?.title).toBe("Sandbox failed");
   });
 
   test("a live machine reads its latest turn", () => {
-    expect(boardState("running", turn("running"), null).kind).toBe("working");
-    expect(boardState("ready", turn("finished"), null).kind).toBe("finished");
-    expect(boardState("ready", turn("interrupted"), null).kind).toBe("interrupted");
-    expect(boardState("ready", turn(null), null)).toMatchObject({ kind: "idle", label: "Waiting for a prompt" });
-    expect(boardState("starting", turn("finished"), null)).toMatchObject({ kind: "working", label: "Starting" });
+    expect(boardState("running", turn("running")).kind).toBe("working");
+    expect(boardState("ready", turn("finished")).kind).toBe("finished");
+    expect(boardState("ready", turn("interrupted")).kind).toBe("interrupted");
+    expect(boardState("ready", turn(null))).toMatchObject({ kind: "idle", label: "Waiting for a prompt" });
+    expect(boardState("starting", turn("finished"))).toMatchObject({ kind: "working", label: "Starting" });
   });
 
   test("without events a live machine is shown from its status, and a stopped one is stopped", () => {
-    expect(boardState("running", null, null).kind).toBe("working");
-    expect(boardState("ready", null, null)).toMatchObject({ kind: "idle", label: "Ready" });
-    expect(boardState("stopped", turn("finished"), null).kind).toBe("stopped");
-    expect(boardState("stopping", null, null)).toMatchObject({ kind: "stopped", label: "Stopping" });
+    expect(boardState("running", null).kind).toBe("working");
+    expect(boardState("ready", null)).toMatchObject({ kind: "idle", label: "Ready" });
+    expect(boardState("stopped", turn("finished")).kind).toBe("stopped");
+    expect(boardState("stopping", null)).toMatchObject({ kind: "stopped", label: "Stopping" });
   });
 });
 
@@ -118,7 +125,7 @@ describe("sortBoard", () => {
     const row = (id: string, status: Parameters<typeof boardState>[0], t: TurnSummary | null, expires?: string) => ({
       id,
       createdAt: `2026-11-10T0${id.length}:00:00.000Z`,
-      state: boardState(status, t, null),
+      state: boardState(status, t),
       expiry: expiryView(status, expires ?? null, NOW),
     });
     const rows = [
@@ -141,13 +148,18 @@ describe("sortBoard", () => {
 });
 
 describe("onBoard", () => {
-  test("keeps live and failed sandboxes, and stopped ones for a day", () => {
-    expect(onBoard({ status: "running", stoppedAt: null }, NOW)).toBe(true);
-    expect(onBoard({ status: "failed", stoppedAt: null }, NOW)).toBe(true);
-    expect(onBoard({ status: "stopped", stoppedAt: "2026-11-10T01:00:00.000Z" }, NOW)).toBe(true);
-    expect(onBoard({ status: "stopped", stoppedAt: "2026-11-09T11:00:00.000Z" }, NOW)).toBe(false);
-    expect(onBoard({ status: "stopped", stoppedAt: null }, NOW)).toBe(false);
-    expect(onBoard({ status: "deleted", stoppedAt: null }, NOW)).toBe(false);
+  test("keeps live sandboxes, and stopped or failed ones for a day after they ended", () => {
+    const old = "2026-11-01T00:00:00.000Z";
+    expect(onBoard({ status: "running", stoppedAt: null, createdAt: old }, NOW)).toBe(true);
+    expect(onBoard({ status: "stopped", stoppedAt: "2026-11-10T01:00:00.000Z", createdAt: old }, NOW)).toBe(true);
+    expect(onBoard({ status: "stopped", stoppedAt: "2026-11-09T11:00:00.000Z", createdAt: old }, NOW)).toBe(false);
+    expect(onBoard({ status: "stopped", stoppedAt: null, createdAt: NOW.toISOString() }, NOW)).toBe(false);
+    expect(onBoard({ status: "deleted", stoppedAt: null, createdAt: NOW.toISOString() }, NOW)).toBe(false);
+    // A failed sandbox ages out a day after Armada last saw it, else after its launch.
+    expect(
+      onBoard({ status: "failed", stoppedAt: null, lastObservedAt: "2026-11-10T02:00:00.000Z", createdAt: old }, NOW),
+    ).toBe(true);
+    expect(onBoard({ status: "failed", stoppedAt: null, lastObservedAt: null, createdAt: old }, NOW)).toBe(false);
   });
 });
 

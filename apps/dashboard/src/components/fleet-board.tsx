@@ -13,9 +13,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { preview } from "@/lib/fleet";
 
 /** How often an open board reads the fleet again, while the tab is visible. */
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 60_000;
 
-/** Reads the board again now, and every half minute while the page is in view. */
+/** Reads the board again now, and every minute while the page is in view. */
 export function BoardRefresh() {
   const router = useRouter();
   const [pending, startTransition] = useTransition();

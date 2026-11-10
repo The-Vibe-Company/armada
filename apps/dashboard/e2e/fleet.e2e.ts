@@ -27,6 +27,11 @@ test("the board puts what needs the operator first and acts on each agent", asyn
       { id: "b2", at: 2, kind: "message", text: LONG, partial: false, tools: [], promptId: "p1" },
     ],
   });
+  // The failed sandbox was last seen an hour ago: it is still on the board.
+  await post("sandbox-lifecycle", {
+    id: IDS.failed,
+    fields: { last_observed_at: new Date(Date.now() - 3600_000).toISOString() },
+  });
   await post("sandbox-lifecycle", {
     id: IDS.running,
     fields: { expires_at: new Date(Date.now() + 3 * 3600_000).toISOString() },
@@ -44,7 +49,11 @@ test("the board puts what needs the operator first and acts on each agent", asyn
   ]);
   await expect(rows(page).first()).toContainText(LABELS.failed);
   await expect(row(page, IDS.failed).locator("[data-failure]")).toContainText("Usage limit reached");
-  await expect(row(page, IDS.bobSecret).locator('[data-expiry="urgent"]')).toContainText("min left");
+  await expect(row(page, IDS.failed).getByRole("link", { name: "Manage credentials" })).toHaveAttribute(
+    "href",
+    "/credentials",
+  );
+  await expect(row(page, IDS.bobSecret).locator('[data-expiry="urgent"]')).toContainText("Expires soon: 19 min left");
   await expect(row(page, IDS.running).locator('[data-expiry="normal"]')).toContainText("h");
   await expect(row(page, IDS.running).locator("[data-latest-message]")).toHaveText("Looking at the test suite.");
   await expect(page.getByText("2 agents need you.")).toBeVisible();

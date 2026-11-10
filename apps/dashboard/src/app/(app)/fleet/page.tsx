@@ -1,4 +1,4 @@
-import { RocketIcon } from "lucide-react";
+import { ClockAlertIcon, RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BoardRefresh, FleetRowActions, FleetRowMessage } from "@/components/fleet-board";
@@ -131,6 +131,12 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
                 row.expiry.urgent ? "bg-warning/15 font-medium text-warning" : "text-muted-foreground",
               )}
             >
+              {row.expiry.urgent && (
+                <>
+                  <ClockAlertIcon aria-hidden="true" className="mr-1 inline size-3 align-[-1px]" />
+                  <span className="sr-only">Expires soon: </span>
+                </>
+              )}
               {row.expiry.text}
             </span>
           )}
@@ -141,6 +147,14 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" data-failure>
           <p className="font-medium text-destructive">{row.state.failure.title}</p>
           {row.state.failure.hint && <p className="mt-1 text-muted-foreground">{row.state.failure.hint}</p>}
+          {row.state.failure.fix && (
+            <Link
+              href={row.state.failure.fix.href}
+              className="mt-1 inline-block font-medium underline underline-offset-4"
+            >
+              {row.state.failure.fix.label}
+            </Link>
+          )}
         </div>
       )}
 
