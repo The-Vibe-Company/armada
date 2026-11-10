@@ -44,7 +44,7 @@ describe("logs through the Armada API", () => {
     expect(await calls[0]?.json()).toEqual({ id, all: true, follow: false });
   });
 
-  test("carries the API cursor across follow batches and emits each event once", async () => {
+  test.each([false, true])("carries the API cursor across follow batches (tail=%s)", async (tail) => {
     const bodies: unknown[] = [];
     let out = "";
     let sleeps = 0;
@@ -64,7 +64,7 @@ describe("logs through the Armada API", () => {
       { events: [], cursor: "two", hasMore: false, settled: true },
     ];
     const code = await run(
-      ["logs", id, "--follow"],
+      ["logs", id, "--follow", ...(tail ? ["--tail", "2"] : [])],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: auth(async (input, init) => {
@@ -83,7 +83,7 @@ describe("logs through the Armada API", () => {
     expect(out).toBe("first\nsecond\n");
     expect(sleeps).toBe(2);
     expect(bodies).toEqual([
-      { id, all: false, follow: true },
+      { id, all: false, follow: true, ...(tail ? { direction: "backward", limit: 2 } : {}) },
       { id, all: false, follow: true, cursor: "one" },
       { id, all: false, follow: true, cursor: "two" },
     ]);
