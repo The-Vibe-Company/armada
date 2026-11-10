@@ -61,8 +61,20 @@ export async function bootstrapOrchestrator(
         ? `skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${request.harness === "claude" ? "claude-code" : "codex"} --pin --yes --json >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
         : referenceCommand,
     });
-    if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0)
+    if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0) {
+      request.diagnostics?.captureReason(
+        result.detached
+          ? "skill_execution_detached"
+          : result.timedOut
+            ? "skill_install_timeout"
+            : result.truncated
+              ? "skill_output_truncated"
+              : result.exitCode === 127
+                ? "skill_command_missing"
+                : "skill_install_nonzero",
+      );
       throw new Error("install_failed");
+    }
     if (skill) {
       const lock = JSON.parse(result.stdout);
       const [org, slug] = reference!.split("/");
