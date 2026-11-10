@@ -168,7 +168,7 @@ test("actual launch admission blocks removal during fork; lost provider outcomes
         { userId: people.owner, orgId: people.org, role: "member" },
         { golden: "mine", harness: "claude" },
       ),
-    ).rejects.toThrow("provider response lost");
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
     expect(unknownBoat.forks).toHaveLength(1);
     expect((await db.query("select golden_id from golden_operation_fences")).rows).toEqual([
       { golden_id: privateGolden.id },

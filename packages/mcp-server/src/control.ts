@@ -261,7 +261,18 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   } catch (error) {
     const failureCode = apiFailureCode(error);
     if (failureCode)
-      return fail(API_FAILURE_STATUS[failureCode], failureCode, error instanceof Error ? error.message : failureCode);
+      return Response.json(
+        {
+          error: {
+            code: failureCode,
+            message: error instanceof Error ? error.message : failureCode,
+            ...(error instanceof ProviderError && error.details?.keepSource === true
+              ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
+              : {}),
+          },
+        },
+        { status: API_FAILURE_STATUS[failureCode], headers: { "cache-control": "no-store" } },
+      );
     if (error instanceof GatewayError) {
       const status =
         error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;

@@ -78,7 +78,24 @@ for (const failure of [
           headers: { authorization: `Bearer ${bearer}` },
           body: JSON.stringify({ golden: "web", harness: "claude" }),
         }),
-        { ...options, ...(failure === "dependency_unavailable" ? {} : { providerFor: () => boat.provider }) },
+        {
+          ...options,
+          ...(failure === "dependency_unavailable"
+            ? {}
+            : {
+                providerFor: () => {
+                  if (failure === "provider_unavailable")
+                    throw new ProviderError({
+                      provider: "boat",
+                      code: "unavailable",
+                      message: "Provider discovery failed.",
+                      retryable: true,
+                      status: 503,
+                    });
+                  return boat.provider;
+                },
+              }),
+        },
       );
       expect(response?.status).toBe(
         failure === "credential_refused" ? 422 : failure === "provider_unavailable" ? 502 : 503,
@@ -530,7 +547,7 @@ describe("armada org and armada creds against the control API", () => {
 });
 
 describe("control API", () => {
-  test("unknown provider failures return 502 with the closed error body", async () => {
+  test("uncertain retained provider outcomes preserve only recovery metadata", async () => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Provider failure", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -548,7 +565,7 @@ describe("control API", () => {
             provider: "boat",
             code: "unknown",
             message: "The provider failed.",
-            details: { internal: "not-public" },
+            details: { keepSource: true, sourceSandboxId: "retained-source", internal: "not-public" },
             retryable: true,
           });
         },
@@ -563,11 +580,37 @@ describe("control API", () => {
         }),
         options,
       );
-      expect(response?.status).toBe(502);
+      expect(response?.status).toBe(503);
       expect(response?.headers.get("cache-control")).toBe("no-store");
       expect(await response?.json()).toEqual({
-        error: { code: "provider_unavailable", message: "The provider failed." },
+        error: {
+          code: "outcome_unknown",
+          message: "The provider failed.",
+          details: { keepSource: true, sourceSandboxId: "retained-source" },
+        },
       });
+      // A read/preparation failure above is retryable; losing a mutation receipt is not.
+      const boat = fakeBoat();
+      let dispatched = 0;
+      boat.provider.get = async (id) => ({ id, name: "failure", state: "ready", providerState: "ready", labels: {} });
+      boat.provider.prompt = async () => {
+        dispatched++;
+        throw new ProviderError({ provider: "boat", code: "unavailable", message: "Lost receipt", retryable: true });
+      };
+      options.providers = { resolve: async () => boat.provider };
+      const send = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/send", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ id: sandbox.rows[0]!.id, prompt: "continue" }),
+        }),
+        options,
+      );
+      expect(dispatched).toBe(1);
+      expect(send?.status).toBe(503);
+      expect(await send?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
     });
   });
 
