@@ -245,7 +245,12 @@ use environment-specific settings.
   production shares the migration lock. Later main runs may update staging after
   the release smoke completes, but production uploads only the already-smoked SHA.
   A tagged recovery deliberately re-deploys that release SHA to staging; dispatch
-  current main afterward if staging must immediately return to its tip.
+  current main afterward if staging must immediately return to its tip. If newer
+  main migrations already advanced staging, Supabase may refuse the older release
+  checkout because of remote-only migration history, even with additive SQL.
+  This fails closed: cut a forward release including those migrations, or
+  freeze/drain merges before cutting the intended release. Never repair/remove
+  migration history just to force an older release through smoke.
 - Missing configuration fails closed in opted-in mode; failed staging visibly blocks
   production and npm. Manual smoke remains diagnostic only. Independent staging
   migrations/deployment-event smoke and standalone production migration applies
