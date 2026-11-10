@@ -38,6 +38,7 @@ export interface PinnedModelAccountResolver {
  * Own-child reservation already exists before any fork, and relation is bound before prompt.
  * Provider idempotency/correlation comes from that durable reservation, never a new UUID. */
 export async function launchOrchestratorChild(input: {
+  extensionHeadroomSeconds?: number;
   sql: Sql;
   provider: Provider;
   stores: LaunchStores;
@@ -198,7 +199,12 @@ export async function launchOrchestratorChild(input: {
         ...(selection.repo ? { repo: selection.repo } : {}),
         ...(selection.prompt ? { prompt: selection.prompt } : {}),
       },
-      { newId: () => op.sandboxId },
+      {
+        newId: () => op.sandboxId,
+        ...(input.extensionHeadroomSeconds === undefined
+          ? {}
+          : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
+      },
     );
     return { providerSandboxId: launched.sandbox.providerSandboxId };
   } catch (error) {

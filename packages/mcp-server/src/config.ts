@@ -1,7 +1,9 @@
 import { resourceUrl } from "@armada/auth";
+import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, PROVIDER_LIMITS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
 import { type OrchestratorPair, orchestratorPairsFromEnv } from "./orchestrator-activation.ts";
 
 export interface ServerConfig {
+  sandboxExtensionHeadroomSeconds: number;
   port: number;
   orchestratorPairs: readonly OrchestratorPair[];
   orchestratorSkillRevision: string | undefined;
@@ -77,6 +79,17 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   if (value("ARMADA_AUTH_SECRET").length < 16) throw new Error("ARMADA_AUTH_SECRET must be at least 16 characters.");
   checkEncryptionKey(value("ARMADA_ENCRYPTION_KEY"));
   const publicUrl = new URL(resourceUrl(value("ARMADA_PUBLIC_URL"))).origin;
+  const sandboxExtensionHeadroomSeconds = env.ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS?.trim()
+    ? Number(env.ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS)
+    : DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
+  if (
+    !Number.isSafeInteger(sandboxExtensionHeadroomSeconds) ||
+    sandboxExtensionHeadroomSeconds < 0 ||
+    sandboxExtensionHeadroomSeconds > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
+  )
+    throw new Error(
+      "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be a non-negative whole number within the Modal lifetime limit minus stop margin.",
+    );
   const development = env.NODE_ENV === "development";
 
   const orchestratorPairs = orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS);
@@ -85,6 +98,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   if (orchestratorSkillRevision && !/^[a-f0-9]{40}$/.test(orchestratorSkillRevision))
     throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
   return {
+    sandboxExtensionHeadroomSeconds,
     port,
     orchestratorPairs,
     orchestratorSkillRevision,

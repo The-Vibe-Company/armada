@@ -16,8 +16,8 @@ await Bun.write(
   JSON.stringify({
     protocol: 1,
     bun: Bun.version,
-    claudeSdk: "0.3.319",
-    claude: "2.1.319",
+    claudeSdk: "0.3.322",
+    claude: "2.1.322",
     codex: "0.167.0",
     artifact: "portable-bundle",
     architecture: process.arch,

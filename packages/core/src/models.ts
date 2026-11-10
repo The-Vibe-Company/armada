@@ -4,7 +4,7 @@ import { LaunchError } from "./launch-error.ts";
 /**
  * The models Armada suggests at launch, per harness, and the defaults. The model is a harness choice: it does
  * not depend on the sandbox provider or the golden. The ids and efforts below come from the harnesses' own
- * catalogs: Codex CLI 0.167.0 `codex debug models` (efforts per model), and Claude Code 2.1.319's model
+ * catalogs: Codex CLI 0.167.0 `codex debug models` (efforts per model), and Claude Code 2.1.322's model
  * selector (Opus 5.5 and Sonnet 5.5; efforts from its `--effort` levels).
  *
  * The list is a set of suggestions, not the whole of what a harness runs. Another well-formed id is passed

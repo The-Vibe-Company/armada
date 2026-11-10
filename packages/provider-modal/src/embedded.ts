@@ -9,8 +9,8 @@ export async function loadEmbeddedRunnerArtifact(): Promise<{ bundle: Uint8Array
   if (
     manifest.protocol !== 1 ||
     manifest.bun !== "1.4.2" ||
-    manifest.claudeSdk !== "0.3.319" ||
-    manifest.claude !== "2.1.319" ||
+    manifest.claudeSdk !== "0.3.322" ||
+    manifest.claude !== "2.1.322" ||
     manifest.codex !== "0.167.0"
   )
     throw refusal("invalid_request", "Embedded runner manifest is not pinned.");

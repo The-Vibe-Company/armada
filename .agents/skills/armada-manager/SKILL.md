@@ -37,6 +37,6 @@ When the user's request includes automatic merges, the integrator completes them
 
 ## Keep compute aligned with the role
 
-Implementation, active review, CI waiting, fixes and integration are all part of an unfinished role. Keep that sandbox warm. Track its real deadline and arrange a supported in-place extension early when needed; retain a bounded TTL. Do not invent an extension flag or disable expiry to avoid a capability gap.
+Implementation, active review, CI waiting, fixes and integration are all part of an unfinished role. Keep that sandbox warm. Track its real deadline and extend early when needed with `armada extend <id> --ttl <duration>`. A coordinator uses its scoped child `extend` tool with `sandboxId`, `ttlSeconds` and `idempotencyKey`. Retain a bounded TTL within server/provider limits. Modal extensions must fit inside the existing physical deadline minus the five-minute stop margin; they never replace the running machine. Plan an orderly stop/resume if a fresh physical lifetime is needed, rather than disabling expiry.
 
 Record a terminal reason, then stop compute only after all of that role's assigned work and verification are complete. Confirm both Armada and provider state. A completed role is stopped after its own ticket is delivered; the next ticket receives its own agent and sandbox. Read [resources.md](references/resources.md) for lifecycle uncertainty, provider-specific goldens and native MCP validation.
