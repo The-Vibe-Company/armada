@@ -58,26 +58,27 @@ public enum FollowUp {
 
 /// Whether the agent is working, for the "is working" indicator and the steer choice. The event
 /// stream reports which turns are queued or running; a steer refused because no turn runs is the
-/// server's proof that those turns ended, even when the stream has not caught up with it (#847).
-/// Such turns stop counting at once, until the stream reports a different turn.
+/// server's proof that what it lists is stale, even when the stream has not caught up (#847).
+/// Those turns stop counting at once, each until the stream reports a new status for it (a queued
+/// turn that starts running counts again) or a turn it did not list.
 public struct TurnActivity: Sendable, Equatable {
-    /// Turns (prompt ids) the stream reports as queued or running.
-    public private(set) var reported: Set<String> = []
-    /// Reported turns the server has since confirmed are not running.
-    public private(set) var ended: Set<String> = []
+    /// The status (`queued` or `running`) of each turn (prompt id) the stream reports as active.
+    public private(set) var reported: [String: String] = [:]
+    /// Reported turns and statuses the server has since contradicted.
+    public private(set) var ended: [String: String] = [:]
 
     public init() {}
 
-    /// The stream was read: these turns are queued or running in it.
-    public mutating func streamReported(_ running: Set<String>) {
-        reported = running
-        ended.formIntersection(running)
+    /// The stream was read: these turns are active in it, with their status.
+    public mutating func streamReported(_ active: [String: String]) {
+        reported = active
+        ended = ended.filter { active[$0.key] == $0.value }
     }
 
-    /// The server refused a steer because no turn runs: every turn reported now has ended.
+    /// The server refused a steer because no turn runs: what the stream reports now is stale.
     public mutating func noTurnRuns() {
         ended = reported
     }
 
-    public var isWorking: Bool { !reported.subtracting(ended).isEmpty }
+    public var isWorking: Bool { reported.contains { ended[$0.key] != $0.value } }
 }

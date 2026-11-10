@@ -63,7 +63,7 @@ final class OrchestratorConversationModel {
     /// steer because none runs. Drives the working indicator and the steer choice.
     var agentWorking: Bool {
         var current = turns
-        current.streamReported(feed.conversation.runningTurns)
+        current.streamReported(feed.conversation.activeTurns)
         return current.isWorking
     }
 
@@ -208,7 +208,7 @@ final class OrchestratorConversationModel {
     /// Called whenever the stream changes: drops local bubbles the conversation now shows and
     /// refreshes detail when an event carries a newer revision.
     func streamChanged() async {
-        turns.streamReported(feed.conversation.runningTurns)
+        turns.streamReported(feed.conversation.activeTurns)
         let before = pending.count
         reconcilePending()
         if let summary, feed.latestRevision > summary.revision || pending.count < before {
@@ -222,7 +222,9 @@ final class OrchestratorConversationModel {
     /// not as the screen last showed it: the turn may have ended while the person typed. If the
     /// server still refuses the steer because no turn runs, the same text goes as a new message.
     func send(_ text: String, intent: ComposerIntent) {
-        guard summary != nil, composerUnavailableReason == nil else { return }
+        guard let summary, composerUnavailableReason == nil else { return }
+        // Fenced by the revision the person saw: a change meanwhile hands the draft back.
+        let revision = summary.revision
         let bubbleID = UUID().uuidString
         pending.append(PendingBubble(id: bubbleID, text: text, intent: intent, sentAt: .now, status: .sending))
         draft = ""
@@ -232,14 +234,13 @@ final class OrchestratorConversationModel {
             if intent == .steer {
                 // A failed read leaves what is known; the server refuses a steer that reaches no turn.
                 try? await feed.refresh(fetch)
-                turns.streamReported(feed.conversation.runningTurns)
+                turns.streamReported(feed.conversation.activeTurns)
                 if ArmadaKit.FollowUp.intent(requested: .steer, turnRunning: agentWorking) == .message {
                     chosen = .message
                     setIntent(.message, for: bubbleID)
                 }
             }
-            guard let revision = summary?.revision, await prepare(bubbleID, text: text, intent: chosen, revision: revision)
-            else { return }
+            guard await prepare(bubbleID, text: text, intent: chosen, revision: revision) else { return }
             await submit(bubbleID)
         }
     }
@@ -352,13 +353,23 @@ final class OrchestratorConversationModel {
     /// The steer reached no turn, so nothing was delivered: the turn ended. The same text is
     /// saved and sent once as a new message at the orchestrator's current revision.
     private func resendAsMessage(_ bubbleID: String, text: String, refused: String) async throws(ServiceFailure) -> OperationSummary {
-        turns.streamReported(feed.conversation.runningTurns)
+        turns.streamReported(feed.conversation.activeTurns)
         turns.noTurnRuns()
         setIntent(.message, for: bubbleID)
         await service.discard(handle: refused)
+        handles[bubbleID] = nil
         await load()
-        guard let revision = summary?.revision else { throw .rejected("This orchestrator can't be read right now. Your message was not sent.") }
-        let handle = try await service.prepareMutation(.message(text), orchestratorID: orchestratorID, expectedRevision: revision)
+        let handle: String
+        do throws(ServiceFailure) {
+            guard let revision = summary?.revision else { throw .offline }
+            handle = try await service.prepareMutation(.message(text), orchestratorID: orchestratorID, expectedRevision: revision)
+        } catch {
+            // Nothing was sent: never an unconfirmed bubble. The text goes back to the draft.
+            switch error {
+            case .signedOut, .noAccess, .staleRevision: throw error
+            default: throw .rejected("Your message was not sent. \(error.message)")
+            }
+        }
         handles[bubbleID] = handle
         return try await service.submit(handle: handle)
     }

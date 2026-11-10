@@ -95,7 +95,9 @@ private final class Screen {
     var activity = TurnActivity()
     var renders: [Bool] = []
     func show(_ events: [TurnEvent]) {
-        activity.streamReported(Set(events.filter { ["queued", "running"].contains($0.status) }.map(\.promptID)))
+        var active: [String: String] = [:]
+        for event in events { active[event.promptID] = ["queued", "running"].contains(event.status) ? event.status : nil }
+        activity.streamReported(active)
         renders.append(activity.isWorking)
     }
 }
@@ -224,16 +226,18 @@ private struct RecordingClock: Clock {
     #expect(sleeps.all == [.seconds(2), .seconds(6)])
 
     // A steer refused because no turn runs clears it at once, though the stream still lists the
-    // turn; the next turn the stream reports counts again.
+    // turn; a turn the stream reports anew (another one, or a queued one now running) counts again.
     var activity = TurnActivity()
-    activity.streamReported(["p1"])
+    activity.streamReported(["p1": "running", "p2": "queued"])
     activity.noTurnRuns()
     #expect(!activity.isWorking)
-    activity.streamReported(["p1"])
+    activity.streamReported(["p1": "running", "p2": "queued"])
     #expect(!activity.isWorking)
-    activity.streamReported(["p1", "p2"])
+    activity.streamReported(["p1": "running", "p2": "running"])
     #expect(activity.isWorking)
-    activity.streamReported([])
-    activity.streamReported(["p1"])
+    activity.streamReported(["p1": "running", "p3": "queued"])
+    #expect(activity.isWorking)
+    activity.streamReported([:])
+    activity.streamReported(["p1": "running"])
     #expect(activity.isWorking)
 }
