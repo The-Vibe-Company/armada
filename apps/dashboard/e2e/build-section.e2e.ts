@@ -95,6 +95,15 @@ for (const mobile of [false, true]) {
     await expect(createDialog(page)).toBeHidden();
     await expect(page).not.toHaveURL(/[?&]item=/);
     await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+
+    // With a row's panel open beside the list, closing the dialog still gives the focus back to New.
+    if (!mobile) {
+      await goldenPanel(page, "shared-golden");
+      await openCreate(page);
+      await page.keyboard.press("Escape");
+      await expect(createDialog(page)).toBeHidden();
+      await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+    }
   });
 }
 

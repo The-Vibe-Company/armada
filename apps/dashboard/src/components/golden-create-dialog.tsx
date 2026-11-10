@@ -2,9 +2,10 @@
 
 import type { GoldenBuildStatus } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { goldenBuildStatus } from "@/app/actions/goldens";
 import { CreateDialog } from "@/components/create-dialog";
+import { ITEM_PARAM } from "@/lib/resource-list";
 
 /**
  * The Environments page's create flow (#898), the dashboard's `CreateDialog` pattern. A build the page tracks in its
@@ -21,20 +22,27 @@ export function GoldenCreateDialog({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(initialOpen);
+  // The row selected when the dialog opened: a different one at close means "Rebuild X" handed off to its panel.
+  const itemAtOpen = useRef<string | null>(null);
+  const param = `build.create.${orgId}`;
   return (
     <>
-      {!open && <BuildFollower param={`build.create.${orgId}`} />}
+      {!open && <BuildFollower key={param} param={param} />}
       <CreateDialog
         label="New"
         title="Create a golden"
         description="Repositories, branches and init commands, built once and saved as a snapshot."
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => {
+          if (next) itemAtOpen.current = currentItem();
+          setOpen(next);
+        }}
         className="sm:max-w-3xl"
         onCloseAutoFocus={(event) => {
           // Closed by choosing an environment to rebuild instead: the focus stays on its panel, not on New.
           const title = document.getElementById("resource-panel-title");
-          if (title && !document.getElementById("resource-panel")?.hidden) {
+          const item = currentItem();
+          if (title && item !== null && item !== itemAtOpen.current) {
             event.preventDefault();
             title.focus();
           }
@@ -46,6 +54,10 @@ export function GoldenCreateDialog({
   );
 }
 
+function currentItem(): string | null {
+  return new URLSearchParams(window.location.search).get(ITEM_PARAM);
+}
+
 const ACTIVE: readonly GoldenBuildStatus["state"][] = ["queued", "running"];
 
 /**
@@ -54,20 +66,30 @@ const ACTIVE: readonly GoldenBuildStatus["state"][] = ["queued", "running"];
  */
 function BuildFollower({ param }: { param: string }) {
   const [status, setStatus] = useState<GoldenBuildStatus | null>(null);
+  // Reads stopped (the 2-minute bound or a failed read) while the build was still running.
+  const [stopped, setStopped] = useState(false);
   useEffect(() => {
-    const jobId = new URLSearchParams(window.location.search).get(param);
-    if (!jobId) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + 120_000;
     const read = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const jobId = params.get(param);
+      if (!jobId) {
+        // Closed while the admission was in flight: its job id lands in the URL when the answer comes back.
+        if (params.has(`build-key.${param.slice("build.".length)}`) && Date.now() < deadline)
+          timer = setTimeout(read, 2000);
+        return;
+      }
       try {
         const next = await goldenBuildStatus(jobId);
         if (!active) return;
         setStatus(next);
-        if (ACTIVE.includes(next.state) && Date.now() < deadline) timer = setTimeout(read, 2000);
+        if (!ACTIVE.includes(next.state)) return;
+        if (Date.now() < deadline) timer = setTimeout(read, 2000);
+        else setStopped(true);
       } catch {
-        // A failed read leaves the last state; New shows the form, which reads the job again.
+        if (active) setStopped(true);
       }
     };
     void read();
@@ -77,7 +99,7 @@ function BuildFollower({ param }: { param: string }) {
     };
   }, [param]);
   if (!status) return null;
-  const { icon, text } = followed(status);
+  const { icon, text } = followed(status, stopped);
   return (
     <p
       role="status"
@@ -91,7 +113,7 @@ function BuildFollower({ param }: { param: string }) {
 }
 
 /** The line beside New for the build's last read state. */
-function followed(status: GoldenBuildStatus): { icon: ReactNode; text: string } {
+function followed(status: GoldenBuildStatus, stopped: boolean): { icon: ReactNode; text: string } {
   if (status.state === "succeeded")
     return {
       icon: <CheckCircle2Icon aria-hidden className="size-4 text-success" />,
@@ -102,5 +124,7 @@ function followed(status: GoldenBuildStatus): { icon: ReactNode; text: string } 
       icon: <CircleAlertIcon aria-hidden className="size-4 text-destructive" />,
       text: "Build failed: open New for details",
     };
+  if (stopped)
+    return { icon: <CircleAlertIcon aria-hidden className="size-4" />, text: "Still building: open New to check" };
   return { icon: <Loader2Icon aria-hidden className="size-4 animate-spin" />, text: `Building (${status.phase})` };
 }
