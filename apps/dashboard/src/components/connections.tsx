@@ -29,6 +29,7 @@ import {
   updateConnectionMetadata,
 } from "@/app/actions/connections";
 import { SubmitButton } from "@/components/action-form";
+import { CreateDialog } from "@/components/create-dialog";
 import { StateCell } from "@/components/state-cell";
 import {
   AlertDialog,
@@ -149,26 +150,19 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
 }
 
 /**
- * The Tools page's add flow (#896): a centred dialog over the list rather than a panel beside it, since adding a
- * server is one short, focused form. Catalog services are not repeated here: each is connected from its card in the
- * page's Services section. Every opening starts a clean form.
+ * The Tools page's add flow (#896), the dashboard's {@link CreateDialog} pattern: one short form for a custom server.
+ * Catalog services are not repeated here: each is connected from its card in the page's Services section.
  */
 export function AddServerDialog({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button data-add-server>
-          <PlusIcon /> Add server
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Add a custom server</DialogTitle>
-          <DialogDescription>Any MCP server by URL, or a command that runs in the sandbox.</DialogDescription>
-        </DialogHeader>
-        <AddConnectionForm orgId={orgId} orgName={orgName} isAdmin={isAdmin} />
-      </DialogContent>
-    </Dialog>
+    <CreateDialog
+      label="Add server"
+      title="Add a custom server"
+      description="Any MCP server by URL, or a command that runs in the sandbox."
+      triggerAttrs={{ "data-add-server": "" }}
+    >
+      <AddConnectionForm orgId={orgId} orgName={orgName} isAdmin={isAdmin} />
+    </CreateDialog>
   );
 }
 
