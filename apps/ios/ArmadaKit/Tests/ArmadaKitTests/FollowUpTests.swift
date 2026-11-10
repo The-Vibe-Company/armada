@@ -65,7 +65,7 @@ private func refusedForNoTurn(_ receipt: OrchestratorOperation) -> Bool {
     FollowUp.refusedForNoRunningTurn(kind: receipt.kind.rawValue, state: receipt.state.rawValue, errorCode: receipt.errorCode)
 }
 
-/// One prompt status as the conversation stream reports it; the same id re-sent is a newer body.
+/// One prompt status as the conversation stream reports it; the latest status of a prompt wins.
 private struct TurnEvent: Identifiable, Equatable, Sendable {
     let id: String
     let promptID: String
@@ -128,8 +128,8 @@ private struct RecordingClock: Clock {
     // The person opens the conversation while the first turn runs: the composer offers Steer.
     let stream = TurnStream([
         page([TurnEvent(id: "e1", promptID: "p1", status: "running")], cursor: "c1"),
-        // It finishes while they type; Boat re-sends the prompt with its newer status.
-        page([TurnEvent(id: "e1", promptID: "p1", status: "finished")], cursor: "c2"),
+        // It finishes while they type: the server publishes the turn's final status (#847).
+        page([TurnEvent(id: "e2", promptID: "p1", status: "finished")], cursor: "c2"),
     ])
     let loader = ConversationLoader<TurnEvent>(key: "orchestrator:orch-a", cache: nil)
     let screen = Screen()
@@ -208,7 +208,8 @@ private struct RecordingClock: Clock {
 @Test func theWorkingIndicatorClearsOnTheReadThatShowsTheTurnFinished() async {
     let stream = TurnStream([
         page([TurnEvent(id: "e1", promptID: "p1", status: "running")], cursor: "c1"),
-        page([TurnEvent(id: "e1", promptID: "p1", status: "finished")], cursor: "c2"),
+        // No follow-up is sent: the server's published completion is the only new event.
+        page([TurnEvent(id: "e2", promptID: "p1", status: "finished")], cursor: "c2"),
     ])
     let loader = ConversationLoader<TurnEvent>(key: "orchestrator:orch-a", cache: nil)
     let screen = Screen()

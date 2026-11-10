@@ -131,6 +131,9 @@ enum ConversationProjection {
         let shown = items.filter { item in
             if superseded.contains(item.key) || hiddenNotices.contains(item.key) { return false }
             if case .assistant(let text, let streaming, _) = item.kind, text.isEmpty, !streaming { return false }
+            // A status-only prompt (the server's published completion of a turn whose own prompt
+            // event is on an older page) updates the turn and is never an empty bubble.
+            if case .user(let text, _, _) = item.kind, text.isEmpty { return false }
             return true
         }
 
