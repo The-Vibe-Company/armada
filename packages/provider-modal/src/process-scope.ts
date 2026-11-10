@@ -15,7 +15,22 @@ function category(row){
   let comm="";try{comm=readFileSync("/proc/"+row.pid+"/comm","utf8").trim();}catch{}
   return comm==="codex"?41:["bun","bun.exe","node"].includes(comm)?42:row.uid===0?43:44;
 }
-let survivorCode=40;
+let survivorCode=40, survivor;
+const roots=["/home/user/.armada-runtime","/home/user/.codex","/home/user/.claude","/home/user/.claude.json"];
+const inside=p=>roots.some(root=>p===root||p.startsWith(root+"/")||p.startsWith(root+" (deleted)"));
+function nameClass(name){return ["bun","bun.exe"].includes(name)?"bun":name==="node"?"node":name==="codex"?"codex":name==="claude"?"claude":["sshd","sshd-session","sshd-auth"].includes(name)?"ssh":"other";}
+function names(row){
+  let comm="unreadable",exe="unreadable",runner=false;
+  try{comm=nameClass(readFileSync("/proc/"+row.pid+"/comm","utf8").trim());}catch{}
+  try{exe=nameClass(readlinkSync("/proc/"+row.pid+"/exe").replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch{}
+  if(comm==="bun"||exe==="bun")try{runner=readFileSync("/proc/"+row.pid+"/cmdline","utf8").split("\0").includes("/opt/armada/main.js");}catch{}
+  return {comm,exe,runner,owned:runner||[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
+}
+function managedState(row){
+  let unreadable=false;try{if(inside(readlinkSync("/proc/"+row.pid+"/cwd")))return "managed";}catch{unreadable=true;}
+  try{for(const fd of readdirSync("/proc/"+row.pid+"/fd")){try{if(inside(readlinkSync("/proc/"+row.pid+"/fd/"+fd)))return "managed";}catch(e){if(!["ENOENT","ESRCH"].includes(e.code))unreadable=true;}}}catch{unreadable=true;}
+  return unreadable?"unreadable":"outside";
+}
 try {
 const input=JSON.parse(await Bun.stdin.text());
 // The SDK binds the physical sandbox and generation. Self namespace links are supplementary
@@ -51,7 +66,37 @@ if(input.op==="capture"){
   const owned=new Map(),failures=new Map();
   const key=row=>row.pid+":"+row.start;
   const live=row=>row&&!['Z','X'].includes(row.state);
-  function excluded(row){return controls.get(row.pid)===row.start||ancestry.get(row.pid)===row.start;}
+  // Root control descendants are infrastructure, not ownership of a managed turn. Do not
+  // extend trust from PID1 (orphans) or through a user process (sudo/double-fork writers).
+  function role(row){
+    if(row.pid===1&&controls.get(1)===row.start)return "pid1";
+    if(ancestry.get(row.pid)===row.start)return "scrub_ancestor";
+    const known=names(row);
+    if(known.runner)return "armada_runner"; // It still owns journal descriptors: must terminate.
+    if(known.owned)return "harness";
+    if(controls.get(row.pid)===row.start)return "baseline_control";
+    if(row.uid!==0)return "writer";
+    const seen=new Set([row.pid]);let parent=row;
+    for(let depth=0;depth<128;depth++){
+      if(parent.parent<=1||seen.has(parent.parent))break;
+      parent=identity(parent.parent);if(!parent||parent.uid!==0)break;
+      seen.add(parent.pid);
+      if(names(parent).owned)break;
+      if(controls.get(parent.pid)===parent.start||ancestry.get(parent.pid)===parent.start)return "platform_control_child";
+    }
+    return "writer";
+  }
+  function excluded(row){
+    const kind=role(row);
+    if(kind==="pid1"||kind==="scrub_ancestor")return true;
+    return ["baseline_control","platform_control_child"].includes(kind)&&managedState(row)!=="managed";
+  }
+  function describe(rows){const row=rows[0],known=names(row);return {
+    processUidClass:row.uid===0?"root":"user",processIsAncestor:ancestry.get(row.pid)===row.start,processIsPid1:row.pid===1,
+    processCommClass:known.comm,processExeClass:known.exe,processRole:role(row),processSurvivorCount:Math.min(rows.length,4096),
+    processStateClass:["T","t"].includes(row.state)?"stopped":row.state==="D"?"blocked":["R","S","I"].includes(row.state)?"running":"unknown",
+    processManagedState:managedState(row),
+  };}
   function pin(row){
     const old=owned.get(row.pid);if(old&&old.start===row.start)return old;
     if(old?.fd>=0)libc.symbols.close(old.fd);owned.delete(row.pid);
@@ -83,12 +128,12 @@ if(input.op==="capture"){
       for(const row of rows){const pinned=pin(row);if(pinned){signal(pinned,19);signal(pinned,9);}}
       await Bun.sleep(10);
     }
-    const remaining=all().find(row=>!excluded(row)&&live(row));
-    if(remaining){survivorCode=category(remaining)+(failures.has(key(remaining))?20:0);throw Error("writer_survived");}
+    const remaining=all().filter(row=>!excluded(row)&&live(row));
+    if(remaining.length){survivor=describe(remaining);survivorCode=category(remaining[0])+(failures.has(key(remaining[0]))?20:0);throw Error("writer_survived");}
   }finally{if(libc){for(const row of owned.values())if(row.fd>=0)libc.symbols.close(row.fd);libc.close();}}
   console.log(JSON.stringify({inspections:[...inspections]}));
 }
-}catch{console.log(JSON.stringify({inspections:[...inspections]}));process.exit(survivorCode);}
+}catch{console.log(JSON.stringify({inspections:[...inspections],survivor}));process.exit(survivorCode);}
 `;
 const PROCESS_FAILURES: Readonly<Record<number, string>> = {
   40: "unknown",
@@ -108,9 +153,37 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
   const output = child.stdout?.readText?.() ?? Promise.resolve("");
   const [exit, text] = await Promise.all([child.wait(), output]);
   let inspection: string | undefined;
+  const survivorDetails: Record<string, string | number | boolean> = {};
   if (!capture || exit !== 0) {
     try {
-      const values = JSON.parse(text).inspections;
+      const parsed = JSON.parse(text);
+      const enums: Record<string, readonly string[]> = {
+        processUidClass: ["root", "user", "unknown"],
+        processCommClass: ["armada_runner", "codex", "claude", "bun", "node", "ssh", "other", "unreadable"],
+        processExeClass: ["armada_runner", "codex", "claude", "bun", "node", "ssh", "other", "unreadable"],
+        processRole: [
+          "pid1",
+          "scrub_ancestor",
+          "baseline_control",
+          "platform_control_child",
+          "armada_runner",
+          "harness",
+          "writer",
+        ],
+        processStateClass: ["running", "stopped", "blocked", "unknown"],
+        processManagedState: ["managed", "outside", "unreadable"],
+      };
+      for (const [field, allowed] of Object.entries(enums)) {
+        const value: unknown = parsed.survivor?.[field];
+        if (typeof value === "string" && allowed.includes(value)) survivorDetails[field] = value;
+      }
+      for (const field of ["processIsAncestor", "processIsPid1"]) {
+        const value: unknown = parsed.survivor?.[field];
+        if (typeof value === "boolean") survivorDetails[field] = value;
+      }
+      const count = parsed.survivor?.processSurvivorCount;
+      if (Number.isSafeInteger(count) && count >= 1 && count <= 4096) survivorDetails.processSurvivorCount = count;
+      const values = parsed.inspections;
       if (Array.isArray(values))
         inspection = values.findLast(
           (value: unknown) =>
@@ -131,6 +204,7 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
       retryable: false,
       details: {
         modalFailure: "process_quiescence_failed",
+        ...survivorDetails,
         ...(inspection ? { processInspection: inspection } : {}),
         processCategory: PROCESS_FAILURES[exit >= 50 && exit < 80 ? 40 + (exit % 10) : exit] ?? "unknown",
         processFailure:
