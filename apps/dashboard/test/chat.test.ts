@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type ChatItem, conversationsOf, eventsOf, projectChat, toolText } from "../src/lib/chat.ts";
 import { type ChatEvent, mergeEvents } from "../src/lib/events.ts";
+import { describeFailure } from "../src/lib/failure.ts";
 
 const turn = { conversationId: "c1", promptId: "p1" };
 const prompt = (id: string, status: "queued" | "running" | "finished" | "failed" | "interrupted", extra = {}) =>
@@ -111,6 +112,20 @@ describe("chat projection", () => {
     expect(chat.items.at(-1)).toMatchObject({ reason: "usage_limit" });
     expect(chat.technical.map((event) => event.id)).toEqual(["x"]);
     expect(projectChat([prompt("a", "running")]).running).toBe(true);
+  });
+
+  test("a finished turn with an expired-credential event fails and points to the credentials page", () => {
+    const chat = projectChat([
+      prompt("a", "running"),
+      { id: "x", at: 2, kind: "other", type: "auth_expiry", data: { message: "OAuth token expired" }, ...turn },
+      prompt("b", "finished"),
+    ]);
+    expect(view(chat.items)).toEqual(["user:Fix the test", "outcome:failed"]);
+    const outcome = chat.items.at(-1);
+    expect(describeFailure(outcome?.kind === "outcome" ? outcome.reason : null)).toMatchObject({
+      title: "Credential expired",
+      fix: { href: "/credentials" },
+    });
   });
 
   test("each conversation shows its own events and the sandbox's, recorded conversations first", () => {
