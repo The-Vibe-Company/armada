@@ -15,7 +15,8 @@ const GITHUB_INSTALLATIONS_URL = "https://api.github.com/user/installations";
 const REQUEST_TIMEOUT_MS = 15_000;
 const INSTALLATIONS_PER_PAGE = 100;
 const INSTALLATIONS_MAX_PAGES = 10;
-const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
+/** A new sandbox must not start on the tail of its owner's eight-hour token window. */
+const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 60 * 60 * 1000;
 
 export const GITHUB_CLIENT_ID_ENV = "GITHUB_APP_CLIENT_ID";
 export const GITHUB_CLIENT_SECRET_ENV = "GITHUB_APP_CLIENT_SECRET";
@@ -302,7 +303,7 @@ export type GitHubStatus = "connected" | "not_connected" | "revoked" | "unavaila
 
 /** The answer of {@link resolveGitHubAccess}: a token for the sandbox, or why there is none. Launch never fails for lack of GitHub. */
 export type GitHubAccess =
-  | { status: "connected"; token: string; identity: GitIdentity }
+  | { status: "connected"; token: string; identity: GitIdentity; expiresAt?: Date }
   | { status: Exclude<GitHubStatus, "connected">; message: string };
 
 export const GITHUB_NOT_CONNECTED =
@@ -353,6 +354,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
           store,
           userId,
           true,
+          connection.accessExpiresAt,
         );
       } catch (error) {
         if (error instanceof EncryptionKeyError) throw error;
@@ -401,7 +403,16 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
     };
     if (!(await store.rotateGitHubToken(userId, connection.refreshTokenEnc, next)))
       throw new Error("GitHub connection changed while its refresh lock was held.");
-    return connectedFromToken(connection, tokens.accessToken, request, store, userId);
+    // Persist rotation even when GitHub issues a surprisingly short lifetime: never replay it.
+    if (
+      tokens.accessExpiresAt.getTime() <=
+      (deps.now ?? (() => new Date()))().getTime() + ACCESS_TOKEN_EXPIRY_MARGIN_MS
+    )
+      return {
+        status: "unavailable",
+        message: "GitHub issued a token with less than one hour remaining; GitHub was not set up in this sandbox.",
+      };
+    return connectedFromToken(connection, tokens.accessToken, request, store, userId, false, tokens.accessExpiresAt);
   });
 }
 
@@ -412,6 +423,7 @@ async function connectedFromToken(
   store: GitHubConnectionStore,
   userId: string,
   rejectCachedAccess = false,
+  expiresAt?: Date,
 ): Promise<GitHubAccess> {
   let user: GitHubUser;
   try {
@@ -429,7 +441,7 @@ async function connectedFromToken(
     };
   if (user.login !== connection.login || user.name !== connection.name)
     await store.updateGitHubProfile(userId, user).catch(() => {});
-  return { status: "connected", token: accessToken, identity: gitIdentity(user) };
+  return { status: "connected", token: accessToken, identity: gitIdentity(user), ...(expiresAt ? { expiresAt } : {}) };
 }
 
 /** The environment variables `gh` and most tools read. */

@@ -13,7 +13,7 @@ import {
   toHarnessCredentials,
 } from "@armada/core";
 
-import { sshHydrateAuthState } from "@armada/core/server";
+import { sshHydrateAuthState, sshHydrateGitHubToken, VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
@@ -40,6 +40,19 @@ export function launchCredentials(
   ownership?: ModelAuthOwnership,
 ): LaunchCredentialResolver {
   return {
+    async refreshGitHub(actor, provider, sandboxId) {
+      if (!github) throw new VaultError("unavailable", "GitHub authorization is not configured.");
+      if (provider.id !== "boat" || provider.configureGitHub)
+        throw new VaultError("unavailable", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
+      const access = await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId);
+      if (access.status !== "connected" || !access.expiresAt)
+        throw new VaultError(
+          "unavailable",
+          access.status === "connected" ? "GitHub expiry is unavailable." : access.message,
+        );
+      await sshHydrateGitHubToken(provider, sandboxId, access.token, access.expiresAt);
+      return { login: access.identity.login };
+    },
     async admit(actor, credentials, sandboxId) {
       if (!credentials.codexAuthJson) return;
       if (!ownership) return; // Embedders without managed auth retain their legacy native path.

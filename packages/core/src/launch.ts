@@ -59,6 +59,9 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
+  /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
+  refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
+
   resolve(
     actor: GoldenActor,
     harness: Harness,

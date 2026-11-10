@@ -170,6 +170,7 @@ Usage:
   armada org current                        Show selected organization
   armada account status|logout              Account identity / revoke current login session
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
+  armada github refresh <sandbox>
                                            Browser authorization waits for real completion; --no-browser prints URL
   armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
   armada org invitations list [--org <name|UUID>] [--json]

@@ -388,6 +388,33 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
 
   tool(
+    "github_refresh",
+    {
+      title: "Repair sandbox GitHub access",
+      description:
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Does not reconnect or rotate a healthy token. Only the sandbox owner may request this.",
+      input: { id },
+      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+    },
+    async (args) => {
+      const { sandbox: found, provider } = await live(args.id);
+      if (found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      const machine = await provider.get(found.providerSandboxId);
+      if (!["ready", "running"].includes(machine.state))
+        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
+      if (!context.launchCredentials.refreshGitHub)
+        throw new ToolError("unavailable", "GitHub repair is not configured.");
+      const result = await context.launchCredentials.refreshGitHub(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        provider,
+        found.providerSandboxId,
+      );
+      return { id: found.id, status: "connected" as const, login: result.login };
+    },
+  );
+
+  tool(
     "golden_list",
     {
       title: "List goldens",

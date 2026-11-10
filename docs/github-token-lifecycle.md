@@ -1,50 +1,76 @@
 # GitHub token lifecycle and incident #879
 
-## Established mechanism, not a production attribution
+## Cause
 
 [GitHub documents](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)
 that exchanging a refresh token invalidates **both** the old refresh token and its
 access token. An eight-hour advertised expiry is not a guarantee that an injected
-token remains valid for eight hours. Refresh elsewhere can invalidate it sooner.
-No token-count-limit hypothesis is needed to explain that mechanism.
+token remains valid for eight hours after the sandbox starts.
 
-Current `resolveGitHubAccess` already persists one encrypted access token per
-owner, serializes refresh under the owner lock, reuses it outside the five-minute
-expiry margin and checks `GET /user` before returning it. A cached 401 triggers
-one serialized renewal. Neither concurrent nor sequential launches should rotate
-a healthy token. The regression in `packages/core/test/github.test.ts` models
-GitHub's invalidation rule and checks twelve concurrent plus twelve sequential
-resolutions, then demonstrates the effect of a genuine expiry-driven rotation.
-It does not establish which server revision or refresh caller caused the reported
-production incident; that requires deployment/incident evidence. Do not describe
-this PR as proving that the current resolver refreshes on every launch.
+The coordinator supplied this sanitized production timeline (2026-11-10 UTC,
+server `2fce2ef6`, deployed 11:31:38): the owner's connection was updated at
+11:44:43.28 with access expiry 19:44:43.72. Sandboxes launched at 11:24, 11:34,
+11:38, 11:42 and 11:44:28 subsequently failed with 401. Sandboxes launched at
+11:44:44 and 11:46 worked. The earlier ones retained the previous owner's token,
+not a new eight-hour token of their own. A launch at 11:38 could reuse a token
+with about six minutes left because the old cache margin was only five minutes.
+The expiry-boundary refresh then invalidated all remaining copies of that token.
+No token-count-limit hypothesis is needed. This PR performed no production access.
 
-## Recovery and runtime gate
+The regression in `packages/core/test/github.test.ts` models GitHub's invalidation
+rule. Twelve concurrent plus twelve sequential resolutions share a healthy token;
+a resolution six minutes before expiry must renew it, and the fake GitHub rejects
+old copies. That case fails with the former five-minute margin and passes with the
+new one-hour minimum remaining lifetime. Unexpectedly short freshly issued tokens
+are reported as unavailable rather than injected. Rotation is persisted first so
+its refresh token is never replayed.
 
-A static `GH_TOKEN` already inherited by a running process cannot be repaired by
-updating the database cache or reconnecting the account. Reconnecting also changes
-the connection epoch. Never paste tokens into `exec`, prompts, command arguments,
-logs or repository files as a workaround.
+## Legacy recovery, without the runtime gate or relaunch
 
-The existing managed GitHub runtime obtains validated tokens on demand instead
-of relying on the launch token. It is opt-in via
-`ARMADA_GITHUB_RUNTIME_ENABLED=true`; this document does not enable it or authorize
-a production change. With that runtime enabled and supported by the provider,
-the next normal `armada send <sandbox> "..."` reconciles the running sandbox's
-broker before the prompt. Stop/resume also reconciles the physical generation.
-This is the existing recovery route without relaunching. Its staging smoke gates
-(#822/#830/#825) must pass before an operator enables it. While the gate is off,
-there is no supported in-place legacy token repair command: this remains an
-explicit delivery gap for #879, not an implicit deployment prerequisite to hide.
+Run as the sandbox's owner:
+
+```sh
+armada github refresh <sandbox>
+```
+
+The HTTP operation and MCP `github_refresh` tool use the same owner-only policy.
+This repairs **running legacy Boat sandboxes** even with
+`ARMADA_GITHUB_RUNTIME_ENABLED` disabled. It reuses the owner's current validated
+token, renewing only near expiry or after rejection. It does not reconnect the
+account, change the model credential, restart the agent, or relaunch the machine.
+A stopped sandbox must first be resumed normally. An org admin cannot inject their
+identity into somebody else's sandbox.
+
+Private pinned SSH/stdin carries the token; never paste one into `exec`, prompts,
+argv, logs or repository files. The repair installs token-aware `gh` and `git`
+wrappers so even already-running agents' inherited stale `GH_TOKEN` is overridden
+on the next tool invocation. The token lives in ephemeral `/run`, outside the
+persisted home and golden snapshot; wrappers fail closed when it is absent or
+expired. Run the repair again after a reboot or subsequent owner-token rotation.
+Absolute preserved `.armada-original` binaries, custom clients that read the old
+environment directly, and already-started network requests are not updated.
+
+The one-hour launch minimum avoids handing a new sandbox a nearly expired token;
+it is not a promise against revocation or another refresh. Legacy environments
+still need this explicit repair after rotation. For automatic on-demand renewal,
+the existing managed GitHub runtime remains separately opt-in via
+`ARMADA_GITHUB_RUNTIME_ENABLED=true`: next-prompt and resume reconciliation install
+its broker, whose wrappers fetch validated credentials on demand. This PR neither
+changes that gate nor deploys it; #822/#830/#825 cover its enablement smoke checks.
+When the managed runtime is active, use the next normal prompt to reconcile it,
+not the legacy repair command.
 
 ## Operator production check (not run by this PR)
 
-1. Record the deployed revision and runtime gate state, without recording tokens.
+1. Record deployed revision and runtime gate state, without recording tokens.
 2. Launch twelve idle sandboxes as one owner, mixing concurrent and sequential
    launches. Run `gh api user --jq .login` in each; record status and login only.
 3. Launch a thirteenth, then recheck all thirteen. Every login must still match.
-4. In an isolated staging account, exercise expiry-driven renewal and recheck
-   older sandboxes through the managed wrappers. Confirm recovery on the next
-   prompt and after resume. Do not force rotation on a production account.
-5. A rejected launch token must produce a non-connected GitHub status/message,
-   never a successful GitHub setup claim. Provider/model launch may still succeed.
+4. In an isolated staging account, exercise expiry-driven renewal. Confirm the
+   legacy refresh command repairs older running sandboxes without relaunching,
+   including agents whose inherited environment is stale. Recheck `gh api user`
+   and a git credential operation. With managed runtime enabled, also test
+   next-prompt and resume recovery. Do not force rotation in production.
+5. A rejected or short-lived launch token must produce a non-connected GitHub
+   status/message, never a successful GitHub setup claim. Provider/model launch
+   may still succeed.

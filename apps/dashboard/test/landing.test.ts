@@ -78,11 +78,11 @@ describe("what the landing says", () => {
     expect(unknown).toEqual([]);
   });
 
-  test("installs the README's package and gives the sandbox's GitHub token the lifetime the CLI states", () => {
+  test("installs the README's package and does not promise a fresh GitHub token lifetime", async () => {
     expect(read(join(REPO, "README.md"))).toContain(INSTALL.replace(" -g ", " --global "));
     expect(SETUP[0]?.command).toBe(INSTALL);
-    // GitHub sets the user token's lifetime; the CLI tells it at every launch, and the landing must say the same.
-    expect(read(join(REPO, "packages/cli/src/run.ts"))).toContain(`token valid for ${GITHUB_TOKEN_HOURS} hours`);
+    const launch = (await landingTranscript()).find((entry) => entry.command.startsWith("armada launch "));
+    expect(launch?.output).toContain(`shared token; expires within ${GITHUB_TOKEN_HOURS} hours`);
   });
 
   test("seals keys the way it says: AES-GCM under a 256-bit key only", async () => {
