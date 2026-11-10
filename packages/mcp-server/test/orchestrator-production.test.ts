@@ -2,10 +2,12 @@ import { expect, test } from "bun:test";
 import * as core from "@armada/core/server";
 import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provider-modal";
 import type { Caller } from "../src/caller.ts";
+import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // SQL composition regression, not native conformance. Placement I/O is fake;
@@ -30,6 +32,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let throwLogger = false;
   let stopUnconfirmed = false;
   const lines: string[] = [];
+  const childPreparation: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
   const provider: core.Provider &
     Pick<ModalProvider, "checkpointOrchestrator" | "readOrchestratorCheckpoint" | "restoreOrchestratorCheckpoint"> = {
@@ -50,6 +53,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     },
     async exec(request) {
       const result = await placement.provider.exec(request);
+      if (request.command.startsWith("skillpack install ")) {
+        childPreparation.push("install");
+        return { ...result, stdout: catalogLock("codex") };
+      }
       return fault === "initialization" || (fault === "skills" && request.command.includes("/skills/armada-tools"))
         ? { ...result, exitCode: 127, stdout: privateText, stderr: privateText }
         : result;
@@ -57,6 +64,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     async stop(request) {
       if (stopUnconfirmed) throw new Error(privateText);
       return placement.provider.stop(request);
+    },
+    async prompt(request) {
+      childPreparation.push("prompt");
+      return placement.provider.prompt(request);
     },
     async get(id, options) {
       nativeReads++;
@@ -273,22 +284,51 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           body: JSON.stringify(body),
         }),
       );
-    const childResponse = await scoped(
-      "launch",
-      {
-        selection: {
-          goldenId: golden.id,
-          harness: "codex",
-          credentialId: account.id,
-          credentialVersion: account.version,
-          model: "gpt-6.1-sol",
-        },
-      },
-      "production-child",
-    );
+    childPreparation.length = 0;
+    const childSelection = {
+      goldenId: golden.id,
+      harness: "codex",
+      credentialId: account.id,
+      credentialVersion: account.version,
+      model: "gpt-6.1-sol",
+      skills: [catalogReference],
+      prompt: "Read the installed notes skill before coding.",
+    };
+    const childResponse = await scoped("launch", { selection: childSelection }, "production-child");
     expect(childResponse?.status).toBe(200);
     const childReceipt = (await childResponse?.json()) as { result: { state: string; sandboxId: string } };
     expect(childReceipt.result.state).toBe("succeeded");
+    expect(childPreparation).toEqual(["install", "prompt"]);
+    expect(
+      (
+        await sql.query<{ skills: unknown; conversation_ids: string[] }>(
+          "select skills,conversation_ids from public.sandboxes where id=$1",
+          [childReceipt.result.sandboxId],
+        )
+      ).rows[0],
+    ).toEqual({ skills: [catalogReceipt], conversation_ids: ["conv_2"] });
+    const unrelatedStore = createSqlData(sql)({ ...caller, userId: p.admin }).sandboxes;
+    await expect(unrelatedStore.recordSkills!(childReceipt.result.sandboxId, [])).rejects.toThrow(
+      "Skill receipts could not be recorded.",
+    );
+    const replayedChild = await scoped("launch", { selection: childSelection }, "production-child");
+    expect(await replayedChild?.json()).toEqual({ result: childReceipt.result });
+    const conflictingSkills = await scoped(
+      "launch",
+      {
+        selection: { ...childSelection, skills: ["example/other@1.0.0"] },
+      },
+      "production-child",
+    );
+    expect(conflictingSkills?.status).toBe(503);
+    expect(await conflictingSkills?.json()).toEqual({
+      error: {
+        code: "scoped_operation_unavailable",
+        message: "scoped_operation_unavailable",
+      },
+    });
+    expect(childPreparation).toEqual(["install", "prompt"]);
+
     expect(
       (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
     ).toEqual([{ sandbox_id: childReceipt.result.sandboxId }]);

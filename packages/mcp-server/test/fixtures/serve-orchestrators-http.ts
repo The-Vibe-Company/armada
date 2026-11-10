@@ -10,6 +10,7 @@ import { ArmadaApiError, createArmadaApiClient } from "../../../cli/src/armada-a
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
+import { checkSandboxSkillLaunch } from "./sandbox-skill-launch.ts";
 import { catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
@@ -370,6 +371,8 @@ try {
     terminations: 0,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [],
     mcpConfigurations: 0,
     epochInstalls: 0,
   });
@@ -403,6 +406,8 @@ try {
     terminations: 1,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [],
     mcpConfigurations: 0,
     epochInstalls: 0,
   });
@@ -544,7 +549,7 @@ try {
       });
       const result = (await response.json()) as any;
       if (
-        status === 200 &&
+        (status === 200 || action === "steer") &&
         action !== "launch" &&
         response.status === 409 &&
         result.error?.code === "sandbox_not_ready"
@@ -647,8 +652,32 @@ try {
   assert.equal(blocked.detail.orchestrator.conversationId, null);
   assert.equal(effects.epochInstalls, epochsBeforeFailure, "No delegated authority after failed install");
   assert.equal(effects.modelCalls, callsBeforeFailure, "No first turn after failed install");
+  await checkSandboxSkillLaunch({
+    sql,
+    orgId,
+    body: {
+      golden: golden.name,
+      org: orgId,
+      provider: "modal",
+      harness: "codex",
+      credentialId: modelId,
+      connections: [],
+    },
+    allocations: () => effects.allocations,
+    prompts: () => effects.promptCalls,
+    stops: () => effects.terminations,
+    order: effects.skillLaunchOrder,
+    request: async (action, body) => {
+      const response = await socketFetch(`${origin}/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() };
+    },
+  });
   console.log(
-    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects })}`,
+    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", sandboxSkills: true, proxyRecovery: true, replayProviderReads, routes, effects })}`,
   );
 } finally {
   fake.release();

@@ -1,0 +1,53 @@
+[
+  {
+    "id": "0201febf-9439-4736-95fe-eb0e151bc38d",
+    "at": 1794314894284,
+    "kind": "prompt",
+    "promptId": "ce7a111e-df2a-48ea-8b1d-3bf1512ee9d5",
+    "text": "Reply with the single word ok.",
+    "status": "queued"
+  },
+  {
+    "id": "9d86440a-991d-4080-a61d-aaf961add4cd",
+    "at": 1794314894284,
+    "kind": "prompt",
+    "promptId": "ce7a111e-df2a-48ea-8b1d-3bf1512ee9d5",
+    "text": "Reply with the single word ok.",
+    "status": "running"
+  },
+  {
+    "id": "692d4e59-453e-444c-b393-a86fb77a0f9d",
+    "at": 1794314897068,
+    "kind": "other",
+    "type": "result",
+    "promptId": "ce7a111e-df2a-48ea-8b1d-3bf1512ee9d5",
+    "data": {
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 4,
+        "cache_creation_input_tokens": 19047,
+        "cache_read_input_tokens": 0,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "modelUsage": {
+        "claude-opus-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 4,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 19047,
+          "thinkingTokens": 0
+        }
+      }
+    }
+  },
+  {
+    "id": "cf9bd9aa-e110-46e5-8227-7a9d2cf0be38",
+    "at": 1794314897378,
+    "kind": "prompt",
+    "promptId": "ce7a111e-df2a-48ea-8b1d-3bf1512ee9d5",
+    "text": "Reply with the single word ok.",
+    "status": "finished"
+  }
+]

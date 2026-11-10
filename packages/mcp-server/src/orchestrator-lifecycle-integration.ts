@@ -1,4 +1,4 @@
-import type { OrchestratorDetail } from "@armada/core";
+import { type OrchestratorDetail, type SandboxUsage, sumSandboxUsage, withUsageTotals } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { recordOrchestratorActivity } from "./orchestrator-activity.ts";
 import { OrchestratorRuntime, type OrchestratorRuntimeOptions } from "./orchestrator-runtime.ts";
@@ -155,7 +155,26 @@ export function lifecycleDetail(sql: Sql): NonNullable<OrchestratorRuntimeOption
         [id],
       )
     ).rows[0];
+    const usage =
+      (
+        await sql.query<{ own: SandboxUsage | null }>(
+          `select case when s.id is null then null else public.sandbox_usage(s) end as own from public.orchestrators o
+       left join public.sandboxes s on s.id=o.sandbox_id and s.owner_id=$2 and s.org_id=$3
+       where o.id=$1 and o.owner_id=$2 and o.org_id=$3`,
+          [id, ownerId, orgId],
+        )
+      ).rows[0]?.own ?? null;
+    const childUsage = (
+      await sql.query<{ usage: SandboxUsage | null }>(
+        `select case when s.id is null then null else public.sandbox_usage(s) end as usage
+       from public.orchestrator_children c left join public.sandboxes s
+       on s.id=c.sandbox_id and s.owner_id=$2 and s.org_id=$3
+       where c.orchestrator_id=$1`,
+        [id, ownerId, orgId],
+      )
+    ).rows;
     return {
+      usage: { own: withUsageTotals(usage), children: sumSandboxUsage(childUsage.map((row) => row.usage)) },
       waits: waits.map((w) => ({
         id: w.id,
         orchestratorId: id,
