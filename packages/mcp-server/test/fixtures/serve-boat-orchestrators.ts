@@ -366,6 +366,13 @@ try {
     assert.equal(detail.orchestrator.state, "blocked");
     const retirementRevision = revision;
     const recovered = await act("recover");
+    const retired: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
+    assert(
+      retired.events.some(
+        (item) => item.kind === "agent" && item.event.kind === "message" && item.event.text === "unread archival tail",
+      ),
+      JSON.stringify(retired),
+    );
     const physicalStops = stops;
     const replay = await cli([
       "recover",
