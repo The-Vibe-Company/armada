@@ -127,10 +127,13 @@
   dd {
     font-variant-numeric: tabular-nums;
   }
-  /* The entrance and exit animations (tw-animate-css) stand still for a viewer who asked for reduced motion. */
+  /*
+   * The entrance and exit animations (tw-animate-css) stand still for a viewer who asked for reduced motion. Matched on
+   * the class attribute, so a variant such as `data-[state=open]:animate-in` (a dialog) is caught too.
+   */
   @media (prefers-reduced-motion: reduce) {
-    .animate-in,
-    .animate-out {
+    [class*="animate-in"],
+    [class*="animate-out"] {
       animation: none !important;
     }
   }
