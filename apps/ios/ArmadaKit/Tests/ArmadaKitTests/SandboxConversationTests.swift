@@ -154,3 +154,18 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     #expect(!EventStream.merge([Entry(id: "next", body: "x")], into: &events))
     #expect(events.count == 3)
 }
+
+@Test func aCatchUpReadAsksTheServerForTheRestOfTheHistoryInOneResponse() async throws {
+    let (client, transport) = try await signedIn([
+        .init(status: 200, body: #"{"events":[],"cursor":"c1","hasMore":true,"settled":true}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"c9","hasMore":false,"settled":true}"#)
+    ])
+    let first = try await client.sandboxEvents(id: sandboxID)
+    let rest = try await client.sandboxEvents(id: sandboxID, cursor: first.cursor, all: true)
+    #expect(rest.cursor == "c9")
+    let requests = Array(await transport.requests.dropFirst(2))
+    let bodies = try requests.map { try JSONSerialization.jsonObject(with: $0.httpBody ?? Data()) as? NSDictionary }
+    // An ordinary page never asks for more; the catch-up read does, from the opaque cursor.
+    #expect(bodies[0] == ["id": sandboxID, "org": "org-a"])
+    #expect(bodies[1] == ["id": sandboxID, "org": "org-a", "cursor": "c1", "all": true])
+}

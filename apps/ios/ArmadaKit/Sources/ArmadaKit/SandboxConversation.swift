@@ -125,11 +125,14 @@ extension ArmadaClient {
         return result
     }
 
-    /// One page of events after `cursor` (from the start when nil), in server order.
-    public func sandboxEvents(id: String, cursor: String? = nil) async throws -> SandboxEventPage {
-        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String? }
+    /// One page of events after `cursor` (from the start when nil), in server order. With `all`, the
+    /// server reads on from `cursor` for as many pages as one response allows (`armada logs --all`)
+    /// and returns them together with the cursor after the last one; `hasMore` stays true when even
+    /// that was not the end.
+    public func sandboxEvents(id: String, cursor: String? = nil, all: Bool = false) async throws -> SandboxEventPage {
+        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let all: Bool? }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
-        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor))
+        return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor, all: all ? true : nil))
     }
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
