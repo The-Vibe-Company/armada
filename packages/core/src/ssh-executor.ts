@@ -354,6 +354,19 @@ function command(
           phase = match[1]!;
           exitCode = match[2];
         }
+        const warning =
+          /^ARMADA_BUILD_WARNING skillpack (download_unavailable|install_unavailable|user_local_only)$/.exec(line);
+        if (warning)
+          console.warn(
+            JSON.stringify({
+              event: "golden_skillpack_warning",
+              reason: warning[1],
+              action:
+                warning[1] === "user_local_only"
+                  ? "use_user_local_cli"
+                  : "allow_github_egress_and_rebuild_before_using_skills",
+            }),
+          );
       }
     });
     c.on("error", () => {

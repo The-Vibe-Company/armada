@@ -244,9 +244,12 @@ receipt and server diagnostics use the same codes):
 | `skillpack_timeout` | Check guest resources and registry connectivity; inspect before retrying. |
 | `skillpack_receipt_invalid` | Rebuild with a compatible native CLI; inspect project permissions and lockfile without exposing package contents. |
 | `skillpack_transport_failed` | Check SSH connectivity, Node, Bash, `flock`, home permissions and pinned-host access. |
-| `skillpack_install_failed` | Inspect the golden's local install prerequisites; provide only the closed diagnostic stage to support, not raw CLI output. |
+| `skillpack_credential_unreadable` | Re-store the personal/org key with `armada creds set skillpack --file <private-file>`; check server encryption-key configuration if this persists. |
+| `skillpack_process_failed` | Check guest process limits and CLI execution resources; no registry response was obtained. |
+| `skillpack_install_nonzero` | The native installer exited with an unsupported status; check CLI version/permissions and report the closed install-stage reason. |
+| `skillpack_install_state_invalid` | Check project directory permissions and native CLI compatibility; installation could not produce supported state. |
 
-Diagnostics distinguish `skills_auth`, `skills_install`, `skills_receipt` and
+Diagnostics distinguish `skills_credential` (stored-key resolution/validation), `skills_auth`, `skills_install`, `skills_receipt` and
 `skills_transport`. A private installation error settles the operation as
 `failed`, never `uncertain`: no delegated authority or conversation has started.
 Create attempts stop the failed allocation and publish `stopped` only after the
@@ -262,11 +265,20 @@ checks its repository-pinned SHA-256
 `8910925ff024eaac513d1419bcea6be7a1080f787fad368b3848c7ac94c9c02e`, and
 only then executes it. That installer embeds the platform archive checksums,
 verifies them before extraction, and self-tests both native binaries. Linux
-x64 and arm64 are supported. Version or checksum failure aborts the build
-(`skillpack` phase), retaining the previous golden. No login or Skillpack key is
+x64 and arm64 are supported. A checksum mismatch in the downloaded bootstrap aborts the build before
+execution (`skillpack` phase), retaining the previous golden. Every build
+attempts HTTPS egress to github.com and its release-asset hosts for provisioning.
+If those hosts are unavailable, the build continues without adding Skillpack,
+logging the closed warning `golden_skillpack_warning/download_unavailable`;
+if the pinned installer cannot complete, it logs `install_unavailable`. Other
+launcher functions remain usable. Before using skills, allow that egress and
+rebuild; a missing executable is still refused as `skillpack_cli_unavailable`. No login or Skillpack key is
 used during building. The managed executable is made available through
-`/usr/local/bin/skillpack`; ownership normalization covers its home-directory
-installation. This belongs in golden baseline provisioning rather than every
+`/usr/local/bin/skillpack` when writable (directly for root) or passwordless
+sudo is available. Otherwise the build keeps the user-local executable and logs
+`user_local_only`; orchestrator skill installation includes `/home/user/.local/bin`
+on its command-local PATH, so passwordless sudo is not required for Skillpack.
+Ownership normalization covers the home-directory installation. This belongs in golden baseline provisioning rather than every
 skill install: it keeps runtime installation offline except for the registry,
 avoids repeating executable downloads with a live credential present, and
 requires no new API or migration.
@@ -297,3 +309,10 @@ the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key m
 be scoped **only** to `skills:read`; broad keys now return
 `skillpack_scope_refused`. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
+
+The public sandbox-launch error lump introduced by #869 is tracked separately
+in [#904](https://github.com/The-Vibe-Company/armada/issues/904). That integration
+is newer than this branch baseline; this PR does not silently import/rework it.
+Its old snapshots likewise need rebuilding, but its API error projection remains
+a follow-up. An install-stage native usage exit (2) is `skillpack_request_rejected`,
+not a missing CLI; an auth-status usage exit (2) signals an incompatible CLI.

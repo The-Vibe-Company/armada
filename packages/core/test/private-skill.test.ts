@@ -18,6 +18,10 @@ test.each([
   "protocol",
   "conflict",
   "rejected",
+  "install usage",
+  "unreadable key",
+  "bad reference",
+  "install nonzero",
 ])("private installer %s", (mode) => {
   const root = mkdtempSync(join(tmpdir(), "private-skill-"));
   const originalKeys = "# unrelated authorization\nssh-ed25519 AAAA existing\n";
@@ -38,6 +42,8 @@ if(process.env.MODE==='auth unavailable')process.exit(8);
 if(process.env.MODE==='protocol'){process.stdout.write('not JSON');process.exit(0);}
 if(process.env.MODE==='refused')process.exit(3);
 if(process.argv[2]==='auth'){process.stdout.write(JSON.stringify({workspace:{id:'11111111-1111-4111-8111-111111111111'},token:{scopes:process.env.MODE==='broad key'?['skills:read','secrets:read']:['skills:read']}}));process.exit(0);}
+if(process.env.MODE==='install usage')process.exit(2);
+if(process.env.MODE==='install nonzero')process.exit(9);
 if(process.env.MODE==='conflict')process.exit(6);
 if(process.env.MODE==='rejected')process.exit(5);
 if(process.env.MODE==='missing')process.exit(4);
@@ -50,7 +56,7 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
     if (mode === "missing executable")
       writeFileSync(join(root, "skillpack"), "#!/nonexistent/skillpack-interpreter\n", { mode: 0o755 });
     const entry = join(import.meta.dir, "../src/private-skill.ts");
-    const script = `import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:'notes@1.0.0',harness:'codex',key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
+    const script = `import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:process.env.MODE==='bad reference'?'not-a-pin':'notes@1.0.0',harness:'codex',key:process.env.MODE==='unreadable key'?'invalid':key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
       env: { ...process.env, HOME: root, PATH: `${root}:${process.env.PATH}`, MODE: mode },
     });
@@ -84,6 +90,10 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
                   protocol: "skillpack_protocol_invalid",
                   conflict: "skillpack_install_conflict",
                   rejected: "skillpack_request_rejected",
+                  "install usage": "skillpack_request_rejected",
+                  "unreadable key": "skillpack_credential_unreadable",
+                  "bad reference": "skillpack_request_rejected",
+                  "install nonzero": "skillpack_install_nonzero",
                 }[mode],
       );
     for (const home of homes) expect(readFileSync(join(home, ".ssh/authorized_keys"), "utf8")).toBe(originalKeys);

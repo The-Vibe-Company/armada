@@ -46,6 +46,7 @@ const STAGES = [
   "native_hydration",
   "preparing",
   "skills",
+  "skills_credential",
   "skills_auth",
   "skills_install",
   "skills_receipt",

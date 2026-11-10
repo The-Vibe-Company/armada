@@ -94,7 +94,7 @@ test.skipIf(!process.env.ARMADA_GOLDEN_OS_IMAGE).each(["user-standard", "root-nn
         [
           "bash",
           "-c",
-          'test "$(id -u)" -ne 0 && test "$(bun --version)" = 1.3.14 && test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2',
+          'test "$(id -u)" -ne 0 && test "$(skillpack --version)" = "skillpack 0.3.5" && test "$(bun --version)" = 1.3.14 && test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2',
         ],
         undefined,
         "user",

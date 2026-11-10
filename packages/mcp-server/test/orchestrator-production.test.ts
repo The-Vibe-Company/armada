@@ -28,6 +28,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let nativeReads = 0;
   let fault: "none" | "launcher" | "fork" | "initialization" | "skills" | "epoch" = "none";
   let throwLogger = false;
+  let stopUnconfirmed = false;
   const lines: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
   const provider: core.Provider &
@@ -52,6 +53,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       return fault === "initialization" || (fault === "skills" && request.command.includes("/skills/armada-tools"))
         ? { ...result, exitCode: 127, stdout: privateText, stderr: privateText }
         : result;
+    },
+    async stop(request) {
+      if (stopUnconfirmed) throw new Error(privateText);
+      return placement.provider.stop(request);
     },
     async get(id, options) {
       nativeReads++;
@@ -359,6 +364,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "initialization",
       "skills",
       "private-skill",
+      "private-skill-stop-unconfirmed",
       "expired-skill-key",
       "undecryptable-skill-key",
       "epoch",
@@ -366,6 +372,8 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "failure_publication",
     ] as const) {
       lines.length = 0;
+      stopUnconfirmed = scenario === "private-skill-stop-unconfirmed";
+      const privateSkill = scenario === "private-skill" || stopUnconfirmed;
       fault = ["launcher", "fork", "initialization", "skills", "epoch"].includes(scenario)
         ? (scenario as typeof fault)
         : "none";
@@ -398,7 +406,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         {
           ...config,
           name: `diagnostic-${scenario}`,
-          ...(scenario === "private-skill" || storedSkillKey ? { skill: "notes@1.0.0" } : {}),
+          ...(privateSkill || storedSkillKey ? { skill: "notes@1.0.0" } : {}),
         },
         `diagnostic-${scenario}`,
       );
@@ -408,15 +416,15 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         (item) => item.id === admitted.id,
       );
       expect(operation?.state).toBe(
-        scenario === "launcher" || scenario === "private-skill" || storedSkillKey
+        scenario === "launcher" || privateSkill || storedSkillKey
           ? "failed"
           : scenario === "failure_publication"
             ? "pending"
             : "uncertain",
       );
-      if (storedSkillKey || scenario === "private-skill") {
+      if (storedSkillKey || privateSkill) {
         const failedParent = (await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator;
-        expect(failedParent.state).toBe("stopped");
+        expect(failedParent.state).toBe(stopUnconfirmed ? "blocked" : "stopped");
         expect(failedParent.conversationId).toBeNull();
         expect(failedParent.skillReceipt).toBeNull();
         await expect(
@@ -434,12 +442,14 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
             [failedParent.sandboxId],
           )
         ).rows[0];
-        expect(sandbox?.status).toBe("stopped");
-        expect(sandbox?.stopped_at).not.toBeNull();
+        if (!stopUnconfirmed) {
+          expect(sandbox?.status).toBe("stopped");
+          expect(sandbox?.stopped_at).not.toBeNull();
+        }
       }
       if (storedSkillKey) {
         const expectedReason =
-          scenario === "expired-skill-key" ? "skillpack_credential_refused" : "skillpack_install_failed";
+          scenario === "expired-skill-key" ? "skillpack_credential_refused" : "skillpack_credential_unreadable";
         expect(operation?.errorCode).toBe(expectedReason);
         expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
           expectedReason,
@@ -449,7 +459,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           p.org,
         ]);
       }
-      if (scenario === "private-skill") {
+      if (privateSkill) {
         expect(operation?.errorCode).toBe("skillpack_credential_missing");
         expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
           "skillpack_credential_missing",
@@ -470,9 +480,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         registration: ["registration", "sql_check"],
         initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
-        "private-skill": ["skills_transport", "skillpack_credential_missing"],
-        "expired-skill-key": ["skills_transport", "skillpack_credential_refused"],
-        "undecryptable-skill-key": ["skills_transport", "skillpack_install_failed"],
+        "private-skill": ["skills_credential", "skillpack_credential_missing"],
+        "private-skill-stop-unconfirmed": ["skills_credential", "skillpack_credential_missing"],
+        "expired-skill-key": ["skills_credential", "skillpack_credential_refused"],
+        "undecryptable-skill-key": ["skills_credential", "skillpack_credential_unreadable"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
         failure_publication: ["completion", "sql_serialization"],
@@ -480,7 +491,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(records[0]).toMatchObject({
         component: "owner",
         action: "create",
-        outcome: scenario === "launcher" || scenario === "private-skill" || storedSkillKey ? "failed" : "uncertain",
+        outcome: scenario === "launcher" || privateSkill || storedSkillKey ? "failed" : "uncertain",
         stage: expected[0],
         reason: expected[1],
       });

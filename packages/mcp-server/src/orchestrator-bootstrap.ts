@@ -71,7 +71,7 @@ export async function bootstrapOrchestrator(
       cwd: projectDir,
       timeoutSeconds: 300,
       command: publicSkill
-        ? `skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${request.harness === "claude" ? "claude-code" : "codex"} --pin --yes --json >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
+        ? `export PATH="$PATH:/home/user/.local/bin"; skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${request.harness === "claude" ? "claude-code" : "codex"} --pin --yes --json >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
         : referenceCommand,
     });
     if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0) {
