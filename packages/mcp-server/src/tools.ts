@@ -1365,10 +1365,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Stop a sandbox",
       description:
-        "Removes the machine and keeps its disk and conversations. A later send resumes it. Use it when the " +
+        "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
+        "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
         "agent is done, so the sandbox stops costing.",
       input: { id },
-      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES) },
+      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
       destructive: true,
     },
     async (args) => {
@@ -1379,15 +1380,20 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         { status: found.status === "failed" ? "failed" : "stopping", stoppedAt: null, stopRequested: true },
         async (signal) => {
           signal.throwIfAborted();
-          await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
+          if (
+            !(found.status === "stopping" && found.preservationNote?.startsWith("unpushed work could not be preserved"))
+          )
+            await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
           let terminal = false;
           let stoppedAt: Date | undefined;
+          let preservationNote: string | undefined;
           try {
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);
             terminal = observed.state === "stopped";
             stoppedAt = observed.stoppedAt;
+            preservationNote = observed.stopNote;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
             terminal = true;
@@ -1395,7 +1401,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           signal.throwIfAborted();
           const status: SandboxStatus = found.status === "failed" ? "failed" : terminal ? "stopped" : "stopping";
           return {
-            result: { id: found.id, status },
+            result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {
               status,
               stopRequested: !terminal,
