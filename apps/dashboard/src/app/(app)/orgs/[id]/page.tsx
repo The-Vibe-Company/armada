@@ -132,15 +132,15 @@ export default async function OrgPage({ params, searchParams }: Props) {
                 const role = member.role === "admin" ? "admin" : "member";
                 return (
                   <TableRow key={member.user_id} data-member={member.email} className="hover:bg-muted/30">
-                    <TableCell className="pl-3 sm:pl-4">
-                      <div className="flex min-w-0 items-center gap-3">
+                    <TableCell className="pl-3 whitespace-normal sm:pl-4 sm:whitespace-nowrap">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap">
                         <span
                           aria-hidden="true"
                           className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-medium text-muted-foreground max-sm:hidden"
                         >
                           {initialOf(member.email)}
                         </span>
-                        <span className="min-w-0 truncate font-medium max-sm:max-w-[8.5rem]" title={member.email}>
+                        <span className="min-w-0 font-medium break-all sm:truncate" title={member.email}>
                           {member.email}
                         </span>
                         {self && (
