@@ -68,7 +68,7 @@ function secret(kind: AccountKind, raw: unknown): { ok: true; value: string } | 
 
 function refresh() {
   revalidatePath(HARNESS_PATH);
-  revalidatePath("/goldens");
+  revalidatePath("/environments");
 }
 
 /** Adds a named account from a pasted token, key or auth.json, and makes it the default when asked. */

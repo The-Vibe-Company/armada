@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * person's dashboard session is read on this (the dashboard's) domain, and the answer is relayed server-side to
  * the Armada API with their bearer: `POST /api/v1/mcp/oauth/callback {state, code, issuer}`. The API matches the
  * state with the pending authorization it created, which fixes the org and connection; nothing here trusts the
- * URL for that. The browser always lands on `/connections`, which rereads the real status. The code and any
+ * URL for that. The browser always lands on `/tools`, which rereads the real status. The code and any
  * provider error text are never shown, logged or forwarded in a redirect.
  */
 export async function GET(request: NextRequest) {
@@ -21,13 +21,13 @@ export async function GET(request: NextRequest) {
   const viewer = await readViewer();
   if (!viewer?.token) {
     // Without a session the code cannot be relayed; it expires unused at the API. Nothing of it is kept.
-    return land(origin, "/login", { next: "/connections" });
+    return land(origin, "/login", { next: "/tools" });
   }
-  if (input.kind === "denied") return land(origin, "/connections", { oauth: "denied" });
-  if (input.kind === "invalid") return land(origin, "/connections", { oauth: "failed" });
+  if (input.kind === "denied") return land(origin, "/tools", { oauth: "denied" });
+  if (input.kind === "invalid") return land(origin, "/tools", { oauth: "failed" });
 
   const url = mcpUrl();
-  if (!url) return land(origin, "/connections", { oauth: "failed" });
+  if (!url) return land(origin, "/tools", { oauth: "failed" });
   const control = createMcpControl({ serverUrl: url, token: viewer.token });
   try {
     const connection = await control.oauthCallback({
@@ -35,11 +35,11 @@ export async function GET(request: NextRequest) {
       code: input.code,
       ...(input.issuer ? { issuer: input.issuer } : {}),
     });
-    return land(origin, "/connections", { connection: connection.id, oauth: "returned" });
+    return land(origin, "/tools", { connection: connection.id, oauth: "returned" });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     console.error("MCP OAuth callback was refused by the Armada API.", { status: error.status ?? null });
-    return land(origin, "/connections", { oauth: "failed" });
+    return land(origin, "/tools", { oauth: "failed" });
   }
 }
 

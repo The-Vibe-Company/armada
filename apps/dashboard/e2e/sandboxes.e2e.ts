@@ -427,7 +427,7 @@ test("reading the history is never interrupted by new messages, and the latest i
 test("a launch from a golden sends the chosen model and effort, and a send can override them once", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   await page.screenshot({ path: "test-results/launch-model-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });

@@ -46,3 +46,27 @@ export async function openLaunch(page: Page, golden: string, { advanced = true }
   if (advanced) await dialog.locator("[data-launch-advanced] > summary").click();
   return dialog;
 }
+
+/** An environment's row in the list; a name may exist once on each provider. */
+export function goldenRow(page: Page, name: string, provider?: "boat" | "modal"): Locator {
+  return page.locator(`[data-golden="${name}"]${provider ? `[data-golden-provider="${provider}"]` : ""}`);
+}
+
+/** Selects an environment's row, unless its detail panel already shows, and returns the panel. */
+export async function goldenPanel(page: Page, name: string, provider?: "boat" | "modal"): Promise<Locator> {
+  const panel = page.locator(`[data-golden-panel="${name}"]${provider ? `[data-golden-provider="${provider}"]` : ""}`);
+  if (!(await panel.isVisible())) await goldenRow(page, name, provider).locator("[data-select-item]").click();
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+/** Opens the New panel, and its form when Boat is full and it starts folded; returns the create form. */
+export async function openCreate(page: Page): Promise<Locator> {
+  const form = page.locator('form[data-golden-form="create"]');
+  if (!(await page.locator('[data-panel="new"]').isVisible()))
+    await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(page.locator('[data-panel="new"]')).toBeVisible();
+  if (!(await form.isVisible())) await page.getByText("Show the create form").click();
+  await expect(form).toBeVisible();
+  return form;
+}

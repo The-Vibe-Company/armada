@@ -9,9 +9,9 @@ test("the command menu opens from the keyboard, finds a page by a few letters an
   const search = page.getByRole("combobox", { name: "Search pages and actions" });
   await expect(search).toBeFocused();
   await search.fill("mcp");
-  await expect(page.getByRole("option")).toHaveText(["Connections"]);
+  await expect(page.getByRole("option")).toHaveText(["Tools"]);
   await page.keyboard.press("Enter");
-  await page.waitForURL("**/connections");
+  await page.waitForURL("**/tools");
   await expect(search).toHaveCount(0);
 
   // Arrows choose among several results; Escape closes without going anywhere.
@@ -21,5 +21,5 @@ test("the command menu opens from the keyboard, finds a page by a few letters an
   await expect(page.getByRole("option", { selected: true })).toHaveText("Launch a sandbox");
   await page.keyboard.press("Escape");
   await expect(search).toHaveCount(0);
-  await expect(page).toHaveURL(/\/connections$/);
+  await expect(page).toHaveURL(/\/tools$/);
 });

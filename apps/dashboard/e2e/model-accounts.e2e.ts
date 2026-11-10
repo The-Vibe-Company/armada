@@ -49,7 +49,7 @@ async function addAccount(page: Page, name: string, token: string, makeDefault: 
 }
 
 async function openLaunch(page: Page) {
-  await page.goto("/goldens");
+  await page.goto("/environments");
   return openLaunchDialog(page, "shared-golden");
 }
 
@@ -150,7 +150,7 @@ test("several accounts and no default: the launch asks who is billed and the ser
   await mock("/__test/accounts", {
     seed: [account(1, "Work"), account(2, "Home"), account(3, "Old", { status: "revoked" })],
   });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page);
   const select = dialog.getByLabel("Account");
   await expect(select.locator("option:checked")).toHaveText("Choose an account");
@@ -236,7 +236,7 @@ test("a sized launch keeps the chosen account: the size and the account are both
   const work = account(51, "Work", { is_default: true });
   const home = account(52, "Home");
   await mock("/__test/accounts", { seed: [work, home] });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const open = () => openLaunchDialog(page, "shared-golden");
 
   let dialog = await open();
@@ -259,7 +259,7 @@ test("a sized launch keeps the chosen account: the size and the account are both
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
 
   // The golden's stored default alone also needs the sized route; the preselected account still goes with it.
-  await page.goto("/goldens");
+  await page.goto("/environments");
   dialog = await open();
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
@@ -280,7 +280,7 @@ test("a refused launch keeps the chosen account: the retry bills who the person 
   const work = account(53, "Work", { is_default: true });
   const home = account(54, "Home");
   await mock("/__test/accounts", { seed: [work, home] });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunchDialog(page, "shared-golden");
   const accountSelect = dialog.getByLabel("Account");
   await accountSelect.selectOption({ label: "Home (Claude subscription)" });

@@ -260,10 +260,10 @@ export function isLaunchable(connection: McpConnection): boolean {
 export function launchBlocker(connection: McpConnection): string | null {
   if (isLaunchable(connection)) return null;
   return connection.status === "disabled"
-    ? "Disabled. Enable it on the Connections page first."
+    ? "Disabled. Enable it on the Tools page first."
     : connection.transport === "stdio"
-      ? `${statusLabel(connection)}. Configure it on the Connections page first.`
-      : `${statusLabel(connection)}. Connect it on the Connections page first.`;
+      ? `${statusLabel(connection)}. Configure it on the Tools page first.`
+      : `${statusLabel(connection)}. Connect it on the Tools page first.`;
 }
 
 /**
@@ -558,7 +558,7 @@ export function oauthCallbackInput(params: URLSearchParams): OAuthCallbackInput 
 }
 
 /**
- * Where `/auth/mcp/callback` sends the browser: `/connections?oauth=<outcome>`, plus `connection=<id>` once the
+ * Where `/auth/mcp/callback` sends the browser: `/tools?oauth=<outcome>`, plus `connection=<id>` once the
  * server completed the sign-in. The page then asks the control API for that connection's actual status, so a
  * crafted link cannot make a connection look connected.
  */
@@ -596,4 +596,13 @@ export function authLabel(authType: ConnectionAuthType): string {
 
 export function transportLabel(transport: ConnectionTransport): string {
   return transport === "stdio" ? "stdio (in sandbox)" : transport === "sse" ? "SSE" : "Streamable HTTP";
+}
+
+/** The host of a server URL, for a row's one-line meta; the URL itself when it does not parse. */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }

@@ -13,7 +13,13 @@ export type Command = {
 };
 
 export const COMMANDS: readonly Command[] = [
-  { id: "launch", label: "Launch a sandbox", href: "/goldens", group: "Actions", keywords: ["new", "start", "run"] },
+  {
+    id: "launch",
+    label: "Launch a sandbox",
+    href: "/environments",
+    group: "Actions",
+    keywords: ["new", "start", "run"],
+  },
   {
     id: "add-account",
     label: "Add a subscription",
@@ -31,8 +37,14 @@ export const COMMANDS: readonly Command[] = [
   { id: "fleet", label: "Fleet", href: "/fleet", group: "Go to", keywords: ["board", "agents", "needs"] },
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   { id: "orchestrators", label: "Orchestrators", href: "/orchestrators", group: "Go to", keywords: ["workers"] },
-  { id: "goldens", label: "Goldens", href: "/goldens", group: "Go to", keywords: ["snapshots", "repositories"] },
-  { id: "connections", label: "Connections", href: "/connections", group: "Go to", keywords: ["mcp", "tools"] },
+  {
+    id: "environments",
+    label: "Environments",
+    href: "/environments",
+    group: "Go to",
+    keywords: ["goldens", "snapshots", "repositories"],
+  },
+  { id: "tools", label: "Tools", href: "/tools", group: "Go to", keywords: ["mcp", "connections"] },
   {
     id: "harness",
     label: "Harness",

@@ -17,8 +17,8 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { cn } from "@/lib/utils";
 
 /**
- * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), goldens, connections and harness subscriptions are set
- * up once (Build), and the account pages sit last. The hint, a tooltip, says what each page holds. On a phone the
+ * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), environments, tools and harness
+ * subscriptions are set up once (Build), and the account pages sit last. The hint, a tooltip, says what each page holds. On a phone the
  * eight links fit two rows of four, so the conversation pages keep their height.
  */
 const GROUPS = [
@@ -33,8 +33,14 @@ const GROUPS = [
   {
     label: "Build",
     links: [
-      { href: "/goldens", label: "Goldens", hint: "Repositories and snapshots", icon: CameraIcon },
-      { href: "/connections", label: "Connections", hint: "MCP servers and tools", icon: PlugIcon },
+      {
+        href: "/environments",
+        label: "Environments",
+        short: "Envs",
+        hint: "Goldens: what a sandbox contains when it starts",
+        icon: CameraIcon,
+      },
+      { href: "/tools", label: "Tools", hint: "MCP connections your agents can use", icon: PlugIcon },
       { href: "/harness", label: "Harness", hint: "Claude Code and Codex subscriptions", icon: KeyRoundIcon },
     ],
   },
