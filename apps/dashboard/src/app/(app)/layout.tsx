@@ -1,6 +1,6 @@
 import { LogOutIcon, ShipIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { CommandMenu } from "@/components/command-menu";
+import { CommandMenu, CommandMenuTrigger } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -26,14 +26,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             Armada
           </div>
           <div className="flex items-center gap-1 md:hidden">
-            <CommandMenu compact />
+            <CommandMenuTrigger compact />
             <ThemeToggle />
             <SignOut compact />
           </div>
         </div>
         <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
         <div className="hidden px-3 pb-2 md:block">
-          <CommandMenu />
+          <CommandMenuTrigger />
         </div>
         <NavLinks className="grid grid-cols-4 gap-1 px-3 pb-3 md:flex md:flex-col md:gap-0.5 md:overflow-y-auto md:pb-4" />
         <div className="mt-auto hidden border-t px-3 py-3 md:block">
@@ -54,6 +54,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
       </aside>
+      <CommandMenu />
       <main className="mx-auto w-full max-w-6xl min-w-0 flex-1 space-y-6 px-4 py-6 md:px-10 md:py-10">{children}</main>
     </div>
   );

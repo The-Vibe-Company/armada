@@ -11,11 +11,14 @@ import { Kbd } from "@/components/ui/kbd";
 import { type Command, matchCommands, moveActive } from "@/lib/command-menu";
 import { cn } from "@/lib/utils";
 
+/** The event a trigger sends to open the one menu of the page. */
+const OPEN_EVENT = "armada:command-menu";
+
 /**
  * ⌘K (Ctrl+K elsewhere) from anywhere in the signed-in app: type a few letters of a page or an action, arrows to
- * choose, Enter to go. The trigger shows the shortcut, so it is discoverable without being learned.
+ * choose, Enter to go. Mounted once per page; any `CommandMenuTrigger` opens it.
  */
-export function CommandMenu({ compact = false }: { compact?: boolean }) {
+export function CommandMenu() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -25,43 +28,53 @@ export function CommandMenu({ compact = false }: { compact?: boolean }) {
         setOpen((value) => !value);
       }
     }
+    const onOpen = () => setOpen(true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener(OPEN_EVENT, onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener(OPEN_EVENT, onOpen);
+    };
   }, []);
 
   return (
-    <>
-      {compact ? (
-        <Button variant="ghost" size="icon" aria-label="Search pages and actions" onClick={() => setOpen(true)}>
-          <SearchIcon />
-        </Button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-keyshortcuts="Meta+K Control+K"
-          className="flex h-9 w-full items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-muted-foreground shadow-xs transition-colors outline-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        >
-          <SearchIcon className="size-4 shrink-0" aria-hidden="true" />
-          <span className="flex-1 text-left">Search</span>
-          <Kbd aria-hidden="true">
-            <span>
-              <ModKey />
-            </span>
-            <span>K</span>
-          </Kbd>
-        </button>
-      )}
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent
-          showCloseButton={false}
-          className="top-[18%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-md"
-          aria-describedby={undefined}
-        >
-          {open && <Palette onDone={() => setOpen(false)} />}
-        </DialogContent>
-      </Dialog>
-    </>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent
+        showCloseButton={false}
+        className="top-[18%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-md"
+        aria-describedby={undefined}
+      >
+        {open && <Palette onDone={() => setOpen(false)} />}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** A button that opens the command menu and shows its shortcut, so it is discoverable without being learned. */
+export function CommandMenuTrigger({ compact = false }: { compact?: boolean }) {
+  const open = () => window.dispatchEvent(new Event(OPEN_EVENT));
+  if (compact)
+    return (
+      <Button variant="ghost" size="icon" aria-label="Search pages and actions" onClick={open}>
+        <SearchIcon />
+      </Button>
+    );
+  return (
+    <button
+      type="button"
+      onClick={open}
+      aria-keyshortcuts="Meta+K Control+K"
+      className="flex h-9 w-full items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-muted-foreground shadow-xs transition-colors outline-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+    >
+      <SearchIcon className="size-4 shrink-0" aria-hidden="true" />
+      <span className="flex-1 text-left">Search</span>
+      <Kbd aria-hidden="true">
+        <span>
+          <ModKey />
+        </span>
+        <span>K</span>
+      </Kbd>
+    </button>
   );
 }
 
