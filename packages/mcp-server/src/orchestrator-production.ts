@@ -175,6 +175,7 @@ export function createProductionOrchestrators(input: {
           ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
           ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
         });
+        await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
         return {
           result: undefined,
           patch: {
