@@ -199,7 +199,8 @@ public actor ArmadaClient {
         if !query.isEmpty { components.queryItems = query }
         guard let url = components.url else { throw ArmadaError.invalidResponse }
         var request = URLRequest(url: url)
-        request.httpMethod = method; request.timeoutInterval = 30
+        request.httpMethod = method
+        request.timeoutInterval = route == SandboxLaunchRequest.route ? SandboxLaunchRequest.timeout : 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
@@ -210,6 +211,9 @@ public actor ArmadaClient {
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch { throw ArmadaError.unavailable }
         try Task.checkCancellation()
+        if route == SandboxLaunchRequest.route, response.statusCode != 401, !(200..<300).contains(response.statusCode) {
+            throw SandboxLaunchFailure.classify(status: response.statusCode, body: data)
+        }
         switch response.statusCode {
         case 200..<300: break
         case 401:
