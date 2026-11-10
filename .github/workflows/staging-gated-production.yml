@@ -62,6 +62,10 @@ jobs:
           for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do
             [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key; production blocked."; exit 1; }
           done
+          [[ "${ARMADA_URL%/}" == "${ARMADA_SERVER_URL%/}" ]] || {
+            echo "::error::Smoke origin must match the deployed staging server; production blocked."
+            exit 1
+          }
           latest=$(git ls-remote origin refs/heads/main | cut -f1)
           [[ "$latest" == "$RELEASE_SHA" ]] || { echo "::error::Superseded commit; run the latest main pipeline."; exit 1; }
           echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
