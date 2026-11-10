@@ -735,7 +735,9 @@ describe("tools", () => {
       observedModel: "claude-sonnet-5",
       reason: "model_selection_mismatch",
     });
-    expect(status.data.prompt.modelSelectionMessage).toContain("Do not retry automatically");
+    expect(status.data.prompt).toMatchObject({
+      modelSelectionMessage: expect.stringContaining("Do not retry automatically"),
+    });
     const sent = await call(mcp, "send", { id, prompt: "override", model: "claude-sonnet-5" });
     expect(sent.isError).toBe(false);
     boat.sandbox("bx_1").events.push({
