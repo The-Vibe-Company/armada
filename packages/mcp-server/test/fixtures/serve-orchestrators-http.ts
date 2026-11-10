@@ -549,7 +549,7 @@ try {
       });
       const result = (await response.json()) as any;
       if (
-        status === 200 &&
+        (status === 200 || action === "steer") &&
         action !== "launch" &&
         response.status === 409 &&
         result.error?.code === "sandbox_not_ready"
