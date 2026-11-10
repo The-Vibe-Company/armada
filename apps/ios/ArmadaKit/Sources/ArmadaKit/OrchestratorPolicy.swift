@@ -30,15 +30,16 @@ public struct OrchestratorControls: Sendable, Equatable {
     public let canSteer: Bool
     public let canStop: Bool
     public let canResume: Bool
-    /// Recovery is offered where the server can settle it: a blocked orchestrator, or a first create
-    /// whose outcome is unknown.
+    /// Recovery is offered only where the server can settle it: a create still open, or a stop whose
+    /// outcome is unknown, at the orchestrator's current revision (blocked), or an unknown first create.
+    /// A blocked orchestrator with nothing to settle is not offered recovery: the server would refuse it.
     public let canRecover: Bool
     /// One sentence for the composer when it takes no message; nil when it does.
     public let composerNote: String?
 
     /// `agentWorking`: a turn of its conversation is queued or running (steer joins it).
-    public init(state: String, continuity: String, blockedReason: String?,
-                operations: [(kind: String, state: String)], agentWorking: Bool) {
+    public init(state: String, continuity: String, blockedReason: String?, revision: Int,
+                operations: [(kind: String, state: String, revision: Int)], agentWorking: Bool) {
         let openOperation = operations.first { $0.state == "pending" || $0.state == "uncertain" }
         open = openOperation.map { OpenOperation(kind: $0.kind, uncertain: $0.state == "uncertain") }
         let lost = continuity == "lost"
@@ -56,16 +57,19 @@ public struct OrchestratorControls: Sendable, Equatable {
         canSteer = canMessage && agentWorking
         canStop = (state == "ready" || state == "blocked") && idle
         canResume = state == "stopped" && continuity == "native" && idle
-        canRecover = state == "blocked"
-            || (state == "creating" && operations.contains { $0.kind == "create" && $0.state == "uncertain" })
+        let current = operations.filter { $0.revision == revision }
+        canRecover = (state == "blocked" && current.contains {
+            ($0.kind == "create" && ($0.state == "pending" || $0.state == "uncertain"))
+                || ($0.kind == "stop" && $0.state == "uncertain")
+        }) || (state == "creating" && current.contains { $0.kind == "create" && $0.state == "uncertain" })
         composerNote = Self.note(state: state, continuity: continuity, open: open, canMessage: canMessage,
                                  canResume: canResume, phase: phase)
     }
 
     public init(detail: OrchestratorDetail, agentWorking: Bool) {
         self.init(state: detail.orchestrator.state.rawValue, continuity: detail.orchestrator.continuity.rawValue,
-                  blockedReason: detail.orchestrator.blockedReason,
-                  operations: detail.operations.map { ($0.kind.rawValue, $0.state.rawValue) },
+                  blockedReason: detail.orchestrator.blockedReason, revision: detail.orchestrator.revision,
+                  operations: detail.operations.map { ($0.kind.rawValue, $0.state.rawValue, $0.revision) },
                   agentWorking: agentWorking)
     }
 
@@ -181,7 +185,10 @@ public enum OrchestratorExplanation {
         "create_recovery_unconfirmed": "Armada couldn't confirm the recovery yet. Retry recovery; it repeats the same request.",
         "create_aborted_before_fork": "Creation was stopped before any machine started.",
         "create_failed": "Armada couldn't create this orchestrator.",
-        "wait_cap_exhausted": "It waited as long as it is allowed to. Recover it to continue.",
+        "wait_cap_exhausted": "It waited as long as it is allowed to, so Armada stopped admitting work to it.",
+        "create_recovered_terminated": "Recovery stopped this orchestrator before it started. Create a new one to continue.",
+        "stop_recovered_terminated": "Recovery confirmed the stop and released its machine.",
+        "native_state_lost": "Its saved native state is gone, so it can't resume as the same conversation.",
         "owner_removed": "Its owner is no longer a member of this organization.",
         "hard_ttl": "It reached the longest time a machine may run, and was stopped.",
         "epoch_expiry": "Its machine session expired and was stopped.",

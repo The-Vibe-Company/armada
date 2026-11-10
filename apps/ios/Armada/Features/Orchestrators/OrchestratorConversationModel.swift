@@ -160,6 +160,9 @@ final class OrchestratorConversationModel {
     /// failed reads back off. Ends when nothing is changing or the screen goes away.
     func pollDetail() async {
         while !Task.isCancelled {
+            // No access or no capability is final for this screen: nothing to follow.
+            if phase == .noAccess { return }
+            if case .unavailable = phase { return }
             let open = !(detail?.openOperations.isEmpty ?? true) || lifecycle != nil
             guard let delay = ArmadaKit.OrchestratorPolling.detailDelay(
                 state: summary?.state.rawValue ?? "creating",

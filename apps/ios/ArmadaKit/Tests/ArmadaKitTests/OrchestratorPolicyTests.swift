@@ -159,35 +159,42 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
 }
 
 @Test func controlsDeriveFromStateContinuityAndOpenOperations() {
-    let ready = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, operations: [], agentWorking: false)
+    let ready = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(ready.phase == .ready && ready.canMessage && !ready.canSteer && ready.canStop && !ready.canResume && !ready.canRecover)
     #expect(ready.composerNote == nil)
-    let working = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, operations: [], agentWorking: true)
+    let working = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: true)
     #expect(working.canSteer)
     // Any open operation (here an unknown-outcome message) blocks every new command.
     let settling = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil,
-                                        operations: [("message", "uncertain")], agentWorking: true)
+                                        operations: [("message", "uncertain", 3)], agentWorking: true)
     #expect(!settling.canMessage && !settling.canSteer && !settling.canStop)
     #expect(settling.open == .init(kind: "message", uncertain: true))
     #expect(settling.composerNote?.contains("settling") == true)
     // Create is asynchronous: never send before it has succeeded.
     let creating = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil,
-                                        operations: [("create", "pending")], agentWorking: false)
+                                        operations: [("create", "pending", 3)], agentWorking: false)
     #expect(creating.phase == .creating && !creating.canMessage && !creating.canRecover)
     let uncertainCreate = OrchestratorControls(state: "creating", continuity: "not_started", blockedReason: nil,
-                                               operations: [("create", "uncertain")], agentWorking: false)
+                                               operations: [("create", "uncertain", 3)], agentWorking: false)
     #expect(uncertainCreate.canRecover)
-    let blocked = OrchestratorControls(state: "blocked", continuity: "unverified", blockedReason: "wait_cap_exhausted",
+    let blocked = OrchestratorControls(state: "blocked", continuity: "unverified", blockedReason: "wait_cap_exhausted", revision: 3,
                                        operations: [], agentWorking: false)
-    #expect(blocked.canRecover && blocked.canStop && !blocked.canMessage)
+    // Nothing to settle: the server would refuse recovery, so it is not offered.
+    #expect(!blocked.canRecover && blocked.canStop && !blocked.canMessage)
     #expect(blocked.phase == .blocked(explanation: OrchestratorExplanation.text(for: "wait_cap_exhausted")))
-    let stopped = OrchestratorControls(state: "stopped", continuity: "native", blockedReason: nil, operations: [], agentWorking: false)
+    let blockedStop = OrchestratorControls(state: "blocked", continuity: "unverified", blockedReason: "native_stop_unconfirmed",
+                                           revision: 3, operations: [("stop", "uncertain", 3)], agentWorking: false)
+    #expect(blockedStop.canRecover && !blockedStop.canStop)
+    let staleStop = OrchestratorControls(state: "blocked", continuity: "unverified", blockedReason: nil,
+                                         revision: 4, operations: [("stop", "uncertain", 3)], agentWorking: false)
+    #expect(!staleStop.canRecover)
+    let stopped = OrchestratorControls(state: "stopped", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(stopped.canResume && !stopped.canStop)
-    let unverified = OrchestratorControls(state: "stopped", continuity: "unverified", blockedReason: nil, operations: [], agentWorking: false)
+    let unverified = OrchestratorControls(state: "stopped", continuity: "unverified", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(!unverified.canResume && unverified.composerNote?.contains("could not verify") == true)
-    let lost = OrchestratorControls(state: "ready", continuity: "lost", blockedReason: nil, operations: [], agentWorking: false)
+    let lost = OrchestratorControls(state: "ready", continuity: "lost", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(!lost.canMessage && lost.composerNote?.contains("lost") == true)
-    let future = OrchestratorControls(state: "hibernating", continuity: "native", blockedReason: nil, operations: [], agentWorking: false)
+    let future = OrchestratorControls(state: "hibernating", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(future.phase == .unknown("hibernating") && !future.canMessage && !future.canStop)
 }
 
@@ -214,7 +221,7 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
 }
 
 @Test func everyCodeGetsAPlainSentence() {
-    for code in ["conflict", "unavailable", "runtime_uncertain", "not_found", "invalid_request"] {
+    for code in ["conflict", "unavailable", "runtime_uncertain", "not_found", "invalid_request", "create_recovered_terminated", "stop_recovered_terminated", "native_state_lost"] {
         let text = OrchestratorExplanation.text(for: code)
         #expect(!text.contains("_") && text.hasSuffix(".") && text != code)
     }

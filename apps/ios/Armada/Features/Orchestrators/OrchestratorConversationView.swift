@@ -12,6 +12,9 @@ struct OrchestratorConversationView: View {
     @State private var confirmingStop = false
     @State private var confirmingResume = false
     @State private var confirmingRecover = false
+    /// Recover chosen in Details: confirmed once the sheet has finished closing, so the two
+    /// presentations never overlap.
+    @State private var recoverAfterDetails = false
     @State private var confirmingDiscard = false
     @State private var discardBubbleID: String?
 
@@ -164,11 +167,16 @@ struct OrchestratorConversationView: View {
         } message: {
             Text("The action may already have happened. This only forgets local tracking; it does not cancel the request. Trying a new request may duplicate its effects. Message text will not be restored to the draft.")
         }
-        .sheet(isPresented: $showingDetails) {
+        .sheet(isPresented: $showingDetails, onDismiss: {
+            if recoverAfterDetails {
+                recoverAfterDetails = false
+                confirmingRecover = true
+            }
+        }) {
             if let detail = model.detail {
                 OrchestratorDetailsSheet(detail: detail, canRecover: model.canRecover) {
+                    recoverAfterDetails = true
                     showingDetails = false
-                    confirmingRecover = true
                 }
             }
         }

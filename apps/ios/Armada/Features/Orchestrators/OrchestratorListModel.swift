@@ -89,8 +89,27 @@ final class OrchestratorListModel {
             ) else { return }
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await load()
+            await refreshFirstPage()
         }
+    }
+
+    /// Re-reads the first page and updates those rows in place, keeping pages already loaded
+    /// with "load more" (and their cursor) instead of collapsing the list to one page.
+    private func refreshFirstPage() async {
+        do throws(ServiceFailure) {
+            let page = try await service.list(orgID: orgID, cursor: nil)
+            let fresh = Dictionary(page.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let known = Set(items.map(\.id))
+            let onlyFirstPageLoaded = items.count <= page.items.count
+            items = page.items.filter { !known.contains($0.id) } + items.map { fresh[$0.id] ?? $0 }
+            if onlyFirstPageLoaded { cursor = page.cursor }
+            refreshError = nil
+            consecutiveReadFailures = 0
+        } catch {
+            consecutiveReadFailures += 1
+            handleReadFailure(error)
+        }
+        await recoverOpenCreate()
     }
 
     func loadMore() async {
