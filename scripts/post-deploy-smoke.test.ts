@@ -23,6 +23,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
   const calls: Call[] = [];
   const lines: string[] = [];
   let clock = 0;
+  let stopping = false;
   const io = {
     now: () => clock,
     sleep: async (ms: number) => {
@@ -43,6 +44,8 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         init,
       };
       calls.push(call);
+      if (call.path === "sandbox/launch") stopping = false;
+      if (call.path === "sandbox/stop") stopping = true;
       const override = await handler?.(call);
       if (override) return override;
       switch (call.path) {
@@ -57,7 +60,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         case "sandbox/stop":
           return json({ status: "stopped" });
         case "sandbox/status":
-          return json({ status: "stopped", providerState: "archived" });
+          return json({ status: stopping ? "stopped" : "ready", providerState: stopping ? "archived" : "active" });
         default:
           throw new Error("Unexpected fake API call");
       }
@@ -111,7 +114,14 @@ test("smokes each configured provider/harness through the real API wire contract
       waited = true;
       return json({ prompt: { promptId: "prompt-id", state: "running" } });
     }
-    if (call.path === "sandbox/status")
+    if (
+      call.path === "sandbox/status" &&
+      fake.calls.some(
+        (entry) =>
+          entry.path === "sandbox/stop" &&
+          fake.calls.lastIndexOf(entry) > fake.calls.findLastIndex((entry) => entry.path === "sandbox/launch"),
+      )
+    )
       return json({ status: "stopped", providerState: provider === "boat" ? "archived" : "stopped" });
   });
   expect(await postDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, [], fake.io)).toBe(true);
@@ -180,7 +190,11 @@ test("failure paths retain cleanup handles and never emit remote bodies, arbitra
   ];
   for (const failure of failures) {
     const fake = fixture((call) => {
-      if ("retainedFailure" in failure && call.path === "sandbox/status")
+      if (
+        "retainedFailure" in failure &&
+        call.path === "sandbox/status" &&
+        fake.calls.some((entry) => entry.path === "sandbox/stop")
+      )
         return json({ status: "failed", providerState: "archived" });
       return call.path === failure.path ? failure.response() : undefined;
     });
@@ -214,7 +228,8 @@ test("reserves cleanup time after the overall deadline and rejects a stopped DB 
   ] as const) {
     const fake = fixture((call) => {
       if (deadline && call.path === "sandbox/send") fake.advance(35 * 60_000);
-      if (!deadline && call.path === "sandbox/status") return json({ status, providerState: "active" });
+      if (!deadline && call.path === "sandbox/status" && fake.calls.some((entry) => entry.path === "sandbox/stop"))
+        return json({ status, providerState: "active" });
     });
     expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
     expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
@@ -230,7 +245,8 @@ function orchestratorFixture(failure?: "resume" | "create_response" | "turn" | "
   let createdName = "";
   const operations: { version: number; id: string; orchestratorId: string; state: string }[] = [];
   const fake = fixture((call) => {
-    if (call.path === "sandbox/status") return json({ status: "stopped", providerState: "stopped" });
+    if (call.path === "sandbox/status" && fake.calls.some((entry) => entry.path === "sandbox/stop"))
+      return json({ status: "stopped", providerState: "stopped" });
     if (call.path === "orchestrators/capabilities")
       return json({
         version: 1,
@@ -356,5 +372,123 @@ test("disabled orchestrator pair fails without allocating an orchestrator", asyn
     step: "orchestrator_capabilities",
     pass: false,
     code: "pair_disabled",
+  });
+});
+
+test("waits for readiness and retries only rejected sends with bounded injected backoff", async () => {
+  let reads = 0;
+  let sends = 0;
+  const fake = fixture((call) => {
+    if (call.path === "sandbox/status" && !sends) return json({ status: ++reads < 3 ? "starting" : "ready" });
+    if (call.path === "sandbox/send" && ++sends < 3)
+      return json({ error: { code: "sandbox_not_ready", message: "secret" } }, 409);
+  });
+  expect(await postDeploySmoke(env, [], fake.io)).toBe(true);
+  expect(reads).toBe(3);
+  expect(sends).toBe(3);
+  expect(fake.io.now()).toBe(4000);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "send", pass: true });
+});
+
+test("bounds readiness and send rejection polling and still cleans up", async () => {
+  for (const phase of ["ready", "send"] as const) {
+    const fake = fixture((call) => {
+      if (
+        phase === "ready" &&
+        call.path === "sandbox/status" &&
+        !fake.calls.some((entry) => entry.path === "sandbox/stop")
+      )
+        return json({ status: "starting" });
+      if (phase === "send" && call.path === "sandbox/send") return json({ error: { code: "sandbox_not_ready" } }, 409);
+    });
+    expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
+    expect(fake.receipts()).toContainEqual({ case: 0, step: phase, pass: false, code: "poll_limit_exceeded" });
+    expect(fake.receipts().at(-1)).toEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+    expect(fake.io.now()).toBe(119000);
+  }
+});
+
+test("reports closed server errors without retrying ambiguous sends", async () => {
+  for (const code of ["outcome_unknown", "credential_refused", "provider_unavailable", "dependency_unavailable"]) {
+    const fake = fixture((call) =>
+      call.path === "sandbox/send" ? json({ error: { code, message: "secret" } }, 503) : undefined,
+    );
+    expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
+    expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(1);
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "send", pass: false, code });
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
+test("unknown stop outcomes are observed once, including Modal checkpoint fallback warnings", async () => {
+  for (const unknown of [false, true]) {
+    let stopping = false;
+    let reads = 0;
+    const fake = fixture((call) => {
+      if (call.path === "sandbox/stop") {
+        stopping = true;
+        return unknown
+          ? json({ error: { code: "outcome_unknown", message: "secret" } }, 503)
+          : json({ status: "stopping", preservationNote: "checkpoint_failed_disk_not_retained" });
+      }
+      if (call.path === "sandbox/status" && stopping)
+        return json({
+          status: ++reads < 3 ? "stopping" : "stopped",
+          providerState: reads < 3 ? "active" : "stopped",
+          preservationNote: unknown ? "checkpoint_failed_disk_not_retained" : null,
+        });
+    });
+    expect(await postDeploySmoke(orchestratorEnv, [], fake.io)).toBe(true);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(reads).toBe(3);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "stop_warning",
+      warning: "checkpoint_failed_disk_not_retained",
+    });
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
+test("unknown cleanup stops poll failed terminal states and bound unsettled stops", async () => {
+  for (const terminal of [true, false]) {
+    let stopping = false;
+    const fake = fixture((call) => {
+      if (call.path === "sandbox/send") return json({ error: { code: "forbidden" } }, 403);
+      if (call.path === "sandbox/stop") {
+        stopping = true;
+        return json({ error: { code: "outcome_unknown" } }, 503);
+      }
+      if (call.path === "sandbox/status" && stopping)
+        return json({ status: terminal ? "failed" : "stopping", providerState: terminal ? "stopped" : "active" });
+    });
+    expect(await postDeploySmoke(orchestratorEnv, [], fake.io)).toBe(false);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.receipts().at(-1)).toEqual({
+      case: 0,
+      step: "cleanup_sandbox",
+      pass: terminal,
+      ...(terminal ? {} : { code: "poll_limit_exceeded" }),
+    });
+  }
+});
+
+test("exhausted unknown stops reserve cleanup for observation rather than redispatch", async () => {
+  let stopping = false;
+  const fake = fixture((call) => {
+    if (call.path === "sandbox/stop") {
+      stopping = true;
+      return json({ error: { code: "outcome_unknown" } }, 503);
+    }
+    if (call.path === "sandbox/status" && stopping) return json({ status: "stopping", providerState: "active" });
+  });
+  expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.receipts().at(-1)).toEqual({
+    case: 0,
+    step: "cleanup_sandbox",
+    pass: false,
+    code: "poll_limit_exceeded",
   });
 });

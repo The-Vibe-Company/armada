@@ -6,6 +6,8 @@
  * --orchestrator, which runs the lifecycle for every selected case (only enabled
  * provider/harness pairs work). No defaults, provider credentials or DB access.
  */
+
+import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
 import type {
   OrchestratorDetail,
   OrchestratorEventPage,
@@ -13,6 +15,8 @@ import type {
 } from "../packages/core/src/orchestrator.ts";
 
 type Code =
+  | ApiFailureCode
+  | "sandbox_not_ready"
   | "invalid_configuration"
   | "compute_opt_in_required"
   | "request_failed"
@@ -32,6 +36,8 @@ type Code =
   | "operation_failed"
   | "continuity_failed";
 const API_CODES = new Set<Code>([
+  ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
+  "sandbox_not_ready",
   "unauthorized",
   "forbidden",
   "not_found",
@@ -176,14 +182,35 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
     let sandboxId: string | undefined;
     let stopped = false;
+    let stopRequested = false;
+    let preservationNote: string | undefined;
     async function stopSandbox() {
-      await sandbox("stop", { id: sandboxId });
+      if (!stopRequested) {
+        try {
+          const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
+          preservationNote = receipt.preservationNote;
+        } catch (error) {
+          // The stop may already be in flight. Observe it; never replay an unknown mutation.
+          if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+        }
+        stopRequested = true;
+      }
       await poll(
-        () => sandbox<{ status: string; providerState: string }>("status", { id: sandboxId }),
+        () =>
+          sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
         (status) => {
           if (status.status !== "stopped" && status.status !== "failed") return false;
           if (status.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
             fail("provider_not_stopped");
+          if (
+            status.providerState === "stopped" &&
+            [preservationNote, status.preservationNote].some((note) =>
+              note?.includes("checkpoint_failed_disk_not_retained"),
+            )
+          )
+            io.out(
+              JSON.stringify({ case: index, step: "stop_warning", warning: "checkpoint_failed_disk_not_retained" }),
+            );
           return true;
         },
       );
@@ -209,8 +236,28 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
         if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
       });
+      await step("ready", () =>
+        poll(
+          () => sandbox<{ status: string }>("status", { id: sandboxId }),
+          (result) => {
+            if (result.status === "failed" || result.status === "stopped") fail("sandbox_not_ready");
+            return result.status === "ready";
+          },
+        ),
+      );
       const turn = await step("send", async () => {
-        const result = await sandbox<{ promptId: string }>("send", { id: sandboxId, prompt: PROMPT });
+        const result = await poll(
+          async () => {
+            try {
+              return await sandbox<{ promptId: string }>("send", { id: sandboxId, prompt: PROMPT });
+            } catch (error) {
+              // Only this closed rejection guarantees the prompt was not admitted.
+              if (!(error instanceof SmokeFailure) || error.code !== "sandbox_not_ready") throw error;
+              return null;
+            }
+          },
+          (result) => result !== null,
+        );
         if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
         return result;
       });
