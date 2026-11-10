@@ -319,15 +319,26 @@ function reason(error: unknown): string {
 }
 
 /** The provider transports only closed process categories via exit status. */
-function processFailure(error: unknown): { processCategory?: string; processFailure?: string } {
+function processFailure(error: unknown): {
+  processCategory?: string;
+  processFailure?: string;
+  processInspection?: string;
+} {
   try {
     if (!(error instanceof ProviderError)) return {};
     const category = error.details?.processCategory;
     const failure = error.details?.processFailure;
+    const inspection = error.details?.processInspection;
     return typeof category === "string" &&
       ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
       ? {
           processCategory: category,
+          ...(typeof inspection === "string" &&
+          /^(self_namespace|proc_stat|proc_status|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
+            inspection,
+          )
+            ? { processInspection: inspection }
+            : {}),
           ...(typeof failure === "string" &&
           ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
             ? { processFailure: failure }

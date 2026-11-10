@@ -9,6 +9,7 @@ import { createInterface } from "node:readline";
 import type { Sandbox } from "modal";
 import type { Machine } from "../src/ports.ts";
 import { captureProcessBaseline, quiesceSandboxProcesses } from "../src/process-scope.ts";
+import { prepareFilesystemSnapshot } from "../src/snapshot.ts";
 
 const bun = process.execPath;
 const codex = join(import.meta.dir, "../../agent-runtime/dist/codex");
@@ -61,12 +62,54 @@ if (process.argv.includes("--parent")) {
   await new Promise(() => {});
 } else if (import.meta.main) {
   if (process.pid !== 1 || process.getuid?.() !== 0) throw Error("Disposable root PID namespace required");
+  const denyPidfd = !process.argv.includes("--native-pidfds");
   let dropKill = false;
+  let restricted = false;
+  const fixtureHome = mkdtempSync(join(tmpdir(), "checkpoint-home-"));
+  const wrapper = join(fixtureHome, "deny-pidfd");
+  // Real seccomp, not a model of the controller: gVisor may not implement pidfds.
+  const compiler = Bun.spawn(["cc", "-x", "c", "-o", wrapper, "-"], {
+    stdin: "pipe",
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  compiler.stdin.write(`#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <stddef.h>
+#include <unistd.h>
+#include <errno.h>
+int main(int argc,char **argv){struct sock_filter code[]={
+BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_pidfd_open,0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|ENOSYS),
+BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_pidfd_send_signal,0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|ENOSYS),
+BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)};struct sock_fprog filter={sizeof(code)/sizeof(code[0]),code};
+if(argc<2||prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)||prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter))return 125;
+execvp(argv[1],argv+1);return 126;}`);
+  compiler.stdin.end();
+  if ((await compiler.exited) !== 0) throw Error("Seccomp fixture compilation failed");
+  let lastInspectionOutput = "";
   const sdk = {
     exec: async (argv: string[]) => {
       // Use the already-built local Bun rather than requiring an installed Modal image.
-      const args = argv.map((arg) => (arg === "/opt/armada/runtime-bun/bun" ? bun : arg));
-      const child = Bun.spawn(dropKill ? ["setpriv", "--bounding-set=-kill", ...args] : args, {
+      let args = argv.map((arg) => (arg === "/opt/armada/runtime-bun/bun" ? bun : arg));
+      if (argv[0] === "bash")
+        args = args.map((arg) =>
+          arg
+            .replaceAll("/home/user", fixtureHome)
+            .replaceAll("/run/armada-ssh", join(fixtureHome, "run-ssh"))
+            .replaceAll("/etc/ssh", join(fixtureHome, "etc-ssh"))
+            .replaceAll("/root/.ssh", join(fixtureHome, "root-ssh")),
+        );
+      if (restricted)
+        args = [
+          "setpriv",
+          "--bounding-set=-sys_ptrace,-net_raw" + (dropKill ? ",-kill" : ""),
+          ...(denyPidfd ? [wrapper] : []),
+          ...args,
+        ];
+      const child = Bun.spawn(args, {
         stdin: "pipe",
         stdout: "pipe",
         stderr: "ignore",
@@ -80,7 +123,13 @@ if (process.argv.includes("--parent")) {
             child.stdin.end();
           },
         },
-        stdout: { readText: () => new Response(child.stdout).text() },
+        stdout: {
+          readText: async () => {
+            const text = await new Response(child.stdout).text();
+            lastInspectionOutput = text;
+            return text;
+          },
+        },
         wait: () => child.exited,
       };
     },
@@ -112,27 +161,36 @@ if (process.argv.includes("--parent")) {
   } finally {
     clearTimeout(deadline);
   }
-  // Without CAP_SYS_PTRACE, dropping CAP_KILL can also deny reading another
-  // process's namespace. That must fail closed before it attempts any signals.
-  const canInspect =
-    (await Bun.spawn(["setpriv", "--bounding-set=-kill", "readlink", "/proc/1/ns/pid"], {
+  // Keep CAP_KILL but remove ptrace and one capability held by PID1: even root
+  // cannot read PID1 namespace links. This must not prevent a checkpoint.
+  restricted = true;
+  const inspectionProbe = await Bun.spawn(
+    ["setpriv", "--bounding-set=-sys_ptrace,-net_raw", "readlink", "/proc/1/ns/pid"],
+    {
       stdout: "ignore",
       stderr: "ignore",
-    }).exited) === 0;
+    },
+  ).exited;
+  if (inspectionProbe === 0) throw Error("Namespace-unreadable configuration not established");
   dropKill = true;
   try {
     await quiesceSandboxProcesses(sdk, machine);
     throw Error("Missing CAP_KILL unexpectedly accepted");
   } catch (error) {
-    const details = (error as { details?: { processCategory?: string; processFailure?: string } }).details;
+    const details = (
+      error as { details?: { processCategory?: string; processFailure?: string; processInspection?: string } }
+    ).details;
     if (
-      details?.processCategory !== (canInspect ? "runtime_or_mcp" : "unknown") ||
-      details.processFailure !== (canInspect ? "pidfd_signal" : "unproven")
+      details?.processCategory !== "runtime_or_mcp" ||
+      details.processFailure !== "pidfd_signal" ||
+      details.processInspection !== "kill_EPERM"
     )
       throw error;
   }
   dropKill = false;
-  await quiesceSandboxProcesses(sdk, machine);
+  await prepareFilesystemSnapshot(sdk, { ...machine, golden: false });
+  if (denyPidfd && !lastInspectionOutput.includes("pidfd_open_ENOSYS"))
+    throw Error("Real pidfd denial was not observed");
   await parent.exited;
   const live = (await import("node:fs"))
     .readdirSync("/proc")
@@ -149,6 +207,6 @@ if (process.argv.includes("--parent")) {
   if (live.length) throw Error("Managed process survived quiescence");
   writeFileSync(
     "/dev/stdout",
-    "PASS: real launcher, Codex and two MCP servers gone; restricted signal failure classified\n",
+    "PASS: unreadable PID1 namespaces + unsupported pidfds checkpoint successfully; real signal survivor classified\n",
   );
 }
