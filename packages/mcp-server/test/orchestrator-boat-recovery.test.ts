@@ -38,10 +38,10 @@ test("Boat retirement recovers an uncertain later-incarnation stop without resto
       goldenId: golden.id,
       provider: "boat",
       providerSandboxId: crypto.randomUUID(),
-      boatId: null,
+      model: "gpt-6.1-sol",
+      reasoningEffort: "high",
       harness: "codex",
       status: "ready",
-      conversationIds: [],
       visibility: "private",
     });
     await sql.query(`update public.orchestrators set sandbox_id=$2,state='ready' where id=$1`, [
@@ -72,9 +72,12 @@ test("Boat retirement recovers an uncertain later-incarnation stop without resto
       get: async () => ({
         id: saved.providerSandboxId,
         name: "retire",
+        providerState: stopped ? "stopped" : "ready",
         state: stopped ? ("stopped" as const) : ("ready" as const),
         labels: {},
       }),
+      resumeBestEffort: async () => {},
+      conversations: async () => [],
       stopBestEffort: async () => {
         calls++;
         if (fail) throw Error("ambiguous archival");
@@ -83,7 +86,7 @@ test("Boat retirement recovers an uncertain later-incarnation stop without resto
     } as BoatProvider;
     const recover = createBoatOrchestratorRecovery(sql, { resolve: async () => provider });
     const input = { ownerId: p.owner, orgId: p.org, id: creation.identity.id, expectedRevision: 2, key: "retire" };
-    await expect(recover({ ...input, ownerId: p.other })).rejects.toThrow();
+    await expect(recover({ ...input, ownerId: p.member })).rejects.toThrow();
     expect(calls).toBe(0);
     expect((await recover(input)).state).toBe("uncertain");
     fail = false;
