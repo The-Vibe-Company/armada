@@ -524,7 +524,7 @@ try {
     throw Error(`${action}: lifecycle admission never became available`);
   };
   const failures = [
-    "missing_python3",
+    "missing_bun",
     "missing_git",
     "missing_openssl",
     "unavailable",

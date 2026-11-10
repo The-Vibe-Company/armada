@@ -34,7 +34,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
         return { id: "bx_recovery", name: "recovery", state: "ready" as const, providerState: "running", labels: {} };
       },
       async exec(request: Parameters<typeof boat.provider.exec>[0]) {
-        if (request.command.includes("f.seek("))
+        if (request.command.includes("fs.readSync(fd,data,"))
           return {
             detached: false as const,
             exitCode: 0,
@@ -45,7 +45,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
           };
         const result = await boat.provider.exec(request);
         if (!result.detached && result.stdout.includes('"status":"preserved"')) {
-          const publicKey = request.command.match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/)?.[0];
+          const publicKey = request.command
+            .match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/)?.[0]
+            .replaceAll("\\n", "\n");
           if (!publicKey) throw new Error("Missing collector public key");
           const password = randomBytes(32).toString("hex");
           const salt = randomBytes(8);
