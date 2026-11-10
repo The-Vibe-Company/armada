@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.17.0](https://github.com/The-Vibe-Company/armada/compare/v2.16.0...v2.17.0) (2026-11-10)
+
+
+### Features
+
+* **api:** delete stopped standalone sandboxes ([#772](https://github.com/The-Vibe-Company/armada/issues/772)) ([b955974](https://github.com/The-Vibe-Company/armada/commit/b9559741b59b549d0e8a467f8f9e0002c04178d5))
+* **api:** page conversation history from the end ([#814](https://github.com/The-Vibe-Company/armada/issues/814)) ([5966f90](https://github.com/The-Vibe-Company/armada/commit/5966f90c567702553b2a8349f5defb7c00690a7e))
+* **api:** report runtime and token usage per sandbox ([#773](https://github.com/The-Vibe-Company/armada/issues/773)) ([3f1b592](https://github.com/The-Vibe-Company/armada/commit/3f1b592c42ca82fd4a139f20d8dc8e1b6f2abad0))
+* **ci:** publish the iOS app to TestFlight automatically ([#807](https://github.com/The-Vibe-Company/armada/issues/807)) ([2eff502](https://github.com/The-Vibe-Company/armada/commit/2eff5024f2ccf0b868dd22ff3e08f3021a294b49))
+* **dashboard:** a design pass that makes the dashboard feel like one product ([#758](https://github.com/The-Vibe-Company/armada/issues/758)) ([e8dbb31](https://github.com/The-Vibe-Company/armada/commit/e8dbb31dff581050f0e9dee29cd35ce0c94801f5))
+* **dashboard:** design pass on the launch form, credentials, goldens and organization screens ([#783](https://github.com/The-Vibe-Company/armada/issues/783)) ([6c4df96](https://github.com/The-Vibe-Company/armada/commit/6c4df962f8aac85e6d88da2d2f1d80372979b796))
+* **dashboard:** rebuild the Build section around what you can launch ([#810](https://github.com/The-Vibe-Company/armada/issues/810)) ([ee38546](https://github.com/The-Vibe-Company/armada/commit/ee385461007aefdd50cfd44c64a45ae835699b16))
+* **dashboard:** rename Credentials to Harness and make it only about subscriptions ([#809](https://github.com/The-Vibe-Company/armada/issues/809)) ([75c6cb6](https://github.com/The-Vibe-Company/armada/commit/75c6cb6c5aa2e255805ffbe2f90c53d51783d013))
+* **dashboard:** rework the fleet board so it only shows what needs a decision ([#811](https://github.com/The-Vibe-Company/armada/issues/811)) ([34854e3](https://github.com/The-Vibe-Company/armada/commit/34854e34688a96bc94070f91bc4e6c36dd01f630))
+* **dashboard:** show the ready / blocked task outcome on the fleet board and sandbox list ([#775](https://github.com/The-Vibe-Company/armada/issues/775)) ([9d7d76e](https://github.com/The-Vibe-Company/armada/commit/9d7d76ea2ead21a9bb9e2114f6a46123a71ac0f0))
+* **dashboard:** toasts for action outcomes ([#789](https://github.com/The-Vibe-Company/armada/issues/789)) ([087d670](https://github.com/The-Vibe-Company/armada/commit/087d6702d28eade33d4f463f97e938dad19ec475))
+* **ios:** orchestrators on the phone: list, create, converse, stop, resume, recover ([#756](https://github.com/The-Vibe-Company/armada/issues/756)) ([335296f](https://github.com/The-Vibe-Company/armada/commit/335296f7158fdcb1ed349f81b55bd55d906dbc48))
+
+
+### Bug Fixes
+
+* **api:** distinguish credential refusal and launch outages ([#774](https://github.com/The-Vibe-Company/armada/issues/774)) ([aed5298](https://github.com/The-Vibe-Company/armada/commit/aed5298a8ac4f85e8d1669f042f9ce9d99a4fc1f))
+* **ci:** match Railway staging deployment smoke environment ([#793](https://github.com/The-Vibe-Company/armada/issues/793)) ([8d6315c](https://github.com/The-Vibe-Company/armada/commit/8d6315cf87ef7d10cfec47d955809d0e204bad04)), closes [#790](https://github.com/The-Vibe-Company/armada/issues/790)
+* **ci:** prevent skipped deployments from evicting staging smoke ([#800](https://github.com/The-Vibe-Company/armada/issues/800)) ([a16e435](https://github.com/The-Vibe-Company/armada/commit/a16e4352577ef451b310e3623fb9db26bf45dba0))
+* **ci:** wait for smoke sandbox readiness and confirm cleanup ([#788](https://github.com/The-Vibe-Company/armada/issues/788)) ([44f91ed](https://github.com/The-Vibe-Company/armada/commit/44f91ed261f009ebd3597bd68d7143268eaf22e8))
+* **cli:** allow slow lifecycle mutations and explain timeouts ([#795](https://github.com/The-Vibe-Company/armada/issues/795)) ([6987a60](https://github.com/The-Vibe-Company/armada/commit/6987a60e8001aa0da2f420d2d62284d20bb5aea6))
+* **ios:** create an orchestrator from the phone with the real form ([#817](https://github.com/The-Vibe-Company/armada/issues/817)) ([d7818cb](https://github.com/The-Vibe-Company/armada/commit/d7818cb39ba36da3337e5d4f212c7c3d15d7a68a))
+* **ios:** open a conversation in one read, history after, from memory on return ([#816](https://github.com/The-Vibe-Company/armada/issues/816)) ([3c735e9](https://github.com/The-Vibe-Company/armada/commit/3c735e9b126d804fb5b6e2c12ab12835ac13bfdb))
+* **modal:** bound ordinary stop checkpoint recovery ([#784](https://github.com/The-Vibe-Company/armada/issues/784)) ([592721c](https://github.com/The-Vibe-Company/armada/commit/592721cc7bc634bef3ad8fefe053018207989d18))
+* **orchestrators:** align Boat parent requests with ordinary sandboxes ([#780](https://github.com/The-Vibe-Company/armada/issues/780)) ([5f6caf0](https://github.com/The-Vibe-Company/armada/commit/5f6caf09a68f75620e11ba2f9b2ec58d4ea1ed3c))
+* **orchestrators:** recover Boat Claude conversations after stop ([#786](https://github.com/The-Vibe-Company/armada/issues/786)) ([5df392c](https://github.com/The-Vibe-Company/armada/commit/5df392c1beed6e957be9f6451de77de1ecefdc19))
+* **orchestrators:** repair Boat parent lifecycle in production ([#764](https://github.com/The-Vibe-Company/armada/issues/764)) ([6d558ab](https://github.com/The-Vibe-Company/armada/commit/6d558abc45dd730d0fdc19e3f30ef6ff70d06b40))
+* **orchestrators:** scope privileged checkpoint writers by ownership ([#765](https://github.com/The-Vibe-Company/armada/issues/765)) ([1e04699](https://github.com/The-Vibe-Company/armada/commit/1e046990c0941587d1d2d9a9e47766274520fe64))
+* **sandbox:** keep recoverable turn interruptions out of machine failures ([#804](https://github.com/The-Vibe-Company/armada/issues/804)) ([ffb9566](https://github.com/The-Vibe-Company/armada/commit/ffb956603dda9713f9dd4af9bd7965c823b6fd2a))
+* **sandbox:** preserve work without python3 ([#797](https://github.com/The-Vibe-Company/armada/issues/797)) ([a6ac03c](https://github.com/The-Vibe-Company/armada/commit/a6ac03c2035238dabbaa1a2f3f8000017aff3e69))
+* **sandbox:** recover quiescent Modal stops and close busy admission ([#777](https://github.com/The-Vibe-Company/armada/issues/777)) ([b692fd5](https://github.com/The-Vibe-Company/armada/commit/b692fd5197f8d3d029f12f0e8b02501589134650))
+* **server:** classify structured diagnostic log severity ([#796](https://github.com/The-Vibe-Company/armada/issues/796)) ([07a8b2d](https://github.com/The-Vibe-Company/armada/commit/07a8b2df65ab02daaaaabdf5114dd907fd49a25e))
+
 ## [2.16.0](https://github.com/The-Vibe-Company/armada/compare/v2.15.0...v2.16.0) (2026-11-10)
 
 
