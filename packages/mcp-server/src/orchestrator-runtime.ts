@@ -9,6 +9,7 @@ import type {
   Provider,
   SandboxRecord,
 } from "@armada/core";
+import { ProviderError } from "@armada/core";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
@@ -26,6 +27,13 @@ import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
 export class BestEffortConversationUnavailable extends Error {}
 class NativeContinuityLost extends Error {}
+// Only explicit admission refusals are safe. In particular, conflict can mean
+// request_outcome_unknown on Modal; retryability is not delivery evidence.
+class PromptRefused extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
 
 export interface OrchestratorCreateHooks {
   registered(saved: SandboxRecord & { lifecycleGeneration: number }): Promise<void>;
@@ -505,7 +513,24 @@ export class OrchestratorRuntime {
               : {}),
           };
         } catch (error) {
-          if (!dispatched) diagnostics.observe("prompt_dispatch", "not_confirmed");
+          if (!dispatched) {
+            diagnostics.observe("prompt_dispatch", "not_confirmed");
+            if (
+              error instanceof ProviderError &&
+              [
+                "no_running_turn",
+                "invalid_request",
+                "unauthorized",
+                "forbidden",
+                "not_found",
+                "provider_not_configured",
+                "sandbox_not_ready",
+                "payment_required",
+                "rate_limited",
+              ].includes(error.code)
+            )
+              throw new PromptRefused(error.code);
+          }
           throw error;
         }
       });
@@ -629,12 +654,15 @@ export class OrchestratorRuntime {
       const unavailable = error instanceof BestEffortConversationUnavailable;
       if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");
       const lost = error instanceof NativeContinuityLost || unavailable;
-      const state = lost ? ("failed" as const) : ("uncertain" as const);
-      const errorCode = unavailable
-        ? "boat_conversation_unavailable"
-        : lost
-          ? "native_continuity_lost"
-          : "runtime_uncertain";
+      const refused = error instanceof PromptRefused;
+      const state = lost || refused ? ("failed" as const) : ("uncertain" as const);
+      const errorCode = refused
+        ? error.code
+        : unavailable
+          ? "boat_conversation_unavailable"
+          : lost
+            ? "native_continuity_lost"
+            : "runtime_uncertain";
       diagnostics.report(state, error);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
@@ -643,7 +671,7 @@ export class OrchestratorRuntime {
       try {
         published = await this.options.store.complete(reservation, {
           state,
-          parentState: "blocked",
+          parentState: refused ? "ready" : "blocked",
           errorCode,
           ...(lost
             ? { continuity: "lost" as const }
