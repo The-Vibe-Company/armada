@@ -128,12 +128,6 @@ async function captureAndStore(
       // Interruption is accepted but not yet settled. Keep the stop request queued:
       // the lifecycle worker retries quiescence and capture before stopping compute.
       if (expired()) return "pending";
-      await sql
-        .query(
-          "update public.sandboxes set preservation_note=null where id=$1::uuid and preservation_note like 'unpushed work could not be preserved%'",
-          [id],
-        )
-        .catch(() => {});
       return "pending";
     }
     diagnostic = workPreservationError(error);

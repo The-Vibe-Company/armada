@@ -958,6 +958,16 @@ describe("tools", () => {
       expect(stop.data.status).toBe(state === "failed" ? "failed" : "stopping");
       expect(boat.stops).toHaveLength(0);
       expect(boat.execs).toHaveLength(commands);
+      // A stale receipt must never let a repeated user stop bypass settlement.
+      await db.query(
+        "update sandboxes set preservation_note='unpushed work could not be preserved (timeout)' where id=$1",
+        [launched.data.id],
+      );
+      expect((await call(mcp, "stop", { id: launched.data.id })).data.status).toBe(
+        state === "failed" ? "failed" : "stopping",
+      );
+      expect(boat.stops).toHaveLength(0);
+      expect(boat.execs).toHaveLength(commands);
       pending = false;
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [launched.data.id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
