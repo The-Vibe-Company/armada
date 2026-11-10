@@ -70,3 +70,9 @@ CLI retry or new allocation is performed. See
 and safe retry limits. A successful recovery keeps history and clears the old
 create's busy fence, allowing a later ordinary stop; it does not invent native
 continuity for a never-started conversation.
+
+For automation in separate tool shells, prefix `ARMADA_URL` on each command rather
+than relying on a prior shell export. The default public origin uses the dashboard
+control proxy; its deployment must include the same owner routes as the backend.
+Unstructured HTTP errors report the validated effective origin without echoing
+upstream bodies or credentials. See [404 diagnosis](orchestrator-troubleshooting.md#a-404-before-recovery-admission).

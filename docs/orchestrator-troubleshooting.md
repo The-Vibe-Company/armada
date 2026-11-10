@@ -158,3 +158,37 @@ The Modal golden needs public Git/npm access and no conflicting managed skill
 package directories; an existing reviewed CLI is used when present, otherwise the
 pinned public installer fallback is used. These are prerequisites, not a diagnosis of
 any particular incident. See [runtime enablement](orchestrator-runtime.md).
+
+## A 404 before recovery admission
+
+Check the effective origin before changing operation keys. The CLI defaults to
+`https://armada.thevibecompany.co`, whose dashboard control proxy forwards a closed
+owner-route allowlist to the configured MCP/control server. Healthy list/detail
+GETs do not establish that a new POST route is admitted by that proxy.
+
+The proxy must include `recover` as well as owner lifecycle settings/waits and
+wait renewal/release. The production serve HTTP regression checks the real CLI
+against both direct server and public proxy, using the same production factory,
+authentication and recovery implementation. A typed runtime not-found has a
+structured `error.code`; an unstructured proxy/edge 404 becomes the CLI's generic
+transport error. That error now includes the validated target origin, never raw
+upstream text, tokens, keys or request payloads.
+
+An export in one short-lived tool shell is not inherited by a later shell. Prefix
+the origin on **each** invocation when running separate tool commands:
+
+```sh
+ARMADA_URL=https://CONTROL_ORIGIN armada orchestrator detail ID --org ORG --json
+ARMADA_URL=https://CONTROL_ORIGIN armada orchestrator recover ID --org ORG \
+  --expected-revision ORIGINAL_REVISION --idempotency-key RECOVERY_KEY --json
+```
+
+Use the existing owner login/token without printing it. Keep the same recovery
+key/revision after errors. No fresh create until recovery is positively confirmed.
+Deploy the dashboard proxy update as well as any backend update if using the
+public origin; deploying only the Railway server cannot update a separate
+Next.js proxy. A direct server unauthenticated POST with empty JSON should reach
+its authentication boundary, not admit an effect. If that direct URL still emits
+an unstructured 404, capture safe response status/headers/body and verify the
+actual deployed service/image/domain routing; do not infer a missing handler from
+the status alone or bypass the private owner boundary.
