@@ -1,5 +1,5 @@
-import { ShipIcon } from "lucide-react";
 import type { Metadata } from "next";
+import { BrandMark } from "@/components/brand-mark";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { enabledProviders } from "@/lib/auth-config";
 import { GITHUB_RESULT_MESSAGES } from "@/lib/github";
@@ -27,7 +27,7 @@ export default async function LoginPage({ searchParams }: Props) {
     <main className="flex min-h-dvh items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <ShipIcon className="mb-2 size-8" />
+          <BrandMark className="mx-auto mb-2 size-10 rounded-xl [&_svg]:size-5" />
           <CardTitle className="text-xl">Sign in to Armada</CardTitle>
           <CardDescription>
             {next === INVITATION_ACCEPT_PATH

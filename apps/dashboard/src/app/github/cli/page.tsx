@@ -1,5 +1,6 @@
-import { CircleAlertIcon, CircleCheckIcon, ShipIcon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon } from "lucide-react";
 import type { Metadata } from "next";
+import { BrandMark } from "@/components/brand-mark";
 import { cliOutcome } from "@/lib/github-cli";
 
 export const metadata: Metadata = { title: "GitHub for the Armada CLI" };
@@ -29,9 +30,9 @@ export default async function GitHubCliPage({ searchParams }: Props) {
   const ok = outcome === "connected";
   return (
     <main className="flex min-h-dvh items-center justify-center p-4">
-      <div className="w-full max-w-md space-y-4 rounded-lg border p-6" data-cli-github={outcome}>
+      <div className="w-full max-w-md space-y-4 rounded-xl border bg-card p-6 shadow-xs" data-cli-github={outcome}>
         <div className="flex items-center gap-2 font-semibold">
-          <ShipIcon className="size-5" />
+          <BrandMark />
           Armada
         </div>
         <div role={ok ? "status" : "alert"} className="flex gap-3">

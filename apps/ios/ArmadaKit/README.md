@@ -154,8 +154,9 @@ form keeps every field), `start_failed`/`init_failed`/`prompt_failed` to
 `failedAfterStart` (a failed sandbox may be listed), a provider's non-allocating fork
 refusals (503 `unauthorized`, `payment_required`, `provider_not_configured`,
 `not_found`) to `refused`, a failure before the request leaves the device (offline,
-session refresh) to `notSent`, and lost answers, other 5xx (including `unavailable`,
-shared by a refused account and a provider outage) and unknown codes to `unconfirmed`
+session refresh) to `notSent`, `credential_refused` (422) to `refused`,
+and `provider_unavailable` (502), `dependency_unavailable` (503),
+lost answers, `outcome_unknown`, other 5xx and unknown codes to `unconfirmed`
 (check the list before launching again). Each code selects
 local text adapted from the dashboard's failure help; only validation codes add the
 server's own message, on one line of at most 300 characters. Sandbox delete is not

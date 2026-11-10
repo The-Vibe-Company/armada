@@ -1,21 +1,12 @@
-"use client";
-
-import {
-  ArchiveIcon,
-  CheckIcon,
-  CopyIcon,
-  GitPullRequestIcon,
-  OctagonPauseIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { ArchiveIcon, GitPullRequestIcon, OctagonPauseIcon, TriangleAlertIcon } from "lucide-react";
+import { CopyButton } from "@/components/copy-button";
 import type { OutcomeView, PreservationView } from "@/lib/outcome";
+import { TONE_BADGE } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
 const OUTCOME_TONES: Record<OutcomeView["kind"], string> = {
-  ready: "border-success/40 bg-success/10 text-success",
-  blocked: "border-warning/40 bg-warning/10 text-warning",
+  ready: TONE_BADGE.success,
+  blocked: TONE_BADGE.warning,
 };
 
 /** The outcome as a badge: "Ready to merge" or "Blocked". */
@@ -98,38 +89,12 @@ export function PreservationNotice({
 }
 
 function CopyLine({ command }: { command: string }) {
-  const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
-  const copy = () => {
-    const done = (result: "copied" | "failed") => {
-      setCopied(result);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setCopied(null), 1600);
-    };
-    // No clipboard outside a secure context: the command stays on screen to select.
-    if (!navigator.clipboard) return done("failed");
-    navigator.clipboard.writeText(command).then(
-      () => done("copied"),
-      () => done("failed"),
-    );
-  };
   return (
     <div className="flex min-w-0 items-center gap-2">
       <code className="min-w-0 flex-1 rounded bg-muted px-2 py-1 font-mono text-xs break-all" title={command}>
         {command}
       </code>
-      <Button type="button" variant="ghost" size="sm" onClick={copy} aria-label="Copy the recovery command">
-        {copied === "copied" ? <CheckIcon /> : <CopyIcon />}
-        {copied === "copied" ? "Copied" : copied === "failed" ? "Select to copy" : "Copy"}
-      </Button>
-      <span role="status" className="sr-only">
-        {copied === "copied"
-          ? "The recovery command was copied."
-          : copied === "failed"
-            ? "The clipboard is unavailable: select the command to copy it."
-            : ""}
-      </span>
+      <CopyButton value={command} label="Copy the recovery command" />
     </div>
   );
 }

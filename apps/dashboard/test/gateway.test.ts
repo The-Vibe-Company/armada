@@ -69,7 +69,13 @@ describe("gateway", () => {
 
   test("a tool error becomes a GatewayError, in plain words for a usage limit", async () => {
     const { gateway } = server((call) =>
-      rpc(call.body.id, { isError: true, content: [{ type: "text", text: "usage_limit: weekly cap reached" }] }),
+      rpc(call.body.id, {
+        isError: true,
+        content: [
+          { type: "text", text: "weekly cap reached" },
+          { type: "text", text: "error code: usage_limit" },
+        ],
+      }),
     );
     const error = await sandboxGateway(gateway)
       .send("sandbox-1", "go")

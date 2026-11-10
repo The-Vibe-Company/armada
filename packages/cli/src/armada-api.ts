@@ -1,5 +1,10 @@
 import { AuthError } from "@armada/auth";
-import type { InvitationApiError, InvitationErrorReason } from "@armada/core";
+import {
+  API_FAILURE_HELP,
+  type ApiFailureCode,
+  type InvitationApiError,
+  type InvitationErrorReason,
+} from "@armada/core";
 import type { SessionStore } from "./session.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
@@ -103,6 +108,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
+      const failureCode =
+        payload && typeof payload === "object" && "error" in payload
+          ? (payload as { error?: { code?: string } }).error?.code
+          : undefined;
+      if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode))
+        throw new ArmadaApiError(failureCode, response.status, API_FAILURE_HELP[failureCode as ApiFailureCode]);
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.

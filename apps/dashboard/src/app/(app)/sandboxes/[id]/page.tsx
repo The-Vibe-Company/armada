@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
+import { CopyButton } from "@/components/copy-button";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
@@ -121,12 +122,14 @@ export default async function SandboxPage({ params }: Props) {
             Sandboxes
           </Link>
         </Button>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
+        {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
             <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
               {sandbox.provider_sandbox_id}
             </h1>
             <StatusBadge status={sandbox.status} />
+            <CopyButton value={sandbox.provider_sandbox_id} label="Copy sandbox ID" className="-ml-1.5" />
             {outcome && <OutcomeBadge outcome={outcome} />}
           </div>
           {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
@@ -166,20 +169,20 @@ export default async function SandboxPage({ params }: Props) {
           />
         </div>
         <SandboxDetailsPanel>
-          <Card className="gap-4">
-            <CardHeader>
-              <CardTitle className="text-base">Details</CardTitle>
+          <Card className="gap-3 py-5">
+            <CardHeader className="px-5">
+              <CardTitle className="text-sm">Details</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-5">
               <Facts facts={facts} />
             </CardContent>
           </Card>
 
-          <Card className="gap-4">
-            <CardHeader>
-              <CardTitle className="text-base">MCP connections</CardTitle>
+          <Card className="gap-3 py-5">
+            <CardHeader className="px-5">
+              <CardTitle className="text-sm">MCP connections</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-5">
               <AppliedConnections applied={applied} />
             </CardContent>
           </Card>
@@ -255,11 +258,11 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
 
 function Facts({ facts }: { facts: [string, string][] }) {
   return (
-    <dl className="divide-y text-sm">
+    <dl className="divide-y divide-border/70 text-[13px]">
       {facts.map(([label, value]) => (
         <div key={label} className="flex min-w-0 items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0">
           <dt className="shrink-0 text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 text-right font-medium break-words">{value}</dd>
+          <dd className="min-w-0 text-right break-words">{value}</dd>
         </div>
       ))}
     </dl>

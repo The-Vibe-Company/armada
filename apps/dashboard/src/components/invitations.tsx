@@ -1,7 +1,8 @@
-import { CircleAlertIcon, MailIcon, ShipIcon } from "lucide-react";
+import { CircleAlertIcon, MailIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { BrandMark } from "@/components/brand-mark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -269,9 +270,12 @@ export function AcceptInvitation({ state, accept, now }: AcceptProps) {
 function InvitationShell({ title, alert = false, children }: { title: string; alert?: boolean; children: ReactNode }) {
   return (
     <main className="flex min-h-dvh items-center justify-center p-4">
-      <section className="w-full max-w-md space-y-4 rounded-lg border p-6" aria-labelledby="invitation-title">
+      <section
+        className="w-full max-w-md space-y-4 rounded-xl border bg-card p-6 shadow-xs"
+        aria-labelledby="invitation-title"
+      >
         <div className="flex items-center gap-2 font-semibold">
-          <ShipIcon className="size-5" aria-hidden />
+          <BrandMark />
           Armada
         </div>
         <h1 id="invitation-title" className={cn("flex items-center gap-2 text-lg font-semibold")}>

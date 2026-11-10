@@ -445,11 +445,10 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     /// `GoldenError` and a provider's `invalid_request`/`forbidden` refusal of the fork).
     static let preStartCodes: Set<String> = [
         "invalid", "invalid_request", "invalid_config", "no_credentials", "missing_credential", "forbidden",
-        "not_found", "conflict",
+        "not_found", "conflict", "credential_refused",
     ]
-    /// Provider refusals of the fork that allocate nothing (`isNonMutatingProviderRefusal` in
-    /// `@armada/core`); the control API answers them with 503. Every other 5xx proves nothing,
-    /// including `unavailable`, which a provider outage during the fork shares with a refused account.
+    /// Legacy provider refusals of the fork that allocate nothing. Other 5xx codes, including
+    /// provider/dependency outages and outcome_unknown, do not prove that no machine was allocated.
     static let nonAllocatingServerCodes: Set<String> = [
         "unauthorized", "payment_required", "provider_not_configured", "not_found",
     ]
@@ -499,6 +498,8 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
         switch code {
         case "payment_required":
             help = ("Provider plan limit reached", "The provider refused to start a machine for this plan or billing state. An admin can check the provider account, then launch again.")
+        case "credential_refused":
+            help = ("Account credential refused", "The selected account credential was refused, revoked or expired. Its owner can replace or reconnect the account from the dashboard or the CLI, then launch again.")
         case "unauthorized":
             help = ("Provider credential refused", "The provider did not accept the organization's provider credential. An admin reconnects it from the dashboard or the CLI.")
         case "no_credentials", "missing_credential":

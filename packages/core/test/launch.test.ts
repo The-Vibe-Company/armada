@@ -66,7 +66,7 @@ describe("launch", () => {
       };
       await expect(
         launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
-      ).rejects.toMatchObject({ code });
+      ).rejects.toMatchObject({ code: code === "unavailable" ? "outcome_unknown" : code });
       expect(released).toBe(code === "invalid_request" ? 1 : 0);
     },
   );

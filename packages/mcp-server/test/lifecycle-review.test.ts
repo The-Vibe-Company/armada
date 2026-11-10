@@ -220,7 +220,7 @@ for (const outcome of ["error", "unconfirmed"] as const)
     try {
       await f.insert();
       await f.scoped.sandboxes.update(f.id, { status: "failed", statusReason: "Original initialization failure" });
-      expect((await f.control("stop", provider))?.status).toBe(outcome === "error" ? 503 : 200);
+      expect((await f.control("stop", provider))?.status).toBe(outcome === "error" ? 502 : 200);
       const pending = await f.scoped.sandboxes.get(f.id);
       expect(pending?.status).toBe("failed");
       expect(pending?.statusReason).toBe("Original initialization failure");
