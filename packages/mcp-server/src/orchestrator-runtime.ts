@@ -670,7 +670,7 @@ export class OrchestratorRuntime {
           const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
           await backend.revalidate(identity);
           if (identity.providerSandboxId && !identity.conversationId) {
-            if (identity.configuration.provider === "modal") {
+            if (backend.provider.id === "modal") {
               // A pre-turn failed create has no native session/checkpoint to save.
               // Stop attempts to checkpoint on Modal and can fail for that reason.
               // Dispose only this fresh, fenced allocation; never discard a resume.
