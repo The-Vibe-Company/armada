@@ -1,6 +1,15 @@
 "use client";
 
-import { BoxesIcon, CameraIcon, KeyRoundIcon, NetworkIcon, PlugIcon, SettingsIcon, UsersIcon } from "lucide-react";
+import {
+  BoxesIcon,
+  CameraIcon,
+  GaugeIcon,
+  KeyRoundIcon,
+  NetworkIcon,
+  PlugIcon,
+  SettingsIcon,
+  UsersIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment } from "react";
@@ -10,12 +19,13 @@ import { cn } from "@/lib/utils";
 /**
  * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), goldens, keys and connections are set
  * up once (Build), and the account pages sit last. The hint, a tooltip, says what each page holds. On a phone the
- * seven links fit two rows of four, so the conversation pages keep their height.
+ * eight links fit two rows of four, so the conversation pages keep their height.
  */
 const GROUPS = [
   {
     label: "Run",
     links: [
+      { href: "/fleet", label: "Fleet", hint: "Every agent and what needs you", icon: GaugeIcon },
       { href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon },
       { href: "/orchestrators", label: "Orchestrators", hint: "Lasting coordinators of workers", icon: NetworkIcon },
     ],
