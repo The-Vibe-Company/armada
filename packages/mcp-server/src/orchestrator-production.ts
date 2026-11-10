@@ -188,7 +188,13 @@ export function createProductionOrchestrators(input: {
         userId: operation.ownerId,
         orgs: [{ orgId: operation.orgId, role: "member" }],
       });
-      await extendSandbox(scoped.sandboxes, saved, provider, ttlSeconds);
+      await extendSandbox(
+        scoped.sandboxes,
+        saved,
+        provider,
+        ttlSeconds,
+        () => input.connections?.renewLifetime?.(provider, saved.id) ?? Promise.resolve(),
+      );
     },
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);

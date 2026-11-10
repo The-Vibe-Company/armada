@@ -316,8 +316,10 @@ export function createSqlData(sql: Sql): DataSource {
           sets.push("activity_until = now() + interval '2 minutes'");
         }
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
-        if (patch.stopRequested !== undefined)
+        if (patch.stopRequested !== undefined) {
           set("stop_requested_at", patch.stopRequested ? new Date().toISOString() : null, "::timestamptz");
+          if (patch.stopRequested) sets.push("reconcile_after = now()");
+        }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
           sets.push(

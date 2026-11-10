@@ -87,7 +87,9 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           signal?.throwIfAborted();
           // A best-effort preservation timeout is NOT proof the active turn settled.
           if (["ready", "running"].includes(info.state))
-            await operation(signal, () => provider.interrupt({ sandboxId: row.provider_sandbox_id }));
+            await operation(signal, () =>
+              (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: row.provider_sandbox_id }),
+            );
           signal?.throwIfAborted();
           if (
             !(

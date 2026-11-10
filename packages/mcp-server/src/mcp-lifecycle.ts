@@ -260,6 +260,9 @@ export function createMcpLifecycle(options: {
   const launch = createSqlMcpLaunchPort(sql, registry);
   const connections: NonNullable<LaunchStores["connections"]> = {
     ...launch,
+    renewLifetime: async (provider, sandboxId) => {
+      await lifecycle.renewLeases(provider, sandboxId);
+    },
     validate: async (actor, ids, visibility) => {
       await launch.validate(actor, ids, visibility);
       for (const id of ids) {
@@ -272,7 +275,7 @@ export function createMcpLifecycle(options: {
       await reconcile(provider, sandbox);
     },
   };
-  return {
+  const lifecycle = {
     connections,
     reconcile,
     /** Trusted provider transition only; never callable via a client-supplied resume flag. */
@@ -401,4 +404,5 @@ export function createMcpLifecycle(options: {
       } else throw Error("Provider cannot scrub transient MCP configuration before snapshot.");
     },
   };
+  return lifecycle;
 }

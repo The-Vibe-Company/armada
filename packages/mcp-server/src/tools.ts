@@ -1383,7 +1383,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox, provider } = await live(args.id);
-      return extendSandbox(data.sandboxes, sandbox, provider, args.ttl_seconds);
+      return extendSandbox(
+        data.sandboxes,
+        sandbox,
+        provider,
+        args.ttl_seconds,
+        () => context.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
+      );
     },
   );
 

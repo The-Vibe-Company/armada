@@ -14,6 +14,7 @@ export async function extendSandbox(
   sandbox: SandboxRecord,
   provider: Provider,
   ttlSeconds: number,
+  renewLeases?: () => Promise<void>,
 ) {
   const max = PROVIDER_LIMITS[sandbox.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS;
   const refuse = (message: string): never => {
@@ -26,16 +27,39 @@ export async function extendSandbox(
   const requested = new Date(Date.now() + ttlSeconds * 1000);
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
     refuse("The requested deadline must extend the existing lifetime.");
-  return sandboxActivity(store, sandbox, {}, async (signal) => {
+  const result = await sandboxActivity(store, sandbox, {}, async (signal) => {
     signal.throwIfAborted();
     const hard = await provider.extendLifetime!({
       sandboxId: sandbox.providerSandboxId,
       ttlSeconds: ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS,
     });
     signal.throwIfAborted();
-    if (!Number.isFinite(hard.getTime()) || hard.getTime() < requested.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000)
-      refuse("Provider could not confirm the requested lifetime; refresh status before retrying.");
+    if (!Number.isFinite(hard.getTime()) || hard.getTime() < requested.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000) {
+      // A capped PATCH may have shortened the old physical deadline. Never leave a
+      // later SQL deadline behind or retain an activity lease that blocks preservation.
+      const unsafe =
+        !Number.isFinite(hard.getTime()) ||
+        !sandbox.expiresAt ||
+        hard.getTime() < new Date(sandbox.expiresAt).getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000;
+      return {
+        result: null,
+        patch: unsafe
+          ? {
+              status: "stopping" as const,
+              statusReason: "expired",
+              expiresAt: new Date().toISOString(),
+              stopRequested: true,
+            }
+          : {},
+      };
+    }
+    await renewLeases?.();
     const expiresAt = requested.toISOString();
     return { result: { id: sandbox.id, expiresAt, ttlSeconds }, patch: { expiresAt, effectiveTtlSeconds: ttlSeconds } };
   });
+  if (result === null)
+    return refuse(
+      "Provider could not confirm the requested lifetime; an unsafe shortened lifetime is scheduled for preservation and stop. Refresh status.",
+    );
+  return result;
 }

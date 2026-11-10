@@ -681,6 +681,7 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         provider: (target) =>
           options.providers

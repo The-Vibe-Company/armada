@@ -1362,6 +1362,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
       await collectImages();
     },
+    quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
       await bound();
       return store.lease(sandboxId, async (row) => {

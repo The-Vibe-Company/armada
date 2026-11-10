@@ -191,6 +191,8 @@ export interface Provider {
   events(request: EventsRequest): Promise<EventPage>;
 
   /** Removes the machine and keeps the disk and the conversations. */
+  /** Interrupt and prove all relevant turns settled. Refuse while interruption is pending. */
+  quiesce?(request: InterruptRequest): Promise<void>;
   /** Reset the physical lifetime without restoring or replacing compute. Returns the confirmed hard deadline. */
   extendLifetime?(request: { sandboxId: string; ttlSeconds: number }): Promise<Date>;
   stop(request: { sandboxId: string }): Promise<void>;

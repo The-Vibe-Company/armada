@@ -615,6 +615,23 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       return page;
     },
 
+    async quiesce(request) {
+      await provider.interrupt(request);
+      const conversations = await provider.conversations(request.sandboxId);
+      if (
+        conversations.some(
+          (conversation) =>
+            (!request.conversationId || conversation.id === request.conversationId) && conversation.running,
+        )
+      )
+        throw new ProviderError({
+          provider: PROVIDER_ID,
+          code: "sandbox_not_ready",
+          message: "Agent interruption is pending; refusing to stop before turns settle.",
+          retryable: true,
+        });
+    },
+
     async extendLifetime(request) {
       const before = await provider.get(request.sandboxId);
       if (!["ready", "running"].includes(before.state)) throw invalidRequest("Only running compute can be extended.");

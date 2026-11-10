@@ -754,7 +754,7 @@ function setup(options: Setup) {
     state,
     providerState: state,
     labels: {},
-    expiresAt: new Date("2026-11-08T16:00:00.000Z"),
+    expiresAt: new Date(Date.now() + 86400000),
   });
   const provider = {
     id: "boat",

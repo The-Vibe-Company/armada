@@ -94,6 +94,8 @@ export interface LaunchStores {
   sandboxes: SandboxStore;
   credentials: LaunchCredentialResolver;
   connections?: {
+    /** Renew already-authorized gateway leases after a physical deadline change. */
+    renewLifetime?(provider: Provider, sandboxId: string): Promise<void>;
     defaults?(actor: GoldenActor, visibility: "private" | "org"): Promise<string[]>;
     validate(actor: GoldenActor, ids: string[], visibility: "private" | "org"): Promise<void>;
     bind(sandboxId: string, ids: string[]): Promise<void>;
@@ -160,7 +162,10 @@ export async function launchSandbox(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   // The provider comes from the golden. The one the caller passed must be that backend, never another.
   assertProviderOf(provider, golden.provider);
-  const ttlSeconds = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
+  const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
+  const ttlSeconds = options.privateParent
+    ? checkedTtl
+    : Math.min(checkedTtl, PROVIDER_LIMITS[golden.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
@@ -583,7 +588,7 @@ function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
       `The TTL must be a whole number of seconds from 1 to ${limits.maxTtlSeconds} (${limits.maxTtlLabel} on ${provider}).`,
     );
   }
-  return Math.min(ttlSeconds, limits.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
+  return ttlSeconds;
 }
 
 function checkPrompt(prompt: string | undefined): string | undefined {
