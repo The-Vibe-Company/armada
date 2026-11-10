@@ -36,6 +36,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           lifecycle_generation: number;
           expires_at: Date | string;
           status: string;
+          preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
@@ -49,7 +50,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
-        returning s.id,s.provider_sandbox_id,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at`,
+        returning s.id,s.provider_sandbox_id,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at,s.preservation_note`,
           [token],
         )
       ).rows[0];
@@ -76,14 +77,16 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           signal?.throwIfAborted();
           const owned = await sql.query<{ id: string }>(
             `update public.sandboxes
-            set reconcile_lease_until=now()+interval '2 minutes'
+            set reconcile_lease_until=now()+interval '2 minutes',
+              status=case when status='failed' then status else 'stopping'::public.sandbox_status end
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
               and reconcile_lease_until>now() and (activity_until is null or activity_until<now()) returning id`,
             [row.id, token, row.lifecycle_generation],
           );
           if (!owned.rows[0]) return true;
           signal?.throwIfAborted();
-          await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {});
+          if (!(row.status === "stopping" && row.preservation_note?.startsWith("unpushed work could not be preserved")))
+            await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {});
           signal?.throwIfAborted();
           await operation(signal, () => provider.stop({ sandboxId: row.provider_sandbox_id }));
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
