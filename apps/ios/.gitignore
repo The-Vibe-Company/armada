@@ -13,3 +13,4 @@ build/
 *.mobileprovision
 *.p12
 *.p8
+Config/Signing.xcconfig
