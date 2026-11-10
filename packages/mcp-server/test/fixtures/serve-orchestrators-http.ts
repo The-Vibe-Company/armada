@@ -550,6 +550,29 @@ try {
   assert(childReceipt.result.sandboxId);
   assert.equal(effects.allocations, 2);
   assert.equal(effects.epochInstalls, 1, "Child must not install a parent epoch.");
+  // The child has served its composition proof. Retire it through its actual
+  // delegated owner lane rather than leaving an unrelated worker live while the
+  // remaining parent-connection scenarios run (child startup lease audit: #864).
+  const childStopped = await socketFetch(`${origin}/api/v1/orchestrator-tools/stop`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${epochToken}`,
+      "content-type": "application/json",
+      "idempotency-key": "serve-child-stop",
+    },
+    body: JSON.stringify({ sandboxId: childReceipt.result.sandboxId }),
+  });
+  assert.equal(childStopped.status, 200);
+  assert.equal(((await childStopped.json()) as { result: { state: string } }).result.state, "succeeded");
+  const stoppedChild = (
+    await sql.query<{ status: string; physical_id: string }>(
+      `select s.status::text,m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+     on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.id=$1`,
+      [childReceipt.result.sandboxId],
+    )
+  ).rows[0];
+  assert.equal(stoppedChild?.status, "stopped");
+  assert(stoppedChild?.physical_id);
   const explicitNone = await cli(
     [
       "create",
@@ -621,6 +644,7 @@ try {
     "output_truncated",
     "decrypt",
   ];
+  const expectedPhysicalExits = new Set<string>([native.physicalId!, stoppedChild.physical_id]);
   for (const reason of failures) {
     fake.failPreservation(reason);
     const launched = await ordinary("launch", {
@@ -658,9 +682,34 @@ try {
     ).rows[0]!;
     assert.equal(row.status, "stopped");
     assert.equal(row.preservation_note, `unpushed work could not be preserved (${reason})`);
+    const physical = (
+      await sql.query<{ physical_id: string }>(
+        `select m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+       on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.id=$1`,
+        [sandboxId],
+      )
+    ).rows[0];
+    assert(physical?.physical_id, "A completed stop must retain its exact physical incarnation");
+    expectedPhysicalExits.add(physical.physical_id);
   }
+  // Prove exact recovery/child/ordinary resource closure, not transport attempt
+  // counts. Missing stops or an accidental stop of either live parent must fail.
+  const physicalExits = fake.physicalExits();
+  const physicalInventory = (
+    await sql.query(`select s.id,s.status::text,s.status_reason,s.preservation_note,s.activity_until,s.expires_at,s.stop_requested_at,
+    m.record->>'physicalId' as physical_id,m.record->>'phase' as phase,
+    exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) as parent,
+    exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id) as child
+    from public.sandboxes s join public.modal_machines m on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id`)
+  ).rows;
+  assert.deepEqual(
+    physicalExits,
+    [...expectedPhysicalExits].sort(),
+    JSON.stringify({ physicalInventory, terminationAttempts: fake.terminationAttempts }),
+  );
+  assert.deepEqual([...new Set(fake.terminationAttempts)].sort(), physicalExits);
   console.log(
-    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects })}`,
+    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects, physicalExits, terminationAttempts: fake.terminationAttempts })}`,
   );
 } finally {
   fake.release();

@@ -37,6 +37,7 @@ export function fakeModalRuntime(input: {
   };
   const byId = new Map<string, Vm>(),
     byName = new Map<string, Vm>();
+  const terminationAttempts: string[] = [];
   let providerReads = 0;
   const privateTokens = new Set<string>();
   let expectedMcp = 0;
@@ -146,6 +147,7 @@ export function fakeModalRuntime(input: {
       getTags: async () => vm.tags,
       terminate: async () => {
         effects.terminations++;
+        terminationAttempts.push(vm.id);
         vm.exit = 0;
       },
       createConnectToken: async () => ({ url: `${tunnelOrigin}/${vm.id}`, token: "synthetic-connect" }),
@@ -263,6 +265,12 @@ export function fakeModalRuntime(input: {
     localOrigin,
     tunnelOrigin,
     privateTokens,
+    terminationAttempts,
+    physicalExits: () =>
+      [...byId.values()]
+        .filter((vm) => vm.exit !== null)
+        .map((vm) => vm.id)
+        .sort(),
     release,
     expectConnections: (count: number, sandboxId?: string) => {
       if (sandboxId) {

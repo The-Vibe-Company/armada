@@ -25,7 +25,7 @@ test("actual serve composition routes the CLI/web/iOS owner API over HTTP withou
     expect(receipt.replayProviderReads).toBe(0);
     expect(receipt.effects.allocations).toBe(15);
     expect(receipt.effects.allocationAttempts).toBe(15);
-    expect(receipt.effects.terminations).toBe(13);
+    expect(receipt.physicalExits).toHaveLength(14);
     expect(receipt.effects.modelCalls).toBe(0);
     expect(receipt.effects.epochInstalls).toBe(2);
     expect(
