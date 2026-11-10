@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -35,11 +35,22 @@ export function CopyButton({ value, label, className }: { value: string; label: 
       size="icon-xs"
       onClick={copy}
       aria-label={label}
-      title={label}
+      title={state === "failed" ? "Copy failed: the browser refused the clipboard" : label}
       data-copy-state={state}
-      className={cn("text-muted-foreground hover:text-foreground", state === "copied" && "text-success", className)}
+      className={cn(
+        "text-muted-foreground hover:text-foreground",
+        state === "copied" && "text-success hover:text-success",
+        state === "failed" && "text-destructive hover:text-destructive",
+        className,
+      )}
     >
-      {state === "copied" ? <CheckIcon className="animate-in zoom-in-50 duration-150" /> : <CopyIcon />}
+      {state === "copied" ? (
+        <CheckIcon className="animate-in zoom-in-50 duration-150" />
+      ) : state === "failed" ? (
+        <XIcon className="animate-in zoom-in-50 duration-150" />
+      ) : (
+        <CopyIcon />
+      )}
       {/* A polite live region without the status role, so it never stands in for a form's own result. */}
       <span aria-live="polite" className="sr-only">
         {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : ""}

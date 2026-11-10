@@ -127,6 +127,13 @@
   dd {
     font-variant-numeric: tabular-nums;
   }
+  /* The entrance and exit animations (tw-animate-css) stand still for a viewer who asked for reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .animate-in,
+    .animate-out {
+      animation: none !important;
+    }
+  }
   ::selection {
     background: color-mix(in oklch, var(--ring) 28%, transparent);
   }

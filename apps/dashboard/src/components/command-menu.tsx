@@ -86,6 +86,11 @@ function Palette({ onDone }: { onDone: () => void }) {
   const listId = useId();
   const optionId = (index: number) => `${listId}-${index}`;
 
+  // The arrows can wrap to a result below the fold: keep the highlighted one in view.
+  useEffect(() => {
+    document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [active, listId]);
+
   function go(command: Command | undefined) {
     if (!command) return;
     onDone();

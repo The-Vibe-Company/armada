@@ -41,7 +41,10 @@ for meaning only, and every text colour holds AA (4.5:1) on the page, the card a
   action that fills the list) in `components/page-header.tsx`.
 - `StatusBadge` and `StatusDot`, `Skeleton`, `Kbd`, `CopyButton`, the `destructive-outline` button for an action that
   is destructive but not the page's primary one (a confirmation then uses the solid `destructive` button).
-- `loading.tsx` skeletons that take the shape of the page they stand in for, so nothing moves when the data arrives.
+- `Skeleton` placeholders that take the shape of what loads (the conversation's history while it is first read), so
+  nothing moves when the data arrives. A `loading.tsx` boundary is never placed above a page that calls `redirect()` or
+  `notFound()`: the boundary streams a 200 first, so the 307 or 404 would be lost (the sandboxes list redirects a new
+  organization to Settings, a sandbox page answers 404).
 - The command menu (`components/command-menu.tsx`, `lib/command-menu.ts`): ⌘K or Ctrl+K anywhere in the signed-in
   app, also reachable from the Search button in the navigation.
 

@@ -68,10 +68,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
 
   return (
     <>
-      <PageHeader
-        title="Sandboxes"
-        meta={total > 0 ? `${total} ${total === 1 ? "sandbox" : "sandboxes"}${filtered ? " match" : ""}` : undefined}
-      >
+      <PageHeader title="Sandboxes" meta={total > 0 ? countLabel(total, filtered) : undefined}>
         {launchAction}
       </PageHeader>
 
@@ -163,7 +160,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
             </TableHeader>
             <TableBody>
               {rows.map((sandbox) => (
-                <TableRow key={sandbox.id} className="relative" data-openable={sandbox.canOpen || undefined}>
+                <TableRow key={sandbox.id} className="relative">
                   <TableCell className="w-full max-w-0 min-w-40">
                     <SandboxName sandbox={sandbox} />
                     <p className="flex items-center gap-1 text-xs text-muted-foreground sm:hidden">
@@ -274,6 +271,12 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
       </p>
     );
   return null;
+}
+
+/** "3 sandboxes", or with filters "1 sandbox matches" / "3 sandboxes match". */
+function countLabel(total: number, filtered: boolean): string {
+  const noun = total === 1 ? "sandbox" : "sandboxes";
+  return filtered ? `${total} ${noun} ${total === 1 ? "matches" : "match"}` : `${total} ${noun}`;
 }
 
 function capitalize(value: string): string {

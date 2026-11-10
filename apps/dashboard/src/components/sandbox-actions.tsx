@@ -21,24 +21,35 @@ const CAN_STOP: readonly SandboxStatus[] = ["starting", "ready", "running"];
 
 /** Messages go through the conversation's composer; the header keeps the machine's own action. */
 export function SandboxActions({ sandboxId, status }: { sandboxId: string; status: SandboxStatus }) {
-  return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} /> : null;
+  return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} compact /> : null;
 }
 
-export function StopButton({ sandboxId, size }: { sandboxId: string; size?: "sm" }) {
+/**
+ * Stops a sandbox after asking. `compact` is the sandbox header's: the quieter outline, and on a phone the icon alone
+ * (the word stays its name) so the header keeps to one row. Elsewhere (the fleet board, the account choice) it is the
+ * solid, labelled button.
+ */
+export function StopButton({
+  sandboxId,
+  size,
+  compact = false,
+}: {
+  sandboxId: string;
+  size?: "sm";
+  compact?: boolean;
+}) {
   const [state, action, pending] = useActionState(stopSandbox, null);
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        {/* The sandbox header (no size) uses the quieter outline and keeps to one row on a phone; the fleet board
-            (#743) keeps its own solid, labelled button. */}
         <Button
-          variant={size ? "destructive" : "destructive-outline"}
+          variant={compact ? "destructive-outline" : "destructive"}
           size={size}
           disabled={pending}
-          className={size ? undefined : "max-sm:px-2.5"}
+          className={compact ? "max-sm:px-2.5" : undefined}
         >
           {pending ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-          <span className={size ? undefined : "max-sm:sr-only"}>Stop</span>
+          <span className={compact ? "max-sm:sr-only" : undefined}>Stop</span>
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
