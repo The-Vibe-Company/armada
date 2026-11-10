@@ -979,7 +979,8 @@ for (const harness of ["claude", "codex"] as const) {
     };
     try {
       run("git", "init", "--quiet");
-      writeFileSync(join(dir, ".git/info/exclude"), "*.log"); // Existing file lacks a final LF.
+      if (harness === "codex") rmSync(join(dir, ".git/info"), { recursive: true });
+      else writeFileSync(join(dir, ".git/info/exclude"), "*.log"); // Existing file lacks a final LF.
       mkdirSync(join(dir, ".companion"), { recursive: true });
       writeFileSync(
         join(dir, ".companion/skills.lock.json"),

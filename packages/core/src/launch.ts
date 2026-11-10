@@ -377,7 +377,7 @@ export async function launchSandbox(
             sandboxId: ready.id,
             cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
             timeoutSeconds: 30,
-            command: `exclude=$(git rev-parse --git-path info/exclude) && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
+            command: `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
           });
           if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
             throw new Error("Skillpack checkout exclusions could not be prepared.");

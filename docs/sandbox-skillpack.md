@@ -23,7 +23,7 @@ and a pinned/checksummed official CLI bootstrap are deferred to #868, as allowed
 by #867's launch-first scope. No golden config field is accepted in this slice.
 
 ## Deployment
-Apply `20261110190000_sandbox_skills.sql` before server rollout. No secret changes.
+Apply `20261110192000_sandbox_skills.sql` before server rollout. No secret changes.
 Coordinator deployed check (not performed in development): on Boat and Modal,
 launch a compatible Skillpack-equipped golden with a currently public pin,
 inspect status receipts and ask the first turn to read the installed skill.
