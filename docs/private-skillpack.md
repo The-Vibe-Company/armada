@@ -371,3 +371,17 @@ a deleted sandbox row. Pending/failed disposal remains visibly blocked with the
 original install reason; do not claim a terminal outcome without physical proof.
 Boat retains its confirmed-stop path. Existing conversations and resumes are
 never discarded by this cleanup path.
+
+The #914 investigation also found a concrete namespace mismatch: the initial
+orchestrator provider was resolved from the org golden, but the sandbox row was
+persisted private. Modal store namespaces include visibility. Re-resolving that
+sandbox for cleanup therefore selected a different store. New creates now bind
+the private working target from the outset, while retaining the original golden
+visibility for source credentials/App authority. Recovery already uses this
+split-source contract. The old scope-free provider fake hid the mismatch; the
+production assembly test now checks the factory's immutable target.
+
+This fixes new creates, not historical stranded allocations. Do not introduce a
+cross-scope fallback or delete older resources by name: use exact, fenced create
+recovery/management proof. The namespace mismatch explains failed cleanup, not
+the original live SSH failure; the staging transport sub-step still needs proof.

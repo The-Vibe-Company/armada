@@ -151,7 +151,7 @@ export function createOrchestratorBackendResolver(input: {
     const selected = await named(actor, configuration, pinnedVersion);
     const target: ProviderTarget = identity?.sandboxId
       ? await persistedTarget(identity.sandboxId, ownerId, configuration.orgId)
-      : golden;
+      : { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility };
     const rawProvider = await input.providers.resolve(target, { userId: ownerId });
     const provider =
       configuration.provider === "boat"

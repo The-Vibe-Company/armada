@@ -135,9 +135,17 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       };
     },
   };
+  const resolvedTargets: core.ProviderTarget[] = [];
   const input = {
     sql,
-    providers: { resolve: async () => provider },
+    providers: {
+      resolve: async (target: core.ProviderTarget) => {
+        // A real Modal adapter binds its store/grants to this target. Returning
+        // one scope-free fake used to hide divergence from persisted private rows.
+        resolvedTargets.push(target);
+        return provider;
+      },
+    },
     credentials: launchCredentials(core.createSqlVaultStore(sql), ENCRYPTION_KEY),
     connections: undefined,
     encryptionKey: ENCRYPTION_KEY,
@@ -218,6 +226,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     expect(placement.forks).toHaveLength(0);
     const created = await settleCreate(config, "production-create");
     expect(created.state).toBe("succeeded");
+    expect(resolvedTargets.length).toBeGreaterThan(0);
+    expect(
+      resolvedTargets.every((target) => target.visibility === "private" && target.sourceGoldenVisibility === "org"),
+    ).toBe(true);
     expect(grant).toMatch(/^armada_epoch_[a-f0-9]{64}$/);
     const id = created.orchestratorId;
     const delegation = (
