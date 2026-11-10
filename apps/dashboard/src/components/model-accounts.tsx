@@ -409,9 +409,9 @@ function InlineAction({
   );
 }
 
-/** A dialog whose form closes it on success and keeps a refusal inside it, next to the fields. */
 function ignoreResult() {}
 
+/** A dialog whose form closes it on success and keeps a refusal inside it, next to the fields. */
 function useDialogAction(action: Action, onResult: (result: ActionResult) => void) {
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);

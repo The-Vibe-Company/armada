@@ -49,7 +49,7 @@ export function Toaster({ children }: { children: ReactNode }) {
         ))}
         <ToastPrimitive.Viewport
           data-slot="toast-viewport"
-          className="fixed right-0 bottom-0 z-[100] flex max-h-dvh w-full flex-col gap-2 p-4 outline-none sm:max-w-sm"
+          className="pointer-events-none fixed right-0 bottom-0 z-[100] flex max-h-dvh w-full flex-col gap-2 p-4 outline-none sm:max-w-sm"
         />
       </ToastPrimitive.Provider>
     </ToastContext.Provider>

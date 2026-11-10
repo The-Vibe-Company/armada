@@ -47,7 +47,8 @@ export function ActionForm({
     },
     [action, successToast, toast],
   );
-  const [state, formAction] = useActionState(run, null);
+  // Without a toast the server action is bound directly, so the form still submits before hydration.
+  const [state, formAction] = useActionState(successToast === undefined ? action : run, null);
   const form = useRef<HTMLFormElement>(null);
   const message = useRef<HTMLParagraphElement>(null);
 
