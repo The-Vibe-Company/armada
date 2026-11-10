@@ -1,9 +1,22 @@
 "use client";
 
 import type { Harness } from "@armada/core";
-import { CopyIcon, KeyRoundIcon, PlusIcon, StarIcon, UserIcon, UsersIcon } from "lucide-react";
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  CircleHelpIcon,
+  CopyIcon,
+  EllipsisIcon,
+  KeyRoundIcon,
+  PencilIcon,
+  PlusIcon,
+  StarIcon,
+  Trash2Icon,
+  UserIcon,
+  UsersIcon,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useState } from "react";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   addAccount,
   makeDefaultAccount,
@@ -23,7 +36,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +47,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,6 +64,7 @@ import {
   type AccountUsage,
   type AuthCapabilities,
   accountProblem,
+  accountState,
   addChoices,
   creditText,
   formatDuration,
@@ -56,7 +76,6 @@ import {
   type ModelAccount,
   otherBilling,
   relativeTime,
-  STATUS_INFO,
   terminalLogin,
   type UsageView,
   usageView,
@@ -64,13 +83,6 @@ import {
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
-
-const TONE: Record<string, string> = {
-  ok: "border-success/40 bg-success/10 text-success",
-  warn: "border-warning/40 bg-warning/10 text-warning",
-  error: "border-destructive/40 bg-destructive/10 text-destructive",
-  muted: "text-muted-foreground",
-};
 
 function ResultLine({ result }: { result: ActionResult | null }) {
   if (!result) return null;
@@ -299,6 +311,15 @@ export function UsagePanel({
 
 /* ---------------------------------------------------------------- one account */
 
+type RowDialog = "rename" | "replace" | "remove" | null;
+
+const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAlertIcon } as const;
+
+/**
+ * One account as a dense row (#805, ready for the Build skeleton of #808): name with a one-line meta and its scope
+ * as a tag, its state in plain words, and the one expected action on the row: Reconnect when it cannot run, Make
+ * default when it could be the default. Rename, replace and remove are rarer and sit in the row's menu.
+ */
 export function AccountRow({
   account,
   orgId,
@@ -316,74 +337,154 @@ export function AccountRow({
   now: number;
 }) {
   const [result, setResult] = useState<ActionResult | null>(null);
+  const [dialog, setDialog] = useState<RowDialog>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
   const info = KIND_INFO[account.kind];
-  const status = STATUS_INFO[account.status];
+  const state = accountState(account, now);
+  const StateIcon = STATE_ICON[state.tone];
   const headingId = `account-${account.id}`;
-  const problem = accountProblem(account, now);
   const expiry = account.expiresAt
     ? Date.parse(account.expiresAt) <= now
       ? `Expired ${day(account.expiresAt)}`
       : `Expires ${day(account.expiresAt)}`
     : null;
+  const secretWord = info.billing === "api" ? "key" : "token";
+  // Stable, so a dialog's success effect runs once per result rather than on every render of the row.
+  const closeDialog = useCallback((next: boolean) => {
+    if (!next) setDialog(null);
+  }, []);
+  const restoreFocus = useCallback((event: Event) => {
+    event.preventDefault();
+    menuTrigger.current?.focus();
+  }, []);
 
   return (
-    <li className="space-y-3 p-4" data-account={account.name} aria-labelledby={headingId}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
+    <li className="px-4 py-3" data-account={account.name} aria-labelledby={headingId}>
+      <div className="grid gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center">
+        <div className="min-w-0 space-y-0.5">
           <div className="flex flex-wrap items-center gap-2">
             <h3 id={headingId} className="font-medium break-all">
               {account.name}
             </h3>
+            <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
+              {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
+              {account.scope === "user" ? "Personal" : orgName}
+            </Badge>
             {account.isDefault && (
               <Badge variant="outline" className="gap-1" data-default>
                 <StarIcon className="fill-current" /> Default
               </Badge>
             )}
-            {account.status !== "active" && (
-              <Badge variant="outline" className={TONE[status.tone]} data-account-status={account.status}>
-                {status.label}
-              </Badge>
-            )}
           </div>
-          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            {kindNote(account) && <span>{kindNote(account)}</span>}
-            <span className="inline-flex items-center gap-1">
-              {account.scope === "user" ? <UserIcon className="size-3" /> : <UsersIcon className="size-3" />}
-              {account.scope === "user" ? "Yours" : orgName}
-            </span>
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+            <span>{kindNote(account) ?? info.label}</span>
             {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
             <span>
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
         </div>
-        {canManage && (
-          <div className="flex flex-wrap items-center gap-1">
+
+        <p
+          className={cn("flex items-center gap-1.5 text-sm", STATE_TONE[state.tone])}
+          data-account-status={account.status}
+          data-account-state={state.label.toLowerCase()}
+        >
+          <StateIcon className="size-4 shrink-0" aria-hidden />
+          {state.label}
+        </p>
+
+        {canManage ? (
+          <div className="flex items-center gap-1 sm:justify-end">
             {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
-            {!account.isDefault && problem === null && (
-              <InlineAction
-                action={makeDefaultAccount}
-                fields={<TargetFields account={account} orgId={orgId} />}
-                onResult={setResult}
-                label={`Make default, ${account.name}`}
-              >
-                Make default
-              </InlineAction>
+            {state.needsAction ? (
+              <Button size="sm" onClick={() => setDialog("replace")} aria-label={`Reconnect, ${account.name}`}>
+                Reconnect
+              </Button>
+            ) : (
+              !account.isDefault && (
+                <InlineAction
+                  action={makeDefaultAccount}
+                  fields={<TargetFields account={account} orgId={orgId} />}
+                  onResult={setResult}
+                  label={`Make default, ${account.name}`}
+                >
+                  Make default
+                </InlineAction>
+              )
             )}
-            <RenameDialog account={account} orgId={orgId} onResult={setResult} />
-            <ReplaceDialog account={account} orgId={orgId} reconnect={problem !== null} onResult={setResult} />
-            <RemoveDialog account={account} orgId={orgId} />
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  ref={menuTrigger}
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`More actions for ${account.name}`}
+                >
+                  <EllipsisIcon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuItem onSelect={() => setDialog("rename")}>
+                  <PencilIcon /> Rename
+                </DropdownMenuItem>
+                {!state.needsAction && (
+                  <DropdownMenuItem onSelect={() => setDialog("replace")}>
+                    <KeyRoundIcon /> Replace {secretWord}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setDialog("remove")}>
+                  <Trash2Icon /> Remove
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
+        ) : (
+          <p className="text-xs text-muted-foreground sm:text-right">Managed by the org&apos;s admins.</p>
         )}
       </div>
       {/* A revoked or removed account has no usage to read: its status already says what to do. */}
       {info.billing === "subscription" && account.status === "active" && (
-        <UsagePanel usage={usage} account={account} now={now} />
+        <div className="mt-2 max-w-2xl">
+          <UsagePanel usage={usage} account={account} now={now} />
+        </div>
       )}
       <ResultLine result={result} />
+
+      {canManage && (
+        <>
+          <RenameDialog
+            account={account}
+            orgId={orgId}
+            onResult={setResult}
+            open={dialog === "rename"}
+            onOpenChange={closeDialog}
+            onCloseAutoFocus={restoreFocus}
+          />
+          <ReplaceDialog
+            account={account}
+            orgId={orgId}
+            reconnect={state.needsAction}
+            onResult={setResult}
+            open={dialog === "replace"}
+            onOpenChange={closeDialog}
+            onCloseAutoFocus={restoreFocus}
+          />
+          <RemoveDialog
+            account={account}
+            orgId={orgId}
+            open={dialog === "remove"}
+            onOpenChange={closeDialog}
+            onCloseAutoFocus={restoreFocus}
+          />
+        </>
+      )}
     </li>
   );
 }
+
+const STATE_TONE = { ok: "text-success", warn: "text-warning", error: "text-destructive" } as const;
 
 function InlineAction({
   action,
@@ -414,41 +515,49 @@ function InlineAction({
 
 function ignoreResult() {}
 
+/** The row owns which dialog is open; the menu and the row's action open them, and closing gives focus back. */
+type Controlled = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus: (event: Event) => void;
+};
+
 /** A dialog whose form closes it on success and keeps a refusal inside it, next to the fields. */
-function useDialogAction(action: Action, onResult: (result: ActionResult) => void) {
-  const [open, setOpen] = useState(false);
+function useDialogAction(
+  action: Action,
+  onResult: (result: ActionResult) => void,
+  onOpenChange: (open: boolean) => void,
+) {
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useActionState(action, null);
   useEffect(() => {
     if (!state) return;
     if (state.ok) {
       onResult(state);
-      setOpen(false);
+      onOpenChange(false);
       setGeneration((value) => value + 1);
     }
-  }, [state, onResult]);
-  return { open, setOpen, state, formAction, generation };
+  }, [state, onResult, onOpenChange]);
+  return { state, formAction, generation };
 }
 
 function RenameDialog({
   account,
   orgId,
   onResult,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
 }: {
   account: ModelAccount;
   orgId: string;
   onResult: (result: ActionResult) => void;
-}) {
-  const { open, setOpen, state, formAction, generation } = useDialogAction(renameAccount, onResult);
+} & Controlled) {
+  const { state, formAction, generation } = useDialogAction(renameAccount, onResult, onOpenChange);
   const id = useId();
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label={`Rename ${account.name}`}>
-          Rename
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Rename {account.name}</DialogTitle>
           <DialogDescription>Only the name changes. Its token and running sandboxes are untouched.</DialogDescription>
@@ -485,28 +594,22 @@ function ReplaceDialog({
   orgId,
   reconnect,
   onResult,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
 }: {
   account: ModelAccount;
   orgId: string;
-  /** The account cannot run now (expired, say): replacing its token is the next step, so it leads. */
+  /** The account cannot run now (expired, say): replacing its token is how it reconnects. */
   reconnect: boolean;
   onResult: (result: ActionResult) => void;
-}) {
-  const { open, setOpen, state, formAction, generation } = useDialogAction(replaceAccountSecret, onResult);
+} & Controlled) {
+  const { state, formAction, generation } = useDialogAction(replaceAccountSecret, onResult, onOpenChange);
   const info = KIND_INFO[account.kind];
   const id = useId();
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button
-          variant={reconnect ? "default" : "ghost"}
-          size="sm"
-          aria-label={`${reconnect ? "Reconnect" : `Replace ${info.billing === "api" ? "key" : "token"}`}, ${account.name}`}
-        >
-          {reconnect ? "Reconnect" : `Replace ${info.billing === "api" ? "key" : "token"}`}
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>
             {reconnect ? "Reconnect" : "Replace the"}{" "}
@@ -538,7 +641,13 @@ function ReplaceDialog({
 }
 
 /** A successful removal takes the account's row, and its result line, off the page: a toast names what went. */
-function RemoveDialog({ account, orgId }: { account: ModelAccount; orgId: string }) {
+function RemoveDialog({
+  account,
+  orgId,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
+}: { account: ModelAccount; orgId: string } & Controlled) {
   const toast = useToast();
   const remove = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
@@ -548,20 +657,10 @@ function RemoveDialog({ account, orgId }: { account: ModelAccount; orgId: string
     },
     [toast, account.name],
   );
-  const { open, setOpen, state, formAction } = useDialogAction(remove, ignoreResult);
+  const { state, formAction } = useDialogAction(remove, ignoreResult, onOpenChange);
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-destructive hover:text-destructive"
-          aria-label={`Remove ${account.name}`}
-        >
-          Remove
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>Remove {account.name}?</AlertDialogTitle>
           <AlertDialogDescription>

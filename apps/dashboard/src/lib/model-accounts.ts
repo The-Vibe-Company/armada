@@ -267,6 +267,36 @@ export function accountProblem(account: Pick<ModelAccount, "status" | "expiresAt
   return null;
 }
 
+export type AccountState = {
+  /** The state in plain words, as the row's state cell says it. */
+  label: string;
+  tone: "ok" | "warn" | "error";
+  /** The account cannot run now: its row leads the list and offers Reconnect. */
+  needsAction: boolean;
+};
+
+/** What an account's row says about it: ready to launch, or why not. */
+export function accountState(account: Pick<ModelAccount, "status" | "expiresAt">, now: number): AccountState {
+  const problem = accountProblem(account, now);
+  if (problem === null) return { label: "Ready", tone: "ok", needsAction: false };
+  if (account.status === "unknown") return { label: STATUS_INFO.unknown.label, tone: "warn", needsAction: true };
+  return { label: problem.charAt(0).toUpperCase() + problem.slice(1), tone: "error", needsAction: true };
+}
+
+/**
+ * The order of one harness's list (#805, the Build skeleton of #808): accounts that need action first, then the
+ * default, then yours before the org's, then by name.
+ */
+export function orderAccounts(accounts: readonly ModelAccount[], now: number): ModelAccount[] {
+  return [...accounts].sort(
+    (a, b) =>
+      Number(accountProblem(b, now) !== null) - Number(accountProblem(a, now) !== null) ||
+      Number(b.isDefault) - Number(a.isDefault) ||
+      (a.scope === b.scope ? 0 : a.scope === "user" ? -1 : 1) ||
+      a.name.localeCompare(b.name),
+  );
+}
+
 export function isUsable(account: ModelAccount, now: number): boolean {
   return accountProblem(account, now) === null;
 }

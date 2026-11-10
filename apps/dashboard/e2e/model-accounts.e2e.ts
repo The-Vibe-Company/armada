@@ -110,7 +110,8 @@ test("rename and default keep the account's id; removing the default leaves the 
   const claude = page.locator('[data-harness="claude"]');
   const home = claude.locator('[data-account="Home"]');
 
-  await home.getByRole("button", { name: "Rename Home" }).click();
+  await home.getByRole("button", { name: "More actions for Home" }).click();
+  await page.getByRole("menuitem", { name: "Rename" }).click();
   await page.getByRole("dialog").getByLabel("Name").fill("Side project");
   await page.getByRole("dialog").getByRole("button", { name: "Save name" }).click();
   const side = claude.locator('[data-account="Side project"]');
@@ -119,7 +120,11 @@ test("rename and default keep the account's id; removing the default leaves the 
   await side.getByRole("button", { name: "Make default, Side project" }).click();
   await expect(claude.locator("[data-launch-uses]")).toHaveText("Launch preselects Side project, your default.");
 
-  await claude.locator('[data-account="Side project"]').getByRole("button", { name: "Remove Side project" }).click();
+  await claude
+    .locator('[data-account="Side project"]')
+    .getByRole("button", { name: "More actions for Side project" })
+    .click();
+  await page.getByRole("menuitem", { name: "Remove" }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
     "New launches can no longer use it. Sandboxes launched with it keep their files and conversations, but new messages to them are refused; a new launch needs another usable account.",
   );
@@ -183,7 +188,8 @@ test("replacing a token keeps the account and names the version seen; a replacem
   await stale.goto("/harness");
 
   const replace = async (on: Page, token: string) => {
-    await on.getByRole("button", { name: "Replace token, Work" }).click();
+    await on.getByRole("button", { name: "More actions for Work" }).click();
+    await on.getByRole("menuitem", { name: "Replace token" }).click();
     const dialog = on.getByRole("dialog");
     // #612 pins a sandbox to the account version it launched with: a replacement refuses new messages to those
     // sandboxes and keeps their files and conversations.

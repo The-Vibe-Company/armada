@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createAccountControl } from "../src/lib/account-control.ts";
 import {
   type AccountUsage,
+  accountState,
   accountsFromList,
   addChoices,
   checkAccountChoice,
@@ -9,6 +10,7 @@ import {
   kindFor,
   launchDefault,
   type ModelAccount,
+  orderAccounts,
   otherBilling,
   parseAuthCapabilities,
   parseUsage,
@@ -421,5 +423,29 @@ describe("adding a subscription (#805)", () => {
     expect(kindFor("claude", "api")).toBe("anthropic");
     expect(otherBilling("claude_oauth")).toBe("anthropic");
     expect(otherBilling("openai")).toBe("codex_auth");
+  });
+});
+
+describe("the Harness list (#805)", () => {
+  test("a row says Ready, or why it cannot run in plain words", () => {
+    expect(accountState(account(1), NOW)).toEqual({ label: "Ready", tone: "ok", needsAction: false });
+    expect(accountState(account(2, { expiresAt: "2026-11-01T00:00:00.000Z" }), NOW)).toEqual({
+      label: "Expired",
+      tone: "error",
+      needsAction: true,
+    });
+    expect(accountState(account(3, { status: "revoked" }), NOW).label).toBe("Revoked");
+    expect(accountState(account(4, { status: "unknown" }), NOW)).toMatchObject({ tone: "warn", needsAction: true });
+  });
+
+  test("needs action first, then the default, then yours before the org's, then by name", () => {
+    const list = [
+      account(1, { name: "Zed", scope: "org" }),
+      account(2, { name: "Beta" }),
+      account(3, { name: "Alpha", scope: "org", isDefault: true }),
+      account(4, { name: "Old", status: "revoked" }),
+      account(5, { name: "Aaron", scope: "org" }),
+    ];
+    expect(orderAccounts(list, NOW).map((item) => item.name)).toEqual(["Old", "Alpha", "Beta", "Aaron", "Zed"]);
   });
 });

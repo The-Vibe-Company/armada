@@ -21,7 +21,7 @@ import {
   HARNESS_PATH,
   kindFor,
   launchDefault,
-  type ModelAccount,
+  orderAccounts,
 } from "@/lib/model-accounts";
 
 export const metadata: Metadata = { title: "Harness" };
@@ -58,16 +58,6 @@ export default async function HarnessPage() {
 
       <HarnessSections list={accounts} selected={selected} capabilities={capabilities} now={now} />
     </>
-  );
-}
-
-/** Defaults first, then yours before the org's, then by name: the order a person scans for "which one bills". */
-function ordered(accounts: ModelAccount[]): ModelAccount[] {
-  return [...accounts].sort(
-    (a, b) =>
-      Number(b.isDefault) - Number(a.isDefault) ||
-      (a.scope === b.scope ? 0 : a.scope === "user" ? -1 : 1) ||
-      a.name.localeCompare(b.name),
   );
 }
 
@@ -132,7 +122,7 @@ async function HarnessSections({
           harness={harness}
           harnessLabel={HARNESS_LABELS[harness]}
           resolved={launchDefault(list.accounts, harness, now)}
-          accounts={ordered(accountsFor(list.accounts, harness))}
+          accounts={orderAccounts(accountsFor(list.accounts, harness), now)}
           orgId={selected.org.id}
           orgName={selected.org.name}
           isAdmin={selected.role === "admin"}
