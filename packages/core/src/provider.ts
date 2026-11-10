@@ -389,7 +389,7 @@ export interface PrepareNativeHarnessCwdRequest {
 }
 
 export interface ExecRequest {
-  /** Cancels bounded lifecycle exec/retry work; never admit a retry after cancellation. */
+  /** Caller cancellation for provider admission/retries where supported. */
   signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
   onlyIfRunning?: boolean;

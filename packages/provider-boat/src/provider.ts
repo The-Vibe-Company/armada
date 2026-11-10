@@ -557,7 +557,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         if (request.onlyIfRunning) {
           // Capture precedes stop and must never resume retained compute. A transient
           // startup may settle, but stopping/terminal compute cannot accept capture.
-          const current = await provider.get(request.sandboxId, { signal: request.signal });
+          const current = await provider.get(
+            request.sandboxId,
+            request.signal ? { signal: request.signal } : undefined,
+          );
           request.signal?.throwIfAborted();
           if (current.physicalExitConfirmed || !["ready", "running"].includes(current.state)) {
             if (current.state === "starting" && attempt < RESTORE_RETRIES) {
