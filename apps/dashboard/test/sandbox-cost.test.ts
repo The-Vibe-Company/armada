@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { costFigure, costOfRow, formatUsd, orchestratorCost, usageFromRow } from "@/lib/sandbox-cost";
+import {
+  costFigure,
+  costOfRow,
+  formatUsd,
+  orchestratorCost,
+  orchestratorCostRows,
+  usageFromRow,
+} from "@/lib/sandbox-cost";
 
 const turns = (list: unknown[], turnCount: unknown = list.length) => ({ turnCount, turns: list });
 
@@ -61,7 +68,7 @@ describe("cost figure", () => {
 });
 
 describe("orchestrator cost", () => {
-  test("its own and its readable workers' together; an unreadable worker is counted as unseen, never as zero", () => {
+  test("its own and its readable workers' together; an unreadable worker is left out", () => {
     const priced = (id: string) => ({
       promptId: id,
       model: "claude-sonnet-5-5",
@@ -79,7 +86,33 @@ describe("orchestrator cost", () => {
     expect(cost.own?.usd).toBeCloseTo(2, 10);
     expect(cost.workers.usd).toBeCloseTo(2, 10);
     expect(Object.keys(cost.children)).toEqual(["w1"]);
-    expect(cost.unseen).toBe(1);
     expect(costFigure(orchestratorCost(null, [], new Map()).total).kind).toBe("none");
+  });
+
+  test("workers launched since the page was read, or unreadable, are not counted and the amounts say so", () => {
+    const priced = {
+      promptId: "a",
+      model: "claude-sonnet-5-5",
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cachedTokens: 0,
+    };
+    const costs = new Map([["w1", costOfRow({ harness: "claude", usage_turns: turns([priced]) }, null)]]);
+    const cost = orchestratorCost(null, ["w1"], costs);
+    expect(orchestratorCostRows(cost, ["w1"])).toEqual([
+      ["API-equivalent cost", "$2.00"],
+      ["Its own", "No usage yet"],
+      ["Its 1 worker", "$2.00"],
+    ]);
+    expect(orchestratorCostRows(cost, ["w1", "w2"])).toEqual([
+      ["API-equivalent cost", "≥ $2.00"],
+      ["Its own", "No usage yet"],
+      ["Its 2 workers, 1 not counted", "≥ $2.00"],
+    ]);
+    expect(orchestratorCostRows(orchestratorCost(null, ["w9"], new Map()), ["w9"])[2]).toEqual([
+      "Its 1 worker, 1 not counted",
+      "Not counted",
+    ]);
+    expect(orchestratorCostRows(orchestratorCost(null, [], new Map()), [])[2]).toEqual(["Its 0 workers", "None yet"]);
   });
 });

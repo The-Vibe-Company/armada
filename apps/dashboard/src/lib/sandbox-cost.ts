@@ -104,9 +104,8 @@ export type OrchestratorCost = {
   own: SandboxCost | null;
   /** Its readable workers' together. */
   workers: SandboxCost;
+  /** The workers whose row the viewer could read, by id: any other is left out of the figures. */
   children: Record<string, SandboxCost>;
-  /** Workers whose row the viewer cannot read (removed, or not theirs): left out of the total. */
-  unseen: number;
 };
 
 export function orchestratorCost(
@@ -116,17 +115,38 @@ export function orchestratorCost(
 ): OrchestratorCost {
   const own = ownId ? (costs.get(ownId) ?? null) : null;
   const children: Record<string, SandboxCost> = {};
-  let unseen = 0;
   for (const id of new Set(childIds)) {
     const cost = costs.get(id);
     if (cost) children[id] = cost;
-    else unseen += 1;
   }
   return {
     total: combineCosts([...(own ? [own] : []), ...Object.values(children)]),
     own,
     workers: combineCosts(Object.values(children)),
     children,
-    unseen,
   };
+}
+
+/**
+ * Its cost (#875): its own and its workers' together, labelled by what the figure means, then each part. The figures
+ * were read with the page; a worker launched since, or one the viewer cannot read, is not counted: the label says how
+ * many and the amounts read "≥". Nothing recorded reads "No usage yet", never $0.00.
+ */
+export function orchestratorCostRows(cost: OrchestratorCost, liveChildren: readonly string[]): [string, string][] {
+  const workers = [...new Set(liveChildren)];
+  const missing = workers.filter((id) => !Object.hasOwn(cost.children, id)).length;
+  const text = (part: SandboxCost | null, lower: boolean) => {
+    if (!part) return "No usage yet";
+    const figure = costFigure(part);
+    if (figure.kind === "none") return "No usage yet";
+    if (figure.kind !== "priced") return figure.text;
+    return figure.partial || lower ? `≥ ${figure.text}` : figure.text;
+  };
+  const counted = workers.length - missing;
+  const label = `Its ${workers.length} worker${workers.length === 1 ? "" : "s"}${missing > 0 ? `, ${missing} not counted` : ""}`;
+  return [
+    [cost.total.label, text(cost.total, missing > 0)],
+    ["Its own", text(cost.own, false)],
+    [label, workers.length === 0 ? "None yet" : counted === 0 ? "Not counted" : text(cost.workers, missing > 0)],
+  ];
 }
