@@ -12,6 +12,17 @@ const KEY = Buffer.alloc(32, 7).toString("base64");
 // Synthetic canaries, never real credentials.
 const CANARY = "synthetic-vault-canary\nsecond line 🦊";
 
+/** Check actual string leaves and JSON text fields, not a reserialized multiline string. */
+function expectNoCanary(output: unknown, canary = CANARY): void {
+  if (typeof output === "string") {
+    expect(output).not.toContain(canary);
+    const escaped = JSON.stringify(canary).slice(1, -1);
+    if (escaped !== canary) expect(output).not.toContain(escaped);
+  } else if (output !== null && typeof output === "object") {
+    for (const value of Object.values(output)) expectNoCanary(value, canary);
+  }
+}
+
 async function fixture() {
   const db = await openDatabase();
   await applyMigrations(db);
@@ -115,6 +126,8 @@ async function withVault(work: (f: Fixture) => Promise<void>) {
 describe("application vault control API and MCP", () => {
   test("write-only secret lifecycle seals values, CAS-fences rotation/revocation, tombstones deletion and audits only IDs", async () => {
     await withVault(async (f) => {
+      expect(() => expectNoCanary({ item: { value: CANARY } })).toThrow();
+      expect(() => expectNoCanary({ content: [{ text: JSON.stringify({ value: CANARY }) }] })).toThrow();
       const created = await f.api(f.owner, "secrets/set", {
         org: f.org,
         scope: "personal",
@@ -169,8 +182,8 @@ describe("application vault control API and MCP", () => {
         await f.api(f.owner, "secrets/list", { org: f.org }),
         await f.api(f.owner, "secrets/read", { org: f.org, id }),
       ];
-      expect(JSON.stringify(outputs)).not.toContain(CANARY);
-      expect(JSON.stringify(outputs)).not.toContain("replacement synthetic canary");
+      expectNoCanary(outputs);
+      expectNoCanary(outputs, "replacement synthetic canary");
       const recreated = await f.api(f.owner, "secrets/set", {
         org: f.org,
         scope: "personal",
@@ -251,7 +264,7 @@ describe("application vault control API and MCP", () => {
         expect((await peer.client.callTool({ name: "secret_commit", arguments: args })).isError).toBe(true);
         const committed = await owner.client.callTool({ name: "secret_commit", arguments: args });
         expect(committed.isError).not.toBe(true);
-        expect(JSON.stringify(committed)).not.toContain(CANARY);
+        expectNoCanary(committed);
         const id = (committed.structuredContent as { item: { id: string } }).item.id;
         expect((await owner.client.callTool({ name: "secret_commit", arguments: args })).isError).toBe(true);
         const replacement = await f.api(f.owner, "secrets/upload", {
@@ -267,7 +280,7 @@ describe("application vault control API and MCP", () => {
         });
         expect(rotated.isError).not.toBe(true);
         expect(rotated.structuredContent).toMatchObject({ item: { id, version: 2, epoch: 2 } });
-        expect(JSON.stringify(rotated)).not.toContain("synthetic replacement");
+        expectNoCanary(rotated, "synthetic replacement");
         const rotate = await f.api(f.owner, "secrets/upload", {
           org: f.org,
           operation: "rotate",
@@ -314,7 +327,7 @@ describe("application vault control API and MCP", () => {
           arguments: { org: f.org, uploadReference: ref, value: CANARY },
         });
         expect(rejected.isError).toBe(true);
-        expect(JSON.stringify(rejected)).not.toContain(CANARY);
+        expectNoCanary(rejected);
         expect(owner.logs).toEqual([]);
         expect(peer.logs).toEqual([]);
         const readable = await owner.client.callTool({
@@ -375,7 +388,7 @@ describe("application vault control API and MCP", () => {
       ]) {
         const r = await f.api(f.owner, "secrets/set", { org: f.org, scope: "personal", name, value });
         expect(r.status).toBe(400);
-        expect(r.text).not.toContain(CANARY);
+        expectNoCanary(r.text);
       }
       expect(
         (
@@ -423,19 +436,19 @@ describe("application vault control API and MCP", () => {
           f.options,
         );
         expect(response?.status).toBe(400);
-        expect(await response?.text()).not.toContain(CANARY);
+        expectNoCanary(await response?.text());
       }
       const duplicate = { org: f.org, scope: "personal", name: "DUPLICATE", value: CANARY };
       expect((await f.api(f.owner, "secrets/set", duplicate)).status).toBe(200);
       const r = await f.api(f.owner, "secrets/set", duplicate);
       expect(r.status).toBe(409);
-      expect(r.text).not.toContain(CANARY);
+      expectNoCanary(r.text);
       await f.db.exec(
         "create function reject_vault_write() returns trigger language plpgsql as $$ begin raise exception 'synthetic-vault-canary'; end $$; create trigger reject_vault_write before insert on application_vault_audit for each row execute function reject_vault_write();",
       );
       const failure = await f.api(f.owner, "secrets/set", { ...duplicate, name: "BACKEND" });
       expect(failure.status).toBe(503);
-      expect(failure.text).not.toContain("synthetic-vault-canary");
+      expectNoCanary(failure.text, "synthetic-vault-canary");
       expect((await f.db.query("select id from application_secrets where name='BACKEND'")).rows).toEqual([]);
       const upload = await f.api(f.owner, "secrets/upload", {
         org: f.org,
@@ -452,7 +465,7 @@ describe("application vault control API and MCP", () => {
           arguments: { org: f.org, uploadReference: upload.body.uploadReference },
         });
         expect(rejected.isError).toBe(true);
-        expect(JSON.stringify(rejected)).not.toContain("synthetic-vault-canary");
+        expectNoCanary(rejected, "synthetic-vault-canary");
         expect(mcp.logs).toEqual([]);
         expect((await f.db.query("select id from application_secrets where name='APP_BACKEND'")).rows).toEqual([]);
         expect((await f.db.query("select hash from application_secret_uploads")).rows).toHaveLength(1);
