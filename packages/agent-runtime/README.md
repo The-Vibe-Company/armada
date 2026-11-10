@@ -448,3 +448,6 @@ Boat forwards explicit `data.message_id` / `messageId` and
 optional fields are forward-compatible, not a guarantee from Boat.
 Runtime journal/outbox, Modal HTTP ingest, JSONB storage and event pagination
 preserve the optional fields without schema changes or a protocol version bump.
+
+For managed Claude upgrades and refreshing existing Boat/Modal snapshots, see
+[the runtime upgrade runbook](../../docs/claude-runtime-upgrade.md).
