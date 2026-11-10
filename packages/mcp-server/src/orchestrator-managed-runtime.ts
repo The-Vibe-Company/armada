@@ -1,5 +1,6 @@
 import type { Provider, SandboxProviderId } from "@armada/core";
 import type { Sql } from "@armada/core/server";
+import { type OrchestratorDiagnosticLog, OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorTransport } from "./orchestrator-transport.ts";
@@ -104,6 +105,7 @@ const uncertain = (machine: ManagedMachine, operationId: string): ManagedStopRec
  * after owner removal uses persisted provider binding, never current-user credentials.
  * The real native backend is mandatory; no flag/capability can fabricate checkpoint proof. */
 export function createManagedOrchestratorRuntime(options: {
+  diagnosticLog?: OrchestratorDiagnosticLog;
   sql: Sql;
   authority: OrchestratorRuntimeFoundation["authority"];
   resolveManaged(machine: ManagedMachine, selection: ManagedSelection): Promise<ManagedNativeBackend>;
@@ -208,76 +210,107 @@ export function createManagedOrchestratorRuntime(options: {
     operationId: string,
     signal?: AbortSignal,
   ): Promise<ManagedStopReceipt> {
-    signal?.throwIfAborted();
-    if (!sql.transaction) throw new OrchestratorRuntimeError("unavailable");
-    const claim = await sql.transaction(async (tx) => {
-      const current = await bound(machine, operationId, tx, true);
-      if (!["stopping", "blocked"].includes(current.state)) throw new OrchestratorRuntimeError("conflict");
-      const prior = recorded(machine, operationId, current.result);
-      if (prior || current.operationState !== "pending") return { ...current, fresh: false };
-      // The actual208 receipt is the dispatch fence, not a second operation store.
-      await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
-        operationId,
-        JSON.stringify(uncertain(machine, operationId)),
-      ]);
-      return { ...current, fresh: true };
-    });
-    if (!claim.fresh) return runtime.reconcileStop(machine, operationId, signal);
-    let value = uncertain(machine, operationId);
+    const diagnostics = new OrchestratorDiagnostics(options.diagnosticLog, "stop", "managed");
+    diagnostics.bind({ operationId, orchestratorId: machine.orchestratorId, sandboxId: machine.sandboxId });
     try {
-      await options.authority.revoke(machine.orchestratorId);
-      const backend = await resolve(machine, { ...claim.selection, operationId });
-      const native = await backend.provider.get(machine.providerSandboxId);
-      if (machine.physicalGeneration && native.physicalGeneration !== machine.physicalGeneration)
-        throw new OrchestratorRuntimeError("conflict");
-      if (native.physicalGeneration) {
-        await sql.transaction!(async (tx) => {
-          const current = await bound(machine, operationId, tx, true);
-          if (current.revision !== claim.revision) throw new OrchestratorRuntimeError("conflict");
-          const boundNative = await tx.query(
-            `update public.sandboxes set orchestrator_native_generation=$2 where id=$1 and (orchestrator_native_generation is null or orchestrator_native_generation=$2) returning id`,
-            [machine.sandboxId, native.physicalGeneration],
-          );
-          if (boundNative.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
-          machine = { ...machine, physicalGeneration: native.physicalGeneration! };
-          await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
-            operationId,
-            JSON.stringify(uncertain(machine, operationId)),
-          ]);
-        });
-      }
-      if (
-        !native.physicalGeneration ||
-        !["ready", "running"].includes(native.state) ||
-        !backend.provider.quiesceOrchestrator
-      )
-        throw new OrchestratorRuntimeError("unavailable");
-      const drained = await backend.provider.quiesceOrchestrator({
-        sandboxId: machine.providerSandboxId,
-        physicalGeneration: native.physicalGeneration,
-      });
-      if (drained.acknowledged !== true) throw new OrchestratorRuntimeError("unavailable");
-      const observed = observation(machine, await readNative(() => backend.observe(machine, signal)));
-      if (observed.state !== "quiescent") throw new OrchestratorRuntimeError("conflict");
-      const afterDrain = await bound(machine, operationId);
-      if (afterDrain.revision !== claim.revision || !["stopping", "blocked"].includes(afterDrain.state))
-        throw new OrchestratorRuntimeError("conflict");
-      const transport = createOrchestratorTransport({
-        provider: backend.provider,
-        providerSandboxId: machine.providerSandboxId,
-        physicalGeneration: native.physicalGeneration,
-        lifecycleGeneration: machine.generation,
-        mcpUrl: backend.mcpUrl,
-      });
-      await options.authority.scrubBeforeCheckpoint(machine.orchestratorId, transport);
       signal?.throwIfAborted();
-      value = receipt(machine, operationId, await backend.checkpointAndStop(machine, operationId, signal));
-    } catch {
-      /* Ambiguous native effects are reconciled by operation, never replayed. */
+      if (!sql.transaction) throw new OrchestratorRuntimeError("unavailable");
+      diagnostics.stage("stop_dispatch");
+      const claim = await sql.transaction(async (tx) => {
+        const current = await bound(machine, operationId, tx, true);
+        if (!["stopping", "blocked"].includes(current.state)) throw new OrchestratorRuntimeError("conflict");
+        const prior = recorded(machine, operationId, current.result);
+        if (prior || current.operationState !== "pending") return { ...current, fresh: false };
+        // The actual208 receipt is the dispatch fence, not a second operation store.
+        await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
+          operationId,
+          JSON.stringify(uncertain(machine, operationId)),
+        ]);
+        return { ...current, fresh: true };
+      });
+      if (!claim.fresh) return runtime.reconcileStop(machine, operationId, signal);
+      let value = uncertain(machine, operationId);
+      try {
+        diagnostics.stage("authority_revoke");
+        await options.authority.revoke(machine.orchestratorId);
+        diagnostics.stage("backend_resolution");
+        const backend = await resolve(machine, { ...claim.selection, operationId });
+        diagnostics.stage("native_observation");
+        const native = await backend.provider.get(machine.providerSandboxId);
+        if (machine.physicalGeneration && native.physicalGeneration !== machine.physicalGeneration)
+          throw new OrchestratorRuntimeError("conflict");
+        diagnostics.stage("generation_binding");
+        if (native.physicalGeneration) {
+          await sql.transaction!(async (tx) => {
+            const current = await bound(machine, operationId, tx, true);
+            if (current.revision !== claim.revision) throw new OrchestratorRuntimeError("conflict");
+            const boundNative = await tx.query(
+              `update public.sandboxes set orchestrator_native_generation=$2 where id=$1 and (orchestrator_native_generation is null or orchestrator_native_generation=$2) returning id`,
+              [machine.sandboxId, native.physicalGeneration],
+            );
+            if (boundNative.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+            machine = { ...machine, physicalGeneration: native.physicalGeneration! };
+            await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
+              operationId,
+              JSON.stringify(uncertain(machine, operationId)),
+            ]);
+          });
+        }
+        if (
+          !native.physicalGeneration ||
+          !["ready", "running"].includes(native.state) ||
+          !backend.provider.quiesceOrchestrator
+        )
+          throw new OrchestratorRuntimeError("unavailable");
+        diagnostics.stage("native_quiesce");
+        const drained = await backend.provider.quiesceOrchestrator({
+          sandboxId: machine.providerSandboxId,
+          physicalGeneration: native.physicalGeneration,
+        });
+        if (drained.acknowledged !== true) throw new OrchestratorRuntimeError("unavailable");
+        diagnostics.stage("native_observation");
+        const observed = observation(machine, await readNative(() => backend.observe(machine, signal)));
+        if (observed.state !== "quiescent") throw new OrchestratorRuntimeError("conflict");
+        diagnostics.stage("stop_revalidation");
+        const afterDrain = await bound(machine, operationId);
+        if (afterDrain.revision !== claim.revision || !["stopping", "blocked"].includes(afterDrain.state))
+          throw new OrchestratorRuntimeError("conflict");
+        diagnostics.stage("epoch_scrub");
+        const transport = createOrchestratorTransport({
+          provider: backend.provider,
+          providerSandboxId: machine.providerSandboxId,
+          physicalGeneration: native.physicalGeneration,
+          lifecycleGeneration: machine.generation,
+          mcpUrl: backend.mcpUrl,
+        });
+        await options.authority.scrubBeforeCheckpoint(machine.orchestratorId, transport);
+        signal?.throwIfAborted();
+        diagnostics.stage("native_checkpoint");
+        value = receipt(machine, operationId, await backend.checkpointAndStop(machine, operationId, signal));
+      } catch (error) {
+        diagnostics.report("uncertain", error);
+        /* Ambiguous native effects are reconciled by operation, never replayed. */
+      }
+      if (value.state !== "stopped") diagnostics.reportIfUnreported("uncertain", undefined, "native_stop_unconfirmed");
+      diagnostics.stage("stop_receipt_publication");
+      let saved: boolean;
+      try {
+        saved = await save(machine, operationId, claim.revision, value);
+      } catch (error) {
+        diagnostics.report("publication_failed", error);
+        throw error;
+      }
+      if (!saved) {
+        diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
+        throw new OrchestratorRuntimeError("conflict");
+      }
+      return value;
+    } catch (error) {
+      diagnostics.reportUnhandled(error);
+      throw error;
     }
-    if (!(await save(machine, operationId, claim.revision, value))) throw new OrchestratorRuntimeError("conflict");
-    return value;
   }
+
   const runtime = {
     async observe(machine: ManagedMachine, signal?: AbortSignal): Promise<ManagedObservation> {
       signal?.throwIfAborted();
@@ -311,18 +344,39 @@ export function createManagedOrchestratorRuntime(options: {
       operationId: string,
       signal?: AbortSignal,
     ): Promise<ManagedStopReceipt> {
-      signal?.throwIfAborted();
-      const current = await bound(machine, operationId);
-      const old = recorded(machine, operationId, current.result);
-      if (!old) return uncertain(machine, operationId); // No dispatch fence, no provider lookup or work.
-      if (old.state !== "uncertain") return old;
-      const backend = await resolve(machine, { ...current.selection, operationId });
-      const observed = await readNative(() => backend.readStopReceipt(machine, operationId, signal));
-      await bound(machine, operationId);
-      if (!observed) return old;
-      const reconciled = receipt(machine, operationId, observed);
-      if (reconciled.state === "stopped") await backend.recoverStopHistory?.(reconciled, operationId);
-      return reconciled;
+      const diagnostics = new OrchestratorDiagnostics(options.diagnosticLog, "stop", "managed");
+      diagnostics.bind({ operationId, orchestratorId: machine.orchestratorId, sandboxId: machine.sandboxId });
+      try {
+        signal?.throwIfAborted();
+        diagnostics.stage("stop_reconcile");
+        const current = await bound(machine, operationId);
+        const old = recorded(machine, operationId, current.result);
+        if (!old) {
+          diagnostics.report("uncertain", undefined, "stop_receipt_missing");
+          return uncertain(machine, operationId);
+        } // No dispatch fence, no provider lookup or work.
+        if (old.state !== "uncertain") {
+          if (old.state !== "stopped") diagnostics.report("uncertain", undefined, "native_stop_unconfirmed");
+          return old;
+        }
+        diagnostics.stage("backend_resolution");
+        const backend = await resolve(machine, { ...current.selection, operationId });
+        diagnostics.stage("stop_reconcile");
+        const observed = await readNative(() => backend.readStopReceipt(machine, operationId, signal));
+        await bound(machine, operationId);
+        if (!observed) {
+          diagnostics.report("uncertain", undefined, "stop_receipt_missing");
+          return old;
+        }
+        const reconciled = receipt(machine, operationId, observed);
+        diagnostics.stage("history_recovery");
+        if (reconciled.state === "stopped") await backend.recoverStopHistory?.(reconciled, operationId);
+        else diagnostics.report("uncertain", undefined, "native_stop_unconfirmed");
+        return reconciled;
+      } catch (error) {
+        diagnostics.reportUnhandled(error);
+        throw error;
+      }
     },
   };
   return runtime;

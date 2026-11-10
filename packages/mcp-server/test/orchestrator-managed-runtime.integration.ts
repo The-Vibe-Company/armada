@@ -215,10 +215,11 @@ test("a replaced generation cannot publish a late managed native receipt", async
   }
 });
 
-test.each(["native", "unknown", "lost"] as const)(
+test.each(["native", "unknown", "lost", "unconfirmed"] as const)(
   "owner stop never resolves model credentials and requires verified quiescence (%s)",
   async (mode) => {
     const f = await fixture();
+    const diagnostics: string[] = [];
     let checkpoints = 0;
     let physicalStopped = false;
     const provider = {
@@ -230,6 +231,7 @@ test.each(["native", "unknown", "lost"] as const)(
     } as unknown as Provider;
     const { OrchestratorRuntime } = await import("../src/orchestrator-runtime.ts");
     const runtime = new OrchestratorRuntime({
+      diagnosticLog: (line) => diagnostics.push(line),
       store: f.store,
       authority: f.authority,
       skillRevision: "a".repeat(40),
@@ -254,8 +256,8 @@ test.each(["native", "unknown", "lost"] as const)(
               ...machine,
               physicalGeneration: machine.physicalGeneration ?? null,
               operationId,
-              state: "stopped",
-              continuity: mode === "lost" ? "lost" : "native",
+              state: mode === "unconfirmed" ? "uncertain" : "stopped",
+              continuity: mode === "lost" ? "lost" : mode === "unconfirmed" ? "unverified" : "native",
             };
           },
           readStopReceipt: async () => null,
@@ -269,6 +271,29 @@ test.each(["native", "unknown", "lost"] as const)(
       );
       expect(result.state).toBe(mode === "native" ? "succeeded" : mode === "lost" ? "failed" : "uncertain");
       expect(checkpoints).toBe(mode !== "unknown" ? 1 : 0);
+      const records = diagnostics.map((line) => JSON.parse(line));
+      if (mode === "native") expect(records).toEqual([]);
+      else
+        expect(records.find((record) => record.component === "owner")).toMatchObject({
+          action: "stop",
+          outcome: mode === "lost" ? "failed" : "uncertain",
+          stage: mode === "unknown" ? "stop_dispatch" : "stop_validation",
+          reason:
+            mode === "unknown"
+              ? "runtime_conflict"
+              : mode === "lost"
+                ? "native_continuity_lost"
+                : "native_stop_unconfirmed",
+          operationId: result.id,
+          orchestratorId: f.machine.orchestratorId,
+          sandboxId: f.machine.sandboxId,
+        });
+      if (mode === "unconfirmed")
+        expect(records.find((record) => record.component === "managed")).toMatchObject({
+          outcome: "uncertain",
+          stage: "native_checkpoint",
+          reason: "native_stop_unconfirmed",
+        });
       if (mode === "lost") expect(result.errorCode).toBe("native_continuity_lost");
       const saved = await f.store.read(f.p.owner, f.p.org, f.machine.orchestratorId);
       expect(saved.state).toBe(mode === "native" ? "stopped" : "blocked");
@@ -283,6 +308,13 @@ test.each(["native", "unknown", "lost"] as const)(
         { orgId: f.p.org, id: f.machine.orchestratorId, action: "stop", key: "stop", expectedRevision: 1 },
       );
       expect(replay.id).toBe(result.id);
+      if (mode !== "native")
+        expect(JSON.parse(diagnostics.at(-1)!)).toMatchObject({
+          component: "owner",
+          stage: "request_lookup",
+          reason: mode === "lost" ? "recorded_operation_failed" : "recorded_operation_uncertain",
+          operationId: result.id,
+        });
       expect(checkpoints).toBe(mode !== "unknown" ? 1 : 0);
       if (mode === "lost") {
         const next = await runtime.mutate(

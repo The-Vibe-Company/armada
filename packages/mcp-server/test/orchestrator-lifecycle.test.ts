@@ -103,7 +103,13 @@ async function fixture() {
       };
     },
   };
-  const worker = createOrchestratorLifecycle(sql, runtime, () => time);
+  const diagnostics: string[] = [];
+  const worker = createOrchestratorLifecycle(
+    sql,
+    runtime,
+    () => time,
+    (line) => diagnostics.push(line),
+  );
   return {
     db,
     sql,
@@ -112,6 +118,7 @@ async function fixture() {
     id,
     worker,
     runtime,
+    diagnostics,
     now: () => time,
     advance(seconds: number) {
       time = new Date(time.getTime() + seconds * 1000);
@@ -151,6 +158,17 @@ test("confirmed quiescence starts an idle interval; polling cannot extend it and
     await f.worker.reconcileOne();
     expect((await f.state())?.state).toBe("blocked");
     expect((await f.state())?.reason).toBe("stop_outcome_unconfirmed");
+    expect(f.diagnostics.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        component: "lifecycle",
+        action: "stop",
+        outcome: "uncertain",
+        stage: "stop_validation",
+        reason: "native_stop_unconfirmed",
+        orchestratorId: f.id,
+        sandboxId: f.parent.id,
+      }),
+    ]);
     f.stopResult("stopped");
     f.advance(61);
     await f.worker.reconcileOne();
@@ -435,9 +453,39 @@ test("hard TTL interruption is unverified on the actual owner detail API, never 
   const f = await fixture();
   try {
     await f.db.query("update sandboxes set expires_at='2030-01-01T00:01:00Z' where id=$1", [f.parent.id]);
+    const store = new LifecycleRuntimeStore(f.sql, reserveOrchestratorOperation);
+    const current = await store.read(f.people.owner, f.people.org, f.id);
+    const pending = await store.reserve({
+      ownerId: f.people.owner,
+      orgId: f.people.org,
+      id: f.id,
+      action: "message",
+      key: "interrupted-private-message",
+      expectedRevision: current.revision,
+      payload: { expectedRevision: current.revision, text: "synthetic-private-prompt" },
+    });
     f.observe("active");
     f.advance(61);
     await f.worker.reconcileOne();
+    expect(
+      (
+        await f.db.query<{ state: string }>("select state from orchestrator_operations where id=$1", [
+          pending.operation.id,
+        ])
+      ).rows[0]?.state,
+    ).toBe("uncertain");
+    expect(f.diagnostics.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        component: "lifecycle",
+        action: "message",
+        outcome: "uncertain",
+        stage: "lifecycle_interruption",
+        reason: "lifecycle_hard_ttl",
+        operationId: pending.operation.id,
+      }),
+    );
+    expect(f.diagnostics.join("\n")).not.toContain("synthetic-private-prompt");
+    expect(f.diagnostics.join("\n")).not.toContain("interrupted-private-message");
     const { runtime } = createLifecycleAwareOrchestratorRuntime(f.sql, {
       reserveOperation: reserveOrchestratorOperation,
       authority: {

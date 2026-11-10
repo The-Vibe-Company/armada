@@ -55,7 +55,12 @@ export function createOrchestratorServices(
     store,
     children,
     waits,
-    lifecycleWorker: createOrchestratorLifecycle(sql, input.lifecycleRuntime ?? requiredManagedRuntime(runtime)),
+    lifecycleWorker: createOrchestratorLifecycle(
+      sql,
+      input.lifecycleRuntime ?? requiredManagedRuntime(runtime),
+      undefined,
+      input.runtime.diagnosticLog,
+    ),
     childWorker: children,
   };
 }

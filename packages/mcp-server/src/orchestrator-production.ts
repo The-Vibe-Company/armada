@@ -19,6 +19,7 @@ import {
 } from "./orchestrator-backend-resolver.ts";
 import { launchOrchestratorChild } from "./orchestrator-child-launch.ts";
 import type { OrchestratorChildExecutor } from "./orchestrator-children.ts";
+import type { OrchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-native.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
@@ -35,6 +36,7 @@ export function createProductionOrchestrators(input: {
   scopedMcpUrl: string;
   requestedPairs: readonly OrchestratorPair[];
   skillRevision: string | undefined;
+  diagnosticLog?: OrchestratorDiagnosticLog;
 }) {
   if (!input.requestedPairs.includes("modal:codex")) return undefined;
   if (!input.skillRevision || !/^[a-f0-9]{40}$/.test(input.skillRevision))
@@ -195,6 +197,7 @@ export function createProductionOrchestrators(input: {
       authority,
       reserveOperation: reserveOrchestratorOperation,
       skillRevision: input.skillRevision,
+      ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs: ["modal:codex"],
       resolveBackend: selection.resolveBackend,
       managed: { sql, resolveManaged: selection.resolveManaged },

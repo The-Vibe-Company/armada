@@ -10,6 +10,7 @@ import {
   type Provider,
   type Sql,
 } from "@armada/core/server";
+import { diagnosticStep, type OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 import { orchestratorParentLaunchRequest } from "./orchestrator-launch-request.ts";
 import { OrchestratorRuntimeError, type RuntimeReservation } from "./orchestrator-runtime-store.ts";
 
@@ -23,6 +24,7 @@ export async function launchOrchestratorParent(input: {
   actor: GoldenActor;
   request: LaunchRequest;
   reservation: RuntimeReservation;
+  diagnostics?: OrchestratorDiagnostics;
   /** Exact #612 resolver signature and binding, not a legacy default credential port. */
   account: {
     credentialId: string;
@@ -37,6 +39,7 @@ export async function launchOrchestratorParent(input: {
 }): Promise<void> {
   const { sql, provider, actor, request, reservation } = input;
   const identity = reservation.identity;
+  input.diagnostics?.stage("launcher_preflight");
   if (
     input.account.credentialId !== identity.configuration.modelAccountId ||
     !Number.isSafeInteger(input.account.credentialVersion) ||
@@ -44,11 +47,14 @@ export async function launchOrchestratorParent(input: {
   )
     throw new OrchestratorRuntimeError("invalid_request");
   // A missing producer migration cannot be discovered only after a billable fork.
+  input.diagnostics?.stage("launcher_schema");
   try {
     await sql.query(`select credential_id,credential_version from public.sandboxes limit 0`);
-  } catch {
+  } catch (error) {
+    input.diagnostics?.capture(error);
     throw new OrchestratorRuntimeError("unavailable");
   }
+  input.diagnostics?.stage("launcher_configuration");
   if (
     !sql.transaction ||
     actor.userId !== identity.ownerId ||
@@ -61,44 +67,57 @@ export async function launchOrchestratorParent(input: {
   )
     throw new OrchestratorRuntimeError("invalid_request");
   const sandboxId = crypto.randomUUID();
+  input.diagnostics?.bind({ sandboxId });
   const sandboxes = {
     ...input.stores.sandboxes,
-    insert: async (record: Parameters<LaunchStores["sandboxes"]["insert"]>[0]) => {
-      if (!sql.transaction || record.id !== sandboxId || record.visibility !== "private")
-        throw new OrchestratorRuntimeError("conflict");
-      return sql.transaction(async (tx) => {
-        const current = await tx.query(
-          `select o.id from public.orchestrators o join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
+    insert: async (record: Parameters<LaunchStores["sandboxes"]["insert"]>[0]) =>
+      diagnosticStep(input.diagnostics, "registration", async () => {
+        input.diagnostics?.bind({ sandboxId });
+        if (!sql.transaction || record.id !== sandboxId || record.visibility !== "private")
+          throw new OrchestratorRuntimeError("conflict");
+        const saved = await sql.transaction(async (tx) => {
+          const current = await tx.query(
+            `select o.id from public.orchestrators o join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
         where o.id=$1 and o.owner_id=$2 and o.org_id=$3 and o.revision=$4 and o.state='creating' and o.sandbox_id is null for update of o,m`,
-          [identity.id, actor.userId, actor.orgId, reservation.operation.revision],
-        );
-        if (!current.rows.length) throw new OrchestratorRuntimeError("conflict");
-        const selectedRecord = {
-          ...record,
-          credentialId: input.account.credentialId,
-          credentialVersion: input.account.credentialVersion,
-        };
-        const saved = await createSqlSandboxStore(tx).insert(selectedRecord);
-        if (
-          Reflect.get(saved, "credentialId") !== input.account.credentialId ||
-          Reflect.get(saved, "credentialVersion") !== input.account.credentialVersion
-        )
-          throw new OrchestratorRuntimeError("unavailable");
-        await tx.query(`update public.orchestrators set sandbox_id=$2 where id=$1`, [identity.id, saved.id]);
+            [identity.id, actor.userId, actor.orgId, reservation.operation.revision],
+          );
+          if (!current.rows.length) throw new OrchestratorRuntimeError("conflict");
+          const selectedRecord = {
+            ...record,
+            credentialId: input.account.credentialId,
+            credentialVersion: input.account.credentialVersion,
+          };
+          const saved = await createSqlSandboxStore(tx).insert(selectedRecord);
+          if (
+            Reflect.get(saved, "credentialId") !== input.account.credentialId ||
+            Reflect.get(saved, "credentialVersion") !== input.account.credentialVersion
+          )
+            throw new OrchestratorRuntimeError("unavailable");
+          await tx.query(`update public.orchestrators set sandbox_id=$2 where id=$1`, [identity.id, saved.id]);
+          return saved;
+        });
+        input.diagnostics?.stage("initialization");
         return saved;
-      });
-    },
+      }),
   };
   const routed = new Proxy(provider, {
     get(target, key) {
       if (key === "fork")
         return (fork: Parameters<Provider["fork"]>[0]) =>
-          target.fork({
-            ...fork,
-            idempotencyKey: reservation.operation.id,
-            labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
-          });
+          diagnosticStep(input.diagnostics, "fork", () =>
+            target.fork({
+              ...fork,
+              idempotencyKey: reservation.operation.id,
+              labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
+            }),
+          );
       const value = Reflect.get(target, key);
+      if (
+        typeof value === "function" &&
+        ["get", "exec", "prepareNativeHarnessCwd", "configureMcp"].includes(String(key))
+      )
+        return (...args: unknown[]) =>
+          diagnosticStep(input.diagnostics, "initialization", () => value.apply(target, args));
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
@@ -107,24 +126,31 @@ export async function launchOrchestratorParent(input: {
   const credentials = new Proxy(input.stores.credentials, {
     get(target, key) {
       if (key === "resolve") {
-        return async (actor: GoldenActor, harness: Harness) => {
-          const credentials = await input.account.resolve(
-            actor,
-            harness,
-            input.account.credentialId,
-            input.account.credentialVersion,
-          );
-          const binding = Reflect.get(credentials, "binding");
-          if (
-            !binding ||
-            binding.credentialId !== input.account.credentialId ||
-            binding.credentialVersion !== input.account.credentialVersion
-          )
-            throw new OrchestratorRuntimeError("unavailable");
-          return credentials;
-        };
+        return (actor: GoldenActor, harness: Harness) =>
+          diagnosticStep(input.diagnostics, "credential_resolution", async () => {
+            const credentials = await input.account.resolve(
+              actor,
+              harness,
+              input.account.credentialId,
+              input.account.credentialVersion,
+            );
+            const binding = Reflect.get(credentials, "binding");
+            if (
+              !binding ||
+              binding.credentialId !== input.account.credentialId ||
+              binding.credentialVersion !== input.account.credentialVersion
+            )
+              throw new OrchestratorRuntimeError("unavailable");
+            input.diagnostics?.stage("launcher_preflight");
+            return credentials;
+          });
       }
       const value = Reflect.get(target, key, target);
+      if (typeof value === "function" && (key === "admit" || key === "hydrateNative"))
+        return (...args: unknown[]) =>
+          diagnosticStep(input.diagnostics, key === "admit" ? "credential_admission" : "native_hydration", () =>
+            value.apply(target, args),
+          );
       return typeof value === "function" ? value.bind(target) : value;
     },
   });

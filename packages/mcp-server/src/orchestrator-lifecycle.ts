@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core/server";
+import { type OrchestratorDiagnosticLog, OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 import {
   type LifecycleStopReceipt,
   lifecycleNow,
@@ -7,13 +8,17 @@ import {
   type OrchestratorMachine,
   sameMachine,
 } from "./orchestrator-lifecycle-contract.ts";
-
 import { orchestratorRuntimeOperations } from "./orchestrator-runtime-operation.ts";
 
 /** A bounded batch for the EXISTING server lifecycle lane. No independent provider poller,
  * quota pacing, allocation freeze or deletion of logical/native history. Feature composition
  * stays absent until #662 supplies real native adapters and operator conformance. */
-export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifecycleRuntime, clock?: () => Date) {
+export function createOrchestratorLifecycle(
+  sql: Sql,
+  runtime: OrchestratorLifecycleRuntime,
+  clock?: () => Date,
+  diagnosticLog?: OrchestratorDiagnosticLog,
+) {
   const operations = orchestratorRuntimeOperations();
   return {
     drain: operations.drain,
@@ -63,6 +68,9 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
         reason: "idle" | "hard_ttl" | "epoch_expiry" | "owner_removed",
         fresh: boolean,
       ) => {
+        const diagnostics = new OrchestratorDiagnostics(diagnosticLog, "stop", "lifecycle");
+        diagnostics.bind({ operationId, orchestratorId: machine.orchestratorId, sandboxId: machine.sandboxId });
+        diagnostics.stage(fresh ? "stop_dispatch" : "stop_reconcile");
         let result: LifecycleStopReceipt | undefined;
         try {
           signal?.throwIfAborted();
@@ -73,9 +81,11 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
                 : runtime.reconcileStop(machine, operationId, signal),
             signal,
           );
-        } catch {
+        } catch (error) {
+          diagnostics.report("uncertain", error);
           /* Lost response is reconciled against the exact recorded operation, never replayed. */
         }
+        diagnostics.stage("stop_validation");
         const ended = await lifecycleNow(sql, clock);
         const expired = new Date(row.expires_at) <= ended;
         const correlated =
@@ -85,8 +95,20 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
           result.operationId === operationId &&
           sameMachine(machine, result);
         const confirmed = correlated && result?.state === "stopped" && result?.continuity === "native" && !expired;
-        await sql.query(
-          `with eligible as (
+        if (!confirmed)
+          diagnostics.reportIfUnreported(
+            "uncertain",
+            undefined,
+            expired
+              ? "lifecycle_hard_ttl"
+              : result?.continuity === "lost"
+                ? "native_continuity_lost"
+                : "native_stop_unconfirmed",
+          );
+        diagnostics.stage("lifecycle_publication");
+        try {
+          const published = await sql.query(
+            `with eligible as (
           select o.id,o.revision,r.continuity as prior_continuity from public.orchestrators o
           join public.sandboxes s on s.id=o.sandbox_id
           join public.orchestrator_lifecycle l on l.orchestrator_id=o.id
@@ -114,25 +136,31 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
             returning r.orchestrator_id,r.continuity)
           insert into public.orchestrator_runtime_events(orchestrator_id,revision,event)
             select p.id,p.revision,jsonb_build_object('kind','state','state',p.state,'continuity',c.continuity)
-            from published p join continuity c on c.orchestrator_id=p.id`,
-          [
-            machine.orchestratorId,
-            lease,
-            confirmed ? "stopped" : "blocked",
-            machine.sandboxId,
-            machine.providerSandboxId,
-            machine.generation,
-            ended,
-            operationId,
-            confirmed
-              ? `${reason}_stopped_native`
-              : expired
-                ? "hard_ttl_interrupted_continuity_unverified"
-                : "stop_outcome_unconfirmed",
-            confirmed ? "succeeded" : "uncertain",
-            correlated && result?.continuity === "lost" ? "lost" : confirmed ? "native" : "unverified",
-          ],
-        );
+            from published p join continuity c on c.orchestrator_id=p.id returning orchestrator_id`,
+            [
+              machine.orchestratorId,
+              lease,
+              confirmed ? "stopped" : "blocked",
+              machine.sandboxId,
+              machine.providerSandboxId,
+              machine.generation,
+              ended,
+              operationId,
+              confirmed
+                ? `${reason}_stopped_native`
+                : expired
+                  ? "hard_ttl_interrupted_continuity_unverified"
+                  : "stop_outcome_unconfirmed",
+              confirmed ? "succeeded" : "uncertain",
+              correlated && result?.continuity === "lost" ? "lost" : confirmed ? "native" : "unverified",
+            ],
+          );
+          if (published.rows.length === 0)
+            diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
+        } catch (error) {
+          diagnostics.report("publication_failed", error);
+          throw error;
+        }
       };
       if (row.stop_operation_id && row.stop_reason) {
         const recorded = (
@@ -158,6 +186,7 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
       }
       // Re-sample server time AFTER network I/O. A stale observation cannot retain a lease.
       const at = await lifecycleNow(sql, clock);
+      const interrupted: { id: string; action: string }[] = [];
       const reason = await sql.transaction(async (tx) => {
         const current = (
           await tx.query<{
@@ -263,11 +292,12 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
             .update(JSON.stringify([current.owner_id, current.org_id, machine, stop]))
             .digest("hex");
           // Hard deadline/removal interrupts pending owner work explicitly; idle never preempts it.
-          await tx.query(
+          const interruptedRows = await tx.query<{ id: string; action: string }>(
             `update public.orchestrator_operations set state='uncertain',error_code=$2
-            where orchestrator_id=$1 and state='pending'`,
+            where orchestrator_id=$1 and state='pending' returning id,action`,
             [machine.orchestratorId, `lifecycle_${stop}`],
           );
+          interrupted.push(...interruptedRows.rows);
           await tx.query(
             `insert into public.orchestrator_operations(id,orchestrator_id,actor_id,action,idempotency_key,request_digest,revision)
             values($1,$2,$3,'stop',$4,$5,$6)`,
@@ -312,6 +342,26 @@ export function createOrchestratorLifecycle(sql: Sql, runtime: OrchestratorLifec
         );
         return null;
       });
+      for (const operation of interrupted) {
+        const diagnostics = new OrchestratorDiagnostics(diagnosticLog, operation.action, "lifecycle");
+        diagnostics.bind({
+          operationId: operation.id,
+          orchestratorId: machine.orchestratorId,
+          sandboxId: machine.sandboxId,
+        });
+        diagnostics.stage("lifecycle_interruption");
+        diagnostics.report(
+          "uncertain",
+          undefined,
+          reason === "idle"
+            ? "lifecycle_idle"
+            : reason === "owner_removed"
+              ? "lifecycle_owner_removed"
+              : reason === "epoch_expiry"
+                ? "lifecycle_epoch_expiry"
+                : "lifecycle_hard_ttl",
+        );
+      }
       if (!reason) return true;
       await completeStop(lease, reason, true);
       return true;
