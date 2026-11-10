@@ -94,7 +94,9 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     boat.provider.delete = async () => {
       throw new ProviderError({ provider: "boat", code: "unavailable", message: "offline", retryable: true });
     };
-    expect((await request(failed)).status).toBe(503);
+    const providerFailure = await request(failed);
+    expect(providerFailure.status).toBe(502);
+    expect(await providerFailure.json()).toMatchObject({ error: { code: "provider_unavailable" } });
     expect((await state(failed)).status).toBe("failed");
     expect((await state(failed)).deleted_at).toBeNull();
     await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [failed]);
