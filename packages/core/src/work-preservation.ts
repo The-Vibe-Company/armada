@@ -1,6 +1,6 @@
 import { constants, createDecipheriv, createHash, generateKeyPairSync, pbkdf2Sync, privateDecrypt } from "node:crypto";
-import { RECOVERY_BUN, RECOVERY_COLLECTOR } from "./work-preservation-collector.ts";
 import type { Provider } from "./provider.ts";
+import { RECOVERY_BUN, RECOVERY_COLLECTOR } from "./work-preservation-collector.ts";
 
 const FAILURE_REASONS = [
   "timeout",
@@ -81,7 +81,10 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   async function collect(): Promise<WorkPreservation> {
     const result = await provider.exec({
       sandboxId,
-      command: CAPTURE.replaceAll("ARMADA_TOKEN", token).replace("ARMADA_PUBLIC_KEY", publicKey.replaceAll("\n", "\\n")),
+      command: CAPTURE.replaceAll("ARMADA_TOKEN", token).replace(
+        "ARMADA_PUBLIC_KEY",
+        publicKey.replaceAll("\n", "\\n"),
+      ),
       timeoutSeconds: 12,
       onlyIfRunning: true,
     });
