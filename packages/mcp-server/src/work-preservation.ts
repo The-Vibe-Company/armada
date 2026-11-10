@@ -10,6 +10,7 @@ export async function preserveBeforeStop(sql: Sql, provider: Provider, id: strin
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
+          console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, reason: "timeout" }));
           void sql
             .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
               id,
@@ -32,7 +33,8 @@ async function captureAndStore(
   providerId: string,
   expired: () => boolean,
 ): Promise<void> {
-  let note = "unpushed work could not be preserved (storage unavailable)";
+  let reason = "unavailable";
+  let note: string;
   try {
     // Exec may implicitly resume retained compute. Never activate a machine known stopped.
     const current = await provider.get(providerId);
@@ -45,6 +47,7 @@ async function captureAndStore(
     const result = await preserveWork(provider, providerId);
     if (expired()) return;
     if (result.status === "preserved") {
+      reason = "storage";
       const encrypted = await encryptSecret(result.archive);
       if (expired()) return;
       const recoveryId = crypto.randomUUID();
@@ -56,11 +59,12 @@ async function captureAndStore(
     } else if (result.status === "clean") {
       // A subsequent clean stop must not hide an earlier recovery archive.
       return;
-    } else note = `unpushed work could not be preserved (${result.reason})`;
+    } else { reason = result.reason; note = `unpushed work could not be preserved (${reason})`; }
   } catch {
-    /* Closed storage failure, stop must still proceed. */
+    note = `unpushed work could not be preserved (${reason})`;
   }
   if (expired()) return;
+  if (!note.startsWith("unpushed work preserved")) console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, reason }));
   await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
 }
 

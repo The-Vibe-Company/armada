@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -59,6 +60,16 @@ test("a clean repository whose HEAD is on a remote ref needs no recovery artifac
 
 test("local capture recovers commits and staged, unstaged and untracked work without GitHub authorization", async () => {
   const { home, repo, provider } = await fixture();
+  // Published history larger than the cap must not enter the recovery bundle.
+  await writeFile(join(repo, "published-history"), randomBytes(3 * 1024 * 1024));
+  await run(["git", "add", "."], repo);
+  await run(["git", "commit", "-qm", "large published base"], repo);
+  await run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], repo);
+  const base = (await run(["git", "rev-parse", "HEAD"], repo)).trim();
+  const hidden = join(home, ".tools");
+  await mkdir(hidden);
+  await run(["git", "clone", "-q", repo, join(hidden, "plugin")], home);
+  await run(["git", "update-ref", "-d", "refs/remotes/origin/main"], join(hidden, "plugin"));
   // A remote which cannot authenticate must not affect local-only preservation.
   await run(["git", "remote", "add", "origin", "https://example.invalid/expired-authorization/repo.git"], repo);
   await writeFile(join(repo, "tracked"), "committed\n");
@@ -78,7 +89,10 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   await run(["tar", "xf", archive], recovery);
   const bundle = join(recovery, "repo-0", "commits.bundle");
   const restored = join(home, "restored");
-  await run(["git", "clone", "-q", bundle, restored], home);
+  await run(["git", "clone", "-q", repo, restored], home);
+  await run(["git", "checkout", "-q", "--detach", base], restored);
+  await run(["git", "fetch", "-q", bundle, "HEAD"], restored);
+  await run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], restored);
   expect((await run(["git", "rev-parse", "HEAD"], restored)).trim()).toBe(head);
   await run(["git", "apply", "--index", join(recovery, "repo-0", "index.patch")], restored);
   await run(["git", "apply", join(recovery, "repo-0", "worktree.patch")], restored);
@@ -167,6 +181,8 @@ test("archives larger than the runtime stdout cap are recovered through bounded 
 
 test("a concurrent write during bundling fails closed rather than authenticating mixed work", async () => {
   const { home, repo } = await fixture();
+  await writeFile(join(repo, "tracked"), "local commit\n");
+  await run(["git", "commit", "-qam", "unpushed"], repo);
   await writeFile(join(repo, "tracked"), "pending\n");
   const bin = join(home, "bin");
   await mkdir(bin);
@@ -194,7 +210,7 @@ test("a concurrent write during bundling fails closed rather than authenticating
       };
     },
   };
-  expect(await preserveWork(raced, "sandbox")).toEqual({ status: "failed", reason: "capture_failed" });
+  expect(await preserveWork(raced, "sandbox")).toEqual({ status: "failed", reason: "collector_failed" });
   expect(await readFile(join(repo, "tracked"), "utf8")).toBe("changed during capture\n");
 });
 
@@ -208,5 +224,21 @@ test("an unresolved conflict index fails closed because patches cannot restore i
   await run(["git", "commit", "-qam", "main"], repo);
   const merge = Bun.spawn(["git", "merge", "side"], { cwd: repo, stdout: "ignore", stderr: "ignore" });
   expect(await merge.exited).toBe(1);
-  expect(await preserveWork(provider, "sandbox")).toEqual({ status: "failed", reason: "capture_failed" });
+  expect(await preserveWork(provider, "sandbox")).toEqual({ status: "failed", reason: "collector_failed" });
+});
+
+test("collector failures are closed and provider output never becomes a reason", async () => {
+  for (const [output, expected] of [
+    [{ exitCode: 127 }, "collector_exit"],
+    [{ exitCode: 137 }, "collector_signal"],
+    [{ truncated: true }, "output_truncated"],
+    [{ stdout: "private invalid output" }, "output_invalid"],
+    [{ stdout: '{"status":"failed","reason":"private data"}' }, "output_invalid"],
+    ...["missing_git", "missing_python3", "missing_openssl", "size_limit", "timeout"].map(reason =>
+      [{ stdout: JSON.stringify({status:"failed", reason}) }, reason]),
+  ] as const) {
+    expect(await preserveWork({async exec() {
+      return {detached:false,exitCode:0,stdout:"",stderr:"private error",timedOut:false,truncated:false,...output};
+    }}, "sandbox")).toEqual({status:"failed",reason:expected});
+  }
 });

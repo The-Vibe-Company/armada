@@ -105,9 +105,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect((await owner.get(id))?.preservationNote).toContain(first.id);
 
     // Retrying after failed capture surfaces a closed reason without losing earlier data.
-    boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "capture_failed" }) });
+    boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
-    expect((await owner.get(id))?.preservationNote).toBe("unpushed work could not be preserved (capture_failed)");
+    expect((await owner.get(id))?.preservationNote).toBe("unpushed work could not be preserved (collector_failed)");
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
     await db.query("update sandbox_work_recovery set created_at='2020-01-01' where id=$1", [first.id]);

@@ -1,27 +1,39 @@
 import { constants, createDecipheriv, createHash, generateKeyPairSync, pbkdf2Sync, privateDecrypt } from "node:crypto";
 import type { Provider } from "./provider.ts";
 
+const FAILURE_REASONS = [
+  "timeout", "unavailable", "size_limit", "missing_git", "missing_python3", "missing_openssl",
+  "collector_exit", "collector_signal", "collector_failed", "output_invalid", "output_truncated", "decrypt",
+] as const;
+type CaptureFailure = (typeof FAILURE_REASONS)[number];
+
 export type WorkPreservation =
   | { status: "clean" }
   | { status: "preserved"; archive: string }
-  | { status: "failed"; reason: "timeout" | "unavailable" | "size_limit" | "capture_failed" };
+  | { status: "failed"; reason: CaptureFailure };
 
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024;
 
 // Fixed command: neither credentials nor repository contents are interpolated into argv.
 // The response is private recovery material, NOT an exec receipt suitable for logs or clients.
-const CAPTURE = String.raw`python3 - <<'ARMADA_RECOVERY'
+const CAPTURE = String.raw`for tool in python3 git openssl; do
+    command -v "$tool" >/dev/null 2>&1 || { printf '{"status":"failed","reason":"missing_%s"}\n' "$tool"; exit 0; }
+done
+python3 - <<'ARMADA_RECOVERY'
 import base64, hashlib, io, json, os, resource, subprocess, sys, tarfile, tempfile
 LIMIT = 2 * 1024 * 1024
 resource.setrlimit(resource.RLIMIT_FSIZE, (LIMIT+64, LIMIT+64))
 class TooLarge(Exception): pass
+class CollectorExit(Exception): pass
 def git(root, *args, output=None):
     # File-backed stdout plus RLIMIT_FSIZE bounds status/path-list output too.
     with tempfile.TemporaryFile() as captured:
         sink = output if output is not None else captured
         p = subprocess.run(['git', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', root, *args], stdout=sink, stderr=subprocess.DEVNULL, timeout=8)
         if sink.tell() >= LIMIT: raise TooLarge()
-        if p.returncode != 0: raise RuntimeError()
+        if p.returncode != 0:
+            if p.returncode == -25 or (args[0:2] == ('bundle', 'create') and os.path.exists(args[2]) and os.path.getsize(args[2]) >= LIMIT): raise TooLarge()
+            raise CollectorExit('collector_signal' if p.returncode < 0 else 'collector_exit')
         if output is not None: return None
         captured.seek(0)
         return captured.read(LIMIT)
@@ -64,7 +76,7 @@ try:
         repos = []
         home = os.path.expanduser('~')
         for root, dirs, files in os.walk(home, followlinks=False):
-            dirs[:] = [d for d in dirs if d not in ('.cache', 'node_modules', '.git') and not os.path.join(root,d).startswith(tmp)]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'node_modules' and not os.path.join(root,d).startswith(tmp)]
             if '.git' not in files and not os.path.isdir(os.path.join(root, '.git')): continue
             dirty = git(root, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
             head = subprocess.run(['git','-C',root,'rev-parse','--verify','HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8)
@@ -80,10 +92,11 @@ try:
                     prefix = 'repo-' + str(i)
                     before = fingerprint(root)
                     if before[0] != head: raise RuntimeError()
-                    manifest.append({'path':root, 'directory':prefix, 'head':head})
-                    if head:
+                    has_bundle = bool(head and git(root, 'rev-list', '--max-count=1', 'HEAD', '--branches', '--tags', '--not', '--remotes').strip())
+                    manifest.append({'path':root, 'directory':prefix, 'head':head, 'bundle':has_bundle})
+                    if has_bundle:
                         bundle = os.path.join(tmp, 'bundle')
-                        git(root, 'bundle', 'create', bundle, '--all', 'HEAD')
+                        git(root, 'bundle', 'create', bundle, 'HEAD', '--branches', '--tags', '--not', '--remotes')
                         tar.add(bundle, arcname=prefix+'/commits.bundle')
                         os.unlink(bundle)
                     for name, args in [('index.patch', ('diff','--no-ext-diff','--no-textconv','--cached','--binary')), ('worktree.patch', ('diff','--no-ext-diff','--no-textconv','--binary'))]:
@@ -99,7 +112,7 @@ try:
                         tar.add(source, arcname=prefix+'/untracked/'+path, recursive=False)
                         if tar.fileobj.tell()>LIMIT: raise TooLarge()
                     if fingerprint(root) != before: raise RuntimeError()
-                data = json.dumps({'version':1,'repositories':manifest}).encode()
+                data = json.dumps({'version':2,'repositories':manifest}).encode()
                 info = tarfile.TarInfo('manifest.json'); info.size=len(data)
                 tar.addfile(info, io.BytesIO(data))
             if os.path.getsize(archive)>LIMIT: raise TooLarge()
@@ -115,11 +128,15 @@ try:
             with open(archive,'rb') as source: digest=hashlib.sha256(source.read()).hexdigest()
             print(json.dumps({'status':'preserved','bytes':os.path.getsize(archive),'sha256':digest,'key':base64.b64encode(key).decode()}))
 except (TooLarge, OSError) as error:
-    print(json.dumps({'status':'failed','reason':'size_limit' if isinstance(error,TooLarge) or getattr(error,'errno',None)==27 else 'capture_failed'}))
+    print(json.dumps({'status':'failed','reason':'size_limit' if isinstance(error,TooLarge) or getattr(error,'errno',None)==27 else 'collector_failed'}))
+except CollectorExit as error:
+    print(json.dumps({'status':'failed','reason':str(error)}))
+except subprocess.CalledProcessError as error:
+    print(json.dumps({'status':'failed','reason':'collector_signal' if error.returncode < 0 else 'collector_exit'}))
 except subprocess.TimeoutExpired:
     print(json.dumps({'status':'failed','reason':'timeout'}))
 except Exception:
-    print(json.dumps({'status':'failed','reason':'capture_failed'}))
+    print(json.dumps({'status':'failed','reason':'collector_failed'}))
 ARMADA_RECOVERY`;
 
 // 32 KiB raw -> 43,692 base64 bytes, below Modal's 65,536-byte stdout cap.
@@ -130,8 +147,15 @@ function privateCommand(token: string, body: string): string {
   return `python3 - <<'ARMADA_RECOVERY'\nimport base64, os, shutil\np='/tmp/armada-recovery-${token}'\n${body}\nARMADA_RECOVERY`;
 }
 
+class CaptureError extends Error {
+  constructor(readonly reason: CaptureFailure) { super(reason); }
+}
+
 function checkedOutput(result: Awaited<ReturnType<Provider["exec"]>>): string {
-  if (result.detached || result.timedOut || result.exitCode !== 0 || result.truncated) throw new Error();
+  if (result.detached) throw new CaptureError("collector_exit");
+  if (result.timedOut) throw new CaptureError("timeout");
+  if (result.truncated) throw new CaptureError("output_truncated");
+  if (result.exitCode !== 0) throw new CaptureError(result.exitCode < 0 || result.exitCode >= 128 ? "collector_signal" : "collector_exit");
   return result.stdout;
 }
 
@@ -148,6 +172,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   const token = crypto.randomUUID().replaceAll("-", "");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
+  let stage: CaptureFailure = "unavailable";
   async function collect(): Promise<WorkPreservation> {
     const result = await provider.exec({
       sandboxId,
@@ -156,6 +181,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       onlyIfRunning: true,
     });
     if (!result.detached && result.timedOut) return { status: "failed", reason: "timeout" };
+    stage = "output_invalid";
     const value: unknown = JSON.parse(checkedOutput(result));
     if (typeof value !== "object" || value === null || !("status" in value)) throw new Error();
     if (value.status === "clean") return { status: "clean" };
@@ -196,6 +222,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       }
       const archive = Buffer.concat(chunks);
       if (createHash("sha256").update(archive).digest("hex") !== value.sha256) throw new Error();
+      stage = "decrypt";
       const password = privateDecrypt(
         { key: privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
         Buffer.from(value.key, "base64"),
@@ -211,9 +238,9 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
     if (
       value.status === "failed" &&
       "reason" in value &&
-      ["timeout", "size_limit", "capture_failed"].includes(String(value.reason))
+      FAILURE_REASONS.includes(value.reason as CaptureFailure)
     )
-      return { status: "failed", reason: value.reason as "timeout" | "size_limit" | "capture_failed" };
+      return { status: "failed", reason: value.reason as CaptureFailure };
     throw new Error();
   }
   try {
@@ -226,8 +253,8 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
         }, 15_000);
       }),
     ]);
-  } catch {
-    return { status: "failed", reason: "unavailable" };
+  } catch (error) {
+    return { status: "failed", reason: error instanceof CaptureError ? error.reason : stage };
   } finally {
     expired = true;
     clearTimeout(timer);
