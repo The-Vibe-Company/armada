@@ -88,10 +88,13 @@ if (process.argv.includes("--parent")) {
   const machine = { physicalId: "fixture", generation: 1, phase: "booting" } as Machine;
   machine.processBaseline = await captureProcessBaseline(sdk, machine);
   const lock = join(mkdtempSync(join(tmpdir(), "checkpoint-launcher-")), "runtime.lock");
-  const parent = Bun.spawn(["flock", lock, "runuser", "-u", "user", "--", bun, import.meta.path, "--parent"], {
-    stdout: "pipe",
-    stderr: "ignore",
-  });
+  const parent = Bun.spawn(
+    ["flock", lock, "runuser", "-u", process.env.SUDO_USER ?? "user", "--", bun, import.meta.path, "--parent"],
+    {
+      stdout: "pipe",
+      stderr: "ignore",
+    },
+  );
   const reader = parent.stdout.getReader();
   const deadline = setTimeout(() => {
     throw Error("Real MCP startup deadline exceeded");
@@ -105,8 +108,8 @@ if (process.argv.includes("--parent")) {
     await quiesceSandboxProcesses(sdk, machine);
     throw Error("Missing CAP_KILL unexpectedly accepted");
   } catch (error) {
-    if ((error as { details?: { processCategory?: string } }).details?.processCategory !== "runtime_or_mcp")
-      throw error;
+    const details = (error as { details?: { processCategory?: string; processFailure?: string } }).details;
+    if (details?.processCategory !== "runtime_or_mcp" || details.processFailure !== "pidfd_signal") throw error;
   }
   dropKill = false;
   await quiesceSandboxProcesses(sdk, machine);

@@ -235,19 +235,20 @@ test.each([
   expect(lines.join("")).not.toContain("private-");
 });
 
-test("publication preserves previously unmapped SQLSTATE and database identifiers, never SQL detail", () => {
+test("publication preserves native Bun SQLSTATE and database identifiers, never SQL detail", () => {
   const lines: string[] = [];
   const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "recover");
   diagnostics.report("publication_failed", {
     name: "PostgresError",
-    code: "23001",
+    code: "ERR_POSTGRES_SERVER_ERROR",
+    errno: "23514",
     table: "orchestrator_operations",
     constraint: "orchestrator_operations_state_check",
     detail: "private-row-values",
     query: "private-query",
   });
   expect(JSON.parse(lines[0]!)).toMatchObject({
-    sqlState: "23001",
+    sqlState: "23514",
     table: "orchestrator_operations",
     constraint: "orchestrator_operations_state_check",
   });

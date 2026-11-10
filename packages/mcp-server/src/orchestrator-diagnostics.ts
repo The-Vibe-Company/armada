@@ -196,11 +196,18 @@ function publicationFailure(error: unknown): {
     } catch {
       /* A hostile class getter must not hide an independently readable SQLSTATE. */
     }
-    try {
-      const code: unknown = Reflect.get(error, "code");
-      if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) sqlState = code;
-    } catch {
-      /* Never serialize an opaque exception. */
+    // Bun's PostgresError uses code=ERR_POSTGRES_SERVER_ERROR and errno=SQLSTATE.
+    // Other drivers use code directly. Read each independently; never serialize the exception.
+    for (const field of ["code", "errno"] as const) {
+      try {
+        const code: unknown = Reflect.get(error, field);
+        if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) {
+          sqlState = code;
+          break;
+        }
+      } catch {
+        /* A hostile getter cannot hide independently readable metadata. */
+      }
     }
   }
   const identifiers: { table?: string; constraint?: string } = {};
