@@ -48,6 +48,7 @@ export interface StatusReport {
   machineSize: MachineSizeEvidence | null;
   /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
   model: string | null;
+  skills?: SandboxView["skills"];
   reasoningEffort: string | null;
   /** Armada's status, after this read. */
   status: SandboxStatus;
@@ -185,6 +186,7 @@ function report(
     repositoryDir: sandbox.repositoryDir ?? null,
     machineSize: sandbox.machineSize ?? null,
     model: sandbox.model,
+    skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,

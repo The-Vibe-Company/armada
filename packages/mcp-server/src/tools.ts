@@ -232,7 +232,20 @@ const prompt = z.object({
   reason: z.string().nullable(),
 });
 
+const skillReceipts = z
+  .array(
+    z.object({
+      reference: z.string(),
+      version: z.string(),
+      skillId: z.string(),
+      checksum: z.string(),
+      origin: z.string(),
+    }),
+  )
+  .optional();
+
 const status = {
+  skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
@@ -399,6 +412,34 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       now: context.now(),
     });
   };
+
+  tool(
+    "github_refresh",
+    {
+      title: "Repair sandbox GitHub access",
+      description:
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+      input: { id },
+      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+    },
+    async (args) => {
+      const { sandbox: found, provider } = await live(args.id);
+      if (found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      const machine = await provider.get(found.providerSandboxId);
+      if (!["ready", "running"].includes(machine.state))
+        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
+      if (!context.launchCredentials.refreshGitHub)
+        throw new ToolError("unavailable", "GitHub repair is not configured.");
+      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
+      const result = await context.launchCredentials.refreshGitHub(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        provider,
+        found.providerSandboxId,
+      );
+      return { id: found.id, status: "connected" as const, login: result.login };
+    },
+  );
 
   tool(
     "golden_list",
@@ -676,6 +717,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         input: {
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
           visibility: z.enum(["private", "org"]).optional(),
+          skills: z.array(z.string()).max(20).optional(),
           connections: z.array(z.string().uuid()).max(100).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
           org: z
@@ -717,6 +759,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: z.string(),
           visibility: z.enum(["org", "private"]),
           harness: z.enum(HARNESSES),
+          skills: skillReceipts,
           repositoryDir: z
             .string()
             .nullable()
@@ -732,6 +775,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .object({
               status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
               login: z.string().nullable(),
+              tokenExpiresAt: z.string().nullable(),
               message: z.string().nullable(),
             })
             .describe(
@@ -763,6 +807,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skills === undefined ? {} : { skills: args.skills }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),
             ...(args.credentialId ? { credentialId: args.credentialId } : {}),
             ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
@@ -777,6 +822,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: result.golden.name,
           visibility: result.sandbox.visibility ?? result.golden.visibility,
           harness: result.sandbox.harness,
+          skills: result.sandbox.skills ?? [],
           repositoryDir: result.sandbox.repositoryDir ?? null,
           model: result.sandbox.model,
           reasoningEffort: result.sandbox.reasoningEffort,
@@ -791,6 +837,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           github: {
             status: result.github.status,
             login: result.github.login ?? null,
+            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
             message: result.github.message ?? null,
           },
         };
