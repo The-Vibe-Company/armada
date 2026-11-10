@@ -29,7 +29,7 @@ export interface PromptReport {
   promptId: string;
   conversationId: string | null;
   state: PromptOutcome["state"];
-  /** Why the turn failed, from the prompt event or the usage-limit or expired-login event. */
+  /** Why the turn failed or was interrupted, from the prompt event or the usage-limit or expired-login event. */
   reason: string | null;
 }
 
@@ -66,7 +66,7 @@ export interface StatusReport {
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
- * A live machine is `running` while a turn runs, `ready` after one ends, and `failed` when it failed.
+ * A live machine is `running` while a turn runs, `ready` after one ends, and `failed` only when the machine failed.
  */
 export async function readStatus(
   provider: Provider | null,
@@ -113,12 +113,12 @@ export async function readStatus(
       promptId: target.promptId,
       conversationId: target.conversationId,
       state: outcome.state,
-      reason: outcome.state === "failed" ? outcome.reason : null,
+      reason: outcome.state === "failed" || outcome.state === "interrupted" ? (outcome.reason ?? null) : null,
     };
   }
 
   const next = nextStatus(sandbox.status, info, prompt);
-  const reason = next === "failed" ? (failureReason(info, prompt) ?? sandbox.statusReason) : null;
+  const reason = next === "failed" ? (failureReason(info) ?? sandbox.statusReason) : null;
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,
@@ -144,8 +144,7 @@ export async function readStatus(
   );
 }
 
-function failureReason(info: SandboxInfo, prompt: PromptReport | null): string | null {
-  if (prompt?.state === "failed" && prompt.reason) return prompt.reason;
+function failureReason(info: SandboxInfo): string | null {
   if (info.state === "failed") return info.error ?? `The machine failed (${info.providerState}).`;
   return null;
 }
@@ -159,8 +158,6 @@ function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptRep
   switch (prompt.state) {
     case "running":
       return "running";
-    case "failed":
-      return "failed";
     default:
       return "ready";
   }

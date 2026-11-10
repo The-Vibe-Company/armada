@@ -589,7 +589,52 @@ describe("tools", () => {
     expect((await call(admin, "list")).data.sandboxes).toMatchObject([{ canOpen: true, canManage: true }]);
   });
 
-  test("status reads getPrompt: a finished turn with a usage limit is failed, with its reason, and recorded", async () => {
+  for (const [message, state, reason] of [
+    [
+      "The box moved to a new machine while this prompt was running. Send it again.",
+      "interrupted",
+      "interrupted_by_provider_move",
+    ],
+    [
+      "Codex app-server exited with signal SIGKILL; the next prompt starts a fresh process",
+      "interrupted",
+      "interrupted_by_harness_exit",
+    ],
+    ["Agent request failed", "failed", "Agent request failed"],
+  ] as const) {
+    test(`turn error does not fail the machine: ${reason}`, async () => {
+      const { token, client, people, boat, db } = await start();
+      const mcp = await client(await token(people.member));
+      const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+      boat.finish("bx_1", "prompt_1", "failed");
+      const event = boat.sandbox("bx_1").events.find((event) => event.kind === "prompt");
+      if (event?.kind !== "prompt") throw Error("Missing prompt fixture");
+      event.reason = message;
+      // Also repair historical misclassification when provider health can be checked.
+      await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [launched.data.id, message]);
+      const status = await call(mcp, "status", { id: launched.data.id });
+      expect(status.data).toMatchObject({
+        status: "ready",
+        statusReason: null,
+        settled: true,
+        prompt: { state, reason },
+      });
+      const row = await db.query("select status::text,status_reason from sandboxes where id=$1", [launched.data.id]);
+      expect(row.rows[0]).toEqual({ status: "ready", status_reason: null });
+      const resent = await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
+      expect(resent.isError).not.toBe(true);
+      boat.finish("bx_1", "prompt_2", "failed");
+      boat.sandbox("bx_1").info.state = "stopped";
+      const stopped = await call(mcp, "status", { id: launched.data.id });
+      expect(stopped.data.status).toBe("stopped");
+      boat.sandbox("bx_1").info.state = "failed";
+      boat.sandbox("bx_1").info.error = "Machine irrecoverable";
+      const failed = await call(mcp, "status", { id: launched.data.id });
+      expect(failed.data).toMatchObject({ status: "failed", statusReason: "Machine irrecoverable" });
+    });
+  }
+
+  test("status reads getPrompt: a usage limit fails the turn, not the machine", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
@@ -604,18 +649,18 @@ describe("tools", () => {
     boat.finish("bx_1", "prompt_1", "finished");
     const status = await call(mcp, "status", { id: launched.data.id });
     expect(status.data).toMatchObject({
-      status: "failed",
+      status: "ready",
       settled: true,
       prompt: { promptId: "prompt_1", state: "failed", reason: "Claude usage limit reached" },
     });
-    expect(status.data.statusReason).toBe("Claude usage limit reached");
+    expect(status.data.statusReason).toBeNull();
     const row = await db.query<{ status: string; status_reason: string | null }>(
       "select status::text as status, status_reason from sandboxes where id = $1",
       [launched.data.id],
     );
-    expect(row.rows[0]).toEqual({ status: "failed", status_reason: "Claude usage limit reached" });
+    expect(row.rows[0]).toEqual({ status: "ready", status_reason: null });
     const listed = await call(mcp, "list");
-    expect(listed.data.sandboxes).toMatchObject([{ status: "failed" }]);
+    expect(listed.data.sandboxes).toMatchObject([{ status: "ready" }]);
 
     await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
     const cleared = await db.query<{ status_reason: string | null }>(

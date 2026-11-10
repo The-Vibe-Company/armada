@@ -9,7 +9,7 @@ const OUTCOME_PAGES = 50;
 export type PromptOutcome =
   | { state: "running" }
   | { state: "finished" }
-  | { state: "interrupted" }
+  | { state: "interrupted"; reason?: "interrupted_by_provider_move" | "interrupted_by_harness_exit" }
   | { state: "failed"; reason: string };
 
 /**
@@ -32,9 +32,16 @@ export async function promptOutcome(
   request: { sandboxId: string; promptId: string; conversationId?: string },
 ): Promise<PromptOutcome> {
   const state = await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId });
-  if (state.status === "interrupted") return { state: "interrupted" };
-  if (state.status === "failed") {
+  if (state.status === "interrupted" || state.status === "failed") {
     const reason = (await promptEvents(provider, request)).find((event) => event.kind === "prompt" && event.reason);
+    const message = reason?.kind === "prompt" ? reason.reason : undefined;
+    // Boat currently reports these recoverable interruptions as failed prompt events.
+    // Match only its documented remedies; arbitrary turn errors remain failures.
+    if (message === "The box moved to a new machine while this prompt was running. Send it again.")
+      return { state: "interrupted", reason: "interrupted_by_provider_move" };
+    if (message && /^Codex app-server exited with signal .+; the next prompt starts a fresh process[.]?$/.test(message))
+      return { state: "interrupted", reason: "interrupted_by_harness_exit" };
+    if (state.status === "interrupted") return { state: "interrupted" };
     return {
       state: "failed",
       reason: reason?.kind === "prompt" && reason.reason ? reason.reason : "The agent failed.",
