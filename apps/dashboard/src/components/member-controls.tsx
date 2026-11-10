@@ -52,7 +52,7 @@ export function MemberRoleForm({ org, orgName, user, email, role, self }: Member
       <input type="hidden" name="org" value={org} />
       <input type="hidden" name="user" value={user} />
       <div className="flex items-center gap-2">
-        <div className="w-28 shrink-0">
+        <div className="w-24 shrink-0 sm:w-28">
           <NativeSelect
             name="role"
             value={next}

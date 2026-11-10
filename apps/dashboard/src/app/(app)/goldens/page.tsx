@@ -60,6 +60,7 @@ import type { LaunchAccounts } from "@/lib/model-accounts";
 import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
+import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Goldens" };
 export const dynamic = "force-dynamic";
@@ -159,7 +160,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       <section className="space-y-3" aria-labelledby="build-golden-title">
         <SectionHeader id="build-golden-title" title="Build a golden" />
         {(connected ?? []).length > 0 && (
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className={cn("grid gap-3", (connected ?? []).length > 1 && "md:grid-cols-2")}>
             {(connected ?? []).map((provider) => {
               const state = capacities[provider];
               return state ? (

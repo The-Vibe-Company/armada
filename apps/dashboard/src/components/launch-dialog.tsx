@@ -370,18 +370,15 @@ function AccountField({
   ];
   return (
     // Its own row, apart from the run settings: the choice of who pays is read before Launch, never assumed.
-    <div
-      data-account-row
-      className="grid gap-x-4 gap-y-2 rounded-lg border bg-muted/40 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)] sm:items-center dark:bg-input/20"
-    >
-      <div className="flex min-w-0 items-start gap-3">
-        <span
-          aria-hidden="true"
-          className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs [&_svg]:size-4"
-        >
-          <WalletIcon />
-        </span>
-        <div className="min-w-0 space-y-1">
+    <div data-account-row className="flex gap-3 rounded-lg border bg-muted/40 p-3 dark:bg-input/20">
+      <span
+        aria-hidden="true"
+        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs [&_svg]:size-4"
+      >
+        <WalletIcon />
+      </span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="space-y-1">
           <Label htmlFor={`${idPrefix}-account`}>Account</Label>
           <p
             id={`${idPrefix}-account-hint`}
@@ -398,32 +395,32 @@ function AccountField({
                 : "Billed for this sandbox, now and for every later message."}
           </p>
         </div>
+        <NativeSelect
+          id={`${idPrefix}-account`}
+          name="credential"
+          defaultValue={preset}
+          required
+          aria-describedby={`${idPrefix}-account-hint`}
+          className="w-full bg-background"
+        >
+          {preset === "" && (
+            <option value="" disabled>
+              Choose an account
+            </option>
+          )}
+          {groups.map(([group, rows]) =>
+            rows.length === 0 ? null : (
+              <optgroup key={group} label={group}>
+                {rows.map((account) => (
+                  <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
+                    {optionLabel(account, accounts.now, accounts.orgName)}
+                  </option>
+                ))}
+              </optgroup>
+            ),
+          )}
+        </NativeSelect>
       </div>
-      <NativeSelect
-        id={`${idPrefix}-account`}
-        name="credential"
-        defaultValue={preset}
-        required
-        aria-describedby={`${idPrefix}-account-hint`}
-        className="w-full bg-background"
-      >
-        {preset === "" && (
-          <option value="" disabled>
-            Choose an account
-          </option>
-        )}
-        {groups.map(([group, rows]) =>
-          rows.length === 0 ? null : (
-            <optgroup key={group} label={group}>
-              {rows.map((account) => (
-                <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
-                  {optionLabel(account, accounts.now, accounts.orgName)}
-                </option>
-              ))}
-            </optgroup>
-          ),
-        )}
-      </NativeSelect>
     </div>
   );
 }

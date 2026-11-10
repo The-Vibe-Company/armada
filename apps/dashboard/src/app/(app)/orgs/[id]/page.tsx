@@ -80,15 +80,11 @@ export default async function OrgPage({ params, searchParams }: Props) {
 
       {invitations && (
         <section className="space-y-3" aria-labelledby="invite-heading">
-          <div>
-            <h2 id="invite-heading" className="text-base font-semibold">
-              Invite a teammate
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Armada emails them a link to this invitation. They sign in with that address, review the organization and
-              join only if they accept.
-            </p>
-          </div>
+          <SectionHeader
+            id="invite-heading"
+            title="Invite a teammate"
+            description="Armada emails them a link to this invitation. They sign in with that address, review the organization and join only if they accept."
+          />
           <InviteForm org={id} action={inviteMember} />
           <h3 className="pt-2 text-sm font-medium">Pending invitations</h3>
           {invitations.ok ? (
@@ -121,7 +117,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="pl-4">Member</TableHead>
+                <TableHead className="pl-3 sm:pl-4">Member</TableHead>
                 <TableHead>Role</TableHead>
                 {isAdmin && (
                   <TableHead className="pr-4 text-right">
@@ -136,15 +132,17 @@ export default async function OrgPage({ params, searchParams }: Props) {
                 const role = member.role === "admin" ? "admin" : "member";
                 return (
                   <TableRow key={member.user_id} data-member={member.email} className="hover:bg-muted/30">
-                    <TableCell className="pl-4">
+                    <TableCell className="pl-3 sm:pl-4">
                       <div className="flex min-w-0 items-center gap-3">
                         <span
                           aria-hidden="true"
-                          className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-medium text-muted-foreground"
+                          className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-medium text-muted-foreground max-sm:hidden"
                         >
                           {initialOf(member.email)}
                         </span>
-                        <span className="min-w-0 truncate font-medium">{member.email}</span>
+                        <span className="min-w-0 truncate font-medium max-sm:max-w-[8.5rem]" title={member.email}>
+                          {member.email}
+                        </span>
                         {self && (
                           <Badge variant="secondary" className="shrink-0">
                             you
@@ -167,7 +165,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
                       )}
                     </TableCell>
                     {isAdmin && (
-                      <TableCell className="pr-4 text-right">
+                      <TableCell className="pr-3 text-right sm:pr-4">
                         <RemoveMember
                           org={id}
                           orgName={membership.org.name}
