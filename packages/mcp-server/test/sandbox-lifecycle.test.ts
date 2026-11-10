@@ -7,7 +7,15 @@ import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { bunLikeSql, database } from "./support.ts";
 
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
-for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", "stale", "manual-stop"] as const) {
+for (const outcome of [
+  "external-stop",
+  "expired",
+  "expired-external-stop",
+  "unconfirmed",
+  "stop-error",
+  "stale",
+  "manual-stop",
+] as const) {
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await database();
     try {
@@ -58,7 +66,10 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
           return Response.json({
             ok: true,
             sandbox: sandbox({
-              state: stopped || outcome === "external-stop" || outcome === "stale" ? "archived" : "running",
+              state:
+                stopped || outcome === "external-stop" || outcome === "expired-external-stop" || outcome === "stale"
+                  ? "archived"
+                  : "running",
             }),
           });
         }) as typeof fetch,
@@ -75,21 +86,27 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
         }>("select * from sandboxes where id=$1", [id])
       ).rows[0]!;
       expect(row.status).toBe(
-        outcome === "external-stop" || outcome === "expired" || outcome === "manual-stop"
+        outcome === "external-stop" ||
+          outcome === "expired" ||
+          outcome === "expired-external-stop" ||
+          outcome === "manual-stop"
           ? "stopped"
           : outcome === "stale"
             ? "running"
             : "stopping",
       );
-      expect(row.status_reason).toBe(["expired", "unconfirmed", "stop-error"].includes(outcome) ? "expired" : null);
+      expect(row.status_reason).toBe(
+        ["expired", "expired-external-stop", "unconfirmed", "stop-error"].includes(outcome) ? "expired" : null,
+      );
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
       // This wire fixture supplies no physical stop timestamp: observation time is not runtime.
-      if (["external-stop", "expired", "manual-stop"].includes(outcome)) expect(row.usage_runtime_seconds).toBeNull();
+      if (["external-stop", "expired", "expired-external-stop", "manual-stop"].includes(outcome))
+        expect(row.usage_runtime_seconds).toBeNull();
       if (outcome === "unconfirmed" || outcome === "stop-error") expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
       expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-        outcome === "external-stop" || outcome === "stale" ? 0 : 1,
+        outcome === "external-stop" || outcome === "expired-external-stop" || outcome === "stale" ? 0 : 1,
       );
     } finally {
       await db.close();

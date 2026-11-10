@@ -67,3 +67,28 @@ token and inspection of the unpushed change. Separately extend before expiry and
 verify the original deadline passes without stopping. Repeat with a removed
 provider disk/checkpoint and require an explicit non-restorable response with the
 work recovery reference. Do not run these destructive checks against production.
+
+## Initial delivery scope
+
+This PR implements points 1 and 2 of #851. Recovery/error closure is tracked in
+#854; the expiring-soon projection is tracked in #855. Existing retained-stop
+resume remains available, but this PR does not claim the complete recovery matrix.
+
+Ordinary launches now reserve five minutes between their logical lifetime and
+Boat's hard stop. Modal uses its 24-hour physical maximum and rejects extensions
+that cannot fit before that machine's existing grant deadline with five minutes
+left for preservation. Requested maximum launch lifetimes are capped to leave
+this margin; the launch response reports the effective TTL. Managed parents keep
+their separate lifecycle policy. Existing machines cannot gain missing Modal
+headroom retroactively. A stopped/resumed Modal worker receives a fresh physical
+machine through the existing restore path.
+
+Operational tradeoff: if Armada is unavailable, Modal's provider timer may leave
+compute running for up to 24 hours, rather than the shorter logical lifetime.
+The provider timer remains a hard cost bound, not a work-preserving stop. Server
+outages lasting beyond the reserved margin cannot guarantee a clean checkpoint.
+
+Deploy the additive constraint migration before the new server. Existing parent
+epochs do not acquire `worker:extend`; stop/resume a parent to install a fresh
+scoped grant. An application rollback can leave the expanded constraints in
+place (no data rewrite or destructive rollback is needed).

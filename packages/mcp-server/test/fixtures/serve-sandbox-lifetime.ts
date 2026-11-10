@@ -1,0 +1,482 @@
+// Isolated infrastructure fakes only: production serve/auth/provider/lifecycle factories remain intact.
+import { mock } from "bun:test";
+import assert from "node:assert/strict";
+import { createServiceToken, createSqlAuthStore } from "@armada/auth";
+import * as core from "@armada/core/server";
+import { createSqlModalStore, type Machine, type Scope } from "@armada/provider-modal";
+import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
+import { fakeModalRuntime } from "./fake-modal-runtime.ts";
+
+const db = await openDatabase();
+await applyMigrations(db);
+const sql: core.Sql = {
+  query: (q, values) => db.query(q, values),
+  transaction: (work) => db.transaction((tx) => work({ query: (q, values) => tx.query(q, values) })),
+};
+const sqlModule = await import("../../src/sql.ts");
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+const key = Buffer.alloc(32, 19).toString("base64");
+// Work preservation uses the process environment, just as the deployed server does.
+process.env.ARMADA_ENCRYPTION_KEY = key;
+const orgId = crypto.randomUUID(),
+  ownerId = crypto.randomUUID(),
+  memberId = crypto.randomUUID(),
+  adminId = crypto.randomUUID(),
+  modelId = crypto.randomUUID();
+const binding = { workspace: "app:ap_lifetime_fixture", environment: "main", appId: "ap_lifetime_fixture" };
+const appName = `armada-org-${orgId.replaceAll("-", "")}`;
+const scope: Scope = { orgId, userId: ownerId, visibility: "org", binding };
+const provenance = { credentialScope: "org" as const, credentialOwnerId: orgId };
+const sourceId = `modal_${crypto.randomUUID()}`;
+const source: Machine = {
+  info: { id: sourceId, name: sourceId, state: "stopped", providerState: "stopped", labels: {} },
+  generation: 1,
+  phase: "stopped",
+  golden: true,
+  launchUserId: ownerId,
+  physicalId: "sb_lifetime_source",
+  physicalName: "lifetime-source",
+  ttlSeconds: 86400,
+  imageId: "im_lifetime_source",
+  managementAuthority: provenance,
+};
+const modal = fakeModalRuntime({
+  appName,
+  appId: binding.appId,
+  tokenId: "ak-lifetimefixture",
+  tokenSecret: "as-lifetimefixture",
+  skillRevision: "a".repeat(40),
+  legacy: () => source,
+  scope: () => "unused-source",
+});
+modal.release();
+modal.failPreservation("missing_bun");
+type Effect = { id: string; op: string; ttlSeconds?: number };
+const effects: Effect[] = [];
+const physicalIds = new Map<string, string>();
+const conversations = new Map<string, string>();
+type NativeSandbox = Awaited<ReturnType<InstanceType<typeof modal.Client>["sandboxes"]["create"]>>;
+function logicalId(physicalId: string): string {
+  const id = physicalIds.get(physicalId);
+  assert(id, "Unknown physical sandbox");
+  return id;
+}
+function auditedNative(sb: NativeSandbox): NativeSandbox {
+  return {
+    ...sb,
+    terminate: async () => {
+      effects.push({ id: logicalId(sb.sandboxId), op: "stop" });
+      return sb.terminate();
+    },
+    snapshotFilesystem: async () => {
+      effects.push({ id: logicalId(sb.sandboxId), op: "snapshot" });
+      return sb.snapshotFilesystem();
+    },
+  };
+}
+class ModalClient extends modal.Client {
+  constructor(options: ConstructorParameters<typeof modal.Client>[0]) {
+    super(options);
+    const sdk = this.sandboxes;
+    this.sandboxes = {
+      ...sdk,
+      create: async (app, image, options) => {
+        const sb = await sdk.create(app, image, options);
+        const id = options.tags.armada_sandbox;
+        assert(id);
+        physicalIds.set(sb.sandboxId, id);
+        effects.push({ id, op: "allocate" });
+        return auditedNative(sb);
+      },
+      fromId: async (id) => auditedNative(await sdk.fromId(id)),
+      fromName: async (name, physicalName, options) => auditedNative(await sdk.fromName(name, physicalName, options)),
+    };
+  }
+}
+mock.module("modal", () => ({ ModalClient }));
+
+await sql.query("insert into orgs(id,name) values($1,'Lifetime composition fixture')", [orgId]);
+for (const [id, role] of [
+  [ownerId, "member"],
+  [memberId, "member"],
+  [adminId, "admin"],
+]) {
+  await sql.query("insert into auth.users(id) values($1)", [id]);
+  await sql.query("insert into members(org_id,user_id,role) values($1,$2,$3)", [orgId, id, role]);
+}
+await sql.query("update orgs set boat_api_key_enc=$2 where id=$1", [
+  orgId,
+  await core.encryptSecret("synthetic-lifetime-boat-key", key),
+]);
+for (const [kind, value] of [
+  ["modal", JSON.stringify({ token_id: "ak-lifetimefixture", token_secret: "as-lifetimefixture" })],
+] as const)
+  await sql.query("insert into credentials(scope,owner_id,kind,value_enc,name) values('org',$1,$2,$3,$4)", [
+    orgId,
+    kind,
+    await core.encryptSecret(value, key),
+    `Lifetime ${kind}`,
+  ]);
+await sql.query(
+  "insert into credentials(id,scope,owner_id,kind,value_enc,name) values($1,'org',$2,'openai',$3,'Lifetime model')",
+  [modelId, orgId, await core.encryptSecret("synthetic-lifetime-model-key", key)],
+);
+await sql.query(
+  "insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment) values($1,$2,'org',$1,$3,$4,'main')",
+  [orgId, `org:${orgId}`, appName, binding.appId],
+);
+const nativeStore = createSqlModalStore(sql, scope);
+await nativeStore.reserve("lifetime-source", source);
+await nativeStore.saveImage({
+  info: { name: "lifetime-modal-source", status: "ready", sourceSandboxId: sourceId },
+  sourceId,
+  imageId: "im_lifetime_source",
+  goldenClean: true,
+  managementAuthority: provenance,
+});
+const goldens = core.createSqlGoldenStore(sql);
+const goldenNames = new Map<string, string>();
+for (const provider of ["boat", "modal"] as const) {
+  const golden = await goldens.insert({
+    orgId,
+    ownerId,
+    provider,
+    name: `Lifetime ${provider}`,
+    visibility: "org",
+    modal: provider === "modal" ? binding : null,
+    config: { repos: [{ url: "https://github.com/example/lifetime.git", branch: "main", dir: "fixture" }], init: [] },
+  });
+  await goldens.setSnapshot(golden.id, `lifetime-${provider}-source`);
+  goldenNames.set(provider, golden.name);
+}
+const tokens = new Map<string, string>();
+for (const id of [ownerId, memberId, adminId])
+  tokens.set(
+    id,
+    (await createServiceToken(createSqlAuthStore(sql), { userId: id, label: "lifetime fixture", now: new Date() }))
+      .token,
+  );
+
+type BoatMachine = {
+  id: string;
+  name: string;
+  state: string;
+  createdAt: string;
+  archiveAfter: string;
+  labels: Record<string, string>;
+  desktopAvailable: boolean;
+  snapshotAvailable: boolean;
+  conversation?: string;
+};
+const boats = new Map<string, BoatMachine>();
+let shortBoatConfirmation = false;
+const nativeFetch = globalThis.fetch;
+const realFetch = nativeFetch.bind(globalThis);
+const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.hostname === "127.0.0.1") return realFetch(input, init);
+  if (url.origin === modal.tunnelOrigin) {
+    const physicalId = url.pathname.slice(1);
+    const id = logicalId(physicalId);
+    const packet = JSON.parse(String(init?.body)) as {
+      version: number;
+      requestId: string;
+      op: string;
+      input?: { command?: string; conversationId?: string };
+    };
+    if (packet.op === "prompt") {
+      const conversationId = conversations.get(id) ?? crypto.randomUUID();
+      assert(
+        !packet.input?.conversationId || packet.input.conversationId === conversationId,
+        "Modal conversation changed",
+      );
+      conversations.set(id, conversationId);
+      effects.push({ id, op: "prompt" });
+      return Response.json({
+        version: 1,
+        requestId: packet.requestId,
+        result: { promptId: crypto.randomUUID(), conversationId, status: "running" },
+      });
+    }
+    if (packet.op === "interrupt") effects.push({ id, op: "interrupt" });
+    if (packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY"))
+      effects.push({ id, op: "preserve" });
+    if (packet.op === "checkpoint") effects.push({ id, op: "checkpoint" });
+    return realFetch(`${modal.localOrigin}${url.pathname}`, init);
+  }
+  assert.equal(url.origin, "https://boat.dev", "Unexpected outbound network in lifetime fixture");
+  const method = init?.method ?? "GET";
+  const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+  const json = (value: object, status = 200) => Response.json({ ok: true, ...value }, { status });
+  if (url.pathname === "/api/v1/sandboxes" && method === "POST") {
+    const id = `bx_${crypto.randomUUID()}`;
+    const machine: BoatMachine = {
+      id,
+      name: id,
+      state: "running",
+      labels: body.labels ?? {},
+      createdAt: new Date().toISOString(),
+      archiveAfter: new Date(Date.now() + body.ttlSeconds * 1000).toISOString(),
+      desktopAvailable: false,
+      snapshotAvailable: false,
+    };
+    boats.set(id, machine);
+    effects.push({ id, op: "allocate", ttlSeconds: body.ttlSeconds });
+    return json({ sandbox: machine }, 202);
+  }
+  const match = url.pathname.match(/^\/api\/v1\/sandboxes\/([^/]+)(.*)$/);
+  assert(match, `Unexpected Boat route ${method} ${url.pathname}`);
+  const machine = boats.get(decodeURIComponent(match[1] ?? ""));
+  assert(machine, "Unknown Boat sandbox");
+  const suffix = match[2];
+  if (!suffix) {
+    if (method !== "GET") {
+      effects.push({ id: machine.id, op: "extend", ttlSeconds: body.ttlSeconds });
+      machine.archiveAfter = new Date(Date.now() + (shortBoatConfirmation ? 1 : body.ttlSeconds) * 1000).toISOString();
+    }
+    return json({ sandbox: machine });
+  }
+  if (suffix === "/commands") {
+    if (body.command?.includes("ARMADA_RECOVERY")) effects.push({ id: machine.id, op: "preserve" });
+    return json({
+      type: "command.finished",
+      success: true,
+      exitCode: 0,
+      timedOut: false,
+      stderr: "",
+      stdout: body.command?.includes("ARMADA_RECOVERY")
+        ? JSON.stringify({ status: "failed", reason: "missing_bun" })
+        : "",
+    });
+  }
+  if (suffix === "/interrupt") {
+    effects.push({ id: machine.id, op: "interrupt" });
+    return json({});
+  }
+  if (suffix === "/stop") {
+    effects.push({ id: machine.id, op: "stop" });
+    machine.state = "archived";
+    return json({ id: machine.id, stop: { id: "fixture-stop", status: "completed" } }, 202);
+  }
+  if (suffix === "/resume") {
+    effects.push({ id: machine.id, op: "resume" });
+    machine.state = "running";
+    return json({ sandbox: machine }, 202);
+  }
+  if (suffix === "/prompt") {
+    effects.push({ id: machine.id, op: "prompt" });
+    machine.conversation ??= crypto.randomUUID();
+    assert(!body.conversationId || body.conversationId === machine.conversation, "Boat conversation changed");
+    return json({ promptId: crypto.randomUUID(), conversationId: machine.conversation, status: "running" }, 202);
+  }
+  if (suffix === "/conversations")
+    return json({
+      conversations: machine.conversation ? [{ id: machine.conversation, running: true, lastHarness: "codex" }] : [],
+    });
+  if (suffix === "/events") return json({ events: [], pageInfo: { hasMore: false } });
+  throw Error(`Unexpected Boat route ${method} ${url.pathname}`);
+}) as typeof fetch;
+globalThis.fetch = fakeFetch;
+const { startServer } = await import("../../src/serve.ts");
+const logs: string[] = [];
+async function start() {
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+  const port = probe.port;
+  await probe.stop(true);
+  return startServer(
+    {
+      PORT: String(port),
+      ARMADA_DATABASE_URL: "postgres://fixture.invalid/db",
+      SUPABASE_URL: "https://supabase.invalid",
+      SUPABASE_ANON_KEY: "fixture-anon",
+      ARMADA_AUTH_SECRET: "synthetic-lifetime-auth-secret",
+      ARMADA_PUBLIC_URL: "https://lifetime.invalid",
+      ARMADA_ENCRYPTION_KEY: key,
+    },
+    { log: (line) => logs.push(line), logError: (line) => logs.push(line) },
+  );
+}
+let server = await start();
+async function request<T = unknown>(action: string, body: object, expected = 200, userId = ownerId): Promise<T> {
+  // The real background observer can briefly own a row. Retry only the closed admission conflict.
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const response = await fakeFetch(`http://127.0.0.1:${server.port}/api/v1/sandbox/${action}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.get(userId)}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...body, org: orgId }),
+    });
+    const result = (await response.json()) as T & { error?: { code?: string } };
+    if (expected !== 409 && response.status === 409 && result.error?.code === "sandbox_not_ready") continue;
+    assert.equal(
+      response.status,
+      expected,
+      `${action} ${JSON.stringify(body)}: ${JSON.stringify(result)}\n${logs.join("\n")}`,
+    );
+    return result;
+  }
+  throw Error(`${action}: real lifecycle admission did not settle`);
+}
+async function row(id: string) {
+  const found = (
+    await sql.query<{
+      status: string;
+      status_reason: string | null;
+      expires_at: Date;
+      effective_ttl_seconds: number;
+      preservation_note: string | null;
+      provider_sandbox_id: string;
+      conversation_ids: string[];
+    }>(
+      "select status::text,status_reason,expires_at,effective_ttl_seconds,preservation_note,provider_sandbox_id,conversation_ids from sandboxes where id=$1",
+      [id],
+    )
+  ).rows[0];
+  assert(found);
+  return found;
+}
+const scenarios: {
+  provider: "boat" | "modal";
+  active: boolean;
+  id: string;
+  nativeId: string;
+  conversation: string | null;
+}[] = [];
+try {
+  for (const provider of ["boat", "modal"] as const) {
+    for (const active of [false, true]) {
+      const launch = await request<{ sandbox: { id: string } }>("launch", {
+        golden: goldenNames.get(provider),
+        provider,
+        harness: "codex",
+        credentialId: modelId,
+        connections: [],
+        ttlSeconds: 120,
+      });
+      const id = launch.sandbox.id;
+      const before = await row(id);
+      if (provider === "boat")
+        assert.equal(
+          effects.find((item) => item.id === before.provider_sandbox_id && item.op === "allocate")?.ttlSeconds,
+          420,
+        );
+      const deniedBefore = effects.length;
+      await request("extend", { id, ttl_seconds: 600 }, 404, memberId);
+      assert.equal(effects.length, deniedBefore, "Denied member must not mutate provider state");
+      const extended = await request<{ id: string; ttlSeconds: number; expiresAt: string }>(
+        "extend",
+        { id, ttl_seconds: 600 },
+        200,
+        active ? adminId : ownerId,
+      );
+      assert.equal(extended.id, id);
+      assert.equal(extended.ttlSeconds, 600);
+      assert(new Date(extended.expiresAt).getTime() > new Date(before.expires_at).getTime());
+      assert.equal(new Date((await row(id)).expires_at).toISOString(), extended.expiresAt);
+      const status = await request<{ expiresAt: string }>("status", { id });
+      assert.equal(
+        status.expiresAt,
+        extended.expiresAt,
+        "HTTP status must expose the logical deadline, not provider hard TTL",
+      );
+      if (provider === "boat")
+        assert.equal(
+          effects.filter((item) => item.id === before.provider_sandbox_id && item.op === "extend").at(-1)?.ttlSeconds,
+          900,
+        );
+      const acceptedDeadline = new Date((await row(id)).expires_at).toISOString();
+      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101])
+        await request("extend", { id, ttl_seconds }, 400);
+      assert.equal(
+        new Date((await row(id)).expires_at).toISOString(),
+        acceptedDeadline,
+        "Invalid/non-extending TTL must not publish",
+      );
+      let conversation: string | null = null;
+      if (active)
+        conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
+          .conversationId;
+      if (provider === "boat") {
+        shortBoatConfirmation = true;
+        await request("extend", { id, ttl_seconds: 900 }, 400);
+        shortBoatConfirmation = false;
+        assert.equal(
+          new Date((await row(id)).expires_at).toISOString(),
+          acceptedDeadline,
+          "Insufficient provider margin must not publish",
+        );
+      } else {
+        // Simulate an older VM whose physical grant has less headroom than the server maximum.
+        const originalGrant = (await nativeStore.get(before.provider_sandbox_id)).grantExpiresAt;
+        assert(originalGrant);
+        await nativeStore.lease(before.provider_sandbox_id, async (native, save) => {
+          native.grantExpiresAt = Date.now() + 900_000;
+          await save(native);
+        });
+        await request("extend", { id, ttl_seconds: 1200 }, 400);
+        assert.equal(new Date((await row(id)).expires_at).toISOString(), acceptedDeadline);
+        await nativeStore.lease(before.provider_sandbox_id, async (native, save) => {
+          native.grantExpiresAt = originalGrant;
+          await save(native);
+        });
+      }
+      scenarios.push({ provider, active, id, nativeId: before.provider_sandbox_id, conversation });
+    }
+  }
+  // Restarting serve runs its first real worker batch immediately. No sleeps, fake lifecycle factory,
+  // manual helper invocation or reliance on the worker's one-second idle timer.
+  await server.stop(true);
+  await server.workerDone;
+  const expirationStart = effects.length;
+  for (const { id } of scenarios)
+    await sql.query(
+      "update sandboxes set expires_at=now()-interval '1 second',reconcile_after=now()-interval '1 second',reconcile_lease_until=null,activity_until=null where id=$1",
+      [id],
+    );
+  server = await start();
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    if ((await Promise.all(scenarios.map(({ id }) => row(id)))).every((item) => item.status === "stopped")) break;
+    // Yield to actual SQL/SDK/socket work, never elapsed time.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  for (const scenario of scenarios) {
+    const stopped = await row(scenario.id);
+    assert.equal(stopped.status, "stopped", JSON.stringify({ scenario, stopped, logs, effects }));
+    assert.equal(stopped.status_reason, "expired");
+    assert.equal(stopped.preservation_note, "unpushed work could not be preserved (missing_bun)");
+    const operations = effects
+      .slice(expirationStart)
+      .filter((item) => item.id === scenario.nativeId)
+      .map((item) => item.op);
+    assert(operations.indexOf("interrupt") >= 0, JSON.stringify({ scenario, operations }));
+    assert(operations.indexOf("preserve") > operations.indexOf("interrupt"), JSON.stringify({ scenario, operations }));
+    assert(operations.indexOf("stop") > operations.indexOf("preserve"), JSON.stringify({ scenario, operations }));
+    if (scenario.provider === "modal") {
+      assert(operations.indexOf("checkpoint") > operations.indexOf("preserve"));
+      assert(operations.indexOf("snapshot") > operations.indexOf("checkpoint"));
+      assert(operations.indexOf("stop") > operations.indexOf("snapshot"));
+      const native = await nativeStore.get(scenario.nativeId);
+      assert.equal(native.phase, "stopped");
+      assert(native.recoveryImageId, "Expiry must retain the verified disk checkpoint");
+    } else assert.equal(boats.get(scenario.nativeId)?.state, "archived");
+    await request("extend", { id: scenario.id, ttl_seconds: 1200 }, 400);
+    if (scenario.active) {
+      const resumed = await request<{ conversationId: string }>("send", {
+        id: scenario.id,
+        prompt: "recall lifetime-token",
+      });
+      assert.equal(resumed.conversationId, scenario.conversation, "Expiry resume must reuse the saved conversation");
+      const continued = await row(scenario.id);
+      assert.equal(continued.status, "running");
+      assert.equal(continued.status_reason, null);
+      assert(new Date(continued.expires_at).getTime() > Date.now(), "Resume must rearm the logical lifetime");
+    }
+  }
+  console.log(
+    `SERVE_SANDBOX_LIFETIME_RECEIPT ${JSON.stringify({ providers: ["boat", "modal"], expiries: scenarios.length, activeExpiries: scenarios.filter((item) => item.active).length })}`,
+  );
+} finally {
+  await server.stop(true);
+  await server.workerDone;
+  await modal.close();
+  await db.close();
+}

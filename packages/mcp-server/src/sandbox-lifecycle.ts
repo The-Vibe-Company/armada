@@ -116,7 +116,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
         status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
-        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') else status_reason end,
+        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
         stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
         usage_runtime_seconds=case when $4 and stopped_at is null and $9::timestamptz is null then null else usage_runtime_seconds end,
@@ -137,6 +137,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           physicalExit,
           INTERRUPTED_LAUNCH_REASON,
           stoppedAt?.toISOString() ?? null,
+          expired,
         ],
       );
       return true;
