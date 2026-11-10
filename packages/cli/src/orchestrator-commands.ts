@@ -13,7 +13,7 @@ import {
   parseMachineSize,
 } from "@armada/core";
 import { type Args, parseArgs, single } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
@@ -30,7 +30,8 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   All commands accept --json. Events with --json emit one JSON page per line,
   including the server cursor for reconnect. Reuse the original key and identical
   arguments after an uncertain mutation; inspect detail/events for completion.
-  Recover nonallocatingly terminates an exact uncertain first create or blocked first-incarnation stop;
+  Recover nonallocatingly terminates an exact uncertain first create or blocked stop;
+  Boat also permits retirement after a failed resume followed by an uncertain message.
   repeat its original key/arguments to retry only that exact termination.
   Completed recovery receipts replay read-only; recovery never forks.
   Resume restores native state without sending a prompt. The server decides
@@ -219,13 +220,30 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
   if ("body" in command) {
     const path =
       command.action === "create" ? root : `${root}/${encodeURIComponent(command.id ?? "")}/${command.action}`;
-    const result = versioned(
-      await client.request<OrchestratorOperation>(path, {
-        method: "POST",
-        headers: { "content-type": "application/json", "idempotency-key": command.key },
-        body: JSON.stringify({ ...command.body, orgId: command.orgId }),
-      }),
-    );
+    let result: OrchestratorOperation;
+    try {
+      result = versioned(
+        await client.request<OrchestratorOperation>(path, {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": command.key },
+          body: JSON.stringify({ ...command.body, orgId: command.orgId }),
+          // Boat archival alone can take 150s, before history/receipt publication.
+          ...(command.action === "stop" ? { signal: AbortSignal.timeout(300_000) } : {}),
+        }),
+      );
+    } catch (error) {
+      if (
+        command.action === "stop" &&
+        error instanceof AuthError &&
+        !(error instanceof ArmadaApiError) &&
+        error.code === "unavailable"
+      )
+        throw new AuthError(
+          `Stop outcome unknown. Run armada orchestrator detail ${command.id} --org ${command.orgId} and check events before retrying with the same idempotency key.`,
+          "unavailable",
+        );
+      throw error;
+    }
     auth.out(`${command.json ? JSON.stringify(result) : orchestratorSummary(result)}\n`);
     return result.state === "failed" || result.state === "uncertain" ? 1 : 0;
   }

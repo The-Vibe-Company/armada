@@ -28,6 +28,7 @@ test.each(["claude", "codex"] as const)(
       activations = 0,
       grant: string | undefined;
     const choice = core.resolveModelChoice(harness, {});
+    const diagnostics: string[] = [];
     const provider: BoatProvider = {
       ...placement.provider,
       get: async (id, options) => ({
@@ -49,7 +50,16 @@ test.each(["claude", "codex"] as const)(
       },
       stopBestEffort: async (sandboxId) => placement.provider.stop({ sandboxId }),
       conversations: async () =>
-        available ? [{ id: "conv_1", running: false, lastHarness: harness, lastModel: choice.model }] : [],
+        available
+          ? [
+              {
+                id: "conv_1",
+                running: false,
+                lastHarness: harness === "claude" ? "claude-code" : harness,
+                lastModel: "provider-model-alias",
+              },
+            ]
+          : [],
       resumeBestEffort: async (id) => {
         activations++;
         generation = `boot-${activations + 1}`;
@@ -78,6 +88,7 @@ test.each(["claude", "codex"] as const)(
       };
       runtime = new OrchestratorRuntime({
         store,
+        diagnosticLog: (line) => diagnostics.push(line),
         skillRevision: revision,
         enabledPairs: [`boat:${harness}`],
         authority: new core.OrchestratorAuthority(sql, async () => {}),
@@ -173,15 +184,37 @@ test.each(["claude", "codex"] as const)(
       ).toBe(true);
       available = false;
       expect(await mutate("resume", "missing-conversation")).toMatchObject({
-        state: "failed",
-        errorCode: "boat_conversation_unavailable",
+        state: "succeeded",
+        errorCode: "previous_conversation_not_continued",
       });
-      expect(activations).toBe(1);
+      expect(diagnostics.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({
+          kind: "resume_continuity",
+          value: "previous_conversation_not_continued",
+        }),
+      );
+      expect(diagnostics.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({ kind: "resume_fallback", value: "conversation_metadata_missing" }),
+      );
+      expect(activations).toBe(2);
       expect(placement.prompts).toHaveLength(2);
       expect(await store.read(p.owner, p.org, created.orchestratorId)).toMatchObject({
-        state: "blocked",
-        continuity: "lost",
+        state: "ready",
+        continuity: "unverified",
+        conversationId: null,
+        blockedReason: null,
       });
+      expect((await mutate("message", "fresh-send")).state).toBe("succeeded");
+      expect(placement.prompts.at(-1)?.conversationId).toBeUndefined();
+      placement.finish("bx_1", "prompt_3", "finished");
+      await sql.query(`update public.orchestrators set state='blocked' where id=$1`, [created.orchestratorId]);
+      const operations = await store.operations(p.owner, p.org, created.orchestratorId);
+      await expect(mutate("message", "blocked-send")).rejects.toMatchObject({
+        code: "conflict",
+        admission: "not_admitted",
+      });
+      expect(await store.operations(p.owner, p.org, created.orchestratorId)).toHaveLength(operations.length);
+      expect(placement.prompts).toHaveLength(3);
     } finally {
       await runtime?.createWorker.drain();
       await db.close();

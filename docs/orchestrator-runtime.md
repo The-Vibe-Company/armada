@@ -8,8 +8,11 @@ Boat × Claude and Boat × Codex are opt-in **best_effort** pairs: clients shoul
 label them “resume not guaranteed”. Their stored continuity is always
 **unverified**, never **native**. Ordinary Boat stop keeps disk and conversation
 metadata; resume starts compute and reuses the saved conversation if still
-available. Missing or incompatible conversations fail with a closed reason;
-no transcript replay, synthetic prompt or invented native checkpoint is used.
+available. Missing or incompatible conversation metadata now starts a fresh
+conversation on the next user send: the parent is ready/unverified and the resume
+receipt carries `previous_conversation_not_continued`. Existing mirrored history
+is retained. No transcript replay, synthetic prompt or invented native checkpoint
+is used. See [the Claude session investigation](boat-claude-resume.md).
 Modal × Codex retains its verified-native checkpoint/restore contract unchanged.
 
 Enable only the desired pairs (default remains off):

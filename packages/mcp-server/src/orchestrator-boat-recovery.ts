@@ -13,6 +13,7 @@ type Input = { ownerId: string; orgId: string; id: string; expectedRevision: num
 type Recovery = {
   kind: "boat_retirement";
   source: string;
+  sourceAction?: "message";
   sandboxId: string;
   providerSandboxId: string;
   generation: string;
@@ -99,8 +100,11 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
       if (Number(current.revision) !== input.expectedRevision || current.state !== "blocked" || !current.sandbox_id)
         throw new OrchestratorRuntimeError("conflict");
       const source = (
-        await tx.query<{ id: string }>(
-          `select id from public.orchestrator_operations where orchestrator_id=$1 and actor_id=$2 and revision=$3 and action='stop' and state='uncertain' for update`,
+        await tx.query<{ id: string; action: "stop" | "message" }>(
+          `select p.id,p.action from public.orchestrator_operations p where p.orchestrator_id=$1 and p.actor_id=$2 and p.revision=$3 and p.state='uncertain'
+           and (p.action='stop' or (p.action='message' and p.error_code='runtime_uncertain'
+             and exists(select 1 from public.orchestrator_operations r where r.orchestrator_id=p.orchestrator_id and r.actor_id=p.actor_id and r.revision=p.revision-1 and r.action='resume' and r.state='failed' and r.error_code='boat_conversation_unavailable')
+             and exists(select 1 from public.orchestrator_runtime r where r.orchestrator_id=p.orchestrator_id and r.continuity='lost' and r.blocked_reason='runtime_uncertain'))) for update of p`,
           [input.id, input.ownerId, input.expectedRevision],
         )
       ).rows[0];
@@ -131,6 +135,9 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
       const result: Recovery = {
         kind: "boat_retirement",
         source: source.id,
+        // A legacy message may have executed without an acknowledgement. Never
+        // publish its native tail or reinterpret retirement as message delivery.
+        ...(source.action === "message" ? { sourceAction: "message" as const, history: "withheld" as const } : {}),
         sandboxId: current.sandbox_id,
         providerSandboxId: machine.provider_sandbox_id,
         generation: machine.lifecycle_generation,
@@ -266,10 +273,10 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
           `update public.sandboxes set status='stopped',stopped_at=coalesce(stopped_at,now()),last_observed_at=now() where id=$1`,
           [b.sandboxId],
         );
-        await tx.query(
-          `update public.orchestrator_operations set state='failed',error_code='stop_recovered_terminated' where id=$1`,
-          [b.source],
-        );
+        await tx.query(`update public.orchestrator_operations set state='failed',error_code=$2 where id=$1`, [
+          b.source,
+          b.sourceAction === "message" ? "message_recovered_terminated" : "stop_recovered_terminated",
+        ]);
         await tx.query(
           `update public.orchestrator_runtime set continuity='unverified',blocked_reason=null,updated_at=now() where orchestrator_id=$1`,
           [input.id],

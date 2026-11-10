@@ -55,7 +55,13 @@ export interface OrchestratorRuntimeBackend {
     hooks?: OrchestratorCreateHooks,
   ): Promise<void>;
   /** Provider-native, no synthetic prompt. Absent means resume is unavailable. */
-  resumeWithoutText?: (identity: RuntimeIdentity, operationId: string) => Promise<void>;
+  resumeWithoutText?: (
+    identity: RuntimeIdentity,
+    operationId: string,
+  ) => Promise<void | {
+    conversationContinued: boolean;
+    reason?: "conversation_metadata_missing" | "conversation_harness_mismatch";
+  }>;
   prepareMcp?(identity: RuntimeIdentity): Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
   revalidate(identity: RuntimeIdentity): Promise<void>;
@@ -337,6 +343,8 @@ export class OrchestratorRuntime {
         },
       });
       if (prior) return this.recorded(prior, diagnostics);
+      if (["message", "steer"].includes(input.action) && identity.state !== "ready")
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       diagnostics.stage("backend_resolution");
       const backend =
         input.action === "stop"
@@ -421,17 +429,26 @@ export class OrchestratorRuntime {
           diagnostics.stage("authority_revoke");
           await this.options.authority.revoke(current.id);
           diagnostics.stage("native_resume");
-          await backend.resumeWithoutText?.(current, reservation.operation.id);
+          const resumed = await backend.resumeWithoutText?.(current, reservation.operation.id);
+          const freshConversation = backend.continuity === "best_effort" && resumed?.conversationContinued === false;
+          if (backend.continuity === "best_effort")
+            diagnostics.observe(
+              "resume_continuity",
+              freshConversation ? "previous_conversation_not_continued" : "unverified",
+            );
+          if (resumed?.reason) diagnostics.observe("resume_fallback", resumed.reason);
           diagnostics.stage("preparing");
           const restored = await this.options.store.preparing(reservation);
           diagnostics.stage("resume_validation");
-          if (restored.conversationId !== current.conversationId) throw new OrchestratorRuntimeError("conflict");
+          if (restored.conversationId !== (freshConversation ? null : current.conversationId))
+            throw new OrchestratorRuntimeError("conflict");
           reservation.identity = restored;
           diagnostics.stage("initialization_mcp");
           await backend.prepareMcp?.(restored);
           await this.configureAuthority(backend, restored, diagnostics);
           return {
             parentState: "ready" as const,
+            ...(freshConversation ? { errorCode: "previous_conversation_not_continued" } : {}),
             ...(backend.continuity === "best_effort" ? { continuity: "unverified" as const } : {}),
           };
         }
@@ -578,6 +595,7 @@ export class OrchestratorRuntime {
       conversationId?: string;
       promptReceipt?: { promptId: string; conversationId: string; status: string };
       continuity?: "native" | "unverified";
+      errorCode?: string;
     }>,
   ): Promise<OrchestratorOperation> {
     try {
@@ -587,7 +605,7 @@ export class OrchestratorRuntime {
         diagnostics.captureReason("publication_fence_rejected");
         throw new OrchestratorRuntimeError("conflict");
       }
-      return { ...reservation.operation, state: "succeeded" };
+      return { ...reservation.operation, state: "succeeded", errorCode: result.errorCode ?? null };
     } catch (error) {
       if (
         reservation.operation.kind === "create" &&
@@ -603,6 +621,7 @@ export class OrchestratorRuntime {
         return { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" };
       }
       const unavailable = error instanceof BestEffortConversationUnavailable;
+      if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");
       const lost = error instanceof NativeContinuityLost || unavailable;
       const state = lost ? ("failed" as const) : ("uncertain" as const);
       const errorCode = unavailable
