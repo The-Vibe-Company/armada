@@ -129,13 +129,13 @@ linuxScanTest(
   30_000,
 );
 
-linuxScanTest(
+linuxScanTest.each([`ghp_${"A".repeat(36)}`, `cmp_pat_${"a".repeat(48)}`])(
   "real shell: a realistically-shaped token in a plain file fails the build",
-  async () => {
+  async (token) => {
     const script = await capturedScript();
     const { base, roots } = sandbox();
     try {
-      writeFileSync(join(roots.tmp, "leak.env"), `GH_TOKEN=ghp_${"A".repeat(36)}\n`);
+      writeFileSync(join(roots.tmp, "leak.env"), `TOKEN=${token}\n`);
       expect(runAgainst(script, roots).status).toBe(97);
     } finally {
       rmSync(base, { recursive: true, force: true });

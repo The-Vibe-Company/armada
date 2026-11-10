@@ -7,10 +7,11 @@ user-selected skill, not an Armada policy.
 ## Supported create contract
 
 CLI create accepts one optional `--skill org/slug@exact-version`; API and MCP
-create accept the same reference in `skill`. This first slice supports only
-anonymous public catalog releases from `https://skillpack.app/v1`.
-Unversioned references, private/share-token packages and custom origins are
-not supported. The `armada-tools` slug is reserved for launcher knowledge.
+create accept the same reference in `skill`. Qualified references install anonymous public catalog releases from `https://skillpack.app/v1`.
+Bare `slug@exact-version` installs from the
+workspace bound to your separate Skillpack credential. Unversioned references,
+share-token packages and custom origins are not supported. See
+[private installation](private-skillpack.md) for the credential and trust boundary. The `armada-tools` slug is reserved for launcher knowledge.
 
 The selected golden must contain the released native `skillpack` executable
 on PATH. Armada never downloads an installer or executes package code on the
@@ -56,7 +57,7 @@ Private workspace installs instead need a workspace-bound profile or ephemeral
 `SKILLPACK_API_KEY`, never a key argument. Public share-token installs also need
 an authorized API key and are not anonymous catalog installs. Armada's delegated
 Armada/model/GitHub authority is not Skillpack authentication; private installation
-needs a separate credential contract rather than credential reuse or fallback.
+uses a separate encrypted Skillpack credential, never credential reuse or fallback.
 
 ## Trust and authority
 

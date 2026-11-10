@@ -147,6 +147,6 @@ export interface OrchestratorSkillReceipt {
   origin: string;
 }
 
-/** Only anonymous catalog references are supported in the first slice. */
+/** Qualified references select anonymous catalog; bare slugs select the authenticated workspace. */
 export const ORCHESTRATOR_SKILL_PATTERN =
-  /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
+  /^(?:[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;

@@ -18,6 +18,9 @@ export const GITHUB_TOKEN_PATTERN = "gh[oprsu]_[A-Za-z0-9]{36,255}|github_pat_[A
  */
 const TIMEOUT_SECONDS = 600;
 
+/** Skillpack personal access tokens contain 24 random bytes encoded as lowercase hex. */
+export const SKILLPACK_TOKEN_PATTERN = "cmp_pat_[a-f0-9]{48}";
+
 /** Where a token could land: the repos' working trees, root's home (some tooling runs as root) and /tmp. */
 const SCAN_ROOTS = "/home/user /root /tmp";
 
@@ -43,7 +46,7 @@ export async function scanGoldenSandbox(
 ): Promise<void> {
   const script = [
     "set -u",
-    `pattern='${GITHUB_TOKEN_PATTERN}'`,
+    `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}'`,
     `roots='${SCAN_ROOTS}'`,
     // Classify paths in memory; only fixed labels and counts leave this process.
     "scan_location() {",

@@ -86,6 +86,7 @@ export interface OrchestratorRuntimeOptions {
   store: OrchestratorRuntimeStore;
   authority: OrchestratorRuntimeFoundation["authority"];
   skillRevision: string;
+  skillpackKey?: (ownerId: string, orgId: string) => Promise<string | null>;
   /** Trusted removed-owner cleanup lane; no user/model credential resolution. */
   managed?: Pick<Parameters<typeof createManagedOrchestratorRuntime>[0], "sql" | "resolveManaged">;
   /** Actual #663 lifecycle projection; absence is unavailable, never invented empty waits. */
@@ -571,6 +572,7 @@ export class OrchestratorRuntime {
       projectDir: backend.projectDir,
       skillRevision: identity.skillRevision,
       skill: identity.configuration.skill,
+      skillpackKey: () => this.options.skillpackKey?.(identity.ownerId, identity.orgId) ?? Promise.resolve(null),
       harness: identity.configuration.harness,
       recordReceipt: async (receipt) => {
         await validate?.();
