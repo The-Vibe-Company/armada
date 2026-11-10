@@ -19,17 +19,30 @@ connections, keys and members. These notes keep later changes consistent with th
 
 ## Tokens
 
-The app reuses the existing neutral shadcn tokens of `globals.css` (shared with the public pages, so they are
-not changed here). Hierarchy comes from weight, size and space rather than new colours:
+The tokens live in `apps/dashboard/src/app/globals.css` (#757). The public landing has its own (`landing.css`) and
+does not read these; the login and invitation pages do. Hierarchy comes from weight, size and space; colour is
+for meaning only, and every text colour holds AA (4.5:1) on the page, the card and the muted fill in both themes.
 
 | Role | Choice |
 | --- | --- |
-| Surfaces | `background` for pages, `muted/40` for the navigation rail, `card` with a border for grouped content |
-| State colour | only for state: `success` running/ready, `warning` starting/stopping, `destructive` failed |
-| Type | system sans; page title 24px semibold, section 16px semibold, body 14px, facts 12–14px muted labels |
-| Identifiers | monospace only for machine ids (sandbox ids, snapshots, paths) |
+| Type | Geist and Geist Mono, the landing's faces (`src/app/landing/fonts.ts`), on every platform; page title 24px semibold, section 16px, card title 14px semibold, body 14px, facts 13px, labels 12px muted |
+| Neutrals | cool graphite (hue 265, barely tinted); the page (`background`) a shade off the cards (`card`), so groups read without heavy borders; `sidebar` for the navigation rail |
+| State colour | `info` in flight (running), `success` live and idle (ready, connected), `warning` in transition (starting, stopping), `destructive` failed; neutral at rest. `src/lib/status-tone.ts` is the one mapping, `StatusBadge` draws it with a dot that pulses while the state moves on its own |
+| Brand | the landing's lime, on the mark only; focus rings are the landing's frontier blue (`ring`) |
+| Identifiers | Geist Mono only for machine ids (sandbox ids, snapshots, paths), with a `CopyButton` where people take them elsewhere |
 | Spacing | 4px grid; 24px between page sections, 12px inside a group |
-| Radius | `rounded-lg` for groups, `rounded-md` for controls inside them |
-| Motion | none beyond the existing focus and pending indicators |
+| Radius | `rounded-xl` for cards, tables and dialogs, `rounded-md` for controls inside them |
+| Elevation | `shadow-xs` on cards and controls, `shadow-lg` on dialogs and floating buttons; dialogs sit on a lightly blurred overlay |
+| Motion | short and explanatory only: a button presses in (scale 0.97), a live state's dot pulses, results fade in. Everything honours `prefers-reduced-motion` |
+
+## Primitives
+
+- `PageHeader` (with an optional `meta`, such as a count), `SectionHeader` and `Empty` (with an optional icon and the
+  action that fills the list) in `components/page-header.tsx`.
+- `StatusBadge` and `StatusDot`, `Skeleton`, `Kbd`, `CopyButton`, the `destructive-outline` button for an action that
+  is destructive but not the page's primary one (a confirmation then uses the solid `destructive` button).
+- `loading.tsx` skeletons that take the shape of the page they stand in for, so nothing moves when the data arrives.
+- The command menu (`components/command-menu.tsx`, `lib/command-menu.ts`): ⌘K or Ctrl+K anywhere in the signed-in
+  app, also reachable from the Search button in the navigation.
 
 Group labels in the navigation are sentence case (`Run`, `Build`, `Account`), not uppercase.

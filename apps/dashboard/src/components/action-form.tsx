@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2Icon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon, Loader2Icon } from "lucide-react";
 import { type ComponentProps, type ReactNode, useActionState, useEffect, useRef } from "react";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
@@ -47,9 +47,17 @@ export function ActionForm({
       ref={message}
       tabIndex={focusError && !state.ok ? -1 : undefined}
       role={state.ok ? "status" : "alert"}
-      className={cn("text-sm outline-none", state.ok ? "text-success" : "text-destructive")}
+      className={cn(
+        "flex items-start gap-1.5 text-sm outline-none animate-in fade-in-0 duration-200",
+        state.ok ? "text-success" : "text-destructive",
+      )}
     >
-      {state.ok ? state.message : state.error}
+      {state.ok ? (
+        <CircleCheckIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      ) : (
+        <CircleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      )}
+      <span className="min-w-0">{state.ok ? state.message : state.error}</span>
     </p>
   );
   return (
