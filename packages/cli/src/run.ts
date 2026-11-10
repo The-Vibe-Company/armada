@@ -755,7 +755,7 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv, ["--size"], ["--sized"]);
+  const args = parseArgs(argv, ["--size", "--skill"], ["--sized"]);
   const rawSize = single(args, "--size");
   const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
@@ -797,7 +797,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        skills: values(args, "--skill"),
+        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
         ...(connections === undefined ? {} : { connections: connections.split(",") }),
         credentialId: single(args, "--credential-id"),
         golden: name,
@@ -946,7 +946,7 @@ function launchText(result: LaunchResult): string {
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),
-    `Skills: ${JSON.stringify(sandbox.skills ?? [])}`,
+    ...(sandbox.skills?.length ? [`Skills: ${JSON.stringify(sandbox.skills)}`] : []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (sandbox.credentialId)

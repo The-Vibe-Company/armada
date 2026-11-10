@@ -103,7 +103,7 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
             input.selection.repo ?? null,
             input.selection.prompt ?? null,
             input.selection.size ?? null,
-            input.selection.skills ?? [],
+            ...(input.selection.skills?.length ? [input.selection.skills] : []),
           ]
         : [input.sandboxId, input.action === "message" ? input.text : null];
     const digest = createHash("sha256")

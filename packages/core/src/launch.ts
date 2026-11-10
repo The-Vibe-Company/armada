@@ -393,6 +393,7 @@ export async function launchSandbox(
           // physical readiness, native preparation, credential setup and prompt overhead.
           deadlineMs:
             15 * 60_000 +
+            (request.skills?.length ?? 0) * 300_000 +
             1000 *
               (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
                 golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
