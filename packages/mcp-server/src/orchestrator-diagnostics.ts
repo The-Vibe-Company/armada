@@ -10,7 +10,15 @@ import {
 
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 
-export type OrchestratorDiagnosticLog = (line: string) => void;
+type DiagnosticLevel = "info" | "warn" | "error";
+export type OrchestratorDiagnosticLog = (line: string, level: DiagnosticLevel) => void;
+
+/** Keep severity at the console boundary, including when serve overrides a sink. */
+export function orchestratorDiagnosticLog(
+  sinks: Record<DiagnosticLevel, (line: string) => void>,
+): OrchestratorDiagnosticLog {
+  return (line, level) => sinks[level](line);
+}
 const STAGES = [
   ...LAUNCH_INITIALIZATION_STAGES,
   "create_reconciliation",
@@ -440,6 +448,11 @@ export class OrchestratorDiagnostics {
             ...(this.orchestratorId ? { orchestratorId: this.orchestratorId } : {}),
             ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
           }),
+          value === "failed"
+            ? "error"
+            : ["accepted", "queued", "running", "finished", "empty", "published"].includes(value)
+              ? "info"
+              : "warn",
         ),
       ).catch(() => {});
     } catch {
@@ -484,7 +497,7 @@ export class OrchestratorDiagnostics {
       ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
     };
     try {
-      void Promise.resolve(this.log?.(JSON.stringify(record))).catch(() => {});
+      void Promise.resolve(this.log?.(JSON.stringify(record), outcome === "uncertain" ? "warn" : "error")).catch(() => {});
     } catch {
       /* Best effort only. */
     }

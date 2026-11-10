@@ -1,3 +1,4 @@
+import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
@@ -235,7 +236,11 @@ export async function startServer(
         encryptionKey: config.encryptionKey,
         requestedPairs: config.orchestratorPairs,
         skillRevision: config.orchestratorSkillRevision,
-        diagnosticLog: options.logError ?? console.error,
+        diagnosticLog: orchestratorDiagnosticLog({
+          info: options.log ?? console.info,
+          warn: console.warn,
+          error: options.logError ?? console.error,
+        }),
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
