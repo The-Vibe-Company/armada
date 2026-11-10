@@ -176,8 +176,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         enabled: boolean;
         pairs?: { provider: string; harness: string; enabled: boolean }[];
       }>("orchestrators/capabilities");
-      if (capabilities?.version !== 1 || !Array.isArray(capabilities.pairs))
-        fail("invalid_response");
+      if (capabilities?.version !== 1 || !Array.isArray(capabilities.pairs)) fail("invalid_response");
       for (const [caseIndex, item] of cases.entries()) {
         index = caseIndex;
         if (

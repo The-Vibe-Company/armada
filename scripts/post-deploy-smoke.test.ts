@@ -383,13 +383,17 @@ test("preflights every selected orchestrator pair before allocating any compute"
     { version: 2, enabled: true, pairs: [] },
     { version: 1, enabled: true, pairs: null },
   ]) {
-    const fake = fixture((call) =>
-      call.path === "orchestrators/capabilities" ? json(capabilities) : undefined,
-    );
-    expect(await postDeploySmoke({
-      ...env,
-      ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
-    }, ["--orchestrator"], fake.io)).toBe(false);
+    const fake = fixture((call) => (call.path === "orchestrators/capabilities" ? json(capabilities) : undefined));
+    expect(
+      await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
+        },
+        ["--orchestrator"],
+        fake.io,
+      ),
+    ).toBe(false);
     expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
     expect(fake.receipts().at(-1)).toMatchObject({
       pass: false,
@@ -400,8 +404,11 @@ test("preflights every selected orchestrator pair before allocating any compute"
 });
 
 test("capability API failures fail closed without exposing remote bodies", async () => {
-  const fake = fixture((call) => call.path === "orchestrators/capabilities"
-    ? json({ error: { code: "forbidden", message: "secret" } }, 403) : undefined);
+  const fake = fixture((call) =>
+    call.path === "orchestrators/capabilities"
+      ? json({ error: { code: "forbidden", message: "secret" } }, 403)
+      : undefined,
+  );
   expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
   expect(fake.calls).toHaveLength(1);
   expect(fake.receipts()).toEqual([{ case: 0, step: "orchestrator_capabilities", pass: false, code: "forbidden" }]);
