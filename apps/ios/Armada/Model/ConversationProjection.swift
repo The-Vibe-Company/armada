@@ -40,8 +40,10 @@ enum ConversationNotice: Hashable, Sendable {
 
 struct Conversation: Sendable {
     var items: [ConversationItem]
+    /// The turns (prompt keys) that are queued or running, with that status.
+    var activeTurns: [String: String]
     /// A turn is queued or running.
-    var running: Bool
+    var running: Bool { !activeTurns.isEmpty }
     /// Events not shown (unknown kinds, status-only prompts), counted for the technical view.
     var technicalCount: Int
 }
@@ -129,6 +131,9 @@ enum ConversationProjection {
         let shown = items.filter { item in
             if superseded.contains(item.key) || hiddenNotices.contains(item.key) { return false }
             if case .assistant(let text, let streaming, _) = item.kind, text.isEmpty, !streaming { return false }
+            // A status-only prompt (the server's published completion of a turn whose own prompt
+            // event is on an older page) updates the turn and is never an empty bubble.
+            if case .user(let text, _, _) = item.kind, text.isEmpty { return false }
             return true
         }
 
@@ -137,11 +142,11 @@ enum ConversationProjection {
             if let promptID = item.promptID { lastOfTurn[promptID] = index }
         }
         var outcomes: [Int: [ConversationItem]] = [:]
-        var running = false
+        var activeTurns: [String: String] = [:]
         for index in promptIndex.values.sorted() {
             let prompt = items[index]
             guard case .user(_, let status, let reason) = prompt.kind else { continue }
-            if status.isActive { running = true }
+            if status.isActive { activeTurns[prompt.key] = status == .queued ? "queued" : "running" }
             guard status == .failed || status == .interrupted else { continue }
             let position = prompt.promptID.flatMap { lastOfTurn[$0] }
                 ?? shown.firstIndex(where: { $0.key == prompt.key })
@@ -160,7 +165,7 @@ enum ConversationProjection {
             result.append(item)
             result.append(contentsOf: outcomes[index] ?? [])
         }
-        return Conversation(items: result, running: running, technicalCount: technicalCount)
+        return Conversation(items: result, activeTurns: activeTurns, technicalCount: technicalCount)
     }
 
     // swiftlint:disable:next function_parameter_count

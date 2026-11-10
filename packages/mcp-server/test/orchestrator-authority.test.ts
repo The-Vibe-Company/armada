@@ -125,9 +125,14 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     const read = (method = "read", childId = child.id) =>
       authority.admit(token, { method, childId }, async (_tx, principal) => principal.ownerId);
     expect(await read()).toBe(p.owner);
-    for (const method of ["exec", "token_create", "__proto__", "stop", "launch"])
+    for (const method of ["exec", "token_create", "__proto__", "stop", "launch", "extend"])
       await expect(read(method)).rejects.toThrow("denied");
     await expect(read("read", unrelated.id)).rejects.toThrow("denied");
+    await db.exec("update orchestrator_delegations set scopes=array['worker:read','worker:extend']");
+    expect(await read("extend")).toBe(p.owner);
+    await expect(read("extend", unrelated.id)).rejects.toThrow("denied");
+    await expect(read("extend", parent.id)).rejects.toThrow("denied");
+    await db.exec("update orchestrator_delegations set scopes=array['worker:read']");
     for (const change of [
       "acknowledged_at=null",
       "created_at=now()-interval '2 hours',expires_at=now()-interval '1 second'",

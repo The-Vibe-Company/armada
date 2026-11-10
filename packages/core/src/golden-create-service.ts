@@ -423,8 +423,8 @@ const CLEANUP_TRAP = [
  * `@playwright/test` pin wins. `grep` exits 1 when a file has no such key, which is normal, not an
  * error (hence `|| true`: a missing pin only means "install the latest", never aborts the build
  * under `set -e`); this is a best-effort optimization, not a security boundary, so a real read
- * failure here is tolerated the same way. `claude` and `codex` are actually installed when
- * missing, not merely checked: boat.dev's golden-builder image is expected to carry them, but a
+ * failure here is tolerated the same way. `claude` is upgraded to the managed pin and `codex` installed when
+ * missing: boat.dev's golden-builder image is expected to carry them, but a
  * build must not silently proceed without them if it does not.
  */
 function baselineSetup(repos: readonly PreparedRepo[]): string {
@@ -451,7 +451,9 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     '  if [ -n "$pw_pin" ]; then bunx --bun --package "@playwright/test@$pw_pin" playwright install --with-deps chromium; else bunx playwright install --with-deps chromium; fi',
     "fi",
     "armada_phase=harness",
-    "command -v claude >/dev/null 2>&1 || npm install --global @anthropic-ai/claude-code",
+    // Exact pin, even for a newer image binary: avoid unvalidated protocol drift.
+    'if [ "$(/usr/local/bin/claude --version 2>/dev/null || true)" != "2.1.322 (Claude Code)" ]; then sudo -n npm install --global --prefix /usr/local @anthropic-ai/claude-code@2.1.322; fi',
+    '[ "$(/usr/local/bin/claude --version)" = "2.1.322 (Claude Code)" ] || { printf "%s\\n" "Claude Code at /usr/local/bin/claude does not match the managed pin." >&2; exit 96; }',
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
   ].join("\n");
 }

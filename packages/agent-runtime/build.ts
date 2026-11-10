@@ -33,8 +33,8 @@ await Bun.write(
   JSON.stringify({
     protocol: 1,
     bun: "1.4.2",
-    claudeSdk: "0.3.319",
-    claude: "2.1.319",
+    claudeSdk: "0.3.322",
+    claude: "2.1.322",
     codex: "0.167.0",
     architecture: process.arch,
   }),

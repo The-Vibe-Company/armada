@@ -30,7 +30,7 @@ final class ConversationFeed {
     /// the page before that older cursor).
     typealias Fetch = @Sendable (_ cursor: String?, _ backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage
 
-    private(set) var conversation = Conversation(items: [], running: false, technicalCount: 0)
+    private(set) var conversation = Conversation(items: [], activeTurns: [:], technicalCount: 0)
     private(set) var documents: [String: MarkdownDocument] = [:]
     private(set) var connection: Connection = .connecting
     /// Something is shown: this session's earlier read of the conversation, or the latest page.

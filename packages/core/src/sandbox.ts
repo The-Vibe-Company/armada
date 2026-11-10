@@ -57,6 +57,8 @@ export interface SandboxRecord {
 }
 
 export interface SandboxPatch {
+  expiresAt?: string;
+  effectiveTtlSeconds?: number;
   /** Admission guard for explicit owner/admin deletion of terminal, unmanaged sandboxes. */
   deleteRequested?: boolean;
   /** Physical interval endpoint is unknown; never fabricate a duration. */
@@ -103,6 +105,7 @@ export interface SandboxStore {
     machineSize?: MachineSizeEvidence;
     resourceProject?: ResourceProject;
     activityLeaseId?: string;
+    expiresAt?: string;
     requestedTtlSeconds?: number;
     effectiveTtlSeconds?: number;
     repositoryDir?: string | null;
@@ -208,7 +211,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
            reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -230,6 +233,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
           input.credentialVersion ?? null,
           JSON.stringify(input.machineSize ?? null),
           JSON.stringify(input.resourceProject ?? null),
+          input.expiresAt ?? null,
         ],
       );
       const row = result.rows[0];
@@ -251,6 +255,8 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
       if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
       if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
       if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
+      if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
+      if (patch.effectiveTtlSeconds !== undefined) set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
       const reason = statusReasonOf(patch);
       if (reason !== undefined) set("status_reason", reason, "::text");
       if (sets.length === 0) return;
@@ -322,6 +328,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
  * any other status, and undefined (left as it is) when the patch does not touch either.
  */
 export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
+  if (patch.statusReason === "expired" && (patch.status === "stopped" || patch.status === "stopping")) return "expired";
   if (patch.status !== undefined && patch.status !== "failed") return null;
   if (patch.statusReason === undefined) return undefined;
   if (patch.statusReason === null || patch.statusReason.trim() === "") return null;

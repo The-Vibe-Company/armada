@@ -89,7 +89,7 @@ struct OrchestratorConversationView: View {
                 draft: $model.draft,
                 placeholder: "Message \(model.summary?.name ?? "orchestrator")",
                 unavailableReason: model.composerUnavailableReason,
-                isAgentWorking: model.feed.conversation.running,
+                isAgentWorking: model.agentWorking,
                 agentName: model.summary?.agentLabel ?? "The agent",
                 steerRestartsTurn: model.summary?.harness?.steerRestartsTurn ?? false,
                 sending: model.pending.contains { $0.status == .sending },
