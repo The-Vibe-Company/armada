@@ -9,7 +9,7 @@ import { LaunchError } from "./launch-error.ts";
  *
  * The list is a set of suggestions, not the whole of what a harness runs. Another well-formed id is passed
  * to the provider unchanged, with an effort from the harness's vocabulary; the provider or the harness
- * may refuse it or fall back. Requested selection is not evidence of the model that answered.
+ * refuses it if it cannot run it. Armada never replaces a requested model or effort by another.
  */
 export interface ModelOption {
   /** The id the harness takes. */

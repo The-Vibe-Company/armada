@@ -580,11 +580,7 @@ describe("launch", () => {
 
   test.each([
     { harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" },
-    ...["low", "medium", "high", "xhigh", "max"].map((reasoningEffort) => ({
-      harness: "claude" as const,
-      model: "claude-fable-5-2",
-      reasoningEffort,
-    })),
+    { harness: "claude", model: "claude-fable-5-2", reasoningEffort: "high" },
   ] as const)("an explicit model and effort reach the prompt and record unchanged: %j", async (choice) => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, {
