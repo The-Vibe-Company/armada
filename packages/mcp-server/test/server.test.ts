@@ -472,6 +472,7 @@ describe("tools", () => {
     expect(first.data.github).toEqual({
       status: "connected",
       login: "octocat",
+      tokenExpiresAt: expect.any(String),
       message: expect.stringContaining("gh"),
     });
     expect(boat.forks[0]?.env).toEqual({
