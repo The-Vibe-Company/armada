@@ -276,7 +276,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     guard case .refused(let refused) = classify(422, #"{"error":{"code":"credential_refused"}}"#) else {
         Issue.record("Credential refusal must be actionable"); return
     }
-    #expect(refused.title == "Model account credential refused")
+    #expect(refused.title == "Account credential refused")
     #expect(refused.hint.contains("owner"))
     #expect(refused.hint.contains("reconnect"))
     for code in ["provider_unavailable", "dependency_unavailable", "outcome_unknown"] {
