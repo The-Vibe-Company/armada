@@ -50,7 +50,7 @@ export function reportedTurnUsage(events: readonly AgentEvent[]): { turnCount: n
           outputTokens: count(usage.outputTokens),
           cachedTokens: count(usage.cacheReadInputTokens),
           cacheWriteTokens: count(usage.cacheCreationInputTokens),
-          reasoningTokens: count(usage.reasoningTokens),
+          reasoningTokens: count(usage.thinkingTokens) ?? count(usage.reasoningTokens),
         });
       }
     } else if (event.type === "armada/turnUsage") {

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { type AgentEvent, reportedTurnUsage, sumSandboxUsage, withUsageTotals } from "@armada/core";
 import claude from "./fixtures/sandbox-usage/boat-claude.json";
 import codex from "./fixtures/sandbox-usage/boat-codex.json";
+import modalClaude from "./fixtures/sandbox-usage/modal-claude-usage.json";
 import modal from "./fixtures/sandbox-usage/modal-codex-usage.json";
 
 // Protect the production distinction: a finished Boat turn is not evidence of zero token cost.
@@ -42,4 +43,29 @@ test("recorded Modal usage survives replay and totals never treat unreported fie
   expect(sumSandboxUsage([usage, null]).inputTokens).toBeNull();
   expect(sumSandboxUsage([]).inputTokens).toBe(0);
   expect(withUsageTotals({ ...usage, turnCount: 2 })?.tokenTotals?.inputTokens).toBeNull();
+});
+
+test("recorded Modal Claude result retains cache creation and thinking tokens per turn and in totals", () => {
+  const collected = reportedTurnUsage([...modalClaude, ...modalClaude] as AgentEvent[]);
+  expect(collected).toEqual({
+    turnCount: 1,
+    turns: [
+      {
+        promptId: modalClaude[0]!.promptId,
+        model: "claude-opus-5-5",
+        inputTokens: 2,
+        outputTokens: 4,
+        cachedTokens: 0,
+        cacheWriteTokens: 19047,
+        reasoningTokens: 0,
+      },
+    ],
+  });
+  expect(withUsageTotals({ computeSeconds: null, ...collected })?.tokenTotals).toEqual({
+    inputTokens: 2,
+    outputTokens: 4,
+    cachedTokens: 0,
+    cacheWriteTokens: 19047,
+    reasoningTokens: 0,
+  });
 });
