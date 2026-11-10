@@ -383,6 +383,8 @@ export interface PrepareNativeHarnessCwdRequest {
 }
 
 export interface ExecRequest {
+  /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
+  onlyIfRunning?: boolean;
   sandboxId: string;
   command: string;
   cwd?: string;

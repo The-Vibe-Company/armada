@@ -3,11 +3,21 @@ import { decryptSecret, encryptSecret, type Provider, preserveWork, type Sql } f
 /** Never return command output or SDK errors: archives may contain credentials. */
 export async function preserveBeforeStop(sql: Sql, provider: Provider, id: string, providerId: string): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
   try {
     await Promise.race([
-      captureAndStore(sql, provider, id, providerId),
+      captureAndStore(sql, provider, id, providerId, () => expired),
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 20_000);
+        timer = setTimeout(() => {
+          expired = true;
+          void sql
+            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
+              id,
+              "unpushed work could not be preserved (timeout)",
+            ])
+            .catch(() => {});
+          resolve();
+        }, 20_000);
       }),
     ]);
   } finally {
@@ -15,12 +25,28 @@ export async function preserveBeforeStop(sql: Sql, provider: Provider, id: strin
   }
 }
 
-async function captureAndStore(sql: Sql, provider: Provider, id: string, providerId: string): Promise<void> {
+async function captureAndStore(
+  sql: Sql,
+  provider: Provider,
+  id: string,
+  providerId: string,
+  expired: () => boolean,
+): Promise<void> {
   let note = "unpushed work could not be preserved (storage unavailable)";
   try {
+    // Exec may implicitly resume retained compute. Never activate a machine known stopped.
+    const current = await provider.get(providerId);
+    if (expired()) return;
+    if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
+    // Native runtimes acknowledge interrupt only after active turns settle.
+    // The stop activity lease prevents new Armada turns during capture.
+    await provider.interrupt({ sandboxId: providerId });
+    if (expired()) return;
     const result = await preserveWork(provider, providerId);
+    if (expired()) return;
     if (result.status === "preserved") {
       const encrypted = await encryptSecret(result.archive);
+      if (expired()) return;
       const recoveryId = crypto.randomUUID();
       await sql.query(
         `insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc) values($1::uuid,$2::uuid,$3::bytea)`,
@@ -34,6 +60,7 @@ async function captureAndStore(sql: Sql, provider: Provider, id: string, provide
   } catch {
     /* Closed storage failure, stop must still proceed. */
   }
+  if (expired()) return;
   await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
 }
 

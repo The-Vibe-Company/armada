@@ -40,3 +40,21 @@ may prevent recording a receipt, but never prevents stopping compute. In-flight
 storage operations can finish after the wait budget. Parent orchestrator recovery
 continues to use its existing fenced checkpoint protocol; child sandbox stops
 use this work archive too.
+
+Before capture Armada interrupts active turns and waits for acknowledgement under
+its stop lease. Repository fingerprints before/after capture reject concurrent
+writes; conflicted indexes fail closed rather than promising an unreplayable patch.
+Detached/background writers outside the harness are not frozen. The collector
+uses private mode-0700 temporary storage and bounded chunk reads to support the
+Modal runtime's 64 KiB stdout cap. A sandbox-local janitor attempts removal after
+120 seconds; a stop before then can retain these temporary files on the provider's
+retained disk until resume. They never enter a golden. No cleanup exec is submitted
+after stop. Modal recovery reads refuse stopped compute rather than resuming it.
+
+OpenSSL is also required in the sandbox image. Recovery bytes are encrypted
+inside the sandbox *before* any exec response: AES-256-CBC/PBKDF2 with a random
+one-use password, wrapped with the server's ephemeral RSA-OAEP-SHA256 public key.
+Only ciphertext enters provider command history. The server decrypts this private
+transport and seals the archive with the standard AES-256-GCM storage key. The
+ephemeral private key and password never enter command arguments or logs.
+`armada stop` uses an extended, non-retrying transport budget for preservation.

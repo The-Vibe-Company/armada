@@ -37,6 +37,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
     const caller = (userId: string): Caller => ({ userId, via: "service", orgs: [{ orgId: p.org, role: "admin" }] });
     const data = (userId: string) => createSqlData(db)(caller(userId)).sandboxes;
     const expectedKeys = [
+      "preservationNote",
       "providerSandboxId",
       "boatId",
       "id",

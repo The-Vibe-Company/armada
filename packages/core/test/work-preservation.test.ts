@@ -36,7 +36,14 @@ async function fixture() {
       });
       const stdout = await new Response(process.stdout).text();
       const stderr = await new Response(process.stderr).text();
-      return { detached: false, exitCode: await process.exited, stdout, stderr, timedOut: false, truncated: false };
+      return {
+        detached: false,
+        exitCode: await process.exited,
+        stdout: stdout.slice(0, 65536),
+        stderr,
+        timedOut: false,
+        truncated: stdout.length > 65536,
+      };
     },
   };
   return { home, repo, provider };
@@ -135,4 +142,71 @@ test("a staged file before the first commit can be restored", async () => {
   await run(["git", "init", "-q"], restored);
   await run(["git", "apply", "--index", join(recovery, "repo-0", "index.patch")], restored);
   expect(await readFile(join(restored, "tracked"), "utf8")).toBe("base\n");
+});
+
+test("archives larger than the runtime stdout cap are recovered through bounded chunks", async () => {
+  const { repo, provider } = await fixture();
+  const original = Buffer.alloc(256 * 1024, 97);
+  await writeFile(join(repo, "larger-than-stdout"), original);
+  const responses: string[] = [];
+  const inspected = {
+    async exec(request: ExecRequest) {
+      const result = await provider.exec(request);
+      if (!result.detached) responses.push(result.stdout);
+      return result;
+    },
+  };
+  const result = await preserveWork(inspected, "sandbox");
+  expect(result.status).toBe("preserved");
+  if (result.status !== "preserved") throw new Error("Expected archive");
+  expect(Buffer.from(result.archive, "base64").includes(original)).toBe(true);
+  // Provider-retained stdout contains ciphertext, not plaintext archive chunks.
+  for (const output of responses.filter((value) => /^[A-Za-z0-9+/=]+\s*$/.test(value)))
+    expect(Buffer.from(output.trim(), "base64").includes(original.subarray(0, 64))).toBe(false);
+});
+
+test("a concurrent write during bundling fails closed rather than authenticating mixed work", async () => {
+  const { home, repo } = await fixture();
+  await writeFile(join(repo, "tracked"), "pending\n");
+  const bin = join(home, "bin");
+  await mkdir(bin);
+  const realGit = (await run(["which", "git"], home)).trim();
+  const wrapper = join(bin, "git");
+  await writeFile(
+    wrapper,
+    `#!/bin/sh\ncase " $* " in *" bundle create "*) printf 'changed during capture\\n' > "$ARMADA_TEST_REPO/tracked";; esac\nexec ${realGit} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const raced = {
+    async exec(request: ExecRequest): Promise<ExecResult> {
+      const child = Bun.spawn(["bash", "-c", request.command], {
+        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, ARMADA_TEST_REPO: repo },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return {
+        detached: false,
+        exitCode: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+        timedOut: false,
+        truncated: false,
+      };
+    },
+  };
+  expect(await preserveWork(raced, "sandbox")).toEqual({ status: "failed", reason: "capture_failed" });
+  expect(await readFile(join(repo, "tracked"), "utf8")).toBe("changed during capture\n");
+});
+
+test("an unresolved conflict index fails closed because patches cannot restore its stages", async () => {
+  const { repo, provider } = await fixture();
+  await run(["git", "checkout", "-qb", "side"], repo);
+  await writeFile(join(repo, "tracked"), "side\n");
+  await run(["git", "commit", "-qam", "side"], repo);
+  await run(["git", "checkout", "-q", "-"], repo);
+  await writeFile(join(repo, "tracked"), "main\n");
+  await run(["git", "commit", "-qam", "main"], repo);
+  const merge = Bun.spawn(["git", "merge", "side"], { cwd: repo, stdout: "ignore", stderr: "ignore" });
+  expect(await merge.exited).toBe(1);
+  expect(await preserveWork(provider, "sandbox")).toEqual({ status: "failed", reason: "capture_failed" });
 });

@@ -290,6 +290,7 @@ describe("tools", () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(
       [
         "exec",
+        "work_recovery",
         "golden_build_status",
         "golden_capabilities",
         "golden_create",
