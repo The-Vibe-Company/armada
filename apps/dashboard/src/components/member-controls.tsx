@@ -1,7 +1,7 @@
 "use client";
 
 import { CircleAlertIcon, Loader2Icon, UserMinusIcon } from "lucide-react";
-import { useActionState, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { changeMemberRole, removeMember } from "@/app/actions/orgs";
 import {
   AlertDialog,
@@ -37,7 +37,19 @@ export function MemberRoleForm({ org, orgName, user, email, role, self }: Member
   const [next, setNext] = useState<MemberRole>(role);
   const [confirming, setConfirming] = useState(false);
   const form = useRef<HTMLFormElement>(null);
+  const select = useRef<HTMLSelectElement>(null);
   const change = roleChange(role, next, self);
+  // The saved role is the server's: once it changes (a save, another admin), the choice starts from it again.
+  useEffect(() => setNext(role), [role]);
+  useEffect(() => {
+    const node = form.current;
+    if (!node) return;
+    // React resets a form after its action. The select is controlled and has no default option, so the reset would
+    // show "admin" whatever the choice is; the choice and a refusal stay as they were instead.
+    const keep = (event: Event) => event.preventDefault();
+    node.addEventListener("reset", keep);
+    return () => node.removeEventListener("reset", keep);
+  }, []);
   return (
     <form
       ref={form}
@@ -54,6 +66,7 @@ export function MemberRoleForm({ org, orgName, user, email, role, self }: Member
       <div className="flex items-center gap-2">
         <div className="w-28 shrink-0">
           <NativeSelect
+            ref={select}
             name="role"
             value={next}
             onChange={(event) => setNext(event.target.value as MemberRole)}
@@ -73,7 +86,13 @@ export function MemberRoleForm({ org, orgName, user, email, role, self }: Member
       </div>
       {state && !state.ok && <Refusal error={state.error} />}
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogContent>
+        {/* Opened by Save, not by a trigger: closing returns focus to the role it is about. */}
+        <AlertDialogContent
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            select.current?.focus();
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>Give up admin of {orgName}?</AlertDialogTitle>
             <AlertDialogDescription>

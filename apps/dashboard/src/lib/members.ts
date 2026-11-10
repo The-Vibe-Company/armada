@@ -12,6 +12,6 @@ export function roleChange(current: MemberRole, next: MemberRole, self: boolean)
 }
 
 /** The initial an avatar shows (a member's email, an org's name): its first letter or digit, else a dot. */
-export function initialOf(email: string): string {
-  return email.match(/[a-z0-9]/i)?.[0]?.toUpperCase() ?? "•";
+export function initialOf(text: string): string {
+  return text.match(/[\p{L}\p{N}]/u)?.[0]?.toUpperCase() ?? "•";
 }

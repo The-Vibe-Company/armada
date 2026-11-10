@@ -80,4 +80,7 @@ test("a member's avatar shows the first letter or digit of their email", () => {
   expect(initialOf("alice@example.com")).toBe("A");
   expect(initialOf("_7bob@example.com")).toBe("7");
   expect(initialOf("@@")).toBe("•");
+  // An org name may start with any script's letter.
+  expect(initialOf("équipe")).toBe("É");
+  expect(initialOf("Ørsted")).toBe("Ø");
 });

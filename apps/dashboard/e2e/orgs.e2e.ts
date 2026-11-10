@@ -38,6 +38,18 @@ test("an admin removes a member", async ({ page }) => {
   await expect(page.locator('[data-member="bob@example.com"]')).toHaveCount(0);
 });
 
+test("a saved role stays shown and Save leaves until the next change", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/orgs");
+  await page.getByRole("link", { name: /Acme/ }).click();
+  const bob = page.locator('[data-member="bob@example.com"]');
+  await bob.getByLabel("Role of bob@example.com").selectOption("admin");
+  await bob.getByRole("button", { name: "Save" }).click();
+  await expect(bob.getByRole("button", { name: "Save" })).toHaveCount(0);
+  await expect(bob.getByLabel("Role of bob@example.com")).toHaveValue("admin");
+  await page.reload();
+  await expect(bob.getByLabel("Role of bob@example.com")).toHaveValue("admin");
+});
+
 test("a member sees the roster but no controls", async ({ page }) => {
   await signIn(page, "bob@example.com", "/orgs");
   await page.getByRole("link", { name: /Acme/ }).click();
@@ -60,4 +72,7 @@ test("the last admin cannot be demoted", async ({ page }) => {
     .getByRole("button", { name: "Make me a member" })
     .click();
   await expect(alert(page)).toContainText("keeps at least one admin");
+  // The refusal keeps the choice shown: saving again sends what is on screen, never a reset value.
+  await expect(alice.getByLabel("Role of alice@example.com")).toHaveValue("member");
+  await expect(alice.getByLabel("Role of alice@example.com")).toBeFocused();
 });
