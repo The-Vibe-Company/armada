@@ -327,3 +327,5 @@ export {
 export { VaultError, type VaultErrorCode } from "./vault-error.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";
+
+export { PROVIDER_PAYMENT_REQUIRED_MESSAGE } from "./golden-build-status.ts";

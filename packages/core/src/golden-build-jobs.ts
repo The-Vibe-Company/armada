@@ -13,7 +13,7 @@ import {
 } from "./golden-create.ts";
 import type { GoldenCreateService } from "./golden-create-service.ts";
 import type { Sql } from "./golden-store.ts";
-import type { Provider } from "./provider.ts";
+import { type Provider, ProviderError } from "./provider.ts";
 import {
   assertProviderOf,
   isSandboxProvider,
@@ -44,7 +44,7 @@ interface Job {
   golden_id: string | null;
   snapshot: string | null;
   build_warnings: GoldenBuildWarning[];
-  failure_reason: "skillpack_integrity_failed" | null;
+  failure_reason: "skillpack_integrity_failed" | "provider_payment_required" | null;
 }
 export interface GoldenBuildJobsOptions {
   sql: Sql;
@@ -509,7 +509,7 @@ export class GoldenBuildJobs {
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
-            error instanceof GoldenError ? (error.safeReason ?? null) : null,
+            error instanceof GoldenError ? (error.safeReason ?? null) : error instanceof ProviderError && error.code === "payment_required" ? "provider_payment_required" : null,
           ],
         );
       });

@@ -1,4 +1,4 @@
-import { ProviderError, type ProviderErrorCode } from "@armada/core";
+import { PROVIDER_PAYMENT_REQUIRED_MESSAGE, ProviderError, type ProviderErrorCode } from "@armada/core";
 import { FetchError, RequiredError, ResponseError } from "@boatdev/sdk";
 
 export const PROVIDER_ID = "boat";
@@ -102,7 +102,7 @@ async function fromResponse(response: Response, cause: unknown): Promise<Provide
   return new ProviderError({
     provider: PROVIDER_ID,
     code,
-    message: envelope.message ?? `boat.dev answered ${status}${providerCode ? ` (${providerCode})` : ""}.`,
+    message: code === "payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : envelope.message ?? `boat.dev answered ${status}${providerCode ? ` (${providerCode})` : ""}.`,
     status,
     ...(providerCode ? { providerCode } : {}),
     retryable,

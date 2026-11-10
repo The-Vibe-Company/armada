@@ -1,4 +1,5 @@
 "use client";
+import { PROVIDER_PAYMENT_REQUIRED_MESSAGE } from "@armada/core";
 
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
@@ -439,7 +440,7 @@ function ScopedGoldenForm({
                 ? observed.state === "failed" || observed.state === "recovery_required"
                   ? {
                       ok: false,
-                      error: `Build ${observed.jobId}: ${observed.state} (build_failed). Last-good golden retained.`,
+                      error: `Build ${observed.jobId}: ${observed.state} (${observed.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : observed.failureReason ?? "build_failed"}). Last-good golden retained.`,
                     }
                   : {
                       ok: true,
