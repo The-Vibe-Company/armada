@@ -339,6 +339,9 @@ export function AccountRow({
   const [result, setResult] = useState<ActionResult | null>(null);
   const [dialog, setDialog] = useState<RowDialog>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
+  const rowAction = useRef<HTMLButtonElement>(null);
+  /** Which control opened the dialog, so closing it gives focus back there. */
+  const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
   const state = accountState(account, now);
   const StateIcon = STATE_ICON[state.tone];
@@ -355,12 +358,14 @@ export function AccountRow({
   }, []);
   const restoreFocus = useCallback((event: Event) => {
     event.preventDefault();
-    menuTrigger.current?.focus();
+    // A successful reconnect removes the row's button: the menu is then the next control.
+    (opener.current === "row" && rowAction.current?.isConnected ? rowAction.current : menuTrigger.current)?.focus();
+    opener.current = "menu";
   }, []);
 
   return (
     <li className="px-4 py-3" data-account={account.name} aria-labelledby={headingId}>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_7rem_11rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_9rem_11rem]">
         <div className="col-span-2 min-w-0 space-y-0.5 sm:col-span-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 id={headingId} className="font-medium break-all">
@@ -404,7 +409,15 @@ export function AccountRow({
           <div className="flex items-center justify-end gap-1">
             {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
             {state.needsAction ? (
-              <Button size="sm" onClick={() => setDialog("replace")} aria-label={`Reconnect, ${account.name}`}>
+              <Button
+                ref={rowAction}
+                size="sm"
+                onClick={() => {
+                  opener.current = "row";
+                  setDialog("replace");
+                }}
+                aria-label={`Reconnect, ${account.name}`}
+              >
                 Reconnect
               </Button>
             ) : (

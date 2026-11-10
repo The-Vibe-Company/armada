@@ -125,4 +125,6 @@ test("each subscription is one dense row: needs action first, state in words, sc
   await expect(more).toBeFocused();
   await old.getByRole("button", { name: "Reconnect, Old laptop" }).click();
   await expect(page.getByRole("dialog", { name: "Reconnect Old laptop" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(old.getByRole("button", { name: "Reconnect, Old laptop" })).toBeFocused();
 });
