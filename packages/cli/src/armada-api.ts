@@ -119,7 +119,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       if (response.ok) return normalizeProviderDto(path, payload) as T;
       if (path === "/api/v1/github/refresh" && response.status === 404)
         throw new AuthError(
-          "GitHub repair was not found. Check the sandbox ID and access. If they are correct, update the dashboard and Armada server so both support github/refresh.",
+          "GitHub refresh is unavailable: the sandbox may be missing or inaccessible, or the dashboard/server route is not deployed. Check the sandbox ID and access; ask an administrator to verify both deployments support github/refresh.",
           "unavailable",
         );
       const failureCode =
