@@ -76,7 +76,7 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
   /** Legacy streamed chunks of each turn not yet followed by a final message. */
   const legacyChunks = new Map<string, Extract<ChatItem, { kind: "assistant" }>[]>();
   const superseded = new Set<string>();
-  /** The stop event type of each turn that has one, by `promptId`. */
+  /** The first stop event type of each turn that has one, by `promptId`, as the server reads it. */
   const stops = new Map<string, string>();
 
   for (const event of events) {
@@ -125,7 +125,9 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
         for (const call of event.tools) addTool(call, event, turn);
         break;
       case "other":
-        if (event.promptId && STOP_EVENTS.has(event.type)) stops.set(event.promptId, event.type);
+        if (event.promptId && STOP_EVENTS.has(event.type) && !stops.has(event.promptId)) {
+          stops.set(event.promptId, event.type);
+        }
         technical.push(event);
         break;
     }
