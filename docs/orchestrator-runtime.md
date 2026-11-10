@@ -2,6 +2,54 @@
 
 ## Release and deployment boundary
 
+## Boat best-effort and Modal native continuity (#752)
+
+Boat × Claude and Boat × Codex are opt-in **best_effort** pairs: clients should
+label them “resume not guaranteed”. Their stored continuity is always
+**unverified**, never **native**. Ordinary Boat stop keeps disk and conversation
+metadata; resume starts compute and reuses the saved conversation if still
+available. Missing or incompatible conversations fail with a closed reason;
+no transcript replay, synthetic prompt or invented native checkpoint is used.
+Modal × Codex retains its verified-native checkpoint/restore contract unchanged.
+
+Enable only the desired pairs (default remains off):
+
+```sh
+ARMADA_ORCHESTRATOR_PAIRS=boat:claude,boat:codex,modal:codex
+ARMADA_ORCHESTRATOR_SKILL_REVISION=0976883b70ee3ddedef5f965064bd75a248c5b6e
+```
+
+Use the existing Boat golden **two-repos-prod-test**, its ID from
+`armada golden list --org ORG --json`, and an authorized named account for the
+selected harness. Keep the ordinary server/database/encryption configuration and
+already-deployed foundation/runtime/lifecycle schema. No new migration is needed.
+After deployment, the operator (not this implementation session) runs, with the
+owner's `ARMADA_TOKEN` already in the environment:
+
+```sh
+armada orchestrator capabilities --json
+ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
+  bun scripts/orchestrator-smoke.ts https://APPROVED_ORIGIN \
+  ORG BOAT_GOLDEN_ID boat claude CLAUDE_MODEL CLAUDE_ACCOUNT [REPO]
+ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
+  bun scripts/orchestrator-smoke.ts https://APPROVED_ORIGIN \
+  ORG BOAT_GOLDEN_ID boat codex CODEX_MODEL CODEX_ACCOUNT [REPO]
+```
+
+Each smoke creates a new owned disposable parent, sends a prompt, reads cursor
+events, stops, resumes with no text, checks stable identity and **unverified**
+continuity, then stops again. Retain original operation keys/receipts on failure;
+never blindly rerun an uncertain mutation. Operator cleanup targets only these
+new fixtures. For rollback stop those parents while the runtime is available,
+remove the Boat pairs from the setting and restart; keep logical history.
+Authority revocation, delegation, ownership, idempotency and generation fences
+remain mandatory. Best-effort is not a claim of verified harness restoration.
+
+Local live probe: `boat --json info self` returned HTTP401 (CLI session not
+signed in). No stop was attempted on this delivery sandbox and no native live
+continuation is claimed; the operator smoke is required to observe actual Boat
+behavior with an authorized fixture.
+
 ## Enable Modal × Codex (operator only, default off)
 
 Configure the server running this PR with:
@@ -41,8 +89,8 @@ GitHub connection valid when the golden requires it.
 
 Restart the server through the normal deployment process, then authenticate as
 the owning member and check `armada orchestrator capabilities --json` against its
-origin. Only Modal × Codex may report `enabled: true`; the other three pairs must
-remain unavailable. This reports real configured adapter availability, **not** a
+origin. Only explicitly selected supported pairs report `enabled: true`; Boat pairs
+report best-effort continuity and Modal × Claude remains unavailable. This reports real configured adapter availability, **not** a
 claim that operator live conformance has already passed. Owner create/detail/
 send/steer/events/stop/resume use the shared `/api/v1` runtime across CLI,
 dashboard and iOS. Delegated waits stay denied and are not required for this flow.
@@ -87,12 +135,10 @@ substitute for reconciliation, and restore the same configuration to reconcile.
 
 ### Unsupported pairs
 
-Boat × Claude and Boat × Codex remain unavailable because native checkpoint/restore
-ports are missing. Modal × Claude remains unavailable because the native no-text
-resume driver is missing (`native_resume_driver_unavailable`); Boat reasons are
-`boat_native_checkpoint_restore_unavailable`. Delegated waits report
-`admit_wait_not_supported`. Unknown pairs fail configuration without echoing values.
-No setting preserves the legacy disabled response and ordinary-worker behavior.
+Modal × Claude remains unavailable (`native_resume_driver_unavailable`).
+Boat pairs use the owner-approved best-effort exception above, not native
+checkpoint support. Delegated waits report `admit_wait_not_supported`.
+Unknown pairs fail configuration without echoing values.
 
 ### Concrete Boat native blocker and required owner decision
 
@@ -116,7 +162,7 @@ handshake for Runner-owned sessions, but its Claude driver has no `resumeSession
 Installing a second Runner beside Boat's native process does not bridge these
 contracts and is not an acceptable capability declaration.
 
-The owner must choose either (1) authorize a separate implementation of an
+Verified native Boat continuity would still require either (1) authorize a separate implementation of an
 **Armada-owned harness runtime on Boat**, including private runtime transport,
 native process/session ownership, credentials lifecycle, durable journal ACKs and
 both Claude/Codex restore drivers, or (2) obtain upstream Boat native observation,
@@ -304,4 +350,4 @@ future pair needs its own native evidence:
 Existing account/foundation, runtime215, native-binding216 and lifecycle217
 schema must already be deployed in migration order; this PR adds no migration.
 Modal × Codex is opt-in under the approved operator postflight procedure above;
-other pairs remain disabled. Rollback retains identity/history/native state.
+Boat pairs are separately opt-in best-effort; Modal × Claude remains disabled. Rollback retains identity/history/native state.
