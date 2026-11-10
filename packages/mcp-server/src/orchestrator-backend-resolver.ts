@@ -8,12 +8,14 @@ import {
   type HarnessCredentials,
   type LaunchCredentialResolver,
   type LaunchStores,
+  mapSandboxRow,
   type OrchestratorCreate,
   type Provider,
   type ProviderRegistry,
   type ProviderTarget,
   resolveModelChoice,
   resolveRepositoryDir,
+  type SandboxRow,
   type Sql,
 } from "@armada/core/server";
 import { createBoatOrchestratorProvider } from "./boat-orchestrator-provider.ts";
@@ -179,7 +181,25 @@ export function createOrchestratorBackendResolver(input: {
             ]);
         }
       },
-      launch: (reservation, diagnostics) =>
+      prepareMcp: async (current) => {
+        if (
+          !input.connections?.prepare ||
+          !current.sandboxId ||
+          !current.providerSandboxId ||
+          current.generation === null
+        )
+          return;
+        const fresh = await member(configuration, ownerId);
+        const row = (
+          await input.sql.query<SandboxRow>(
+            `select s.* from public.sandboxes s where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5`,
+            [current.sandboxId, ownerId, configuration.orgId, current.providerSandboxId, current.generation],
+          )
+        ).rows[0];
+        if (!row) throw new OrchestratorRuntimeError("conflict");
+        await input.connections.prepare(provider, mapSandboxRow(row), fresh);
+      },
+      launch: (reservation, diagnostics, hooks) =>
         launchOrchestratorParent({
           sql: input.sql,
           provider,
@@ -201,6 +221,7 @@ export function createOrchestratorBackendResolver(input: {
           },
           reservation,
           ...(diagnostics ? { diagnostics } : {}),
+          ...(hooks ? { hooks } : {}),
           account: {
             credentialId: configuration.modelAccountId,
             credentialVersion: selected.version,

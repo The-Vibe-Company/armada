@@ -1,9 +1,19 @@
-import { GoldenError, LaunchError, OrchestratorAuthorityDenied, ProviderError, VaultError } from "@armada/core/server";
+import {
+  GoldenError,
+  LAUNCH_FAILURE_REASONS,
+  LAUNCH_INITIALIZATION_STAGES,
+  LaunchError,
+  OrchestratorAuthorityDenied,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
 
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 
 export type OrchestratorDiagnosticLog = (line: string) => void;
 const STAGES = [
+  ...LAUNCH_INITIALIZATION_STAGES,
+  "create_reconciliation",
   "recovery_reservation",
   "recovery_dispatch",
   "recovery_observation",
@@ -55,6 +65,8 @@ const STAGES = [
 export type OrchestratorDiagnosticStage = (typeof STAGES)[number];
 
 const REASONS = [
+  "create_worker_interrupted",
+  "create_authority_revoked",
   "recorded_operation_uncertain",
   "recorded_operation_failed",
   "unexpected_error",
@@ -139,7 +151,7 @@ const ACTIONS = new Set(["create", "message", "steer", "stop", "resume", "recove
 
 /** No message, stack, details, request, provider ID, config, or causal payload is read.
  * Untrusted error codes are projected through closed allowlists, not sanitized strings. */
-function reason(error: unknown): string {
+function baseReason(error: unknown): string {
   try {
     if (error instanceof OrchestratorAuthorityDenied) return "authority_denied";
     if (!error || typeof error !== "object") return "unexpected_error";
@@ -175,6 +187,38 @@ function reason(error: unknown): string {
     /* Hostile getters and logger failures never become operation failures. */
   }
   return "unexpected_error";
+}
+
+// Only trusted LaunchError data properties are unwrapped. Never evaluate a
+// causal getter, stringify an error, or walk opaque SDK/private payloads.
+function reason(error: unknown): string {
+  const base = baseReason(error);
+  try {
+    if (!(error instanceof LaunchError)) return base;
+    const seen = new Set<unknown>([error]);
+    let current: unknown = error;
+    for (let depth = 0; depth < 4 && current instanceof LaunchError; depth++) {
+      const safe = Object.getOwnPropertyDescriptor(current, "safeReason");
+      if (
+        safe &&
+        "value" in safe &&
+        typeof safe.value === "string" &&
+        (LAUNCH_FAILURE_REASONS as readonly string[]).includes(safe.value)
+      )
+        return `${base}_${safe.value}`;
+      const cause = Object.getOwnPropertyDescriptor(current, "cause");
+      if (!cause || !("value" in cause) || seen.has(cause.value)) break;
+      current = cause.value;
+      seen.add(current);
+      if (!(current instanceof LaunchError)) {
+        const underlying = baseReason(current);
+        if (underlying !== "unexpected_error") return `${base}_caused_by_${underlying}`;
+      }
+    }
+  } catch {
+    /* Diagnostics must not activate hostile descriptor/proxy failures. */
+  }
+  return base;
 }
 
 /** Per-operation state, not global mutable tracing. Keep only a safe classification

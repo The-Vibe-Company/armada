@@ -1,10 +1,21 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
-import { createSqlVaultStore, GoldenBuildJobs } from "@armada/core/server";
+import {
+  createSqlGoldenStore,
+  createSqlMcpRegistry,
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  GOLDEN_ROOT,
+  GoldenBuildJobs,
+  reserveOrchestratorOperation,
+} from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
+import { createManagedParentMcp } from "../../mcp-server/src/mcp-managed-parent.ts";
+import { createModalOrchestratorNativeAdapter } from "../../mcp-server/src/orchestrator-modal-native.ts";
+import { OrchestratorRuntimeStore } from "../../mcp-server/src/orchestrator-runtime-store.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
@@ -2415,13 +2426,97 @@ test("only newly managed VM incarnations expose resource observations", async ()
 
 test("orchestrator native checkpoint is operation-correlated and restore verifies identity without a prompt", async () => {
   const hooks: string[] = [];
+  let preparations = 0;
+  const registry = createSqlMcpRegistry(db, Buffer.alloc(32, 1).toString("base64"));
+  const managed = createManagedParentMcp({
+    sql: db,
+    registry,
+    encryptionKey: Buffer.alloc(32, 1).toString("base64"),
+    origin: "https://managed.example",
+    prepareGitHub: async () => {
+      preparations++;
+    },
+  });
+  const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
+  let publicSandboxId = "";
+  let stoppedGeneration: number | null = null;
   const f = fixture(scope, db, async (provider, sandboxId) => {
     hooks.push("beforePrompt");
-    await provider.configureMcp({ sandboxId, configuration: { revision: "restored-current-auth", servers: {} } });
+    expect(await managed.beforePrompt(provider, sandboxId, actor)).toBe(publicSandboxId);
+    // The callback is before native proof. It must neither configure MCP nor
+    // publish readiness/the new SQL generation prematurely.
+    expect(
+      (await db.query("select status,lifecycle_generation from sandboxes where id=$1", [publicSandboxId])).rows,
+    ).toEqual([{ status: "stopped", lifecycle_generation: Number(stoppedGeneration) }]);
+    expect(f.log.filter((op) => op === "configureMcp")).toHaveLength(0);
+    expect(preparations).toBe(1);
+    expect(f.log.filter((op) => op === "resumeNativeSession")).toHaveLength(0);
   });
   const golden = await f.provider.createGolden({});
   const image = await f.provider.snapshot({ sandboxId: golden.id, name: `orch-checkpoint-${crypto.randomUUID()}` });
   const parent = await f.provider.fork({ from: image.name });
+  const sqlGolden = await createSqlGoldenStore(db).insert({
+    orgId: scope.orgId,
+    ownerId: scope.userId,
+    visibility: "private",
+    name: `managed-restore-${crypto.randomUUID()}`,
+    provider: "modal",
+    modal: scope.binding,
+    config: { repos: [{ url: "https://github.com/example/managed.git", branch: "main", dir: "managed" }], init: [] },
+  });
+  const runtimeStore = new OrchestratorRuntimeStore(db, reserveOrchestratorOperation);
+  const created = await runtimeStore.create({
+    ownerId: scope.userId,
+    key: crypto.randomUUID(),
+    skillRevision: "a".repeat(40),
+    configuration: {
+      version: 1,
+      orgId: scope.orgId,
+      name: `managed-${crypto.randomUUID()}`,
+      provider: "modal",
+      harness: "codex",
+      model: "gpt-6.1-sol",
+      reasoningEffort: "high",
+      goldenId: sqlGolden.id,
+      modelAccountId: crypto.randomUUID(),
+    },
+  });
+  const publicSandbox = await createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "modal",
+    providerSandboxId: parent.id,
+    goldenId: sqlGolden.id,
+    orgId: scope.orgId,
+    ownerId: scope.userId,
+    visibility: "private",
+    harness: "codex",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    status: "ready",
+    effectiveTtlSeconds: 3600,
+  });
+  publicSandboxId = publicSandbox.id;
+  await db.query("update orchestrators set sandbox_id=$2 where id=$1", [created.identity.id, publicSandboxId]);
+  await managed.prepare(f.provider, publicSandbox, actor);
+  created.identity = await runtimeStore.preparing(created);
+  expect(
+    await runtimeStore.complete(created, {
+      state: "succeeded",
+      parentState: "ready",
+      conversationId: "logical",
+      continuity: "native",
+    }),
+  ).toBe(true);
+  const stop = await runtimeStore.reserve({
+    ownerId: scope.userId,
+    orgId: scope.orgId,
+    id: created.identity.id,
+    action: "stop",
+    key: "checkpoint-stop",
+    expectedRevision: created.operation.revision,
+    payload: {},
+  });
+  stoppedGeneration = stop.identity.generation;
   const native = (row: Machine) => ({
     physicalGeneration: String(row.generation),
     conversationId: "logical",
@@ -2435,7 +2530,7 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
         ? native(row)
         : undefined,
   );
-  const operationId = crypto.randomUUID();
+  const operationId = stop.operation.id;
   const checkpoint = await f.provider.checkpointOrchestrator({
     sandboxId: parent.id,
     operationId,
@@ -2443,6 +2538,8 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
     conversationId: "logical",
     harness: "codex",
     model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    cwd: GOLDEN_ROOT,
   });
   expect(checkpoint).toMatchObject({
     state: "stopped",
@@ -2461,12 +2558,49 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
   ).toBeNull();
   expect(f.log.length).toBe(effects);
   expect(f.creates).toBe(creates);
-  const restored = await f.provider.restoreOrchestratorCheckpoint({
-    sandboxId: parent.id,
-    operationId: crypto.randomUUID(),
-    checkpoint,
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [publicSandboxId]);
+  await db.query("update orchestrator_operations set runtime_result=$2::jsonb where id=$1", [
+    operationId,
+    JSON.stringify({ state: "stopped", continuity: "native", generation: String(stoppedGeneration) }),
+  ]);
+  expect(await runtimeStore.complete(stop, { state: "succeeded", parentState: "stopped", continuity: "native" })).toBe(
+    true,
+  );
+  await expect(managed.beforePrompt(f.provider, parent.id, actor)).rejects.toMatchObject({ code: "forbidden" });
+  const resume = await runtimeStore.reserve({
+    ownerId: scope.userId,
+    orgId: scope.orgId,
+    id: created.identity.id,
+    action: "resume",
+    key: "checkpoint-resume",
+    expectedRevision: stop.operation.revision,
+    payload: {},
   });
-  expect(restored).toEqual({ ...native({ generation: 2 } as Machine) });
+  await expect(managed.prepare(f.provider, publicSandbox, actor)).rejects.toMatchObject({ code: "forbidden" });
+  await expect(
+    managed.beforePrompt(f.provider, parent.id, { ...actor, userId: "00000000-0000-0000-0000-000000000004" }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  const adapter = createModalOrchestratorNativeAdapter({
+    sql: db,
+    mcpUrl: "https://managed.example/mcp",
+    assertPrerequisites: async () => {},
+  });
+  if (!adapter.resumeWithoutText) throw Error("Modal native resume adapter is required.");
+  await adapter.resumeWithoutText(f.provider, resume.identity, resume.operation.id);
+  expect((await f.provider.get(parent.id)).physicalGeneration).toBe("2");
+  resume.identity = await runtimeStore.preparing(resume);
+  expect(resume.identity.generation).toBe(Number(stoppedGeneration) + 1);
+  // The real post-proof owner path, not beforePrompt, performs managed
+  // preparation before the runtime installs its fresh private epoch. The
+  // nonempty-MCP configuration contract lives in mcp-managed-parent.test.ts;
+  // PGlite cannot nest the native lease on its single SQL connection here.
+  await managed.prepare(f.provider, publicSandbox, actor);
+  expect(preparations).toBe(2);
+  expect(f.log.filter((op) => op === "resumeNativeSession")).toHaveLength(1);
+  expect(await runtimeStore.complete(resume, { state: "succeeded", parentState: "ready" })).toBe(true);
+  await expect(registry.sandboxConnections(scope.userId, scope.orgId, publicSandboxId)).rejects.toMatchObject({
+    code: "not_found",
+  });
   expect(hooks).toEqual(["beforePrompt"]);
   expect(f.log.filter((op) => op === "prompt")).toHaveLength(0);
   expect(f.log.filter((op) => op === "resumeNativeSession")).toHaveLength(1);

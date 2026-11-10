@@ -138,7 +138,14 @@ export {
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
 } from "./launch.ts";
-export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
+export {
+  LAUNCH_FAILURE_REASONS,
+  LAUNCH_INITIALIZATION_STAGES,
+  LaunchError,
+  type LaunchErrorCode,
+  type LaunchFailureReason,
+  type LaunchInitializationStage,
+} from "./launch-error.ts";
 export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
 export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";

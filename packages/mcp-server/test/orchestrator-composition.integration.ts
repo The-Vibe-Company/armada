@@ -27,7 +27,8 @@ async function fixture() {
       const actual = new projection.LifecycleRuntimeStore(sql, reserve);
       return actual.complete.bind(actual);
     },
-    configure: settings.configureOrchestratorLifecycle,
+    configure: (sql, input) =>
+      settings.configureOrchestratorLifecycle(sql, { ...input, key: `initial:${input.orchestratorId}` }),
     recordActivity: activity.recordOrchestratorActivity,
     detail: projection.lifecycleDetail,
     worker: (sql, runtime) => worker.createOrchestratorLifecycle(sql, runtime, () => clock),
@@ -83,7 +84,7 @@ async function fixture() {
           >[0],
         ) => ({
           ...machine,
-          physicalGeneration: machine.physicalGeneration ?? null,
+          physicalGeneration: machine.physicalGeneration ?? "fixture-native-not-sql",
           state: "active" as const,
           evidence: "native:active:1",
         }),
@@ -113,7 +114,13 @@ test("actual owner create configures209 before reserving208 receipt, without str
       state: string;
       revision: number;
     };
-    expect(result.state).toBe("uncertain");
+    expect(result.state).toBe("pending");
+    await services.runtime.createWorker.drain();
+    expect(
+      (await services.store.operations(f.p.owner, f.p.org, result.orchestratorId)).find(
+        (operation) => operation.id === result.id,
+      )?.state,
+    ).toBe("failed");
     expect(result.revision).toBe(2);
     const row = (
       await f.db.query<{ revision: string | number; idle_seconds: number; max_active_children: number | null }>(
@@ -131,6 +138,7 @@ test("actual owner create configures209 before reserving208 receipt, without str
     expect(replay.id).toBe(result.id);
     expect(replay.revision).toBe(2);
   } finally {
+    await services.runtime.createWorker.drain();
     await services.lifecycle.drain();
     await f.db.close();
   }
@@ -174,6 +182,9 @@ test("actual native activity and cursor ACK commit together; replay is not activ
       effectiveTtlSeconds: 7200,
     });
     await f.db.query("update orchestrators set sandbox_id=$2 where id=$1", [created.identity.id, sandbox.id]);
+    await f.db.query("update sandboxes set orchestrator_native_generation='fixture-native-not-sql' where id=$1", [
+      sandbox.id,
+    ]);
     created.identity = await services.store.preparing(created);
     await services.store.complete(created, { state: "succeeded", conversationId: "native-conversation" });
     const identity = await services.store.read(f.p.owner, f.p.org, created.identity.id);
@@ -229,6 +240,7 @@ test("actual native activity and cursor ACK commit together; replay is not activ
       ).rows[0]?.state,
     ).toBe("active");
   } finally {
+    await services.runtime.createWorker.drain();
     await services.lifecycle.drain();
     await f.db.close();
   }
@@ -298,6 +310,7 @@ test("an accepted owner turn refreshes actual209 activity without polling provid
     const detail = await services.runtime.detail(f.caller, f.p.org, created.identity.id);
     expect(detail.orchestrator.idleDeadline).toBeNull();
   } finally {
+    await services.runtime.createWorker.drain();
     await services.lifecycle.drain();
     await f.db.close();
   }

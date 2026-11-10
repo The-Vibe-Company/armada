@@ -29,6 +29,7 @@ import { createGitHubRuntime } from "./github-runtime.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
+import { createManagedParentMcp } from "./mcp-managed-parent.ts";
 import { boundedOAuthFetch, probeRemoteMcp, withMcpDiscoveryBudget } from "./mcp-probe.ts";
 
 const sha = async (v: string) =>
@@ -73,6 +74,14 @@ export function createMcpHttpIntegration(options: {
     ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
     encryptionKey: options.encryptionKey,
     origin: new URL(options.publicUrl).origin,
+  });
+  const managedMcp = createManagedParentMcp({
+    sql,
+    ...(options.catalogAuthentication ? { catalogAuthentication: options.catalogAuthentication } : {}),
+    registry,
+    encryptionKey: options.encryptionKey,
+    origin: new URL(options.publicUrl).origin,
+    ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
   });
   const grants = createSqlMcpGrantPort(sql);
   const store = createMcpOAuthStore(sql, options.encryptionKey);
@@ -602,6 +611,13 @@ export function createMcpHttpIntegration(options: {
         return { status: (await connectionStatus(input.userId, input.orgId, input.connectionId)).status };
       },
     },
+    managedConnections: {
+      ...lifecycle.connections,
+      prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
+        await managedMcp.prepare(...args);
+        await refreshActiveExpiries(args[1].id);
+      },
+    },
     connections: {
       ...lifecycle.connections,
       prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
@@ -616,7 +632,7 @@ export function createMcpHttpIntegration(options: {
       return result.shouldResume;
     },
     beforePrompt: async (...args: Parameters<typeof lifecycle.beforePrompt>) => {
-      const sandboxId = await lifecycle.beforePrompt(...args);
+      const sandboxId = (await managedMcp.beforePrompt(...args)) ?? (await lifecycle.beforePrompt(...args));
       await refreshActiveExpiries(sandboxId);
     },
     beforeSnapshot: async (...args: Parameters<typeof lifecycle.beforeSnapshot>) => {

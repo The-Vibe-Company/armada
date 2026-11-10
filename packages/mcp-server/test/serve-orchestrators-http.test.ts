@@ -23,7 +23,11 @@ test("actual serve composition routes the CLI/web/iOS owner API over HTTP withou
     expect(receipt.baseline).toBe("green");
     expect(receipt.proxyRecovery).toBe(true);
     expect(receipt.replayProviderReads).toBe(0);
-    expect(receipt.effects).toEqual({ allocations: 0, terminations: 1, runnerCalls: 0 });
+    expect(receipt.effects.allocations).toBe(2);
+    expect(receipt.effects.allocationAttempts).toBe(2);
+    expect(receipt.effects.terminations).toBe(1);
+    expect(receipt.effects.modelCalls).toBe(0);
+    expect(receipt.effects.epochInstalls).toBe(1);
     expect(
       receipt.routes.some(
         (route: { path: string; status: number }) => route.path.endsWith("/recover") && route.status === 202,

@@ -12,6 +12,7 @@ import {
 } from "@armada/core/server";
 import { diagnosticStep, type OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 import { orchestratorParentLaunchRequest } from "./orchestrator-launch-request.ts";
+import type { OrchestratorCreateHooks } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError, type RuntimeReservation } from "./orchestrator-runtime-store.ts";
 
 /** Reuses the v2 launcher; named credentials and size policy are resolved by their
@@ -25,6 +26,7 @@ export async function launchOrchestratorParent(input: {
   request: LaunchRequest;
   reservation: RuntimeReservation;
   diagnostics?: OrchestratorDiagnostics;
+  hooks?: OrchestratorCreateHooks;
   /** Exact #612 resolver signature and binding, not a legacy default credential port. */
   account: {
     credentialId: string;
@@ -67,9 +69,35 @@ export async function launchOrchestratorParent(input: {
   )
     throw new OrchestratorRuntimeError("invalid_request");
   const sandboxId = crypto.randomUUID();
+  let registeredGeneration: number | undefined;
   input.diagnostics?.bind({ sandboxId });
   const sandboxes = {
     ...input.stores.sandboxes,
+    update: async (id: string, patch: Parameters<LaunchStores["sandboxes"]["update"]>[1]) => {
+      await input.hooks?.assertCurrent?.();
+      if (!sql.transaction || id !== sandboxId || registeredGeneration === undefined)
+        throw new OrchestratorRuntimeError("conflict");
+      await sql.transaction(async (tx) => {
+        const live = await tx.query(
+          `select s.id from public.orchestrators o join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
+           join public.orchestrator_operations p on p.orchestrator_id=o.id and p.id=$5
+           join public.sandboxes s on s.id=o.sandbox_id
+           where o.id=$1 and o.owner_id=$2 and o.org_id=$3 and o.revision=$4 and p.revision=o.revision and p.state='pending' and p.action='create'
+           and s.id=$6 and s.lifecycle_generation=$7 and s.stop_requested_at is null and s.deleted_at is null for update of o,m,p,s`,
+          [
+            identity.id,
+            actor.userId,
+            actor.orgId,
+            reservation.operation.revision,
+            reservation.operation.id,
+            sandboxId,
+            registeredGeneration,
+          ],
+        );
+        if (live.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+        await createSqlSandboxStore(tx).update(id, patch);
+      });
+    },
     insert: async (record: Parameters<LaunchStores["sandboxes"]["insert"]>[0]) =>
       diagnosticStep(input.diagnostics, "registration", async () => {
         input.diagnostics?.bind({ sandboxId });
@@ -94,8 +122,17 @@ export async function launchOrchestratorParent(input: {
           )
             throw new OrchestratorRuntimeError("unavailable");
           await tx.query(`update public.orchestrators set sandbox_id=$2 where id=$1`, [identity.id, saved.id]);
-          return saved;
+          const raw = (
+            await tx.query<{ lifecycle_generation: string | number }>(
+              "select lifecycle_generation from public.sandboxes where id=$1",
+              [saved.id],
+            )
+          ).rows[0];
+          const generation = Number(raw?.lifecycle_generation);
+          if (!Number.isSafeInteger(generation) || generation < 1) throw new OrchestratorRuntimeError("conflict");
+          return { ...saved, lifecycleGeneration: generation };
         });
+        registeredGeneration = saved.lifecycleGeneration;
         input.diagnostics?.stage("initialization");
         return saved;
       }),
@@ -111,13 +148,27 @@ export async function launchOrchestratorParent(input: {
               labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
             }),
           );
+      // Logical-ID cleanup cannot atomically compare our native incarnation.
+      // Never let an old catch stop a replacement: exact recovery owns all
+      // failed managed-create cleanup, even before public registration.
+      if (key === "stop" || key === "delete")
+        return async () => {
+          throw new OrchestratorRuntimeError("conflict");
+        };
       const value = Reflect.get(target, key);
       if (
         typeof value === "function" &&
         ["get", "exec", "prepareNativeHarnessCwd", "configureMcp"].includes(String(key))
       )
-        return (...args: unknown[]) =>
-          diagnosticStep(input.diagnostics, "initialization", () => value.apply(target, args));
+        return async (...args: unknown[]) => {
+          await input.hooks?.assertCurrent?.();
+          try {
+            return await value.apply(target, args);
+          } catch (error) {
+            input.diagnostics?.capture(error);
+            throw error;
+          }
+        };
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
@@ -148,9 +199,10 @@ export async function launchOrchestratorParent(input: {
       const value = Reflect.get(target, key, target);
       if (typeof value === "function" && (key === "admit" || key === "hydrateNative"))
         return (...args: unknown[]) =>
-          diagnosticStep(input.diagnostics, key === "admit" ? "credential_admission" : "native_hydration", () =>
-            value.apply(target, args),
-          );
+          diagnosticStep(input.diagnostics, key === "admit" ? "credential_admission" : "native_hydration", async () => {
+            await input.hooks?.assertCurrent?.();
+            return value.apply(target, args);
+          });
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
@@ -164,6 +216,21 @@ export async function launchOrchestratorParent(input: {
       visibility: "private",
       ttlSeconds: PROVIDER_LIMITS[identity.configuration.provider].maxTtlSeconds,
     },
-    { newId: () => sandboxId, privateParent: true },
+    {
+      newId: () => sandboxId,
+      privateParent: true,
+      onInitialization: (stage) => input.diagnostics?.stage(stage),
+      beforeFork: async (id) => {
+        await input.hooks?.beforeFork(id);
+      },
+      onRegistered: async (saved) => {
+        const generation = saved.lifecycleGeneration;
+        if (generation === undefined || !Number.isSafeInteger(generation) || generation < 1)
+          throw new OrchestratorRuntimeError("conflict");
+        await diagnosticStep(input.diagnostics, "registration", async () =>
+          input.hooks?.registered({ ...saved, lifecycleGeneration: generation }),
+        );
+      },
+    },
   );
 }

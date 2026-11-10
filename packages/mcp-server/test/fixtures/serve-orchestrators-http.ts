@@ -9,6 +9,7 @@ import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { ArmadaApiError, createArmadaApiClient } from "../../../cli/src/armada-api.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
+import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
@@ -27,52 +28,18 @@ const binding = { workspace: "app:ap_serve_fixture", environment: "main", appId:
 const appName = `armada-user-${ownerId.replaceAll("-", "")}`;
 const scope: Scope = { orgId, userId: ownerId, visibility: "private", binding };
 let native: Machine;
-let nativeScope = "",
-  exit: number | null = null;
-let providerReads = 0;
-const effects = { allocations: 0, terminations: 0, runnerCalls: 0 };
-const forbidden = () => {
-  effects.runnerCalls++;
-  throw Error("Unexpected native work in routing regression.");
-};
-class FakeModalClient {
-  constructor(options: { tokenId: string; tokenSecret: string }) {
-    assert(options.tokenId === modalId && options.tokenSecret === modalSecret, "Wrong fixture management authority.");
-  }
-  apps = {
-    fromName: async (name: string, options: object) => {
-      providerReads++;
-      assert.equal(name, appName);
-      assert.deepEqual(options, { environment: "main", createIfMissing: false });
-      return { appId: binding.appId };
-    },
-  };
-  sandboxes = {
-    create: async () => {
-      effects.allocations++;
-      throw Error("Routing regression must not allocate.");
-    },
-    fromId: forbidden,
-    fromName: async (name: string, physicalName: string, options: object) => {
-      assert.equal(name, appName);
-      assert.equal(physicalName, native.physicalName);
-      assert.deepEqual(options, { environment: "main", includeTerminated: true });
-      return {
-        sandboxId: native.physicalId,
-        getTags: async () => ({ armada_sandbox: native.info.id, armada_scope: nativeScope, armada_generation: "1" }),
-        poll: async () => exit,
-        terminate: async () => {
-          effects.terminations++;
-          exit = 0;
-        },
-        exec: forbidden,
-        createConnectToken: forbidden,
-      };
-    },
-  };
-  close() {}
-}
-mock.module("modal", () => ({ ModalClient: FakeModalClient }));
+let nativeScope = "";
+const fake = fakeModalRuntime({
+  appName,
+  appId: binding.appId,
+  tokenId: modalId,
+  tokenSecret: modalSecret,
+  skillRevision: "a".repeat(40),
+  legacy: () => native,
+  scope: () => nativeScope,
+});
+const effects = fake.effects;
+mock.module("modal", () => ({ ModalClient: fake.Client }));
 const sqlModule = await import("../../src/sql.ts");
 mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
 // Actual serve, control, authentication, factory, authority, stores and native adapter.
@@ -158,7 +125,28 @@ native = {
   sourceImage: { scopeKey: nativeScope, name: "serve-source-snapshot", imageId: "im_serve_source" },
   managementAuthority: { credentialScope: "user", credentialOwnerId: ownerId },
 };
-await createSqlModalStore(sql, scope).reserve(created.operation.id, native);
+const nativeStore = createSqlModalStore(sql, scope);
+await nativeStore.reserve(created.operation.id, native);
+const sourceId = `modal_${crypto.randomUUID()}`;
+const sourceMachine: Machine = {
+  ...native,
+  golden: true,
+  phase: "stopped",
+  physicalName: `armada-${createHash("sha256").update(sourceId).digest("hex").slice(0, 32)}-1`,
+  info: { ...native.info, id: sourceId, name: sourceId, labels: {}, state: "stopped" },
+};
+delete sourceMachine.physicalId;
+delete sourceMachine.runtimeEvidence;
+delete sourceMachine.runtimePolicy;
+delete sourceMachine.sourceImage;
+await nativeStore.reserve("fixture-saved-golden", sourceMachine);
+await nativeStore.saveImage({
+  info: { name: "serve-source-snapshot", status: "ready", sourceSandboxId: sourceId },
+  sourceId,
+  imageId: "im_serve_source",
+  goldenClean: true,
+  managementAuthority: { credentialScope: "user", credentialOwnerId: ownerId },
+});
 const token = await createServiceToken(createSqlAuthStore(sql), {
   userId: ownerId,
   label: "HTTP process fixture",
@@ -174,6 +162,10 @@ const socketOrigins = new Set([origin]);
 const socketFetch: typeof fetch = Object.assign(
   (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin === fake.tunnelOrigin) {
+      const target = `${fake.localOrigin}${url.pathname}`;
+      return input instanceof Request ? realFetch(new Request(target, input)) : realFetch(target, init);
+    }
     assert(socketOrigins.has(url.origin), "Unexpected outbound network in serve regression.");
     return realFetch(input, init);
   },
@@ -264,9 +256,10 @@ async function cli(args: string[], expectedStatus: number, expectedError?: strin
     assert(!err.includes("Armada server request failed (404)"));
     return null;
   }
-  assert.equal(code, 0, err);
   assert.equal(err, "");
-  return JSON.parse(out);
+  const payload = JSON.parse(out);
+  assert.equal(code, payload.state === "failed" || payload.state === "uncertain" ? 1 : 0, err);
+  return payload;
 }
 async function http<T = unknown>(method: string, path: string, body?: object, key = "serve-direct-key") {
   const response = await auditedFetch(`${activeOrigin}/api/v1${path}`, {
@@ -276,19 +269,28 @@ async function http<T = unknown>(method: string, path: string, body?: object, ke
   });
   return { response, payload: (await response.json()) as T };
 }
+const invalidGoldenId = crypto.randomUUID();
+async function waitForOperation(parentId: string, operationId: string) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const detail = await cli(["detail", parentId, "--org", orgId], 200);
+    const operation = detail.operations.find((item: { id: string }) => item.id === operationId);
+    if (operation?.state !== "pending") return { detail, operation };
+  }
+  throw Error("Create did not settle after bounded real HTTP polling.");
+}
 async function auditOwnerRoutes(expectedRevision: number) {
   assert.equal((await cli(["capabilities"], 200)).enabled, true);
-  assert.equal((await cli(["list", "--org", orgId], 200)).items[0].id, id);
+  assert((await cli(["list", "--org", orgId], 200)).items.some((item: { id: string }) => item.id === id));
   assert.equal((await cli(["detail", id, "--org", orgId], 200)).orchestrator.revision, expectedRevision);
   assert.equal((await cli(["events", id, "--org", orgId], 200)).version, 1);
-  await cli(
+  const invalid = await cli(
     [
       "create",
       "invalid-golden",
       "--org",
       orgId,
       "--golden",
-      crypto.randomUUID(),
+      invalidGoldenId,
       "--provider",
       "modal",
       "--agent",
@@ -300,9 +302,9 @@ async function auditOwnerRoutes(expectedRevision: number) {
       "--idempotency-key",
       "serve-invalid-create",
     ],
-    404,
-    "not_found",
+    202,
   );
+  assert.equal((await waitForOperation(invalid.orchestratorId, invalid.id)).operation.state, "failed");
   for (const action of ["send", "steer", "stop", "resume"]) {
     await cli(
       [
@@ -361,7 +363,15 @@ async function auditOwnerRoutes(expectedRevision: number) {
 try {
   assert.equal((await socketFetch(`${origin}/healthz`)).status, 200);
   await auditOwnerRoutes(1);
-  assert.deepEqual(effects, { allocations: 0, terminations: 0, runnerCalls: 0 });
+  assert.deepEqual(effects, {
+    allocations: 0,
+    allocationAttempts: 0,
+    terminations: 0,
+    runnerCalls: 0,
+    modelCalls: 0,
+    mcpConfigurations: 0,
+    epochInstalls: 0,
+  });
   const recovered = await cli(
     ["recover", id, "--org", orgId, "--expected-revision", "1", "--idempotency-key", "serve-recover"],
     202,
@@ -370,19 +380,31 @@ try {
   // The actual Next catch-all handlers proxy to the actual serve socket. This
   // was the missing production boundary in the original direct-handler tests.
   activeOrigin = proxyOrigin;
-  const readsBeforeReplay = providerReads;
+  const readsBeforeReplay = fake.providerReads();
   const effectsBeforeReplay = { ...effects };
   const proxyRecovered = await cli(
     ["recover", id, "--org", orgId, "--expected-revision", "1", "--idempotency-key", "serve-recover"],
     202,
   );
   assert.deepEqual(proxyRecovered, recovered);
-  assert.equal(providerReads, readsBeforeReplay, "Completed recovery replay must not resolve provider SDK state.");
+  assert.equal(
+    fake.providerReads(),
+    readsBeforeReplay,
+    "Completed recovery replay must not resolve provider SDK state.",
+  );
   assert.deepEqual(effects, effectsBeforeReplay);
-  const replayProviderReads = providerReads - readsBeforeReplay;
+  const replayProviderReads = fake.providerReads() - readsBeforeReplay;
   await auditOwnerRoutes(2);
 
-  assert.deepEqual(effects, { allocations: 0, terminations: 1, runnerCalls: 0 });
+  assert.deepEqual(effects, {
+    allocations: 0,
+    allocationAttempts: 0,
+    terminations: 1,
+    runnerCalls: 0,
+    modelCalls: 0,
+    mcpConfigurations: 0,
+    epochInstalls: 0,
+  });
   assert.equal((await cli(["detail", id, "--org", orgId], 200)).orchestrator.state, "stopped");
   assert.equal(
     (
@@ -408,13 +430,83 @@ try {
   );
   assert.equal(routes.at(-1)?.status, 404);
   assert.equal(routes.at(-1)?.code, null);
-  for (const secret of [token.token, modalId, modalSecret, modelSecret, key]) assert(!logs.join("\n").includes(secret));
+  // Actual async CREATE through serve+proxy, with actual default-zero managed
+  // MCP preparation. The external allocation cannot finish before admission.
+  const admitted = await cli(
+    [
+      "create",
+      "actual-managed-create",
+      "--org",
+      orgId,
+      "--golden",
+      golden.id,
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-6.1-sol",
+      "--model-account",
+      modelId,
+      "--idempotency-key",
+      "serve-actual-create",
+    ],
+    202,
+  );
+  assert.equal(admitted.state, "pending");
+  assert.equal(effects.allocations, 0, "Create waited for external allocation before returning pending.");
+  fake.release();
+  const initialized = await waitForOperation(admitted.orchestratorId, admitted.id);
+  for (const secret of [token.token, modalId, modalSecret, modelSecret, key, ...fake.privateTokens])
+    assert(!logs.join("\n").includes(secret), "Sensitive value in server logs.");
+  assert.equal(initialized.operation.state, "succeeded", `${JSON.stringify(initialized.operation)} ${logs.join("\n")}`);
+  assert.equal(initialized.detail.orchestrator.state, "ready");
+  assert.equal(effects.allocationAttempts, 1);
+  assert.equal(effects.allocations, 1);
+  assert.equal(effects.modelCalls, 0);
+  assert.equal(effects.mcpConfigurations, 0, "Default-zero keeps the real lifecycle's no-prior-bootstrap fast path.");
+  assert.equal(effects.epochInstalls, 1);
+  await assert.rejects(
+    core.createSqlMcpRegistry(sql, key).sandboxConnections(ownerId, orgId, initialized.detail.orchestrator.sandboxId),
+    (error: unknown) => error instanceof core.VaultError && error.code === "not_found",
+  );
+  // The same production bundle must keep ordinary child MCP preparation,
+  // not pass children into its parent-only private preparation port.
+  const epochToken = [...fake.privateTokens].find((value) => value.startsWith("armada_epoch_"));
+  assert(epochToken);
+  const childResponse = await socketFetch(`${origin}/api/v1/orchestrator-tools/launch`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${epochToken}`,
+      "content-type": "application/json",
+      "idempotency-key": "serve-child-launch",
+    },
+    body: JSON.stringify({
+      selection: {
+        goldenId: golden.id,
+        harness: "codex",
+        credentialId: modelId,
+        credentialVersion: 1,
+        model: "gpt-6.1-sol",
+      },
+    }),
+  });
+  assert.equal(childResponse.status, 200);
+  const childReceipt = (await childResponse.json()) as { result: { state: string; sandboxId: string } };
+  assert.equal(childReceipt.result.state, "succeeded", "Child must retain ordinary MCP initialization.");
+  assert(childReceipt.result.sandboxId);
+  assert.equal(effects.allocations, 2);
+  assert.equal(effects.epochInstalls, 1, "Child must not install a parent epoch.");
+  for (const secret of [token.token, modalId, modalSecret, modelSecret, key, ...fake.privateTokens])
+    assert(!logs.join("\n").includes(secret));
   console.log(
     `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects })}`,
   );
 } finally {
+  fake.release();
   await proxy.stop(true);
   await server.stop(true);
   await server.workerDone;
+  await fake.close();
   await db.close();
 }

@@ -19,7 +19,7 @@ import {
   waitReady,
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
-import { LaunchError } from "./launch-error.ts";
+import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
@@ -123,6 +123,12 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted server telemetry only; never request input or a raw-error sink. */
+  onInitialization?: (stage: LaunchInitializationStage) => void;
+  /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
+  beforeFork?: (sandboxId: string) => Promise<void>;
+  /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
+  onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
   /** Trusted server-only narrowing for managed orchestrator parents. Not a public launch field. */
   privateParent?: true;
   /** For tests. */
@@ -191,6 +197,7 @@ export async function launchSandbox(
   let failed = false;
   try {
     await stores.credentials.admit?.(actor, credentials, id);
+    await options.beforeFork?.(id);
     noAllocation = false;
     const forked = await provider
       .fork({
@@ -258,29 +265,44 @@ export async function launchSandbox(
       throw error;
     }
 
+    const progress = (stage: LaunchInitializationStage) => {
+      try {
+        void Promise.resolve(options.onInitialization?.(stage)).catch(() => {});
+      } catch {
+        /* Best effort only. */
+      }
+    };
     const start = async (signal: AbortSignal) => {
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });
         throw new LaunchError(
           "start_failed",
           "The sandbox store did not persist the requested independent visibility; no agent was started.",
+          { safeReason: "visibility_not_persisted" },
         );
       }
+      progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
+      progress("initialization_ready");
       const ready = await waitReady(provider, forked.id, options);
+      progress("initialization_hydrate");
       if (
         credentials.codexAuthJson &&
         !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
       )
         await writeCodexAuth(provider, ready.id, secrets);
+      progress("initialization_github");
       const launchGithub: GitHubLaunchInfo =
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
           : { status: github.status, message: github.message };
-      await setup(provider, ready.id, golden, secrets);
+      await setup(provider, ready.id, golden, secrets, progress);
+      progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
+      progress("initialization_mcp");
       await stores.connections?.prepare?.(provider, record, actor);
+      progress("initialization_publish");
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {
@@ -326,6 +348,7 @@ export async function launchSandbox(
       };
     };
     try {
+      await options.onRegistered?.(record);
       if (activityLeaseId)
         return await sandboxActivity(stores.sandboxes, record, {}, start, {
           initialLeaseId: activityLeaseId,
@@ -393,11 +416,14 @@ async function setup(
   sandboxId: string,
   golden: GoldenRecord,
   secrets: readonly string[],
+  progress: (stage: LaunchInitializationStage) => void,
 ): Promise<void> {
   for (const repo of golden.config.repos) {
+    progress("initialization_repository");
     await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets);
   }
   for (const [index, command] of golden.config.init.entries()) {
+    progress("initialization_commands");
     await run(provider, sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
   }
 }
@@ -415,11 +441,15 @@ async function setupGitHub(
     cwd: GOLDEN_ROOT,
     timeoutSeconds: 60,
   });
-  if (result.detached) throw new LaunchError("start_failed", "GitHub setup started in the background.");
+  if (result.detached)
+    throw new LaunchError("start_failed", "GitHub setup started in the background.", {
+      safeReason: "github_setup_background",
+    });
   if (result.timedOut || result.exitCode !== 0) {
     throw new LaunchError(
       "start_failed",
       `GitHub could not be set up in the sandbox.${output(result.stderr, result.stdout, secrets)}`,
+      { safeReason: result.timedOut ? "github_setup_timeout" : "github_setup_nonzero" },
     );
   }
   const present = result.stdout.includes(GH_PRESENT_MARKER);
@@ -431,7 +461,9 @@ async function writeCodexAuth(provider: Provider, sandboxId: string, secrets: re
   const command = `umask 077 && mkdir -p ${dir} && printf '%s' "$${CODEX_AUTH_ENV}" > ${dir}/auth.json`;
   const result = await provider.exec({ sandboxId, command, cwd: GOLDEN_ROOT, timeoutSeconds: 60 });
   if (result.detached || result.timedOut || result.exitCode !== 0) {
-    throw new LaunchError("start_failed", redact("Codex auth.json could not be written in the sandbox.", secrets));
+    throw new LaunchError("start_failed", redact("Codex auth.json could not be written in the sandbox.", secrets), {
+      safeReason: "native_auth_write_failed",
+    });
   }
 }
 
@@ -471,7 +503,11 @@ function withSandbox(error: unknown, sandboxId: string, secrets: readonly string
   if (error instanceof LaunchError) {
     return error.sandboxId === sandboxId
       ? error
-      : new LaunchError(error.code, error.message, { cause: error.cause, sandboxId });
+      : new LaunchError(error.code, error.message, {
+          cause: error.cause,
+          sandboxId,
+          ...(error.safeReason ? { safeReason: error.safeReason } : {}),
+        });
   }
   return new LaunchError("start_failed", `The sandbox could not be started: ${redact(messageOf(error), secrets)}`, {
     cause: error,

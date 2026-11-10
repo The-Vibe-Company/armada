@@ -521,15 +521,23 @@ describe("launch", () => {
           : { exitCode: 0 },
     });
 
+    const stages: string[] = [];
     const error = await launchSandbox(
       world.provider,
       world.stores,
       owner,
       { golden: "web", harness: "claude" },
-      { newId: () => "sbx-1" },
+      {
+        newId: () => "sbx-1",
+        onInitialization: (stage) => {
+          stages.push(stage);
+        },
+      },
     ).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(LaunchError);
+    expect((error as LaunchError).safeReason).toBe("github_setup_nonzero");
+    expect(stages.at(-1)).toBe("initialization_github");
     expect((error as LaunchError).message).toContain("GitHub could not be set up");
     expect((error as LaunchError).message).not.toContain(GITHUB_TOKEN);
     expect(world.rows.get("sbx-1")?.status).toBe("failed");

@@ -22,6 +22,8 @@ export function createMcpLifecycle(options: {
   encryptionKey: string | undefined;
   origin: string;
   registry: McpRegistry;
+  /** Trusted internal registry for the same transaction (managed parents never use the public registry). */
+  registryForSql?: (sql: Sql) => McpRegistry;
   prepareGitHub?: (provider: Provider, sandboxId: string) => Promise<void>;
 }) {
   const { sql, registry } = options;
@@ -142,11 +144,9 @@ export function createMcpLifecycle(options: {
         servers: {},
       };
       const leasePort = createSqlMcpLeasePort(tx);
-      const currentDefinitions = await createSqlMcpRegistry(tx, options.encryptionKey).sandboxConnections(
-        sandbox.ownerId,
-        sandbox.orgId,
-        sandbox.id,
-      );
+      const currentDefinitions = await (
+        options.registryForSql?.(tx) ?? createSqlMcpRegistry(tx, options.encryptionKey)
+      ).sandboxConnections(sandbox.ownerId, sandbox.orgId, sandbox.id);
       for (const c of currentDefinitions) {
         if (c.status !== "connected") throw Error("An MCP connection needs reconnecting or removal before this turn.");
         const name = `armada_${c.id.replaceAll("-", "_")}`;
@@ -225,11 +225,9 @@ export function createMcpLifecycle(options: {
       for (const tokenHash of prepared.hashes)
         if (!(await createSqlMcpLeasePort(tx).validate(tokenHash, "tools")))
           throw Error("MCP authority changed during native configuration.");
-      const verified = await createSqlMcpRegistry(tx, options.encryptionKey).sandboxConnections(
-        sandbox.ownerId,
-        sandbox.orgId,
-        sandbox.id,
-      );
+      const verified = await (
+        options.registryForSql?.(tx) ?? createSqlMcpRegistry(tx, options.encryptionKey)
+      ).sandboxConnections(sandbox.ownerId, sandbox.orgId, sandbox.id);
       if (
         verified.length !== Object.keys(prepared.config.servers).length ||
         verified.some((c) => c.status !== "connected")

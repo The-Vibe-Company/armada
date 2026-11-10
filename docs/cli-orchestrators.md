@@ -54,11 +54,12 @@ Delivery is at-least-once across an interruption: deduplicate by event ID if a
 page must be replayed. Cursors are opaque; never substitute provider cursors.
 Polling is read-only and does not keep a runtime active.
 
-## Recover an allocated but unbound Modal create
+## Recover a never-conversed Modal create
 
 `armada orchestrator recover ID --org ORG --expected-revision ORIGINAL_REVISION
 --idempotency-key RECOVERY_KEY --json` is a narrow owner recovery, not a generic
-retry. It discovers the original uncertain create's exact private Modal resource,
+retry. It aborts an original pending/uncertain first create, with or without a
+registered parent sandbox. It discovers its exact private Modal resource,
 terminates/confirms it through Armada's fenced provider path, and publishes a
 stop-kind receipt only after positive terminal proof. It never allocates a
 replacement or requests model-account values. Keep the original key and revision
@@ -76,3 +77,13 @@ than relying on a prior shell export. The default public origin uses the dashboa
 control proxy; its deployment must include the same owner routes as the backend.
 Unstructured HTTP errors report the validated effective origin without echoing
 upstream bodies or credentials. See [404 diagnosis](orchestrator-troubleshooting.md#a-404-before-recovery-admission).
+
+## Pending create is admission
+
+Create returns a durable pending receipt promptly; provider validation and
+preparation run in the server worker. Keep its ID/key and poll detail/events until
+ready or a terminal failure. Selection failures may arrive as failed preallocation
+receipts rather than a synchronous create HTTP error. Replaying the same key and
+payload discovers the same operation and never forks it again. Recovery also
+supports a never-conversed registered pending first create; it is explicit abort,
+not permission to resume initialization or adopt a newer generation.
