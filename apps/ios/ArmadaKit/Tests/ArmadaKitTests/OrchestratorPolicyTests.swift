@@ -38,9 +38,9 @@ private func signedIn(_ replies: [(Int, String)]) async throws -> (ArmadaClient,
 private let capabilities = #"""
 {"version":1,"enabled":true,"reason":null,
  "pairs":[
-  {"provider":"boat","harness":"claude","requested":true,"enabled":false,"reason":"boat_native_checkpoint_restore_unavailable"},
-  {"provider":"modal","harness":"claude","requested":false,"enabled":false,"reason":"native_resume_driver_unavailable"},
-  {"provider":"modal","harness":"codex","requested":true,"enabled":true,"reason":null},
+  {"provider":"boat","harness":"claude","requested":true,"enabled":false,"continuity":"best_effort","reason":"boat_native_checkpoint_restore_unavailable"},
+  {"provider":"modal","harness":"claude","requested":false,"enabled":false,"continuity":"native","reason":"native_resume_driver_unavailable"},
+  {"provider":"modal","harness":"codex","requested":true,"enabled":true,"continuity":"native","reason":null},
   {"provider":"future","harness":"pilot","requested":true,"enabled":true,"reason":null}],
  "harnesses":[
   {"harness":"claude","defaultModel":"c-1","defaultReasoningEffort":"medium","reasoningEfforts":["low","medium"],
@@ -61,20 +61,26 @@ private let goldens = #"""
 """#
 private let credentials = #"""
 {"user":[
-  {"id":"acc-codex","name":"Mine","kind":"openai","status":"active","isDefault":false,"createdAt":null},
-  {"id":"acc-default","name":"Team default","kind":"codex_auth","status":"active","isDefault":true,"createdAt":null},
-  {"id":"acc-expired","name":"Old","kind":"openai","status":"active","expiresAt":"2000-01-01T00:00:00Z","createdAt":null},
-  {"id":"acc-revoked","name":"Gone","kind":"openai","status":"revoked","createdAt":null},
+  {"id":"00000000-0000-4000-8000-000000000001","name":"Mine","kind":"openai","status":"active","isDefault":false,"createdAt":null},
+  {"id":"00000000-0000-4000-8000-000000000002","name":"Team default","kind":"codex_auth","status":"active","isDefault":true,"createdAt":null},
+  {"id":"00000000-0000-4000-8000-000000000003","name":"Old","kind":"openai","status":"active","expiresAt":"2000-01-01T00:00:00Z","createdAt":null},
+  {"id":"00000000-0000-4000-8000-000000000004","name":"Gone","kind":"openai","status":"revoked","createdAt":null},
   {"kind":"openai","createdAt":null}],
  "orgs":[
-  {"id":"org-a","name":"Team","role":"member","credentials":[{"kind":"boat","createdAt":null},{"id":"acc-claude","name":"Org Claude","kind":"claude_oauth","status":"active","createdAt":null}]},
-  {"id":"org-b","name":"Other","role":"member","credentials":[{"id":"acc-elsewhere","name":"Elsewhere","kind":"openai","status":"active","createdAt":null}]}]}
+  {"id":"org-a","name":"Team","role":"member","credentials":[{"kind":"boat","createdAt":null},{"id":"00000000-0000-4000-8000-000000000005","name":"Org Claude","kind":"claude_oauth","status":"active","createdAt":null}]},
+  {"id":"org-b","name":"Other","role":"member","credentials":[{"id":"00000000-0000-4000-8000-000000000006","name":"Elsewhere","kind":"openai","status":"active","createdAt":null}]}]}
 """#
+
+private let accCodex = "00000000-0000-4000-8000-000000000001"
+private let accDefault = "00000000-0000-4000-8000-000000000002"
+private let accClaude = "00000000-0000-4000-8000-000000000005"
+private let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
 
 private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTransport) {
     let (client, transport, _) = try await signedIn([(200, capabilities), (200, goldens), (200, credentials)])
     let result = OrchestratorCreateCatalog(capabilities: try await client.orchestratorCapabilities(),
-                                           goldens: try await client.goldens(), accounts: try await client.modelAccounts())
+                                           goldens: try await client.launchGoldens(), accounts: try await client.launchAccounts(),
+                                           now: fixedNow)
     return (result, transport)
 }
 
@@ -89,7 +95,7 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     }
     #expect(!catalog.goldens.contains { $0.id == "g-other" })
     // Unnamed, expired, revoked and other organizations' accounts are never offered.
-    #expect(Set(catalog.accounts.map(\.id)) == ["acc-codex", "acc-default", "acc-claude"])
+    #expect(Set(catalog.accounts.map(\.id)) == [accCodex, accDefault, accClaude])
 }
 
 @Test func onlyEnabledPairsAreOfferedAndADisabledPairIsExplained() async throws {
@@ -106,8 +112,8 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     let future = try #require(catalog.goldens.first { $0.id == "g-future" })
     #expect(catalog.offers(for: future).map(\.harness.rawValue) == ["pilot"])
     #expect(catalog.offers(for: future).first?.enabled == true)
-    // Accounts follow the server's account kinds for the harness, the default first.
-    #expect(catalog.accounts(for: .codex).map(\.id) == ["acc-default", "acc-codex"])
+    // Accounts follow the server's account kinds for the harness, the person's before the org's.
+    #expect(catalog.accounts(for: .codex).map(\.id) == [accCodex, accDefault])
     #expect(catalog.accounts(for: ArmadaHarness(rawValue: "pilot")!).isEmpty)
     #expect(catalog.canCreate)
 }
@@ -120,7 +126,7 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     let modal = try #require(catalog.goldens.first { $0.id == "g-modal" })
     catalog.adopt(golden: modal, into: &draft)
     #expect(draft.harness == .codex && draft.model == "x-1" && draft.reasoningEffort == "medium")
-    #expect(draft.accountId == "acc-default")
+    #expect(draft.accountId == accDefault)
     #expect(catalog.request(orgId: "org-a", draft: draft) == .failure(.missingName))
     draft.name = "  Release  "
     draft.reasoningEffort = "low"
@@ -143,7 +149,7 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     #expect(body["name"] as? String == "Release")
     #expect(body["provider"] as? String == "modal" && body["harness"] as? String == "codex")
     #expect(body["model"] as? String == "x-1" && body["reasoningEffort"] as? String == "high")
-    #expect(body["modelAccountId"] as? String == "acc-default" && body["repo"] as? String == "api")
+    #expect(body["modelAccountId"] as? String == accDefault && body["repo"] as? String == "api")
     #expect(body["idleSeconds"] == nil && body["size"] == nil)
     // A golden without a saved snapshot cannot start an orchestrator.
     draft.goldenId = "g-draft"
@@ -153,7 +159,8 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
 @Test func aServerWithoutPairsOffersNothingToCreate() async throws {
     let (client, _, _) = try await signedIn([(200, #"{"version":1,"enabled":false,"reason":"native_conformance_required"}"#), (200, goldens), (200, credentials)])
     let catalog = OrchestratorCreateCatalog(capabilities: try await client.orchestratorCapabilities(),
-                                            goldens: try await client.goldens(), accounts: try await client.modelAccounts())
+                                            goldens: try await client.launchGoldens(), accounts: try await client.launchAccounts(),
+                                            now: fixedNow)
     #expect(!catalog.canCreate)
     #expect(catalog.offers(for: catalog.goldens[0]).isEmpty)
 }
@@ -262,4 +269,142 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     #expect(key != nil && key == posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
     let body = try JSONSerialization.jsonObject(with: posts[0].httpBody!) as! [String: Any]
     #expect(body["expectedRevision"] as? Int == 7 && body["orgId"] as? String == "org-a" && body["text"] == nil)
+}
+
+@Test func eachPairSaysWhetherAResumeIsGuaranteed() async throws {
+    let (catalog, _) = try await catalog()
+    let modal = try #require(catalog.goldens.first { $0.id == "g-modal" })
+    #expect(catalog.offers(for: modal).map(\.continuityLabel) == ["Resume guaranteed", "Resume guaranteed"])
+    let boat = try #require(catalog.goldens.first { $0.id == "g-boat" })
+    #expect(catalog.offers(for: boat).first?.continuityLabel == "Resume not guaranteed")
+    // An older server reports no continuity: nothing is claimed.
+    let future = try #require(catalog.goldens.first { $0.id == "g-future" })
+    #expect(catalog.offers(for: future).first?.continuityLabel == nil)
+}
+
+@Test func theAccountIsChosenOnlyWhenThereIsAChoice() async throws {
+    let (catalog, _) = try await catalog()
+    // Claude runs on one org account: shown, preselected, no picker.
+    #expect(!catalog.offersAccountChoice(for: .claude))
+    #expect(catalog.defaultAccount(for: .claude)?.id == accClaude)
+    // Codex has two personal accounts and a personal default: a picker, the default preselected.
+    #expect(catalog.offersAccountChoice(for: .codex))
+    #expect(catalog.defaultAccount(for: .codex)?.id == accDefault)
+    // Two accounts and no default: the person chooses; the request is refused until they do.
+    let ambiguous = OrchestratorCreateCatalog(
+        capabilities: try JSONDecoder().decode(OrchestratorCapabilities.self, from: Data(capabilities.utf8)),
+        goldens: catalog.goldens,
+        accounts: [
+            LaunchAccount(id: accCodex, name: "A", kind: "openai", scope: .user, isDefault: false, status: "active", expiresAt: nil),
+            LaunchAccount(id: accDefault, name: "B", kind: "codex_auth", scope: .user, isDefault: false, status: "active", expiresAt: nil),
+            LaunchAccount(id: accClaude, name: "Org", kind: "openai", scope: .org, isDefault: true, status: "active", expiresAt: nil),
+        ],
+        now: fixedNow
+    )
+    #expect(ambiguous.accounts(for: .codex).map(\.id) == [accCodex, accDefault, accClaude])
+    #expect(ambiguous.defaultAccount(for: .codex) == nil)
+    var draft = ambiguous.initialDraft()
+    let modal = try #require(ambiguous.goldens.first { $0.id == "g-modal" })
+    ambiguous.adopt(golden: modal, into: &draft)
+    draft.name = "Release"
+    #expect(draft.accountId == nil)
+    #expect(ambiguous.request(orgId: "org-a", draft: draft) == .failure(.missingAccount))
+    draft.accountId = accClaude
+    #expect(try ambiguous.request(orgId: "org-a", draft: draft).get().modelAccountId == accClaude)
+}
+
+@Test func aModelChangeKeepsOnlyAnEffortTheModelAccepts() async throws {
+    let (catalog, _) = try await catalog()
+    var draft = OrchestratorCreateCatalog.Draft(harness: .codex, model: "x-1", reasoningEffort: "high")
+    // Another model id takes the harness's efforts, which include "high".
+    catalog.adopt(model: "x-custom", into: &draft)
+    #expect(draft.model == "x-custom" && draft.reasoningEffort == "high")
+    draft.reasoningEffort = "low"
+    // x-1 accepts medium and high only: back to the harness default.
+    catalog.adopt(model: "x-1", into: &draft)
+    #expect(draft.reasoningEffort == "medium")
+}
+
+private let createConfiguration = #"{"version":1,"orgId":"org-a","name":"Release","goldenId":"g-modal","provider":"modal","harness":"codex","model":"x-1","modelAccountId":"00000000-0000-4000-8000-000000000002"}"#
+private func createDetail(state: String, operation: String, blockedReason: String? = nil) -> String {
+    let blocked = blockedReason.map { #","blockedReason":"\#($0)""# } ?? ""
+    return #"{"version":1,"orchestrator":{"version":1,"id":"orch-new","ownerId":"owner-a","configuration":\#(createConfiguration),"state":"\#(state)","revision":1,"continuity":"not_started","createdAt":"2026-11-10T00:00:00Z","updatedAt":"2026-11-10T00:00:00Z","lastActivityAt":"2026-11-10T00:00:00Z","skillRevision":"v1"\#(blocked)},"operations":[\#(operation)],"waits":[],"childSandboxIds":[]}"#
+}
+private func createReceipt(_ state: String, errorCode: String? = nil) -> String {
+    let code = errorCode.map { #""\#($0)""# } ?? "null"
+    return #"{"version":1,"id":"op-create","orchestratorId":"orch-new","kind":"create","state":"\#(state)","revision":1,"errorCode":\#(code)}"#
+}
+private actor Sleeps {
+    private(set) var delays: [Duration] = []
+    func record(_ delay: Duration) { delays.append(delay) }
+}
+
+@Test func anAcceptedCreateIsFollowedUntilTheServerSettlesIt() async throws {
+    let enabled = #"{"version":1,"enabled":true,"reason":null}"#
+    let (client, transport, _) = try await signedIn([
+        (200, enabled),
+        (202, createReceipt("pending")),
+        (200, createDetail(state: "creating", operation: createReceipt("pending"))),
+        (503, #"{"error":{"code":"unavailable","message":"unavailable"}}"#),
+        (200, createDetail(state: "ready", operation: createReceipt("pending"))),
+        (200, createDetail(state: "ready", operation: createReceipt("succeeded"))),
+    ])
+    let (catalog, _) = try await catalog()
+    var draft = catalog.initialDraft()
+    catalog.adopt(golden: try #require(catalog.goldens.first { $0.id == "g-modal" }), into: &draft)
+    draft.name = "Release"
+    let command = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    let receipt = try await client.submitOrchestratorOperation(command.id)
+    #expect(receipt.state == .pending && receipt.orchestratorId == "orch-new")
+
+    let sleeps = Sleeps()
+    let progress = try await client.followOrchestratorCreate(command.id) { await sleeps.record($0) }
+    #expect(progress == .ready)
+    // Creating polls quickly; a failed read backs off; a ready state with its create still open keeps waiting.
+    #expect(await sleeps.delays == [.seconds(2), .seconds(2), .seconds(5)])
+    #expect(await client.pendingOperations.first { $0.id == command.id }?.state == .succeeded)
+
+    let requests = await transport.requests
+    let posts = requests.filter { $0.httpMethod == "POST" && $0.url!.path == "/api/v1/orchestrators" }
+    #expect(posts.count == 1)
+    #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") != nil)
+    // Following only reads the new orchestrator; it never sends the create again.
+    let follow = requests.suffix(4)
+    #expect(follow.allSatisfy { $0.httpMethod == "GET" && $0.url!.path == "/api/v1/orchestrators/orch-new" })
+    #expect(follow.allSatisfy { $0.value(forHTTPHeaderField: "Idempotency-Key") == nil })
+}
+
+@Test func aFailedCreateEndsTheFollowWithThePlainReason() async throws {
+    let enabled = #"{"version":1,"enabled":true,"reason":null}"#
+    let (client, _, _) = try await signedIn([
+        (200, enabled),
+        (202, createReceipt("pending")),
+        (200, createDetail(state: "blocked", operation: createReceipt("failed", errorCode: "create_preallocation_failed"),
+                           blockedReason: "create_preallocation_failed")),
+    ])
+    let (catalog, _) = try await catalog()
+    var draft = catalog.initialDraft()
+    catalog.adopt(golden: try #require(catalog.goldens.first { $0.id == "g-modal" }), into: &draft)
+    draft.name = "Release"
+    let command = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    _ = try await client.submitOrchestratorOperation(command.id)
+    let sleeps = Sleeps()
+    let progress = try await client.followOrchestratorCreate(command.id) { await sleeps.record($0) }
+    #expect(progress == .failed(OrchestratorExplanation.text(for: "create_preallocation_failed")))
+    #expect(await sleeps.delays.isEmpty)
+    #expect(await client.pendingOperations.first { $0.id == command.id }?.state == .failed)
+}
+
+@Test func onlyAnAcceptedCreateCanBeFollowed() async throws {
+    let (client, transport, _) = try await signedIn([])
+    let (catalog, _) = try await catalog()
+    var draft = catalog.initialDraft()
+    catalog.adopt(golden: try #require(catalog.goldens.first { $0.id == "g-modal" }), into: &draft)
+    draft.name = "Release"
+    let command = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    // Never sent, so there is no orchestrator to read yet.
+    await #expect(throws: ArmadaError.conflict) {
+        _ = try await client.followOrchestratorCreate(command.id) { _ in }
+    }
+    #expect(await transport.requests.allSatisfy { !$0.url!.path.hasPrefix("/api/v1/orchestrators") })
 }

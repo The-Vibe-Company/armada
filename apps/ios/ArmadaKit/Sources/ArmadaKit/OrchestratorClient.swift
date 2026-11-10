@@ -134,8 +134,17 @@ extension ArmadaClient {
         if let terminal = terminalReceipt(operationID) { return terminal }
         guard let prior = pending.receipt else { return nil }
         let detail = try await orchestratorDetail(id: prior.orchestratorId)
+        return try absorb(detail, into: operationID)
+    }
+
+    /// Records the saved operation's receipt as `detail` reports it. Nil when the detail does not
+    /// carry that exact receipt (another orchestrator, organization, revision or kind).
+    private func absorb(_ detail: OrchestratorDetail, into operationID: UUID) throws -> OrchestratorOperation? {
+        guard let pending = pendingOperations.first(where: { $0.id == operationID }) else { throw CancellationError() }
         guard selectedOrgID == pending.orgId, isSignedIn else { throw CancellationError() }
-        guard detail.orchestrator.id == prior.orchestratorId,
+        if let terminal = terminalReceipt(operationID) { return terminal }
+        guard let prior = pending.receipt,
+              detail.orchestrator.id == prior.orchestratorId,
               detail.orchestrator.configuration.orgId == pending.orgId,
               let receipt = detail.operations.first(where: { $0.id == prior.id }),
               receipt.version == 1, pending.action.receiptKinds.contains(receipt.kind),
@@ -143,6 +152,47 @@ extension ArmadaClient {
               receipt.revision == prior.revision else { return nil }
         try update(pending.updating(state: receipt.state, receipt: receipt))
         return terminalReceipt(operationID) ?? receipt
+    }
+
+    /// Follows an accepted create until it settles: reads the new orchestrator's detail, records its
+    /// create receipt, and sleeps `OrchestratorPolling`'s delay between reads (backing off after a
+    /// failed read). Sends nothing. Returns `.ready` only once the server reports the create
+    /// succeeded and the orchestrator past `creating`; `.failed` with a plain sentence otherwise.
+    /// `sleep` is the clock (injected by tests); cancelling the task stops following.
+    /// Throws `ArmadaError.conflict` when the saved operation is not an accepted create, and
+    /// rethrows a read failure that waiting cannot fix (signed out, no access, unsupported answer).
+    public func followOrchestratorCreate(
+        _ operationID: UUID,
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async throws -> OrchestratorCreateProgress {
+        var failures = 0
+        while true {
+            try Task.checkCancellation()
+            guard let pending = pendingOperations.first(where: { $0.id == operationID }),
+                  pending.orgId == (try selectedOrganization()),
+                  pending.action == .create, let receipt = pending.receipt else { throw ArmadaError.conflict }
+            var delay = OrchestratorPolling.settling
+            do {
+                let detail = try await orchestratorDetail(id: receipt.orchestratorId)
+                let settled = try absorb(detail, into: operationID)
+                if let settled, settled.state == .failed {
+                    return .failed(OrchestratorExplanation.text(for: settled.errorCode ?? "create_failed"))
+                }
+                let progress = OrchestratorCreateProgress(detail: detail)
+                if case .failed = progress { return progress }
+                // Ready only once its own receipt, when the detail lists it, is no longer open.
+                if progress == .ready, settled?.state != .pending, settled?.state != .uncertain { return .ready }
+                failures = 0
+                delay = OrchestratorPolling.detailDelay(state: detail.orchestrator.state.rawValue,
+                                                        hasOpenOperation: true, consecutiveFailures: 0)
+                    ?? OrchestratorPolling.settling
+            } catch let error as ArmadaError where error == .unavailable || error == .http(429) {
+                // Offline, a server error or rate limiting: wait longer and read again.
+                failures += 1
+                delay = OrchestratorPolling.backoff(failures)
+            }
+            try await sleep(delay)
+        }
     }
 
     /// Explicit user-authorized local abandonment only. Does not cancel the server

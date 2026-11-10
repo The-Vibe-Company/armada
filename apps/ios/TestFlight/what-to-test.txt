@@ -11,10 +11,16 @@ Check that a refused launch keeps every field and explains why, and that stop an
 sending a new prompt (which resumes a stopped sandbox) work from the conversation.
 Orchestrators tab: each row shows its state (starting, ready, needs attention with a
 plain reason, stopped), name, agent, model, provider and last activity.
-New Orchestrator: only provider and agent pairs the server enables can be chosen; a
+New Orchestrator (+ on the Orchestrators tab): the form opens with your goldens, not
+"Not available yet" (unless the server has orchestrators turned off). Pick a name and
+a golden (its provider is shown); only provider and agent pairs the server enables
+can be chosen, each saying "Resume guaranteed" or "Resume not guaranteed"; a
 disabled pair is listed with the server's reason. Models, efforts and accounts come
-from the server. After Create the orchestrator shows as starting and nothing can be
-sent until the server confirms it is ready.
+from the server, the same lists as New Sandbox; the account is a choice only when
+you have several. The idle stop is under More Options. After Create you land on the
+orchestrator in "starting" and nothing can be sent until the server confirms it is
+ready. Turn on Airplane Mode before Create: Retry repeats the same request. A refused
+create keeps every field and explains why.
 Conversation: send and steer, the event stream updating live, Details listing the
 workers it launched with a link to each worker's sandbox.
 Actions menu: Stop, Resume and Recover each ask for confirmation. Turn on Airplane

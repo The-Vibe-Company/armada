@@ -39,6 +39,7 @@ final class OrchestratorListModel {
     @ObservationIgnored private var pendingCreateHandle: String?
     /// Creates the server refused in this launch; never offered again as a retry.
     @ObservationIgnored private var refusedHandles = Set<String>()
+    @ObservationIgnored private var followTask: Task<Void, Never>?
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored private var consecutiveReadFailures = 0
     @ObservationIgnored let service: any OrchestratorService
@@ -192,6 +193,7 @@ final class OrchestratorListModel {
                 createStatus = .refused(ArmadaKit.OrchestratorExplanation.text(for: operation.errorCode ?? "create_failed"))
                 return nil
             }
+            if operation.state != .succeeded { follow(handle) }
             pendingCreateHandle = nil
             createStatus = nil
             pendingCreateName = nil
@@ -212,6 +214,17 @@ final class OrchestratorListModel {
                 createStatus = .refused(error.message)
             }
             return nil
+        }
+    }
+
+    /// Follows an accepted create until it settles (ArmadaKit's create → poll flow), then reloads
+    /// so its row and the saved command reflect the outcome even when nothing else polls.
+    private func follow(_ handle: String) {
+        followTask?.cancel()
+        followTask = Task { [weak self, service] in
+            let settlement = try? await service.followCreate(handle: handle)
+            guard !Task.isCancelled, settlement != nil, let self else { return }
+            await self.load()
         }
     }
 
