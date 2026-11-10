@@ -1,0 +1,96 @@
+import { describe, expect, test } from "bun:test";
+import { outcomeView, parseTaskOutcome, preservationView, safeHref } from "../src/lib/outcome.ts";
+
+const SHA = "0123456789abcdef0123456789ABCDEF01234567";
+const ID = "00000000-0000-4000-8000-000000000032";
+
+describe("parseTaskOutcome", () => {
+  test("keeps an outcome the database allows", () => {
+    const ready = { state: "ready", prNumber: 768, prUrl: "https://github.com/acme/web/pull/768", headSha: SHA };
+    expect(parseTaskOutcome(ready)).toEqual(ready);
+    expect(parseTaskOutcome({ state: "ready" })).toEqual({ state: "ready" });
+    expect(parseTaskOutcome({ state: "blocked", reason: "  Needs a key  " })).toEqual({
+      state: "blocked",
+      reason: "Needs a key",
+    });
+  });
+
+  test("refuses anything else rather than guess", () => {
+    for (const value of [
+      null,
+      "ready",
+      [],
+      { state: "done" },
+      { state: "blocked" },
+      { state: "blocked", reason: "   " },
+      { state: "ready", prNumber: 0 },
+      { state: "ready", prNumber: "12" },
+      { state: "ready", prUrl: "" },
+      { state: "ready", headSha: "abc123" },
+    ])
+      expect(parseTaskOutcome(value)).toBeNull();
+  });
+});
+
+describe("outcomeView", () => {
+  test("reads ready to merge with its pull request and short commit", () => {
+    expect(
+      outcomeView({ state: "ready", prNumber: 768, prUrl: "https://github.com/acme/web/pull/768", headSha: SHA }),
+    ).toEqual({
+      kind: "ready",
+      label: "Ready to merge",
+      pr: { label: "PR #768", href: "https://github.com/acme/web/pull/768" },
+      sha: "0123456",
+    });
+    expect(outcomeView({ state: "ready", prUrl: "https://example.com/pr" })).toMatchObject({
+      pr: { label: "Pull request", href: "https://example.com/pr" },
+    });
+    expect(outcomeView({ state: "ready" })).toMatchObject({ pr: null, sha: null });
+  });
+
+  test("never links an unsafe address", () => {
+    expect(outcomeView({ state: "ready", prNumber: 3, prUrl: "javascript:alert(1)" })).toMatchObject({
+      pr: { label: "PR #3", href: null },
+    });
+    expect(outcomeView({ state: "ready", prUrl: "http://github.com/x" })).toMatchObject({ pr: null });
+    expect(safeHref("/relative")).toBeNull();
+    expect(safeHref("data:text/html,x")).toBeNull();
+  });
+
+  test("reads blocked with its reason, and nothing as nothing", () => {
+    expect(outcomeView({ state: "blocked", reason: "Needs review" })).toEqual({
+      kind: "blocked",
+      label: "Blocked",
+      reason: "Needs review",
+    });
+    expect(outcomeView(null)).toBeNull();
+  });
+});
+
+describe("preservationView", () => {
+  const preserved = `unpushed work preserved at work_recovery:${ID}/00000000-0000-4000-8000-000000000099`;
+
+  test("a preserved archive gives its owner or an admin the recovery command", () => {
+    expect(preservationView(preserved, "stopped", ID, true)).toEqual({
+      kind: "preserved",
+      text: "Unpushed work preserved",
+      command: `armada recovery ${ID} > armada-recovery.json`,
+    });
+    expect(preservationView(preserved, "stopped", ID, false)).toMatchObject({ kind: "preserved", command: null });
+  });
+
+  test("a failed attempt says why, and any other note is shown as written", () => {
+    expect(preservationView("unpushed work could not be preserved (size_limit)", "stopped", ID, true)).toEqual({
+      kind: "failed",
+      text: "Unpushed work could not be preserved (size_limit)",
+      reason: "size_limit",
+    });
+    expect(preservationView("something else", "stopped", ID, true)).toEqual({ kind: "other", text: "something else" });
+  });
+
+  test("only a stopped sandbox with a note shows one", () => {
+    expect(preservationView(preserved, "running", ID, true)).toBeNull();
+    expect(preservationView(null, "stopped", ID, true)).toBeNull();
+    expect(preservationView("  ", "stopped", ID, true)).toBeNull();
+  });
+});
