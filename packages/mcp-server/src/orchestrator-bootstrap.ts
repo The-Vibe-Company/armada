@@ -92,15 +92,6 @@ export async function bootstrapOrchestrator(
         checksum: entry.checksum,
         origin: workspace.apiUrl,
       };
-      if (
-        request.expectedReceipt &&
-        Object.keys(receipt).some(
-          (key) =>
-            request.expectedReceipt?.[key as keyof OrchestratorSkillReceipt] !==
-            receipt?.[key as keyof OrchestratorSkillReceipt],
-        )
-      )
-        throw new Error("receipt_changed");
     }
   } catch {
     request.diagnostics?.captureReason("skill_install_nonzero");
