@@ -435,6 +435,9 @@ export class OrchestratorDiagnostics {
       resume_fallback: ["conversation_metadata_missing", "conversation_harness_mismatch"],
     };
     if (!Object.hasOwn(allowed, kind) || !allowed[kind].includes(value)) return;
+    let level: DiagnosticLevel = "warn";
+    if (value === "failed") level = "error";
+    else if (["accepted", "queued", "running", "finished", "empty", "published"].includes(value)) level = "info";
     try {
       void Promise.resolve(
         this.log?.(
@@ -448,11 +451,7 @@ export class OrchestratorDiagnostics {
             ...(this.orchestratorId ? { orchestratorId: this.orchestratorId } : {}),
             ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
           }),
-          value === "failed"
-            ? "error"
-            : ["accepted", "queued", "running", "finished", "empty", "published"].includes(value)
-              ? "info"
-              : "warn",
+          level,
         ),
       ).catch(() => {});
     } catch {
