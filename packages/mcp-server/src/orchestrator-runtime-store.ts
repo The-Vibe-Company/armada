@@ -402,7 +402,10 @@ export class OrchestratorRuntimeStore {
         event.kind === "agent"
           ? { ...event, event: truncateEvent(event.event, originalBytes) }
           : {
-              ...event,
+              id: event.id,
+              orchestratorId: event.orchestratorId,
+              at: event.at,
+              revision: event.revision,
               kind: "agent",
               event: truncateEvent(
                 { id: event.id, at: 0, kind: "other", type: "oversized", data: null },
