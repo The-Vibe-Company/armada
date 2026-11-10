@@ -1350,7 +1350,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         }
         return {
           result: { id: found.id, status: "deleted" as const },
-          patch: { status: "deleted", deletedAt: context.now().toISOString() },
+          patch: {
+            status: "deleted",
+            deletedAt: context.now().toISOString(),
+            ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
+          },
         };
       });
     },

@@ -61,7 +61,15 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       calls.push(sandboxId);
       return { status: "deleted" };
     };
+    const usage = async (id: string) =>
+      (
+        await db.query<{ seconds: number | null }>(
+          "select usage_runtime_seconds as seconds from sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0]!.seconds;
     const id = await insert();
+    await db.query("update sandboxes set usage_runtime_seconds=42 where id=$1", [id]);
     await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
       id,
       new Uint8Array([1]),
@@ -81,6 +89,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     expect(await removed.json()).toEqual({ id, status: "deleted" });
     const history = await state(id);
     expect(history.status).toBe("deleted");
+    expect(await usage(id)).toBe(42);
     expect(history.deleted_at).not.toBeNull();
     expect(history.preservation_note).toBeNull();
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
@@ -91,6 +100,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     expect((listed.data.sandboxes as { id: string }[]).map((row) => row.id)).not.toContain(id);
 
     const failed = await insert("failed");
+    await db.query("update sandboxes set usage_running_since='2026-01-01T00:00:00Z' where id=$1", [failed]);
     boat.provider.delete = async () => {
       throw new ProviderError({ provider: "boat", code: "unavailable", message: "offline", retryable: true });
     };
@@ -108,6 +118,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       throw new ProviderError({ provider: "boat", code: "not_found", message: "gone", retryable: false });
     };
     expect((await request(failed, adminToken)).status).toBe(200);
+    expect(await usage(failed)).toBeNull();
 
     const mcpId = await insert();
     expect((await call(owner, "delete", { id: mcpId })).data).toEqual({ id: mcpId, status: "deleted" });
