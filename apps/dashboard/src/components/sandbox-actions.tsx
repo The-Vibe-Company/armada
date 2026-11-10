@@ -1,7 +1,7 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { SquareIcon } from "lucide-react";
+import { Loader2Icon, SquareIcon } from "lucide-react";
 import { useActionState } from "react";
 import { stopSandbox } from "@/app/actions/sandboxes";
 import {
@@ -29,8 +29,8 @@ export function StopButton({ sandboxId }: { sandboxId: string }) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="destructive" disabled={pending}>
-          <SquareIcon /> Stop
+        <Button variant="destructive-outline" disabled={pending}>
+          {pending ? <Loader2Icon className="animate-spin" /> : <SquareIcon />} Stop
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -45,7 +45,9 @@ export function StopButton({ sandboxId }: { sandboxId: string }) {
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <form action={action}>
             <input type="hidden" name="sandbox" value={sandboxId} />
-            <AlertDialogAction type="submit">Stop sandbox</AlertDialogAction>
+            <AlertDialogAction type="submit" variant="destructive">
+              Stop sandbox
+            </AlertDialogAction>
           </form>
         </AlertDialogFooter>
       </AlertDialogContent>
