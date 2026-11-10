@@ -140,13 +140,17 @@ extension ArmadaClient {
     /// One page of events in chronological order. Forward (the default) reads after `cursor`, from
     /// the start when nil. Backward reads the latest page when `cursor` is nil, otherwise the page
     /// before it (`olderCursor` of an earlier backward read); its `hasMore` means older events exist
-    /// and its `cursor` is the forward frontier to follow from (#812).
-    public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false) async throws -> SandboxEventPage {
-        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String? }
+    /// and its `cursor` is the forward frontier to follow from (#812). `maxBytes` raises the page's
+    /// byte budget (server default 256 KiB): a single larger event is refused (400), never skipped.
+    public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false, maxBytes: Int? = nil) async throws -> SandboxEventPage {
+        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String?; let maxBytes: Int? }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
         return try await post("logs/read", Read(id: try sandboxID(id), org: try sandboxOrganization(), cursor: cursor,
-                                                direction: backward ? "backward" : nil))
+                                                direction: backward ? "backward" : nil, maxBytes: maxBytes))
     }
+
+    /// The largest byte budget an event page may ask for (#812): one event larger than this cannot be read.
+    public static let largestEventPageBytes = 1_048_576
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
     /// `SandboxMutationFailure.classify` and never resent by this client.

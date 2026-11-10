@@ -154,8 +154,11 @@ orchestrator events route with `direction: backward`):
 
 Reads are not coalesced: #812 coalesces a page's fragments into a snapshot of
 that page's text only, which would replace the earlier part of a message that
-spans pages. A server without backward reads answers with its first page and no
-`olderCursor`; it is then followed forward at once. The clock is injected; tests
+spans pages. A page whose single event exceeds the default 256 KiB budget is
+refused (400); the app reads it again once with `largestEventPageBytes`. A
+`logs/read` server without backward reads answers with its first page and no
+`olderCursor`; it is then followed forward at once. The orchestrator events
+route of such a server refuses `direction`, so the app needs a server with #812. The clock is injected; tests
 use a recording one.
 
 ## Launching a sandbox (#750)

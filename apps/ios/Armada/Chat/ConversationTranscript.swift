@@ -32,6 +32,8 @@ struct ConversationTranscript: View {
     var onDismissPending: ((PendingBubble) -> Void)?
     /// Older history exists above the first item.
     var hasOlder = false
+    /// Changes after every older page read: the top row then asks for the next one if still shown.
+    var olderPagesRead = 0
     var onLoadOlder: (() -> Void)?
 
     @State private var toolRoute: ToolRoute?
@@ -49,16 +51,16 @@ struct ConversationTranscript: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if items.isEmpty && pending.isEmpty {
+                    if items.isEmpty && pending.isEmpty && !hasOlder {
                         ContentUnavailableView(emptyTitle, systemImage: "bubble.left.and.text.bubble.right", description: Text(emptyMessage))
                             .padding(.top, 60)
                     }
-                    if hasOlder, !items.isEmpty, let onLoadOlder {
+                    if hasOlder, let onLoadOlder {
                         ProgressView()
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .accessibilityLabel("Loading earlier messages")
-                            // A new row after each page, so reaching the top again reads the next one.
-                            .id("older-\(items.first?.id ?? "")")
+                            // A new row after each page read, so a row still in view reads the next one.
+                            .id("older-\(olderPagesRead)")
                             .onAppear {
                                 olderAnchor = items.first?.id
                                 onLoadOlder()

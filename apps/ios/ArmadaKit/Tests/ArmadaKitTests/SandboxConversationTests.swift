@@ -158,7 +158,8 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
 @Test func theLatestPageIsReadBackwardAndOlderPagesFromItsOlderCursor() async throws {
     let (client, transport) = try await signedIn([
         .init(status: 200, body: #"{"events":[],"cursor":"frontier","olderCursor":"o9","hasMore":true,"settled":true}"#),
-        .init(status: 200, body: #"{"events":[],"cursor":"o9-next","olderCursor":"o1","hasMore":false,"settled":true}"#)
+        .init(status: 200, body: #"{"events":[],"cursor":"o9-next","olderCursor":"o1","hasMore":false,"settled":true}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"frontier","hasMore":false,"settled":true}"#)
     ])
     let latest = try await client.sandboxEvents(id: sandboxID, backward: true)
     #expect(latest.cursor == "frontier")
@@ -169,6 +170,10 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     let requests = Array(await transport.requests.dropFirst(2))
     #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "direction": "backward"])
     #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a", "cursor": "o9", "direction": "backward"])
+    // A page whose single event exceeds the default budget is read again with the largest one.
+    _ = try await client.sandboxEvents(id: sandboxID, cursor: "frontier", maxBytes: ArmadaClient.largestEventPageBytes)
+    let raised = try JSONSerialization.jsonObject(with: await transport.requests.last!.httpBody ?? Data()) as? NSDictionary
+    #expect(raised == ["id": sandboxID, "org": "org-a", "cursor": "frontier", "maxBytes": 1_048_576])
 }
 
 @Test func closedInterruptionReasonsOfferManualResendWithoutBlockingAdmission() throws {

@@ -153,6 +153,7 @@ struct SandboxConversationView: View {
             onRetryPending: nil,
             onDismissPending: { model.dismiss($0) },
             hasOlder: model.feed.hasOlder,
+            olderPagesRead: model.feed.olderPagesRead,
             onLoadOlder: { Task { await model.loadOlder() } }
         )
         .refreshable { await model.refresh() }

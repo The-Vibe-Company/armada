@@ -78,6 +78,7 @@ struct OrchestratorConversationView: View {
                 confirmingDiscard = true
             },
             hasOlder: model.feed.hasOlder,
+            olderPagesRead: model.feed.olderPagesRead,
             onLoadOlder: { Task { await model.loadOlder() } }
         )
         .safeAreaInset(edge: .top, spacing: 0) {

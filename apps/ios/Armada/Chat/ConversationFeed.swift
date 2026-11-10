@@ -38,6 +38,9 @@ final class ConversationFeed {
     /// Older history exists above what is shown.
     private(set) var hasOlder = false
     private(set) var isLoadingOlder = false
+    /// Counts older pages read, so the transcript asks again even when a page added no new first
+    /// item (more fragments of a message already shown, or only technical events).
+    private(set) var olderPagesRead = 0
     /// The highest orchestrator revision any event carried; a newer value means detail is stale.
     private(set) var latestRevision = 0
 
@@ -92,6 +95,7 @@ final class ConversationFeed {
             hasOlder = loader.hasOlder
         }
         try await loader.loadOlder(Self.read(fetch), show: show)
+        olderPagesRead += 1
     }
 
     /// Forgets what this session kept of the conversation, after its access was refused.
