@@ -499,6 +499,72 @@ try {
   assert.equal(effects.epochInstalls, 1, "Child must not install a parent epoch.");
   for (const secret of [token.token, modalId, modalSecret, modelSecret, key, ...fake.privateTokens])
     assert(!logs.join("\n").includes(secret));
+  // Ordinary stop survives collector failure notes and transport/receipt failures.
+  // Archive decryption itself is covered by the core preservation tests, not this fake runner.
+  const ordinary = async (action: string, body: object, status = 200) => {
+    // The real background reconciler may own a short observation lease. Exercise
+    // the closed retry contract without wall-clock sleeps or bypassing ownership.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const response = await socketFetch(`${origin}/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const result = (await response.json()) as any;
+      if (
+        status === 200 &&
+        action !== "launch" &&
+        response.status === 409 &&
+        result.error?.code === "sandbox_not_ready"
+      )
+        continue;
+      assert.equal(response.status, status, `${action}: ${JSON.stringify(result)}`);
+      return result;
+    }
+    throw Error(`${action}: lifecycle admission never became available`);
+  };
+  const failures = [
+    "missing_python3",
+    "missing_git",
+    "missing_openssl",
+    "unavailable",
+    "timeout",
+    "size_limit",
+    "collector_exit",
+    "collector_signal",
+    "collector_failed",
+    "output_invalid",
+    "output_truncated",
+    "decrypt",
+  ];
+  for (const reason of failures) {
+    fake.failPreservation(reason);
+    const launched = await ordinary("launch", {
+      golden: golden.name,
+      org: orgId,
+      provider: "modal",
+      harness: "codex",
+      credentialId: modelId,
+      connections: [],
+    });
+    const sandboxId = launched.sandbox.id;
+    assert(sandboxId, JSON.stringify(launched));
+    // A live observation lease must be a closed retryable conflict, never a 503.
+    await sql.query("update sandboxes set reconcile_lease_until=now()+interval '1 minute' where id=$1", [sandboxId]);
+    await ordinary("send", { id: sandboxId, prompt: "hello" }, 409);
+    await sql.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
+    await ordinary("send", { id: sandboxId, prompt: "hello" });
+    const stopped = await ordinary("stop", { id: sandboxId });
+    assert.equal(stopped.status, "stopped");
+    const row = (
+      await sql.query<{ status: string; preservation_note: string }>(
+        "select status::text, preservation_note from sandboxes where id=$1",
+        [sandboxId],
+      )
+    ).rows[0]!;
+    assert.equal(row.status, "stopped");
+    assert.equal(row.preservation_note, `unpushed work could not be preserved (${reason})`);
+  }
   console.log(
     `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects })}`,
   );

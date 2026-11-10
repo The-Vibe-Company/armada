@@ -109,6 +109,12 @@ type SandboxViewRow = SandboxRow & {
 
 export class DataError extends Error {
   override readonly name = "DataError";
+  constructor(
+    message: string,
+    readonly code: "unavailable" | "sandbox_not_ready" = "unavailable",
+  ) {
+    super(message);
+  }
 }
 
 export function createSqlData(sql: Sql): DataSource {
@@ -359,7 +365,11 @@ export function createSqlData(sql: Sql): DataSource {
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now()) and (s.activity_until is null or s.activity_until < now())"}) ${fence} returning s.id${patch.status === "deleted" ? "), purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id) select id from updated" : ""}`,
           params,
         );
-        if (!result.rows[0]) throw new DataError("The sandbox could not be updated.");
+        if (!result.rows[0])
+          throw new DataError(
+            "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
+            "sandbox_not_ready",
+          );
       },
       async reportTaskOutcome(id, promptId, outcome, expectedGeneration) {
         const result = await sql.query(

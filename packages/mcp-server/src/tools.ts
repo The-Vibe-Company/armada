@@ -1581,7 +1581,8 @@ function describe(error: unknown): { code: string; message: string } {
       message: error.message,
     };
   if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
-  if (error instanceof DataError) return { code: "dependency_unavailable", message: error.message };
+  if (error instanceof DataError)
+    return { code: error.code === "unavailable" ? "dependency_unavailable" : error.code, message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };
 }
 
