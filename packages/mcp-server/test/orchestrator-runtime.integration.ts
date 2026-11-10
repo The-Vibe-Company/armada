@@ -86,6 +86,13 @@ test("runtime receipts serialize retries, block uncertain replay, fence completi
     expect(repeated.operation.state).toBe("uncertain");
     const page = await store.events(p.owner, p.org, first.identity.id);
     expect(page.events).toHaveLength(2);
+    const tail = await store.events(p.owner, p.org, first.identity.id, undefined, 1, { direction: "backward" });
+    expect(tail.events.map((e) => e.id)).toEqual([page.events[1]!.id]);
+    expect(tail.hasMore).toBe(true);
+    const older = await store.events(p.owner, p.org, first.identity.id, tail.olderCursor, 1, { direction: "backward" });
+    expect(older.events.map((e) => e.id)).toEqual([page.events[0]!.id]);
+    expect(older.hasMore).toBe(false);
+    expect((await store.events(p.owner, p.org, first.identity.id, tail.cursor!)).events).toEqual([]);
     if (!page.cursor) throw Error("missing retained-event cursor");
     const other = await store.create({
       ownerId: p.owner,

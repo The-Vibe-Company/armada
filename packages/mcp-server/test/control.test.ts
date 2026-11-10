@@ -448,7 +448,7 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
-  test("logs follow settles for no prompt and each final prompt status", async () => {
+  test.each([true, false])("logs tail settles without draining history (follow=%s)", async (follow) => {
     // All variants are read-only; migrate one database rather than repeating the
     // same setup four times inside one bounded behavioral test.
     await withServer(async ({ options }) => {
@@ -457,6 +457,7 @@ describe("armada org and armada creds against the control API", () => {
         const prompt = status
           ? [{ id: `prompt-${status}`, at: 1, kind: "prompt" as const, promptId: "pr_1", text: "go" }]
           : [];
+        let reads = 0;
         const logs: ControlOptions = {
           ...options,
           logs: async () => ({
@@ -466,6 +467,8 @@ describe("armada org and armada creds against the control API", () => {
               harnesses: ["claude", "codex"],
               capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } } as never,
               async events() {
+                reads++;
+                if (reads > 1) throw new Error("History was drained behind a tail read");
                 return { events: prompt, cursor: status ? "cursor" : undefined, hasMore: false };
               },
               async get() {
@@ -483,13 +486,14 @@ describe("armada org and armada creds against the control API", () => {
             headers: {
               authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
             },
-            body: JSON.stringify({ id: armadaId, follow: true }),
+            body: JSON.stringify({ id: armadaId, follow, direction: "backward" }),
           }),
           logs,
         );
         expect(response?.status).toBe(200);
         if (!response) throw new Error("expected response");
         expect(((await response.json()) as { settled: boolean }).settled).toBe(true);
+        expect(reads).toBe(1);
       }
     });
   });

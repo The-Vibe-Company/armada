@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   EventPage,
+  EventsRequest,
   HarnessCapabilities,
   MachineSize,
   ModalBinding,
@@ -148,7 +149,7 @@ export interface ModalStore {
   images(sourceId: string): Promise<SavedImage[]>;
   /** Server-only boolean: checks references across target visibility scopes without exposing rows. */
   imageReferenced(imageId: string): Promise<boolean>;
-  events(input: { sandboxId: string; cursor?: string; conversationId?: string; limit?: number }): Promise<EventPage>;
+  events(input: EventsRequest): Promise<EventPage>;
 }
 export interface RunnerGrant {
   token: string;

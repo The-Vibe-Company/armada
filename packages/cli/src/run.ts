@@ -153,7 +153,7 @@ Usage:
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
-  armada logs <sandbox-id> [--all] [--follow] [--json]
+  armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
                                            --email sends a sign-in link; click it, or type the code it contains
@@ -846,7 +846,21 @@ type LogsWireResult = {
 };
 
 async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv);
+  const normalized: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--tail") {
+      normalized.push("--tail", /^\d+$/.test(argv[i + 1] ?? "") ? argv[++i]! : "100");
+    } else normalized.push(arg);
+  }
+  const args = parseArgs(normalized, ["--tail"]);
+  const tail = single(args, "--tail");
+  const limit = tail === undefined ? undefined : Number(tail);
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000))
+    throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
+  if (tail !== undefined && (flag(args, "--all") || single(args, "--since")))
+    throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
+  let firstTail = tail !== undefined;
   const id = oneName(args.positionals);
   const all = flag(args, "--all");
   const follow = flag(args, "--follow");
@@ -864,12 +878,22 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     const result: LogsWireResult = await client.request<LogsWireResult>("/api/v1/logs/read", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id, all, follow, ...(cursor === null ? {} : { cursor }) }),
+      body: JSON.stringify({
+        id,
+        all,
+        follow,
+        ...(firstTail ? { direction: "backward", limit } : {}),
+        ...(cursor === null ? {} : { cursor }),
+      }),
       // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
       signal: AbortSignal.timeout(10 * 60_000),
     });
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
+    if (firstTail) {
+      firstTail = false;
+      result.hasMore = false;
+    }
     const nextCursor: string | null = result.cursor ?? cursor;
     const progressed = nextCursor !== cursor;
     if ((all || follow) && result.hasMore && !progressed) {
