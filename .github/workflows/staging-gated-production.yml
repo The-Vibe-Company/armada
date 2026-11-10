@@ -28,7 +28,17 @@ jobs:
         env:
           ENABLED: ${{ vars.STAGING_GATED_DEPLOYS }}
           RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
+          RELEASE_CALL_SHA: ${{ inputs.source_sha }}
+          SOURCE_REF: ${{ github.ref }}
         run: |
+          if [[ -n "$RELEASE_CALL_SHA" && "$ENABLED" != true ]]; then
+            echo "::error::Release staging smoke cannot be a disabled/no-op run."
+            exit 1
+          fi
+          if [[ "$ENABLED" == true && "$SOURCE_REF" != refs/heads/main && "$SOURCE_REF" != refs/tags/v* ]]; then
+            echo "::error::Pinned staging smoke requires main or a version tag."
+            exit 1
+          fi
           if [[ "$ENABLED" != true ]]; then
             echo "::notice::Staging-gated deployments disabled; existing deployment behavior unchanged. See docs/releasing.md."
           elif [[ "$RELEASE_SYNCED" != true ]]; then
