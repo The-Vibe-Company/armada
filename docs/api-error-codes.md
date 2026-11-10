@@ -33,14 +33,15 @@ A LaunchError with a recorded legacy code retains that code (no message guessing
 | invalid, invalid_config | 400 | Correct request/configuration. invalid also covers method rejection at 405. |
 | unauthorized | 401 | Authenticate again (control authentication, not provider credential refusal). |
 | forbidden | 403 | Caller lacks access. |
-| not_found, missing_credential | 404 | Resource/account not visible or missing. |
+| not_found | 404 | Resource not visible or missing. |
+| missing_credential | 404 direct VaultError; 400 via shared tool | Account credential missing. |
 | conflict, credential_binding_required, credential_binding_unsafe | 409 | Refresh state or explicitly repair credential binding. |
 | sandbox_not_ready, no_running_turn | 409 via shared tool; 503 for direct ProviderError | Wait for readiness, or avoid steering an absent turn. |
 | invalid_request | 400 | Invalid provider/tool/launch request. |
 | no_credentials, start_failed, init_failed, prompt_failed | 400 | Launch refused or recorded failure; inspect existing sandbox before a new launch. |
 | setup_failed, snapshot_failed, build_failed | 502 | Golden build/setup failed. |
 | provider_not_configured | 503 | Provider adapter/account unavailable. |
-| provider_mismatch | 503 | Persisted routing disagrees; do not switch providers. |
+| provider_mismatch | 503 direct control; 400 via shared tool | Persisted routing disagrees; do not switch providers. |
 | payment_required, rate_limited | 400 via shared tool; 503 for direct ProviderError | Resolve billing/quota or back off; surface-dependent legacy status. |
 | unavailable | 503 via legacy shared tool | Legacy unavailable marker; typed paths use the shared categories above. |
 | unknown | 502 via shared tool | Legacy unknown marker; typed provider unknown is provider_unavailable. |
