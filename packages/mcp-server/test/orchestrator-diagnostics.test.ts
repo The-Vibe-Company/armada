@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { LaunchError, ProviderError, VaultError } from "@armada/core/server";
 import { lifecycleStep, modalError } from "../../provider-modal/src/errors.ts";
-import { orchestratorDiagnosticLog, OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
+import { OrchestratorDiagnostics, orchestratorDiagnosticLog } from "../src/orchestrator-diagnostics.ts";
 
 test("diagnostics project only safe codes/UUIDs and retain failure identity across cleanup/publication", () => {
   const lines: string[] = [];
@@ -403,7 +403,6 @@ test("Boat invalid requests expose only closed HTTP/code/parameter metadata", ()
   expect(lines.join("")).not.toContain("private-");
 });
 
-
 // One owner-boundary regression covers severity without replaying orchestrator effects.
 test("structured diagnostic severity follows outcomes through the production sink", async () => {
   const entries: { level: string; value: string }[] = [];
@@ -420,10 +419,14 @@ test("structured diagnostic severity follows outcomes through the production sin
     ["prompt_dispatch", "not_confirmed", "warn"],
     ...["queued", "running", "finished"].map((value) => ["prompt_status", value, "info"]),
     ...["failed", "interrupted", "unknown", "unavailable"].map((value) => [
-      "prompt_status", value, value === "failed" ? "error" : "warn",
+      "prompt_status",
+      value,
+      value === "failed" ? "error" : "warn",
     ]),
     ...["empty", "published", "fenced", "failed"].map((value) => [
-      "events_poll", value, value === "failed" ? "error" : value === "fenced" ? "warn" : "info",
+      "events_poll",
+      value,
+      value === "failed" ? "error" : value === "fenced" ? "warn" : "info",
     ]),
     ["resume_continuity", "unverified", "warn"],
     ["resume_continuity", "previous_conversation_not_continued", "warn"],
@@ -444,7 +447,11 @@ test("structured diagnostic severity follows outcomes through the production sin
   try {
     for (const retryable of [true, false]) {
       const failure = new ProviderError({ provider: "modal", code: "unavailable", message: "safe", retryable });
-      await expect(lifecycleStep("modal_checkpoint_snapshot", async () => { throw failure; })).rejects.toMatchObject({
+      await expect(
+        lifecycleStep("modal_checkpoint_snapshot", async () => {
+          throw failure;
+        }),
+      ).rejects.toMatchObject({
         retryable,
       });
     }

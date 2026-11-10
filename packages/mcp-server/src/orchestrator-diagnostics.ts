@@ -497,7 +497,9 @@ export class OrchestratorDiagnostics {
       ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
     };
     try {
-      void Promise.resolve(this.log?.(JSON.stringify(record), outcome === "uncertain" ? "warn" : "error")).catch(() => {});
+      void Promise.resolve(this.log?.(JSON.stringify(record), outcome === "uncertain" ? "warn" : "error")).catch(
+        () => {},
+      );
     } catch {
       /* Best effort only. */
     }

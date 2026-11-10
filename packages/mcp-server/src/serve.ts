@@ -1,4 +1,3 @@
-import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
@@ -28,6 +27,7 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
 import type { createOrchestratorServices } from "./orchestrator-composition.ts";
+import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
