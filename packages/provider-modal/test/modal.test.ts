@@ -10,10 +10,11 @@ import {
   GoldenBuildJobs,
   reserveOrchestratorOperation,
 } from "@armada/core/server";
-import type { Image, ModalClient, Sandbox } from "modal";
+import { type Image, ModalClient, type Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createManagedParentMcp } from "../../mcp-server/src/mcp-managed-parent.ts";
+import { createManagedOrchestratorRuntime } from "../../mcp-server/src/orchestrator-managed-runtime.ts";
 import { createModalOrchestratorNativeAdapter } from "../../mcp-server/src/orchestrator-modal-native.ts";
 import { OrchestratorRuntimeStore } from "../../mcp-server/src/orchestrator-runtime-store.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
@@ -2525,7 +2526,7 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
   });
   f.onRpc(async (row, op) =>
     op === "observeOrchestrator"
-      ? { ...native(row), state: "quiescent", eventWatermark: 0, acknowledgedSequence: 0 }
+      ? { ...native(row), state: "quiescent", evidence: "a".repeat(64), eventWatermark: 0, acknowledgedSequence: 0 }
       : op === "resumeNativeSession"
         ? native(row)
         : undefined,
@@ -2558,7 +2559,10 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
   ).toBeNull();
   expect(f.log.length).toBe(effects);
   expect(f.creates).toBe(creates);
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [publicSandboxId]);
+  await db.query(
+    "update sandboxes set status='stopped',stopped_at=now(),orchestrator_native_generation='1' where id=$1",
+    [publicSandboxId],
+  );
   await db.query("update orchestrator_operations set runtime_result=$2::jsonb where id=$1", [
     operationId,
     JSON.stringify({ state: "stopped", continuity: "native", generation: String(stoppedGeneration) }),
@@ -2609,6 +2613,37 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
     f.provider.restoreOrchestratorCheckpoint({ sandboxId: parent.id, operationId: crypto.randomUUID(), checkpoint }),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(f.creates).toBe(after);
+  const secondStop = await runtimeStore.reserve({
+    ownerId: scope.userId,
+    orgId: scope.orgId,
+    id: created.identity.id,
+    action: "stop",
+    key: "checkpoint-stop-2",
+    expectedRevision: resume.operation.revision,
+    payload: {},
+  });
+  const machine = {
+    orchestratorId: created.identity.id,
+    sandboxId: publicSandboxId,
+    providerSandboxId: parent.id,
+    generation: String(secondStop.identity.generation),
+  };
+  const managedStop = createManagedOrchestratorRuntime({
+    sql: db,
+    authority: { revoke: async () => {}, scrubBeforeCheckpoint: async () => {} } as never,
+    resolveManaged: async () =>
+      adapter.managed(f.provider, machine, {
+        orgId: scope.orgId,
+        ownerId: scope.userId,
+        goldenId: sqlGolden.id,
+        provider: "modal",
+      }),
+  });
+  expect(await managedStop.stopOwner(machine, secondStop.operation.id)).toMatchObject({
+    state: "stopped",
+    continuity: "native",
+    physicalGeneration: "2",
+  });
 });
 
 test("unknown native checkpoint dispatch never repeats snapshot and unacknowledged native events prevent stop", async () => {
@@ -2844,3 +2879,149 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
     }
   },
 );
+
+// Recovery must own cleanup even when an old initialization catch began a stop
+// whose checkpoint or snapshot failed. Exercise the public SDK's lookup/tag/poll
+// and termination paths, with only its gRPC transport replaced.
+test.each(["checkpoint", "snapshot"] as const)(
+  "registered first-create recovery terminates interrupted %s cleanup",
+  async (phase) => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const createOperationId = crypto.randomUUID();
+    const orchestratorId = crypto.randomUUID();
+    const sandboxId = crypto.randomUUID();
+    const child = await f.provider.fork({
+      from: name,
+      idempotencyKey: createOperationId,
+      labels: {
+        sandbox: sandboxId,
+        operation: createOperationId,
+        orchestrator: orchestratorId,
+        owner: scope.userId,
+        org: scope.orgId,
+        visibility: "private",
+      },
+    });
+    await f.store.lease(child.id, async (row, save) => {
+      row.phase = phase;
+      await save(row);
+    });
+    const row = await f.store.get(child.id);
+    let terminated = false;
+    let terminations = 0;
+    const client = new ModalClient({
+      tokenId: "synthetic",
+      tokenSecret: "synthetic",
+      cpClient: {
+        appGetOrCreate: async () => ({ appId: scope.binding.appId }),
+        sandboxGetFromNameV2: async (request: { sandboxName: string }) => {
+          expect(request.sandboxName).toBe(row.physicalName);
+          return { sandboxId: row.physicalId };
+        },
+        sandboxTagsGetV2: async () => ({
+          tags: [
+            { tagName: "armada_sandbox", tagValue: child.id },
+            { tagName: "armada_scope", tagValue: (await import("../src/store.ts")).scopeKey(scope) },
+            { tagName: "armada_generation", tagValue: "1" },
+          ],
+        }),
+        sandboxWaitV2: async () => (terminated ? { result: { status: 1, exitcode: 0 } } : {}),
+        sandboxTerminateV2: async () => {
+          terminations++;
+          terminated = true;
+          return {};
+        },
+      } as unknown as ModalClient["cpClient"],
+    });
+    const provider = createModalProvider({
+      scope,
+      store: f.store,
+      appName: "pinned",
+      client,
+      distribution: f.distribution,
+      runner: {
+        call: async () => {
+          throw Error("Recovery must not contact Runner");
+        },
+      },
+    });
+    const request = {
+      version: 1 as const,
+      createOperationId,
+      recoveryOperationId: crypto.randomUUID(),
+      orchestratorId,
+      ownerId: scope.userId,
+      orgId: scope.orgId,
+      providerSnapshotId: name,
+      intendedSandboxId: sandboxId,
+      originalSandbox: { sandboxId, providerSandboxId: child.id, sqlGeneration: "1", nativeGeneration: "1" },
+      target: {
+        provider: "modal" as const,
+        orgId: scope.orgId,
+        visibility: "private" as const,
+        sourceGoldenVisibility: "private" as const,
+        modal: scope.binding,
+      },
+    };
+    try {
+      expect(await provider.readOrchestratorCreateRecovery!(request)).toBeNull();
+      expect(terminations).toBe(0);
+      expect(await provider.recoverOrchestratorCreate!(request)).toMatchObject({
+        state: "terminated",
+        physicalId: row.physicalId,
+      });
+      expect((await f.store.get(child.id)).phase).toBe("deleted");
+      expect(await provider.readOrchestratorCreateRecovery!(request)).toMatchObject({ state: "terminated" });
+      expect(terminations).toBe(1);
+    } finally {
+      client.close();
+    }
+  },
+);
+
+test("orchestrator stop seals the final acknowledged checkpoint watermark, not its earlier observation", async () => {
+  const f = fixture();
+  const parent = await runningFork(f);
+  f.onRpc(async (row, op) => {
+    if (op === "observeOrchestrator")
+      return {
+        physicalGeneration: String(row.generation),
+        state: "quiescent",
+        nativeSessionId: "native",
+        eventWatermark: 0,
+        acknowledgedSequence: 0,
+      };
+    if (op === "checkpoint") {
+      await appendModalEvents(db, scope, parent.id, "1", [
+        {
+          sequence: 1,
+          event: {
+            id: crypto.randomUUID(),
+            at: 1,
+            kind: "prompt",
+            text: "done",
+            promptId: "p",
+            conversationId: "logical",
+            status: "finished",
+          },
+        },
+      ]);
+      return { generation: "1", watermark: 1, acknowledgedSequence: 1 };
+    }
+  });
+  const request = {
+    sandboxId: parent.id,
+    operationId: crypto.randomUUID(),
+    physicalGeneration: "1",
+    conversationId: "logical",
+    harness: "codex" as const,
+    model: "gpt-6.1-sol",
+  };
+  const receipt = await f.provider.checkpointOrchestrator(request);
+  expect(receipt).toMatchObject({ state: "stopped", eventWatermark: 1, acknowledgedSequence: 1 });
+  expect(await f.provider.readOrchestratorCheckpoint(request)).toEqual(receipt);
+  expect((await f.provider.get(parent.id)).state).toBe("stopped");
+});

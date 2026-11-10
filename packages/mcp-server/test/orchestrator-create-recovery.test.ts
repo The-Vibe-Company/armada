@@ -557,3 +557,98 @@ test.each([false, true])(
   },
   20_000,
 );
+
+// Native destructive recovery is distinct from continuity recovery: a failed
+// checkpoint must not leave an owned VM running forever, nor invent a session.
+test.each([false, true])(
+  "owner abort fences the exact uncertain stop (replacement=%s)",
+  async (replacement) => {
+    const f = await fixture();
+    try {
+      const registered = await f.register("active", false);
+      const conversation = crypto.randomUUID();
+      await f.sql.query("update orchestrator_operations set state='succeeded',error_code=null where id=$1", [
+        f.create.operation.id,
+      ]);
+      await f.sql.query("update orchestrators set state='ready' where id=$1", [f.input.id]);
+      await f.sql.query("update orchestrator_runtime set conversation_id=$2 where orchestrator_id=$1", [
+        f.input.id,
+        conversation,
+      ]);
+      await f.sql.query("update sandboxes set conversation_ids=array[$2] where id=$1", [registered.id, conversation]);
+      const stop = await core.reserveOrchestratorOperation(f.sql, {
+        orchestratorId: f.input.id,
+        actorId: f.p.owner,
+        action: "stop",
+        key: "failed-stop",
+        digest: "a".repeat(64),
+        expectedRevision: f.input.expectedRevision,
+      });
+      await f.sql.query(
+        "update orchestrator_operations set state='uncertain',error_code='runtime_uncertain',runtime_result=$2::jsonb where id=$1",
+        [stop.id, JSON.stringify({ state: "uncertain" })],
+      );
+      await f.sql.query("update orchestrators set state='blocked' where id=$1", [f.input.id]);
+      await f.native.lease(f.row.info.id, async (row, save) => {
+        row.phase = "checkpoint";
+        row.orchestratorCheckpoint = {
+          receipt: {
+            version: 1,
+            operationId: stop.id,
+            sandboxId: row.info.id,
+            physicalGeneration: "1",
+            conversationId: conversation,
+            nativeSessionId: "native-original",
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            eventWatermark: 1,
+            acknowledgedSequence: 1,
+            checkpointId: null,
+            state: "pending",
+          },
+        };
+        if (replacement) row.generation = 2;
+        await save(row);
+      });
+      const input = { ...f.input, expectedRevision: stop.revision, key: "abort-uncertain-stop" };
+      if (replacement) {
+        expect((await f.recover(input)).state).toBe("uncertain");
+        expect(f.stats()).toEqual({ allocations: 0, terminations: 0 });
+        expect((await f.native.get(f.row.info.id)).generation).toBe(2);
+        return;
+      }
+      const recovered = await f.recover(input);
+      expect(recovered.state).toBe("succeeded");
+      expect(f.stats()).toEqual({ allocations: 0, terminations: 1 });
+      expect(f.modelLookups()).toBe(0);
+      expect(await f.store.read(f.p.owner, f.p.org, f.input.id)).toMatchObject({
+        state: "stopped",
+        continuity: "unverified",
+      });
+      expect(
+        (await f.sql.query("select state,error_code from orchestrator_operations where id=$1", [stop.id])).rows,
+      ).toEqual([{ state: "failed", error_code: "stop_recovered_terminated" }]);
+      expect(
+        (await f.sql.query("select state from orchestrator_operations where id=$1", [f.create.operation.id])).rows,
+      ).toEqual([{ state: "succeeded" }]);
+      expect(await f.recover(input)).toEqual(recovered);
+      expect(f.stats().terminations).toBe(1);
+      const request = (await f.native.get(f.row.info.id)).orchestratorCreateRecovery!.request;
+      const { originalSandbox, ...unregistered } = request;
+      await expect(f.provider.readOrchestratorCreateRecovery!(unregistered)).rejects.toMatchObject({
+        code: "conflict",
+        providerCode: "modal_recovery_binding",
+      });
+      await expect(
+        f.provider.readOrchestratorCreateRecovery!({
+          ...request,
+          originalSandbox: { ...originalSandbox!, nativeGeneration: "2" },
+        }),
+      ).rejects.toMatchObject({ code: "conflict", providerCode: "modal_recovery_binding" });
+      expect(f.stats().terminations).toBe(1);
+    } finally {
+      await f.db.close();
+    }
+  },
+  20_000,
+);

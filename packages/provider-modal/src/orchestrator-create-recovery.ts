@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { OrchestratorCreateRecoveryProof, OrchestratorCreateRecoveryRequest } from "@armada/core";
 import type { Sandbox } from "modal";
-import { refusal } from "./errors.ts";
+import { lifecycleStep, refusal } from "./errors.ts";
 import type { Machine, ModalStore, Scope } from "./ports.ts";
 import { scopeKey } from "./store.ts";
 
@@ -20,6 +20,15 @@ export function createOrchestratorCreateRecovery(input: {
     const { target } = request;
     const registered = request.originalSandbox;
     const expanded = !!registered || !!request.intendedSandboxId;
+    const stopRecovery = request.stopOperationId !== undefined;
+    if (
+      stopRecovery &&
+      (!UUID.test(request.stopOperationId!) ||
+        !registered ||
+        registered.nativeGeneration !== "1" ||
+        registered.sqlGeneration !== "1")
+    )
+      throw refusal("conflict", "Stop recovery requires an exact registered first incarnation.");
     if (request.intendedSandboxId && row.info.labels.sandbox !== request.intendedSandboxId)
       throw refusal("conflict", "Intended registration changed.");
     if (
@@ -58,12 +67,12 @@ export function createOrchestratorCreateRecovery(input: {
       row.launchUserId !== request.ownerId ||
       !(
         expanded
-          ? ["booting", "active", "stopped", "terminate", "deleting", "deleted"]
+          ? ["booting", "active", "checkpoint", "snapshot", "stopped", "terminate", "deleting", "deleted"]
           : ["booting", "deleting", "deleted"]
       ).includes(row.phase) ||
-      (expanded
+      (!stopRecovery && expanded
         ? row.orchestratorCheckpoint?.receipt.conversationId != null
-        : !!row.orchestratorCheckpoint || !!row.recoveryImageId) ||
+        : !stopRecovery && (!!row.orchestratorCheckpoint || !!row.recoveryImageId)) ||
       !row.sourceImage ||
       row.sourceImage.name !== request.providerSnapshotId ||
       row.sourceImage.imageId !== row.imageId ||
@@ -83,6 +92,7 @@ export function createOrchestratorCreateRecovery(input: {
       ([
         "version",
         "createOperationId",
+        "stopOperationId",
         "recoveryOperationId",
         "orchestratorId",
         "ownerId",
@@ -136,7 +146,7 @@ export function createOrchestratorCreateRecovery(input: {
       const current = await input.store.findByRequestKey(request.createOperationId);
       if (!current || current.info.id !== row.info.id)
         throw refusal("conflict", "Original reservation changed; resource retained.");
-      assert(row, request);
+      await lifecycleStep("modal_recovery_binding", async () => assert(row, request));
       if (row.orchestratorCreateRecovery?.state === "terminated")
         return { ...row.orchestratorCreateRecovery.binding, state: "terminated" as const };
       if (!dispatch && !row.orchestratorCreateRecovery) return null;

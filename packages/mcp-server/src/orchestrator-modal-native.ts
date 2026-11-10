@@ -244,7 +244,7 @@ export function createModalOrchestratorNativeAdapter(input: {
         throw new OrchestratorRuntimeError("unavailable");
       await input.sql.transaction(async (tx) => {
         const changed = await tx.query(
-          `update public.sandboxes s set status='ready',stopped_at=null,expires_at=$9,last_observed_at=now(),lifecycle_generation=lifecycle_generation+1
+          `update public.sandboxes s set status='ready',stopped_at=null,expires_at=$9,last_observed_at=now(),lifecycle_generation=lifecycle_generation+1,orchestrator_native_generation=$10
           from public.orchestrators o,public.orchestrator_operations p,public.members m
           where m.org_id=o.org_id and m.user_id=o.owner_id and s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.status='stopped' and s.stop_requested_at is null
           and o.id=$4 and o.sandbox_id=s.id and o.owner_id=$5 and o.org_id=$6 and o.revision=$7
@@ -259,6 +259,7 @@ export function createModalOrchestratorNativeAdapter(input: {
             identity.revision,
             operationId,
             active.expiresAt,
+            proof.physicalGeneration,
           ],
         );
         if (changed.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
