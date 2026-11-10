@@ -34,31 +34,36 @@ test.each([new Response("Not found", { status: 404 }), Response.json({ error: "N
   },
 );
 
-test("GitHub refresh distinguishes a server not_found from an undeployed route", async () => {
-  let error = "";
-  const code = await run(
-    ["github", "refresh", "missing", "--json"],
-    {
-      out: () => {},
-      err: (text) => {
-        error += text;
-      },
-    },
-    {
-      auth: {
+test.each([
+  [404, "not_found", "Sandbox not found or not accessible."],
+  [403, "forbidden", "GitHub refresh requires current organization membership and the sandbox owner."],
+] as const)(
+  "GitHub refresh distinguishes a structured %s resource failure from an undeployed route",
+  async (status, serverCode, message) => {
+    let error = "";
+    const code = await run(
+      ["github", "refresh", "missing", "--json"],
+      {
         out: () => {},
         err: (text) => {
           error += text;
         },
-        env: { ARMADA_TOKEN: "fixture-service-token" },
-        session: memorySessionStore(),
-        now: () => new Date(),
-        open: () => {},
-        fetch: async () =>
-          Response.json({ error: { code: "not_found", message: "untrusted response" } }, { status: 404 }),
       },
-    },
-  );
-  expect(code).toBe(1);
-  expect(JSON.parse(error).error).toEqual({ code: "conflict", message: "Sandbox not found or not accessible." });
-});
+      {
+        auth: {
+          out: () => {},
+          err: (text) => {
+            error += text;
+          },
+          env: { ARMADA_TOKEN: "fixture-service-token" },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => {},
+          fetch: async () => Response.json({ error: { code: serverCode, message: "untrusted response" } }, { status }),
+        },
+      },
+    );
+    expect(code).toBe(1);
+    expect(JSON.parse(error).error).toEqual({ code: "conflict", message });
+  },
+);

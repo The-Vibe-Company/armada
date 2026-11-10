@@ -132,11 +132,13 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.
-      if ((isSandboxInteriorPath(path) || path === "/api/v1/github/refresh") && response.status !== 401) {
+      if (isSandboxInteriorPath(path) && response.status !== 401) {
         const denied = response.status === 403;
         throw new AuthError(
           denied
-            ? "Sandbox interior access requires current organization membership and the owner or an org admin."
+            ? path === "/api/v1/github/refresh"
+              ? "GitHub refresh requires current organization membership and the sandbox owner."
+              : "Sandbox interior access requires current organization membership and the owner or an org admin."
             : response.status === 404
               ? "Sandbox not found or not accessible."
               : `Sandbox operation failed (${response.status}). Check access and sandbox status before retrying.`,
@@ -321,6 +323,7 @@ function isSandboxInteriorPath(path: string): boolean {
   return (
     /^\/api\/v1\/sandbox\/(?:detail|status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
     /^\/api\/v1\/sandboxes\/[0-9a-f-]+(?:\?.*)?$/i.test(path) ||
+    path === "/api/v1/github/refresh" ||
     path === "/api/v1/logs/read" ||
     path === "/api/v1/mcp/sandbox-connections"
   );
