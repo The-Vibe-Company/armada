@@ -31,6 +31,7 @@ type Code =
   | "poll_limit_exceeded"
   | "turn_failed"
   | "exec_failed"
+  | "invalid_receipt"
   | "provider_not_stopped"
   | "pair_disabled"
   | "operation_failed"
@@ -346,17 +347,32 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         );
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {
-            await checkedExec(`test "$(cat ${quote(receipt)})" = '0 0 0'`);
+            const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
+              id: sandboxId,
+              command: `head -c 64 -- ${quote(receipt)}`,
+              cwd: item.repo,
+              timeout_seconds: 60,
+            });
+            if (
+              result?.exitCode !== 0 ||
+              result.timedOut !== false ||
+              typeof result.stdout !== "string" ||
+              !/^\d{1,3} \d{1,3} \d{1,3}$/.test(result.stdout)
+            )
+              fail("invalid_receipt");
+            const [status, remote, push] = result.stdout.split(" ").map(Number);
+            if ([status, remote, push].some((value) => value === undefined || value > 255)) fail("invalid_receipt");
             io.out(
               JSON.stringify({
                 case: index,
                 step: "native_git_exit_statuses",
                 turn: second ? 2 : 1,
-                status: 0,
-                remote: 0,
-                ...(second ? {} : { push: 0 }),
+                status,
+                remote,
+                ...(second ? {} : { push }),
               }),
             );
+            if (status !== 0 || remote !== 0 || push !== 0) fail("exec_failed");
           });
       }
       await nativeTurn(false);
@@ -371,6 +387,20 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             cwd: item.repo,
             timeout_seconds: 60,
           });
+          if (github) {
+            const exitCode = result?.exitCode;
+            if (exitCode !== null && (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255))
+              fail("invalid_response");
+            io.out(
+              JSON.stringify({
+                case: index,
+                step: "exec_git_exit_status",
+                operation: name,
+                exitCode,
+                timedOut: result.timedOut === true,
+              }),
+            );
+          }
           if (result?.exitCode !== 0 || result.timedOut !== false) fail("exec_failed");
         });
       }
@@ -395,9 +425,25 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (github && sandboxId && pushAttempted) {
         cleaning = true;
         try {
-          await step("cleanup_scratch_branch", () =>
-            checkedExec(`${remoteGuard} && ${git} push origin --delete ${scratch}`),
-          );
+          await step("cleanup_scratch_branch", async () => {
+            await checkedExec(remoteGuard);
+            const presence = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
+              id: sandboxId,
+              command: `${git} ls-remote --exit-code origin refs/heads/${scratch}`,
+              cwd: item.repo,
+              timeout_seconds: 60,
+            });
+            if (presence?.timedOut !== false || (presence.exitCode !== 0 && presence.exitCode !== 2))
+              fail("exec_failed");
+            if (presence.exitCode === 0) await checkedExec(`${remoteGuard} && ${git} push origin --delete ${scratch}`);
+            io.out(
+              JSON.stringify({
+                case: index,
+                step: "scratch_branch_cleanup",
+                outcome: presence.exitCode === 2 ? "absent" : "deleted",
+              }),
+            );
+          });
         } catch {
           passed = false;
         } finally {

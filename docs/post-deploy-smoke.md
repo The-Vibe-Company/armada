@@ -143,3 +143,14 @@ bun test scripts/post-deploy-smoke.test.ts
 
 Tests drive the real step logic through a fake API and virtual polling clock;
 they require no credentials, network calls, compute or wall-clock waits.
+
+### Managed GitHub runtime mode
+
+`bun scripts/post-deploy-smoke.ts --github-runtime` runs the staging-only native
+Git/push slice. It additionally requires each case's `disposableRepository` field
+(an exact credential-free HTTPS GitHub `.git` origin), all four provider/harness
+pairs, gate/revision assertions and disposable push authority. See the
+[settings, manual renewal and provider-specific broker procedures](github-runtime.md#automated-first-slice-822).
+First run the default smoke above with the staging gate off for the stock baseline;
+then retire those workers and turn staging on before running the new mode. A zero
+exit from this partial slice does not authorize production enablement.
