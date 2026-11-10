@@ -6,8 +6,8 @@ import { disconnectGitHub } from "@/app/actions/github";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { PageHeader } from "@/components/page-header";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
+import { ConnectionBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getGitHubConnection } from "@/lib/data/github";
@@ -77,19 +77,24 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           )}
 
           {connection && !revoked ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
+              data-github-state="connected"
+            >
               <div className="min-w-0 space-y-1">
-                <p className="text-sm font-medium">
-                  Connected as <span className="font-mono">@{connection.login}</span>
-                  {connection.name ? ` (${connection.name})` : ""}
+                <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                  <span>
+                    <span className="font-mono">@{connection.login}</span>
+                    {connection.name ? ` (${connection.name})` : ""}
+                  </span>
+                  <ConnectionBadge state="connected" />
                 </p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs break-all text-muted-foreground">
                   {connection.github_id}+{connection.login}@users.noreply.github.com, since{" "}
                   {new Date(connection.created_at).toISOString().slice(0, 10)}
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <Badge variant="outline">Connected</Badge>
                 {configured && (
                   <Button variant="outline" size="sm" asChild>
                     <a href="/github/connect">Reconnect</a>
@@ -103,15 +108,23 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               </div>
             </div>
           ) : (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
+              data-github-state={revoked ? "revoked" : "not-connected"}
+            >
               <div className="min-w-0 space-y-1">
-                <p className="text-sm font-medium">
-                  {revoked ? `GitHub access for @${connection?.login} was revoked or expired.` : "Not connected."}
+                <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                  {revoked ? <span className="font-mono">@{connection?.login}</span> : "Your GitHub account"}
+                  <ConnectionBadge state={revoked ? "revoked" : "not-connected"} />
                 </p>
-                {revoked && <p className="text-xs text-muted-foreground">Sandboxes have no GitHub identity.</p>}
+                <p className="text-xs text-muted-foreground">
+                  {revoked
+                    ? `GitHub access for @${connection?.login} was revoked or expired. Sandboxes have no GitHub identity.`
+                    : "Sandboxes have no GitHub identity until you connect it."}
+                </p>
               </div>
               {configured && (
-                <Button asChild>
+                <Button asChild size="sm">
                   <a href="/github/connect">{revoked ? "Reconnect GitHub" : "Connect GitHub"}</a>
                 </Button>
               )}

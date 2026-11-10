@@ -14,6 +14,7 @@ import {
 import { SubmitButton } from "@/components/action-form";
 import { ChoiceCard } from "@/components/connections";
 import { Disclosure } from "@/components/disclosure";
+import { Empty } from "@/components/page-header";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -624,6 +625,8 @@ export function AddAccountDialog({
   isAdmin,
   capabilities,
   initialKind = "claude_oauth",
+  triggerLabel = "Add account",
+  triggerVariant = "default",
 }: {
   orgId: string;
   orgName: string;
@@ -631,6 +634,9 @@ export function AddAccountDialog({
   /** What this deployment offers for connecting accounts; null offers paste only. */
   capabilities: AuthCapabilities | null;
   initialKind?: AccountKind;
+  /** The trigger's words, when it opens on one agent's kind (an empty agent's "Add a Codex account"). */
+  triggerLabel?: string;
+  triggerVariant?: "default" | "outline";
 }) {
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
@@ -673,8 +679,8 @@ export function AddAccountDialog({
         }}
       >
         <DialogTrigger asChild>
-          <Button size="sm">
-            <PlusIcon /> Add account
+          <Button size="sm" variant={triggerVariant}>
+            <PlusIcon /> {triggerLabel}
           </Button>
         </DialogTrigger>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
@@ -841,9 +847,12 @@ export function HarnessAccounts({
   isAdmin,
   usage,
   now,
+  emptyAction,
 }: {
   harness: Harness;
   harnessLabel: string;
+  /** What fills an agent with no account yet: the add dialog opened on its kind. */
+  emptyAction?: ReactNode;
   resolved: LaunchDefault;
   accounts: ModelAccount[];
   orgId: string;
@@ -859,8 +868,15 @@ export function HarnessAccounts({
         <h2 id={headingId} className="text-base font-semibold">
           {harnessLabel}
         </h2>
-        <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />
+        {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}
       </div>
+      {accounts.length === 0 && (
+        <div data-launch-uses="none">
+          <Empty icon={<KeyRoundIcon />} title={`No ${harnessLabel} account yet`} action={emptyAction}>
+            Add one to launch {harnessLabel}. Each launch bills the account it names.
+          </Empty>
+        </div>
+      )}
       {accounts.length > 0 && (
         <ul className="divide-y rounded-lg border">
           {accounts.map((account) => (

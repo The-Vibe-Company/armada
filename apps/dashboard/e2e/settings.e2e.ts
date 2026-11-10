@@ -20,7 +20,7 @@ test("without a connection the settings offer Connect GitHub, which starts GitHu
   await page.route("https://github.com/**", (route) => route.fulfill({ status: 200, body: "GitHub" }));
   await signIn(page, "alice@example.com", "/settings");
   const card = page.locator('[data-settings="github"]');
-  await expect(card.getByText("Not connected.")).toBeVisible();
+  await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
 
   const connect = card.getByRole("link", { name: "Connect GitHub" });
   await expect(connect).toHaveAttribute("href", "/github/connect");
@@ -70,7 +70,7 @@ test("connecting stores only ciphertext, Disconnect forgets it, and connecting a
 
   await page.goto("/settings");
   await card.getByRole("button", { name: "Disconnect" }).click();
-  await expect(card.getByText("Not connected.")).toBeVisible();
+  await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
   expect(await connections()).toEqual([]);
 
   await authorize("Connect GitHub");
@@ -194,7 +194,7 @@ test("a connected person sees who they are, and disconnecting removes only their
   expect(await page.content()).not.toContain("refresh_token_enc");
 
   await card.getByRole("button", { name: "Disconnect" }).click();
-  await expect(card.getByText("Not connected.")).toBeVisible();
+  await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
   const rows = (await (await fetch(`${MOCK}/__test/github-connections`)).json()) as { login: string }[];
   expect(rows.map((row) => row.login)).toEqual(["bobcat"]);
 });
@@ -211,7 +211,7 @@ test("a connection with no installation warns, and Connect sends the person to i
   await expect(card.locator("[data-github-installations='missing']")).toContainText("not installed");
 
   await card.getByRole("button", { name: "Disconnect" }).click();
-  await expect(card.getByText("Not connected.")).toBeVisible();
+  await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
 
   const [request] = await Promise.all([
     page.waitForRequest((candidate) => candidate.url().startsWith("https://github.com/login/oauth/authorize")),

@@ -207,7 +207,7 @@ test("an unavailable status is a retryable error: never unconfigured, never retr
   await expect(page).toHaveURL(/\/goldens$/);
   await expect(page.getByRole("heading", { name: "Build a golden" })).toHaveCount(0);
   const card = page.locator('[data-golden="shared-golden"]');
-  await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused: provider status unavailable");
+  await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused. The provider status is unavailable.");
   await expect(card.locator("[data-rebuild-paused]")).toHaveText("Rebuilding paused: provider status unavailable.");
 
   await post("/__test/provider-status-fail", {});
@@ -228,7 +228,7 @@ test("an edge 404 while no deployment serves is a temporary outage, and Check ag
   await expect(alert).not.toContainText("does not offer");
   await expect(alert).not.toContainText("Application not found");
   const card = page.locator('[data-golden="shared-golden"]');
-  await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused: provider status unavailable");
+  await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused. The provider status is unavailable.");
   await expect(card.locator("[data-rebuild-paused]")).toHaveText("Rebuilding paused: provider status unavailable.");
 
   await post("/__test/provider-status-fail", {});

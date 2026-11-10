@@ -29,6 +29,12 @@ test("an admin removes a member", async ({ page }) => {
   await page.getByRole("link", { name: /Acme/ }).click();
   const bob = page.locator('[data-member="bob@example.com"]');
   await bob.getByRole("button", { name: "Remove bob@example.com" }).click();
+  // Removing is confirmed first, in the destructive dialog; cancelling keeps the member.
+  const confirm = page.getByRole("alertdialog", { name: "Remove bob@example.com from Acme?" });
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(bob).toBeVisible();
+  await bob.getByRole("button", { name: "Remove bob@example.com" }).click();
+  await confirm.getByRole("button", { name: "Remove member" }).click();
   await expect(page.locator('[data-member="bob@example.com"]')).toHaveCount(0);
 });
 
@@ -45,7 +51,13 @@ test("the last admin cannot be demoted", async ({ page }) => {
   await signIn(page, "alice@example.com", "/orgs");
   await page.getByRole("link", { name: /Acme/ }).click();
   const alice = page.locator('[data-member="alice@example.com"]');
+  // Save appears only once the role differs, and giving up your own admin role asks first.
+  await expect(alice.getByRole("button", { name: "Save" })).toHaveCount(0);
   await alice.getByLabel("Role of alice@example.com").selectOption("member");
   await alice.getByRole("button", { name: "Save" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Give up admin of Acme?" })
+    .getByRole("button", { name: "Make me a member" })
+    .click();
   await expect(alert(page)).toContainText("keeps at least one admin");
 });

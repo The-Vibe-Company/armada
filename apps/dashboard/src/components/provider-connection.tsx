@@ -5,6 +5,7 @@ import { ExternalLinkIcon, Loader2Icon } from "lucide-react";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { connectProvider, disconnectProvider } from "@/app/actions/provider-setup";
+import { ConnectionBadge } from "@/components/status-badge";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -15,22 +16,14 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { ActionResult } from "@/lib/action";
 import { SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
-import { cn } from "@/lib/utils";
 
 /** One provider as the server reports it for the active organization; `unavailable` when it could not be read. */
 export type ProviderRowState = "connected" | "not-connected" | "unavailable";
-
-const STATE_LABEL: Record<ProviderRowState, string> = {
-  connected: "Connected",
-  "not-connected": "Not connected",
-  unavailable: "Unavailable",
-};
 
 /**
  * One sandbox provider of the active organization: its status and, for an admin, connect, replace and disconnect.
@@ -84,12 +77,7 @@ export function ProviderConnection({
         <div className="min-w-0 space-y-0.5">
           <p className="flex items-center gap-2 text-sm font-medium">
             {info.label}
-            <Badge
-              variant={connected ? "outline" : "secondary"}
-              className={cn(connected && "border-success/40 text-success")}
-            >
-              {STATE_LABEL[state]}
-            </Badge>
+            <ConnectionBadge state={state} />
           </p>
         </div>
         {manageable && !open && (

@@ -1,14 +1,14 @@
 import type { Harness } from "@armada/core";
 import { encryptionKey } from "@armada/core";
-import { CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, KeyRoundIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { removeCredential, saveCredential } from "@/app/actions/credentials";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { AddAccountDialog, HarnessAccounts } from "@/components/model-accounts";
 import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
+import { ToneBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,13 @@ import {
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
-import { accountsFor, launchDefault, type ModelAccount } from "@/lib/model-accounts";
+import {
+  type AccountKind,
+  type AuthCapabilities,
+  accountsFor,
+  launchDefault,
+  type ModelAccount,
+} from "@/lib/model-accounts";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
@@ -57,7 +63,7 @@ export default async function CredentialsPage() {
         )}
       </PageHeader>
 
-      <ModelAccounts list={accounts} selected={selected} now={now} />
+      <ModelAccounts list={accounts} selected={selected} capabilities={capabilities} now={now} />
 
       <section className="space-y-3" aria-labelledby="hosting">
         <SectionHeader id="hosting" title="Hosting" description="Pays for and runs sandboxes. Never enters one." />
@@ -93,6 +99,8 @@ export default async function CredentialsPage() {
 }
 
 const HARNESS_ORDER: Harness[] = ["claude", "codex"];
+/** The kind the add dialog opens on from an agent with no account: its subscription sign-in. */
+const FIRST_KIND: Record<Harness, AccountKind> = { claude: "claude_oauth", codex: "codex_auth" };
 
 /** Defaults first, then yours before the org's, then by name: the order a person scans for "which one bills". */
 function ordered(accounts: ModelAccount[]): ModelAccount[] {
@@ -107,10 +115,12 @@ function ordered(accounts: ModelAccount[]): ModelAccount[] {
 async function ModelAccounts({
   list,
   selected,
+  capabilities,
   now,
 }: {
   list: AccountList;
   selected: Awaited<ReturnType<typeof selectedOrganization>>;
+  capabilities: AuthCapabilities | null;
   now: number;
 }) {
   if (list.state === "no-org" || !selected)
@@ -168,6 +178,17 @@ async function ModelAccounts({
           isAdmin={selected.role === "admin"}
           usage={usage}
           now={now}
+          emptyAction={
+            <AddAccountDialog
+              orgId={selected.org.id}
+              orgName={selected.org.name}
+              isAdmin={selected.role === "admin"}
+              capabilities={capabilities}
+              initialKind={FIRST_KIND[harness]}
+              triggerLabel={`Add a ${HARNESS_LABELS[harness]} account`}
+              triggerVariant="outline"
+            />
+          }
         />
       ))}
     </>
@@ -192,26 +213,41 @@ function CredentialSection({
 }) {
   const byKind = new Map(rows.map((row) => [row.kind, row]));
   return (
-    <Card data-credentials={scope}>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <ul className="divide-y rounded-lg border">
+    <div data-credentials={scope} className="space-y-4">
+      {/* What is stored, apart from the forms that store it. */}
+      <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
+        <div className="space-y-0.5 border-b px-4 py-3">
+          <h3 id={`credentials-${scope}`} className="text-sm font-semibold">
+            {title}
+          </h3>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </div>
+        <ul className="divide-y" aria-labelledby={`credentials-${scope}`}>
           {CREDENTIAL_KINDS.map((info) => {
             const row = byKind.get(info.kind);
             return (
-              <li key={info.kind} className="flex flex-wrap items-center justify-between gap-3 p-3">
-                <div className="min-w-0">
+              <li key={info.kind} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span
+                    aria-hidden="true"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs [&_svg]:size-4"
+                  >
+                    <KeyRoundIcon />
+                  </span>
                   <p className="text-sm font-medium">{info.label}</p>
                 </div>
                 {row ? (
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-sm tracking-widest" role="img" aria-label="Value hidden">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span
+                      className="font-mono text-sm tracking-widest text-muted-foreground"
+                      role="img"
+                      aria-label="Value hidden"
+                    >
                       ••••••••
                     </span>
-                    <Badge variant="outline">{`Set ${new Date(row.created_at).toISOString().slice(0, 10)}`}</Badge>
+                    <ToneBadge tone="success" data-credential-state="set">
+                      Set <time dateTime={row.created_at}>{new Date(row.created_at).toISOString().slice(0, 10)}</time>
+                    </ToneBadge>
                     {canManage && (
                       <ActionForm action={removeCredential} className="flex flex-col items-end gap-1">
                         <input type="hidden" name="id" value={row.id} />
@@ -222,83 +258,102 @@ function CredentialSection({
                     )}
                   </div>
                 ) : (
-                  <Badge variant="secondary">Not set</Badge>
+                  <ToneBadge tone="neutral" data-credential-state="not-set">
+                    Not set
+                  </ToneBadge>
                 )}
               </li>
             );
           })}
         </ul>
+      </div>
 
-        {canManage && (
-          <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3 sm:max-w-xl">
-            <input type="hidden" name="scope" value={scope} />
-            <input type="hidden" name="owner" value={owner} />
-            <div className="grid gap-3 sm:grid-cols-[14rem_1fr]">
-              <div className="space-y-2">
-                <Label htmlFor={`kind-${owner}`}>Kind</Label>
-                <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
-                  {SINGLE_VALUE_KINDS.map((info) => (
-                    <option key={info.kind} value={info.kind}>
-                      {info.label}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor={`value-${owner}`}>Value</Label>
-                <Input
-                  id={`value-${owner}`}
-                  name="value"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  required
-                  placeholder="Paste the value"
-                />
-              </div>
-            </div>
-            <SubmitButton className="justify-self-start">Save credential</SubmitButton>
-          </ActionForm>
-        )}
+      {canManage && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card className="gap-4" data-hosting-form="key">
+            <CardHeader>
+              <CardTitle role="heading" aria-level={4}>
+                Save a key
+              </CardTitle>
+              <CardDescription>Replaces the one stored for that kind.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
+                <input type="hidden" name="scope" value={scope} />
+                <input type="hidden" name="owner" value={owner} />
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                  <div className="space-y-2">
+                    <Label htmlFor={`kind-${owner}`}>Kind</Label>
+                    <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
+                      {SINGLE_VALUE_KINDS.map((info) => (
+                        <option key={info.kind} value={info.kind}>
+                          {info.label}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`value-${owner}`}>Value</Label>
+                    <Input
+                      id={`value-${owner}`}
+                      name="value"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                      placeholder="Paste the value"
+                    />
+                  </div>
+                </div>
+                <SubmitButton className="justify-self-start">Save credential</SubmitButton>
+              </ActionForm>
+            </CardContent>
+          </Card>
 
-        {canManage && (
-          <div data-modal-token className="border-t pt-6">
-            <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3 sm:max-w-xl">
-              <input type="hidden" name="scope" value={scope} />
-              <input type="hidden" name="owner" value={owner} />
-              <input type="hidden" name="kind" value="modal" />
-              <p className="text-sm font-medium">Modal token</p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor={`modal-id-${owner}`}>Token ID</Label>
-                  <Input
-                    id={`modal-id-${owner}`}
-                    name="modal_token_id"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    placeholder="ak-…"
-                  />
+          <Card className="gap-4" data-modal-token>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={4}>
+                Modal token
+              </CardTitle>
+              <CardDescription>A token ID and its secret, stored together.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
+                <input type="hidden" name="scope" value={scope} />
+                <input type="hidden" name="owner" value={owner} />
+                <input type="hidden" name="kind" value="modal" />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor={`modal-id-${owner}`}>Token ID</Label>
+                    <Input
+                      id={`modal-id-${owner}`}
+                      name="modal_token_id"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                      placeholder="ak-…"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`modal-secret-${owner}`}>Token secret</Label>
+                    <Input
+                      id={`modal-secret-${owner}`}
+                      name="modal_token_secret"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                      placeholder="as-…"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor={`modal-secret-${owner}`}>Token secret</Label>
-                  <Input
-                    id={`modal-secret-${owner}`}
-                    name="modal_token_secret"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    placeholder="as-…"
-                  />
-                </div>
-              </div>
-              <SubmitButton className="justify-self-start">Save Modal token</SubmitButton>
-            </ActionForm>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                <SubmitButton className="justify-self-start">Save Modal token</SubmitButton>
+              </ActionForm>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
   );
 }
