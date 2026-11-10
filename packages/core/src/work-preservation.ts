@@ -2,8 +2,18 @@ import { constants, createDecipheriv, createHash, generateKeyPairSync, pbkdf2Syn
 import type { Provider } from "./provider.ts";
 
 const FAILURE_REASONS = [
-  "timeout", "unavailable", "size_limit", "missing_git", "missing_python3", "missing_openssl",
-  "collector_exit", "collector_signal", "collector_failed", "output_invalid", "output_truncated", "decrypt",
+  "timeout",
+  "unavailable",
+  "size_limit",
+  "missing_git",
+  "missing_python3",
+  "missing_openssl",
+  "collector_exit",
+  "collector_signal",
+  "collector_failed",
+  "output_invalid",
+  "output_truncated",
+  "decrypt",
 ] as const;
 type CaptureFailure = (typeof FAILURE_REASONS)[number];
 
@@ -148,14 +158,21 @@ function privateCommand(token: string, body: string): string {
 }
 
 class CaptureError extends Error {
-  constructor(readonly reason: CaptureFailure) { super(reason); }
+  constructor(readonly reason: CaptureFailure) {
+    super(reason);
+  }
 }
 
 function checkedOutput(result: Awaited<ReturnType<Provider["exec"]>>): string {
   if (result.detached) throw new CaptureError("collector_exit");
   if (result.timedOut) throw new CaptureError("timeout");
   if (result.truncated) throw new CaptureError("output_truncated");
-  if (result.exitCode !== 0) throw new CaptureError(result.exitCode < 0 || result.exitCode >= 128 ? "collector_signal" : "collector_exit");
+  if (result.exitCode !== 0)
+    throw new CaptureError(
+      result.exitCode !== null && (result.exitCode < 0 || result.exitCode >= 128)
+        ? "collector_signal"
+        : "collector_exit",
+    );
   return result.stdout;
 }
 
@@ -235,11 +252,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       if (plaintext.length > MAX_ARCHIVE_BYTES) throw new Error();
       return { status: "preserved", archive: plaintext.toString("base64") };
     }
-    if (
-      value.status === "failed" &&
-      "reason" in value &&
-      FAILURE_REASONS.includes(value.reason as CaptureFailure)
-    )
+    if (value.status === "failed" && "reason" in value && FAILURE_REASONS.includes(value.reason as CaptureFailure))
       return { status: "failed", reason: value.reason as CaptureFailure };
     throw new Error();
   }

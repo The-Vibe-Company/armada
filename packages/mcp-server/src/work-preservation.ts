@@ -59,13 +59,22 @@ async function captureAndStore(
     } else if (result.status === "clean") {
       // A subsequent clean stop must not hide an earlier recovery archive.
       return;
-    } else { reason = result.reason; note = `unpushed work could not be preserved (${reason})`; }
+    } else {
+      reason = result.reason;
+      note = `unpushed work could not be preserved (${reason})`;
+    }
   } catch {
     note = `unpushed work could not be preserved (${reason})`;
   }
   if (expired()) return;
-  if (!note.startsWith("unpushed work preserved")) console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, reason }));
-  await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
+  if (!note.startsWith("unpushed work preserved"))
+    console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, reason }));
+  try {
+    await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
+  } catch {
+    if (!expired() && note.startsWith("unpushed work preserved"))
+      console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, reason: "storage" }));
+  }
 }
 
 export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {

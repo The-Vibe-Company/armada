@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +66,8 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   await run(["git", "commit", "-qm", "large published base"], repo);
   await run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], repo);
   const base = (await run(["git", "rev-parse", "HEAD"], repo)).trim();
+  const restored = join(home, "restored");
+  await run(["git", "clone", "-q", repo, restored], home);
   const hidden = join(home, ".tools");
   await mkdir(hidden);
   await run(["git", "clone", "-q", repo, join(hidden, "plugin")], home);
@@ -88,8 +90,6 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   await writeFile(archive, Buffer.from(result.archive, "base64"));
   await run(["tar", "xf", archive], recovery);
   const bundle = join(recovery, "repo-0", "commits.bundle");
-  const restored = join(home, "restored");
-  await run(["git", "clone", "-q", repo, restored], home);
   await run(["git", "checkout", "-q", "--detach", base], restored);
   await run(["git", "fetch", "-q", bundle, "HEAD"], restored);
   await run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], restored);
@@ -234,11 +234,29 @@ test("collector failures are closed and provider output never becomes a reason",
     [{ truncated: true }, "output_truncated"],
     [{ stdout: "private invalid output" }, "output_invalid"],
     [{ stdout: '{"status":"failed","reason":"private data"}' }, "output_invalid"],
-    ...["missing_git", "missing_python3", "missing_openssl", "size_limit", "timeout"].map(reason =>
-      [{ stdout: JSON.stringify({status:"failed", reason}) }, reason]),
+    ...(["missing_git", "missing_python3", "missing_openssl", "size_limit", "timeout"] as const).map(
+      (reason) => [{ stdout: JSON.stringify({ status: "failed", reason }) }, reason] as const,
+    ),
   ] as const) {
-    expect(await preserveWork({async exec() {
-      return {detached:false,exitCode:0,stdout:"",stderr:"private error",timedOut:false,truncated:false,...output};
-    }}, "sandbox")).toEqual({status:"failed",reason:expected});
+    expect(
+      await preserveWork(
+        {
+          async exec() {
+            return Object.assign(
+              {
+                detached: false as const,
+                exitCode: 0,
+                stdout: "",
+                stderr: "private error",
+                timedOut: false,
+                truncated: false,
+              },
+              output,
+            );
+          },
+        },
+        "sandbox",
+      ),
+    ).toEqual({ status: "failed", reason: expected });
   }
 });
