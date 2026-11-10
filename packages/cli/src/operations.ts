@@ -16,11 +16,13 @@ export async function operation(
 ) {
   const args = parseArgs(
     argv,
-    command === "mcp"
-      ? ["--scope", "--service"]
-      : command === "list"
-        ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
-        : [],
+    command === "report"
+      ? ["--reason", "--pr-number", "--pr-url", "--head-sha"]
+      : command === "mcp"
+        ? ["--scope", "--service"]
+        : command === "list"
+          ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
+          : [],
     command === "list" ? ["--page-info"] : [],
   );
   if (single(args, "--repo") !== undefined)
@@ -165,7 +167,22 @@ export async function operation(
       uuid(credentialId, "credential id");
       body.credentialId = credentialId;
     }
-    if (command === "send" || command === "steer" || command === "exec") {
+    if (command === "report") {
+      const [state] = rest;
+      if (rest.length !== 1 || (state !== "ready" && state !== "blocked") || !body.prompt_id)
+        throw new GoldenError("invalid_config", "Use report <id> ready|blocked --prompt-id ID.");
+      const outcome: Record<string, unknown> = { state };
+      if (state === "blocked") outcome.reason = single(args, "--reason");
+      else {
+        const number = single(args, "--pr-number");
+        if (number !== undefined) outcome.prNumber = Number(number);
+        const url = single(args, "--pr-url");
+        if (url !== undefined) outcome.prUrl = url;
+        const sha = single(args, "--head-sha");
+        if (sha !== undefined) outcome.headSha = sha;
+      }
+      body.outcome = outcome;
+    } else if (command === "send" || command === "steer" || command === "exec") {
       if (!rest.length) throw new GoldenError("invalid_config", "Provide the prompt or command after the id.");
       body[command === "send" ? "prompt" : command === "steer" ? "text" : "command"] = rest.join(" ");
     } else if ((command === "list" && id) || rest.length)

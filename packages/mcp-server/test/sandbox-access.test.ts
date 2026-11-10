@@ -33,10 +33,14 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         );
       }
     }
+    await db.query("update sandboxes set task_prompt_id='finished-turn', task_outcome=$1::jsonb", [
+      JSON.stringify({ state: "blocked", reason: "interior-only" }),
+    ]);
     await db.query("update goldens set removed_at=now() where id=$1", [golden]);
     const caller = (userId: string): Caller => ({ userId, via: "service", orgs: [{ orgId: p.org, role: "admin" }] });
     const data = (userId: string) => createSqlData(db)(caller(userId)).sandboxes;
     const expectedKeys = [
+      "taskOutcome",
       "providerSandboxId",
       "boatId",
       "id",
@@ -77,6 +81,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(Object.keys(row).sort()).toEqual(expectedKeys);
         expect(row.providerSandboxId).toBe(`physical-${row.id}`);
         expect(row.boatId).toBe(row.provider === "boat" ? row.providerSandboxId : null);
+        expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
         expect(row.canOpen).toBe(mayOpen);
         expect(row.canManage).toBe(mayOpen);
         expect(JSON.stringify(row)).not.toMatch(/sensitive-source|conversation-private|failure-private|app-private/);
@@ -87,12 +92,19 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(!!(await data(actor).get(id))).toBe(mayOpen);
         if (mayOpen) await data(actor).update(id, { conversationIds: ["changed"] });
         else await expect(data(actor).update(id, { conversationIds: ["forbidden"] })).rejects.toThrow();
+        const report = data(actor).reportTaskOutcome!(id, "finished-turn", {
+          state: "blocked",
+          reason: "interior-only",
+        });
+        if (mayOpen) await report;
+        else await expect(report).rejects.toThrow();
       }
       await asUser(actor, async () => {
         const rpc = await db.query<SandboxListMetadata>("select * from sandbox_list_metadata()");
         expect(rpc.rows.length).toBe(mayList ? 4 : 0);
         for (const row of rpc.rows) {
           expect(Object.keys(row).sort()).toEqual(expectedKeys);
+          expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
           expect(row.canOpen).toBe(mayOpen);
         }
         expect((await db.query("select * from sandboxes")).rows.length).toBe(mayOpen ? 4 : 0);

@@ -4,6 +4,7 @@ import type { Sql } from "./golden-store.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
+import type { TaskOutcome } from "./task-outcome.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
 export interface ResourceProject {
@@ -14,6 +15,9 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  taskOutcome?: TaskOutcome | null;
+  /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
+  taskPromptId?: string | null;
   resourceProject?: ResourceProject | null;
   machineSize?: MachineSizeEvidence | null;
   credentialId?: string | null;
@@ -50,6 +54,8 @@ export interface SandboxRecord {
 }
 
 export interface SandboxPatch {
+  clearTaskOutcome?: boolean;
+  taskPromptId?: string;
   renewLifecycle?: boolean;
   expectedGeneration?: number;
   advanceGeneration?: boolean;
@@ -146,6 +152,8 @@ export async function cleanupSandboxes(
 }
 
 export interface SandboxRow {
+  task_outcome?: TaskOutcome | null;
+  task_prompt_id?: string | null;
   machine_size?: MachineSizeEvidence | null;
   resource_project?: ResourceProject | null;
   credential_id?: string | null;
@@ -178,7 +186,7 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
@@ -223,6 +231,8 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
         params.push(value);
         sets.push(`${column} = $${params.length}${cast}`);
       };
+      if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
+      if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
       if (patch.status !== undefined) set("status", patch.status, "::public.sandbox_status");
       if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
       if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
@@ -265,6 +275,8 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
+    taskOutcome: row.task_outcome ?? null,
+    taskPromptId: row.task_prompt_id ?? null,
     id: row.id,
     provider: row.provider,
     providerSandboxId: row.provider_sandbox_id,

@@ -2409,6 +2409,8 @@ export type Database = {
           resource_sampling_after: string | null;
           resource_sampling_generation: number | null;
           orchestrator_native_generation: string | null;
+          task_outcome: Json | null;
+          task_prompt_id: string | null;
         };
         Insert: {
           id?: string;
@@ -2452,6 +2454,8 @@ export type Database = {
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
           orchestrator_native_generation?: string | null;
+          task_outcome?: Json | null;
+          task_prompt_id?: string | null;
         };
         Update: {
           id?: string;
@@ -2495,6 +2499,8 @@ export type Database = {
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
           orchestrator_native_generation?: string | null;
+          task_outcome?: Json | null;
+          task_prompt_id?: string | null;
         };
         Relationships: [
           {

@@ -314,6 +314,7 @@ describe("tools", () => {
         "orchestrator_resume",
         "orchestrator_recover",
         "orchestrator_reconcile",
+        "report",
         "resource_advice",
         "send",
         "status",

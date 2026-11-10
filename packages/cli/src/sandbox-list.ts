@@ -26,6 +26,9 @@ export function sandboxListText(rows: unknown[], now: Date): string {
       provider,
       row.providerSandboxId === null ? "—" : text(row.providerSandboxId),
       text(row.status),
+      row.taskOutcome && typeof row.taskOutcome === "object"
+        ? text((row.taskOutcome as Record<string, unknown>).state)
+        : "—",
       age,
       text(row.ownerId),
       typeof row.canOpen !== "boolean" || typeof row.canManage !== "boolean"
@@ -37,5 +40,5 @@ export function sandboxListText(rows: unknown[], now: Date): string {
           : "metadata only",
     ].join("  ");
   });
-  return `ID  LABEL  PROVIDER  PROVIDER ID  STATUS  AGE  OWNER  ACCESS\n${lines.join("\n")}\n`;
+  return `ID  LABEL  PROVIDER  PROVIDER ID  STATUS  OUTCOME  AGE  OWNER  ACCESS\n${lines.join("\n")}\n`;
 }

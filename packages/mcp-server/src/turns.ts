@@ -8,6 +8,7 @@ import {
   type SandboxInfo,
   type SandboxPatch,
   type SandboxStatus,
+  type TaskOutcome,
 } from "@armada/core";
 import type { SandboxView, ServerSandboxStore } from "./data.ts";
 
@@ -25,6 +26,7 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  taskOutcome?: TaskOutcome | null;
   credentialId?: string | null;
   credentialVersion?: number | null;
   id: string;
@@ -132,6 +134,7 @@ function report(
 ): StatusReport {
   const machineDown = status === "stopped" || status === "deleted" || status === "failed";
   return {
+    taskOutcome: sandbox.taskOutcome ?? null,
     id: sandbox.id,
     golden: sandbox.golden,
     visibility: sandbox.visibility,
@@ -156,22 +159,29 @@ function report(
 export async function latestPrompt(
   provider: Provider,
   sandboxId: string,
+  complete = false,
 ): Promise<{ promptId: string; conversationId: string | null } | null> {
   let latest: AgentEvent | undefined;
-  for (const event of await allEvents(provider, sandboxId)) {
+  for (const event of await allEvents(provider, sandboxId, complete)) {
     if (event.kind !== "prompt" || !event.promptId) continue;
     if (!latest || event.at >= latest.at) latest = event;
   }
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
 }
 
-async function allEvents(provider: Provider, sandboxId: string): Promise<AgentEvent[]> {
+async function allEvents(provider: Provider, sandboxId: string, complete = false): Promise<AgentEvent[]> {
   const all: AgentEvent[] = [];
   let cursor: string | undefined;
-  for (let page = 0; page < EVENT_PAGES; page++) {
+  const cursors = new Set<string>();
+  for (let page = 0; complete || page < EVENT_PAGES; page++) {
     const read = await provider.events({ sandboxId, ...(cursor ? { cursor } : {}), limit: EVENT_PAGE_LIMIT });
     all.push(...read.events);
-    if (!read.hasMore || !read.cursor || read.cursor === cursor) break;
+    if (!read.hasMore) break;
+    if (!read.cursor || cursors.has(read.cursor) || read.cursor === cursor) {
+      if (complete) throw new Error("Cannot prove latest turn: provider event cursor did not advance.");
+      break;
+    }
+    cursors.add(read.cursor);
     cursor = read.cursor;
   }
   return dedupeEvents(all);
