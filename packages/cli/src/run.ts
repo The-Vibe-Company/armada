@@ -946,7 +946,7 @@ function launchText(result: LaunchResult): string {
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),
-    ...(sandbox.skills?.length ? [`Skills: ${JSON.stringify(sandbox.skills)}`] : []),
+    ...(sandbox.skills?.map((skill) => `Skill: ${skill.reference} (${skill.checksum})`) ?? []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (sandbox.credentialId)

@@ -219,18 +219,20 @@ const prompt = z.object({
   reason: z.string().nullable(),
 });
 
+const skillReceipts = z
+  .array(
+    z.object({
+      reference: z.string(),
+      version: z.string(),
+      skillId: z.string(),
+      checksum: z.string(),
+      origin: z.string(),
+    }),
+  )
+  .optional();
+
 const status = {
-  skills: z
-    .array(
-      z.object({
-        reference: z.string(),
-        version: z.string(),
-        skillId: z.string(),
-        checksum: z.string(),
-        origin: z.string(),
-      }),
-    )
-    .optional(),
+  skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
@@ -716,7 +718,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: z.string(),
           visibility: z.enum(["org", "private"]),
           harness: z.enum(HARNESSES),
-          skills: z.array(z.unknown()).optional(),
+          skills: skillReceipts,
           repositoryDir: z
             .string()
             .nullable()

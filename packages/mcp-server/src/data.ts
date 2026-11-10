@@ -233,10 +233,11 @@ export function createSqlData(sql: Sql): DataSource {
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
       async recordSkills(id, skills) {
-        await sql.query(
-          "update public.sandboxes s set skills=$3::text::jsonb where s.id=$1::uuid and s.owner_id=$2::uuid",
+        const result = await sql.query(
+          "update public.sandboxes s set skills=$3::text::jsonb where s.id=$1::uuid and s.owner_id=$2::uuid returning id",
           [id, caller.userId, JSON.stringify(skills)],
         );
+        if (result.rows.length !== 1) throw new DataError("Skill receipts could not be recorded.");
       },
       async insert(input) {
         if (!orgIds.includes(input.orgId) || input.ownerId !== caller.userId) {

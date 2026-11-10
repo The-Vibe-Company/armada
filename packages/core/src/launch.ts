@@ -330,6 +330,25 @@ export async function launchSandbox(
               skill,
             ),
           );
+        if (repositoryDir !== null) {
+          // Local Git metadata only: do not stage third-party launch skills with worker changes.
+          const paths = [
+            "/.companion/skills.lock.json",
+            "/.companion/skills.lock.json.lock",
+            ...request.skills.flatMap((skill) => {
+              const slug = skill.split("@")[0]!.split("/")[1];
+              return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
+            }),
+          ];
+          const excluded = await provider.exec({
+            sandboxId: ready.id,
+            cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
+            timeoutSeconds: 30,
+            command: `exclude=$(git rev-parse --git-path info/exclude) && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
+          });
+          if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
+            throw new Error("Skillpack checkout exclusions could not be prepared.");
+        }
         await stores.sandboxes.recordSkills!(record.id, receipts);
         record.skills = receipts;
       }

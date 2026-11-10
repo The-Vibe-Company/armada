@@ -32,7 +32,8 @@ An unavailable release must fail/stop without a first turn.
 ## Private-install integration seam (#841)
 The owner requires private skills; this public-only slice does not satisfy that
 requirement by itself. #841 owns encrypted user/org credential resolution and
-command-only ephemeral environment injection. The server-only installSkill helper
+command-only ephemeral environment injection. PR #872 (codex/841-private-skillpack-skills) is the consumer of this seam.
+The server-only installSkill helper
 accepts a trusted SkillInstallTransport closure: it receives separate install and
 receipt-read commands and must return lock output only after successful install.
 This keeps credential transport out of reference validation and receipt parsing;
@@ -45,3 +46,13 @@ login/profile, add credentials to golden config or sandbox persistent environmen
 or snapshot a credential-bearing builder. #868 must remain public-only and build
 with no credentials; private installs belong only in fresh, non-snapshotted
 launch sandboxes. No golden build code is introduced or changed here.
+
+## Worker checkout hygiene
+When --repo selects a checkout, successful installs add the project lock file and its persistent .lock sibling
+and installed shared .agents skill paths (plus .claude copies for Claude) to Git's local info/exclude file
+(resolved with git rev-parse, including worktrees). This metadata is never
+committed, so git add -A does not sweep these untracked launch artifacts into
+the worker's PR. Failure to prepare exclusions fails the launch before a turn.
+Git exclusions do not hide already tracked files; existing tracked skills remain
+subject to Skillpack's conflict rules and normal Git review. Without --repo,
+installation remains at the golden root, outside the selected coding checkout.

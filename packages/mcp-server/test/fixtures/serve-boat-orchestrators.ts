@@ -134,6 +134,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   const suffix = match[2];
   if (!suffix) return json({ sandbox: machine });
   if (suffix === "/commands") {
+    if (JSON.stringify(body).includes("git rev-parse --git-path info/exclude")) skillLaunchOrder.push("exclude");
     if (JSON.stringify(body).includes("skillpack install")) skillLaunchOrder.push("install");
     return json({
       type: "command.finished",

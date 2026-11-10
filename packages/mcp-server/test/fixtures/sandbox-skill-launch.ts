@@ -18,6 +18,7 @@ export async function checkSandboxSkillLaunch(input: {
   const launched = await request("launch", {
     ...input.body,
     skills: [catalogReference],
+    repo: "fixture",
     prompt: "Read the installed notes skill.",
   });
   assert.equal(launched.status, 200, JSON.stringify(launched.body));
@@ -29,6 +30,7 @@ export async function checkSandboxSkillLaunch(input: {
     order.indexOf("install") >= 0 && order.indexOf("install") < order.indexOf("prompt"),
     "Install must finish before first turn",
   );
+  assert(order.includes("exclude"), "Checkout must locally exclude installed skill files");
   const detail = await request("status", { id });
   assert.equal(detail.status, 200, JSON.stringify(detail.body));
   assert.deepEqual(detail.body.skills, [catalogReceipt], "Status must read the persisted verified receipt");

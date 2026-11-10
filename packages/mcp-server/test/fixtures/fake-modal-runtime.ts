@@ -64,6 +64,8 @@ export function fakeModalRuntime(input: {
         token?: string;
       };
       effects.runnerCalls++;
+      if (packet.op === "exec" && packet.input?.command?.includes("git rev-parse --git-path info/exclude"))
+        effects.skillLaunchOrder.push("exclude");
       if (packet.op === "exec" && packet.input?.command?.startsWith("skillpack install"))
         effects.skillLaunchOrder.push("install");
       if (packet.op === "prompt") {

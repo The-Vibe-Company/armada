@@ -209,10 +209,11 @@ const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, creden
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
     async recordSkills(id, skills) {
-      await sql.query("update public.sandboxes set skills=$2::text::jsonb where id=$1::uuid", [
-        id,
-        JSON.stringify(skills),
-      ]);
+      const result = await sql.query(
+        "update public.sandboxes set skills=$2::text::jsonb where id=$1::uuid returning id",
+        [id, JSON.stringify(skills)],
+      );
+      if (result.rows.length !== 1) throw new Error("Skill receipts could not be recorded.");
     },
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(

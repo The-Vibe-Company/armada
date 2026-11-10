@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { installSkill, type Provider } from "@armada/core/server";
-import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
+import { installSkill, type Provider } from "../src/server.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./support/skillpack-catalog.ts";
 
 test("trusted install transport retains shared receipt validation and sanitized failures", async () => {
   const provider = {

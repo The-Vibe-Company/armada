@@ -51,7 +51,8 @@ export function parseSkillReceipt(output: string, skill: string, harness: string
   return receipt;
 }
 
-/** Trusted server transport seam for #841, never a public launch/config field.
+/** Trusted server transport seam consumed by #841 / PR #872 (codex/841-private-skillpack-skills).
+ * Never a public launch/config field.
  * A private transport may close over a resolved credential, applying it only to
  * installCommand via ephemeral process environment. Never persist credentials,
  * attach them to the sandbox environment, or use private transport in goldens.
