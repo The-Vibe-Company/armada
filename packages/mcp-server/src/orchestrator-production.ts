@@ -46,7 +46,7 @@ export function createProductionOrchestrators(input: {
 }) {
   const enabledPairs = input.requestedPairs.filter((pair) => pair === "modal:codex" || pair.startsWith("boat:"));
   if (enabledPairs.length === 0) return undefined;
-  // Legacy database metadata only; no remote method is installed from this revision.
+  // Legacy database metadata only; 40 zeroes means none. No skill is selected by this revision.
   const skillRevision = input.skillRevision ?? "0".repeat(40);
   const { sql } = input;
   const authority = new OrchestratorAuthority(sql, async (tx, account) => {

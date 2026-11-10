@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import type { Provider } from "@armada/core";
+import { type Provider, ProviderError } from "@armada/core";
 import { bootstrapOrchestrator } from "../src/orchestrator-bootstrap.ts";
+import { OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
 
 const reference = "example/notes@1.0.0";
 const checksum = `sha256:${"a".repeat(64)}`;
@@ -23,6 +24,8 @@ test.each([
   "plain",
   "pinned",
   "nonzero",
+  "provider error",
+  "invalid JSON",
   "detached",
   "truncated",
   "wrong version",
@@ -31,28 +34,39 @@ test.each([
   "reserved reference",
 ])("bootstrap %s", async (mode) => {
   const calls: string[] = [];
+  const commands: string[] = [];
+  const lines: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "create");
+  diagnostics.stage("skills");
   const provider = {
-    exec: async () => {
+    exec: async ({ command }: { command: string }) => {
+      commands.push(command);
       calls.push("install");
+      if (mode === "provider error")
+        throw new ProviderError({ provider: "boat", code: "unavailable", message: "private output", retryable: false });
       return {
         detached: mode === "detached",
         timedOut: false,
         truncated: mode === "truncated",
         exitCode: mode === "nonzero" ? 1 : 0,
-        stdout: lock(
-          mode === "wrong version"
-            ? { ...entry, version: "2.0.0" }
-            : mode === "wrong checksum"
-              ? { ...entry, checksum: "bad" }
-              : entry,
-        ),
+        stdout:
+          mode === "invalid JSON"
+            ? "private output"
+            : lock(
+                mode === "wrong version"
+                  ? { ...entry, version: "2.0.0" }
+                  : mode === "wrong checksum"
+                    ? { ...entry, checksum: "bad" }
+                    : entry,
+              ),
         stderr: "private output",
       };
     },
   } as unknown as Provider;
   const run = bootstrapOrchestrator(provider, {
     sandboxId: "parent",
-    projectDir: "/home/user/repo",
+    diagnostics,
+    projectDir: "/home/user/repo'$(false)",
     skillRevision: "a".repeat(40),
     ...(mode === "plain"
       ? {}
@@ -75,6 +89,10 @@ test.each([
   if (mode === "plain" || mode === "pinned") {
     const receipt = await run;
     expect(calls).toEqual(["install", "receipt", "authority"]);
+    if (mode === "pinned")
+      expect(commands[0]?.split(" && ")[0]).toBe(
+        "skillpack install 'example/notes' --version '1.0.0' --api-url https://skillpack.app/v1 --scope project --project '/home/user/repo'\\''$(false)' --tools codex --pin --yes --json >/dev/null",
+      );
     expect(receipt).toEqual(
       mode === "plain"
         ? null
@@ -87,6 +105,29 @@ test.each([
         : "orchestrator_skill_bootstrap_failed",
     );
     expect(calls).toEqual(mode === "invalid reference" || mode === "reserved reference" ? [] : ["install"]);
+    diagnostics.report("failed");
+    const reason =
+      mode === "provider error"
+        ? "provider_unavailable"
+        : ["invalid JSON", "wrong version", "wrong checksum"].includes(mode)
+          ? "skill_provenance_missing"
+          : mode === "detached"
+            ? "skill_execution_detached"
+            : mode === "truncated"
+              ? "skill_output_truncated"
+              : ["invalid reference", "reserved reference"].includes(mode)
+                ? "skill_configuration_invalid"
+                : "skill_install_nonzero";
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      {
+        event: "orchestrator_operation_failure",
+        component: "owner",
+        action: "create",
+        outcome: "failed",
+        stage: "skills",
+        reason,
+      },
+    ]);
   }
 });
 

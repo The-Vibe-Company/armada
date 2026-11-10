@@ -51,6 +51,7 @@ export async function bootstrapOrchestrator(
   // Never follow a redirected destination or overwrite an unrelated package.
   const referenceCommand = `test ! -L ${quote(referenceDir)} && mkdir -p ${quote(referenceDir)} && if test -e ${referenceFile}; then test ! -L ${referenceFile} && test "$(cat ${referenceFile})" = "$(printf '%s' ${quote(toolReference)})"; else (set -C; printf '%s' ${quote(toolReference)} > ${referenceFile}); fi`;
   let receipt: OrchestratorSkillReceipt | null = null;
+  let validatingReceipt = false;
   try {
     const [reference, version] = skill?.split("@") ?? [];
     const result = await provider.exec({
@@ -76,6 +77,7 @@ export async function bootstrapOrchestrator(
       throw new Error("install_failed");
     }
     if (skill) {
+      validatingReceipt = true;
       const lock = JSON.parse(result.stdout);
       const [org, slug] = reference!.split("/");
       const workspace = lock.workspaces?.[`catalog:${org}`];
@@ -105,8 +107,9 @@ export async function bootstrapOrchestrator(
         origin: workspace.apiUrl,
       };
     }
-  } catch {
-    request.diagnostics?.captureReason("skill_install_nonzero");
+  } catch (error) {
+    if (validatingReceipt) request.diagnostics?.captureReason("skill_provenance_missing");
+    else request.diagnostics?.capture(error);
     throw new Error("orchestrator_skill_bootstrap_failed");
   }
   await request.recordReceipt?.(receipt);

@@ -55,7 +55,7 @@ export interface Orchestrator {
   updatedAt: string;
   lastActivityAt: string;
   idleDeadline: string | null;
-  /** Public reviewed commit used by armada skill install --revision. */
+  /** Legacy installer revision metadata; 40 zeroes means none. Does not select a skill. */
   skillRevision: string;
   skillReceipt?: OrchestratorSkillReceipt | null;
   blockedReason: string | null;

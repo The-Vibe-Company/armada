@@ -110,9 +110,10 @@ preparation without starting a turn; errors never include guest output.
 
 Without `--skill`, only Armada's minimal launcher-tool reference is installed;
 no orchestration method is selected. `ARMADA_ORCHESTRATOR_SKILL_REVISION` is no
-longer required and remains only legacy receipt metadata. Existing parents use
-the new bootstrap on their next preparation; remove previously installed method
-files from old goldens yourself if a truly plain harness is required.
+longer required and remains only legacy receipt metadata. Only new creates receive
+the built-in reference or selected skill. Existing parents retain the files already
+installed in their project directory and are not re-bootstrapped, including on
+resume. Creating a new parent does not remove skills inherited from a golden.
 
 Private/share-token skills, custom origins and unversioned references are not
 supported yet. No Skillpack credentials are inferred from Armada credentials.
