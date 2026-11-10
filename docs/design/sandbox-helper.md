@@ -172,11 +172,16 @@ worker state is never accepted as authority, even if accidentally retained.
 
 ### Exposure and “no worse than today”
 
-No secret in goldens, argv, logs, ordinary Provider.exec payloads/results or exec
-journals. Bootstrap only through existing private stdin/pinned SSH on Boat and
-private Runner transport on Modal. Retain issued-leaf redaction history across
-broker restart; do not pass secrets through a diagnostics command. No telemetry
-environment dumps, paths, raw exceptions or raw native payloads.
+The helper must never intentionally put secrets in goldens, argv, logs, ordinary
+Provider.exec payloads/results or exec journals. Bootstrap only through existing
+private stdin/pinned SSH on Boat and private Runner transport on Modal. Retain
+issued-leaf redaction history across broker restart; diagnostics never return
+secret bytes. This is a control-transport requirement, not a confidentiality
+guarantee for arbitrary guest-controlled exec output: a compromised guest can
+print stolen leaves, and ordinary local Git is not an arbitrary-secret redaction
+boundary. Keep account-private usage/quota collection off ordinary exec journals;
+require a proven private non-journaled channel or leave those readings unavailable.
+No telemetry environment dumps, paths, raw exceptions or raw native payloads.
 
 A compromised agent can forge its own usage/liveness, upload malicious bounded
 recovery data, and request allowed GitHub operations. In compatibility mode it
@@ -248,7 +253,10 @@ never production access or migration application by this design author.
    reports do not double count, unrelated session refused, quota stays private.
 3. **Preservation failure stages first (#902), then private inside-out upload.**
    First distinguish collect/encrypt/transport/storage/ACK failure. Staging: dirty
-   and unpushed work recoverable through existing recovery workflow; offline upload,
+   and unpushed work recoverable through existing recovery workflow; clean reviewer
+   and already-pushed/no-op cases yield no archive or preservation warning/note
+   after a successful empty capture (failed inspection is not proof of no work).
+   Exercise offline upload,
    size cap, denied path, repeated receipt, closing race, forced kill and
    stop/resume/stop produce honest complete/partial/unavailable outcomes. No
    auto-publication or execution of guest hooks beside server credentials.
