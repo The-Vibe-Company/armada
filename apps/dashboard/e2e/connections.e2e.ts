@@ -102,6 +102,16 @@ for (const mobile of [false, true]) {
     await expect(page.getByRole("dialog").locator("[data-service]")).toHaveCount(0);
     await expect(dialog.getByRole("group", { name: /Who uses it/ })).toContainText("Cannot be changed later");
     if (!mobile) await expect(dialog.getByRole("button", { name: "Add and connect" })).toBeInViewport({ ratio: 1 });
+    if (!mobile) {
+      // The stdio path fits too: its importer is folded, so the scope choice and the submit stay in view.
+      await dialog.getByRole("radio", { name: /stdio command/ }).check();
+      await expect(dialog.getByText("Runs in each sandbox launched with it")).toBeVisible();
+      await expect(dialog.getByRole("radio", { name: /Personal/ })).toBeInViewport({ ratio: 1 });
+      await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeInViewport({ ratio: 1 });
+      await expect(dialog.getByRole("button", { name: "Add connection" })).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: "test-results/connections-add-stdio-desktop.png", animations: "disabled" });
+      await dialog.getByRole("radio", { name: /Remote URL/ }).check();
+    }
     // On a phone the form scrolls inside the dialog, but nothing overflows its width.
     await expect(dialog.getByText("stdio command")).toBeInViewport({ ratio: 1 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobile ? 390 : 1280);
@@ -305,16 +315,17 @@ test("a stdio server is imported, must pin its package and is configured for lau
   const dialog = await openAdd(page);
   await dialog.getByRole("radio", { name: /stdio command/ }).check();
   await expect(dialog.getByText("Runs in each sandbox launched with it")).toBeVisible();
-  const importBox = dialog.getByLabel("Import a JSON definition (optional)");
+  await dialog.getByRole("button", { name: "Import JSON definition" }).click();
+  const importBox = dialog.getByLabel("JSON definition");
   await importBox.fill(JSON.stringify({ mcpServers: { files: { command: "npx", env: { TOKEN: "x" } } } }));
-  await dialog.getByRole("button", { name: "Import" }).click();
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("Remove the env block");
   await importBox.fill(
     JSON.stringify({
       mcpServers: { files: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem"] } },
     }),
   );
-  await dialog.getByRole("button", { name: "Import" }).click();
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog.getByLabel("Name")).toHaveValue("files");
   await expect(dialog.getByRole("textbox", { name: "Command" })).toHaveValue("npx");
   await dialog.getByRole("button", { name: "Add connection" }).click();

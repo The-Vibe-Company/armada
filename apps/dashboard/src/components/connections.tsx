@@ -207,10 +207,7 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
       {kind === "remote" ? (
         <RemoteFields idPrefix={id} authType={authType} onAuthType={setAuthType} lead={nameField} />
       ) : (
-        <>
-          {nameField}
-          <StdioFields idPrefix={id} onName={(imported) => setName((current) => current || imported)} />
-        </>
+        <StdioFields idPrefix={id} onName={(imported) => setName((current) => current || imported)} lead={nameField} />
       )}
 
       <input type="hidden" name="scope" value={scope} />
@@ -501,16 +498,21 @@ function StdioFields({
   onName,
   initialCommand = "",
   initialArgs = "",
+  lead,
 }: {
   idPrefix: string;
   onName?: (name: string) => void;
   initialCommand?: string;
   initialArgs?: string;
+  /** A field beside the command on a wide screen (Add's name), so the short form needs no scrolling. */
+  lead?: ReactNode;
 }) {
   const [command, setCommand] = useState(initialCommand);
   const [args, setArgs] = useState(initialArgs);
   const [importText, setImportText] = useState("");
   const [importResult, setImportResult] = useState<ActionResult | null>(null);
+  // Optional, so folded: the short form keeps the scope and the submit in view on a laptop.
+  const [importing, setImporting] = useState(false);
 
   function runImport() {
     const parsed = parseStdioImport(importText);
@@ -528,51 +530,65 @@ function StdioFields({
   return (
     <div className="space-y-4">
       <input type="hidden" name="kind" value="stdio" />
-      <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
-        <p>
-          <span className="font-medium text-foreground">Runs in each sandbox launched with it</span>, never on Armada.
-        </p>
-        <p>
-          Pin an exact version, for example{" "}
-          <code className="font-mono text-foreground">npx -y @modelcontextprotocol/server-filesystem@2026.1.14</code>.
-          Other programs must already be in the golden. No secret is passed in; everyone who can use it sees its
-          command.
-        </p>
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-import`}>Import a JSON definition (optional)</Label>
-        <Textarea
-          id={`${idPrefix}-import`}
-          value={importText}
-          onChange={(event) => setImportText(event.target.value)}
-          rows={3}
-          spellCheck={false}
-          className="font-mono text-xs"
-          placeholder={'{"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", "…@1.2.3"]}}}'}
-        />
-        <div className="flex flex-wrap items-center gap-3">
-          <Button type="button" variant="outline" size="sm" onClick={runImport} disabled={!importText.trim()}>
-            Import
-          </Button>
-          <ResultLine result={importResult} className="text-xs" />
+      <p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-pretty text-muted-foreground">
+        <span className="font-medium text-foreground">Runs in each sandbox launched with it</span>, never on Armada. Pin
+        an exact package version, as in the example below; other programs must already be in the golden. No secret is
+        passed in, and everyone who can use it sees its command.
+      </p>
+      <div className={cn(lead && "grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
+        {lead}
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-command`}>Command</Label>
+          <Input
+            id={`${idPrefix}-command`}
+            name="command"
+            value={command}
+            onChange={(event) => setCommand(event.target.value)}
+            required
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+            placeholder="npx"
+          />
         </div>
       </div>
       <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-command`}>Command</Label>
-        <Input
-          id={`${idPrefix}-command`}
-          name="command"
-          value={command}
-          onChange={(event) => setCommand(event.target.value)}
-          required
-          autoComplete="off"
-          spellCheck={false}
-          className="font-mono"
-          placeholder="npx"
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-args`}>Arguments, one per line</Label>
+        <div className="flex flex-wrap items-center justify-between gap-x-3">
+          <Label htmlFor={`${idPrefix}-args`}>Arguments, one per line</Label>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            aria-expanded={importing}
+            aria-controls={`${idPrefix}-import-area`}
+            onClick={() => setImporting((open) => !open)}
+          >
+            Import JSON definition
+          </Button>
+        </div>
+        {importing && (
+          <div id={`${idPrefix}-import-area`} className="space-y-2 rounded-md border bg-muted/40 p-3">
+            <Label htmlFor={`${idPrefix}-import`} className="text-xs text-muted-foreground">
+              JSON definition
+            </Label>
+            <Textarea
+              id={`${idPrefix}-import`}
+              value={importText}
+              onChange={(event) => setImportText(event.target.value)}
+              rows={3}
+              spellCheck={false}
+              className="bg-background font-mono text-xs"
+              placeholder={'{"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", "…@1.2.3"]}}}'}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="button" variant="outline" size="sm" onClick={runImport} disabled={!importText.trim()}>
+                Import
+              </Button>
+              <ResultLine result={importResult} className="text-xs" />
+            </div>
+          </div>
+        )}
         <Textarea
           id={`${idPrefix}-args`}
           name="args"
@@ -580,7 +596,7 @@ function StdioFields({
           onChange={(event) => setArgs(event.target.value)}
           rows={3}
           spellCheck={false}
-          className="font-mono text-xs"
+          className="min-h-0 font-mono text-xs"
           placeholder={"-y\n@modelcontextprotocol/server-filesystem@2026.1.14\n/workspace"}
         />
       </div>
