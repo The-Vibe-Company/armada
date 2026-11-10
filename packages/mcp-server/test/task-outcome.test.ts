@@ -83,7 +83,7 @@ test("explicit report validates the latest finished turn and persists through AP
   }
 });
 
-test("new send clears an outcome before provider admission and rejects stale reporters", async () => {
+test("send and steer clear outcomes before admission and fence replacement receipts", async () => {
   const server = await harness();
   try {
     const { client, token, people, boat, db } = server;
@@ -113,6 +113,38 @@ test("new send clears an outcome before provider admission and rejects stale rep
         })
       ).isError,
     ).toBe(false);
+    // A late native continuation/restart may return a new prompt ID, even after
+    // the previously observed turn finished. Its receipt, not the old ID, wins.
+    boat.provider.steer = async (input) => {
+      expect((await db.query("select task_outcome,task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
+        task_outcome: null,
+        task_prompt_id: null,
+      });
+      const receipt = await boat.provider.prompt({
+        sandboxId: input.sandboxId,
+        harness: "claude",
+        text: input.text,
+        conversationId: "conv_1",
+      });
+      return { ...receipt, promptId: "unpollable-steer-record", mode: "late" };
+    };
+    expect((await call(mcp, "steer", { id, text: "continue with review" })).data.promptId).toBe(
+      "unpollable-steer-record",
+    );
+    boat.finish("bx_1", "prompt_3", "finished");
+    expect((await call(mcp, "report", { id, prompt_id: "prompt_2", outcome: { state: "ready" } })).isError).toBe(true);
+    expect((await call(mcp, "report", { id, prompt_id: "prompt_3", outcome: { state: "ready" } })).isError).toBe(false);
+    boat.provider.prompt = async () => {
+      throw new Error("Ambiguous provider admission");
+    };
+    expect((await call(mcp, "send", { id, prompt: "unconfirmed work" })).isError).toBe(true);
+    // Even after the bounded activity lease expires, no old finished turn can
+    // revive the cleared outcome. Expiry is simulated rather than slept through.
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    expect((await call(mcp, "report", { id, prompt_id: "prompt_3", outcome: { state: "ready" } })).isError).toBe(true);
+    expect((await db.query("select task_outcome from sandboxes where id=$1", [id])).rows[0]).toEqual({
+      task_outcome: null,
+    });
   } finally {
     await server.close();
   }

@@ -52,7 +52,7 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
-import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import { latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -925,11 +925,23 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       output: { id: z.string(), taskOutcome },
     },
     async (args) => {
-      const report = await statusOf(args.id, undefined);
-      if (!report.prompt || report.prompt.promptId !== args.prompt_id || report.prompt.state !== "finished")
+      const found = await visible(args.id);
+      const provider = found.status === "deleted" ? null : await context.provider(found);
+      // Empty is a successful-steer marker, not a provider run ID. Null remains
+      // unreportable after an ambiguous admission or for legacy rows.
+      const target =
+        found.taskPromptId === ""
+          ? provider
+            ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
+            : null
+          : found.taskPromptId;
+      if (!target || target !== args.prompt_id)
+        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+      const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
+      if (!report.prompt || report.prompt.state !== "finished")
         throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
-      await data.sandboxes.reportTaskOutcome(args.id, args.prompt_id, args.outcome);
+      await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
     },
   );
@@ -1052,18 +1064,30 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         orgId: found.orgId,
         role: member.role,
       });
-      const receipt = await provider.steer({
-        sandboxId: found.providerSandboxId,
-        text: args.text,
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+      return sandboxActivity(data.sandboxes, found, { clearTaskOutcome: true }, async () => {
+        const receipt = await provider.steer({
+          sandboxId: found.providerSandboxId,
+          text: args.text,
+          ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+        });
+        return {
+          patch: {
+            status: "running",
+            // Boat returns a steer-record ID; resolve the actual run from events.
+            taskPromptId: "",
+            conversationIds: found.conversationIds.includes(receipt.conversationId)
+              ? found.conversationIds
+              : [...found.conversationIds, receipt.conversationId],
+          },
+          result: {
+            id: found.id,
+            promptId: receipt.promptId,
+            conversationId: receipt.conversationId,
+            delivery,
+            mode: receipt.mode ?? null,
+          },
+        };
       });
-      return {
-        id: found.id,
-        promptId: receipt.promptId,
-        conversationId: receipt.conversationId,
-        delivery,
-        mode: receipt.mode ?? null,
-      };
     },
   );
 

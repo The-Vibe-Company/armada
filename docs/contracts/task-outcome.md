@@ -29,12 +29,16 @@ members retain the safe list metadata projection, but receive `taskOutcome: null
 Raw rows use the sandbox's existing owner/admin RLS. The Supabase metadata RPC
 uses the same redaction.
 
-A new send clears both the outcome and reportable prompt ID when activity is
+A new send or steer admission clears both the outcome and reportable prompt ID when activity is
 reserved, before provider admission. Its accepted receipt records the new ID.
 Reports compare that ID atomically and cannot race a new admitted turn. If
 provider admission fails ambiguously the old outcome stays cleared, not
-misrepresented as the result of new work. Steer is not a new turn and does not
-clear it.
+misrepresented as the result of new work. Steer may continue the same prompt or create a replacement turn (for example,
+a Codex restart or late native continuation); its receipt may identify an unpollable steer record. Reports therefore resolve
+the latest actual prompt from the complete event stream after successful steer,
+fencing the lifecycle generation. A missing or non-advancing cursor fails closed.
+Internally an empty task_prompt_id marks this successful-steer state; null remains
+unreportable for legacy rows and ambiguous send admissions.
 
 Version one deliberately leaves out in-agent credential provisioning,
 dashboard UI, outcome filters, notifications, PR/commit verification, automatic

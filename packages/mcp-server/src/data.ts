@@ -32,7 +32,7 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
-  reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome): Promise<void>;
+  reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
   get(id: string): Promise<SandboxView | null>;
   /** Newest first. */
@@ -314,14 +314,15 @@ export function createSqlData(sql: Sql): DataSource {
         );
         if (!result.rows[0]) throw new DataError("The sandbox could not be updated.");
       },
-      async reportTaskOutcome(id, promptId, outcome) {
+      async reportTaskOutcome(id, promptId, outcome, expectedGeneration) {
         const result = await sql.query(
           `update public.sandboxes s set task_outcome=$5::text::jsonb
            where ${SANDBOX_VISIBLE} and s.id=$3::uuid and s.task_prompt_id=$4::text
+           and ($6::bigint is null or s.lifecycle_generation=$6::bigint)
            and (s.activity_until is null or s.activity_until < now())
            and s.status not in ('starting','running','deleted')
            returning s.id`,
-          [...scope, id, promptId, JSON.stringify(outcome)],
+          [...scope, id, promptId, JSON.stringify(outcome), expectedGeneration ?? null],
         );
         if (!result.rows.length) throw new DataError("The turn changed or this sandbox is not reportable.");
       },

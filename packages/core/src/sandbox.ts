@@ -16,6 +16,7 @@ export interface ResourceProject {
 
 export interface SandboxRecord {
   taskOutcome?: TaskOutcome | null;
+  /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
   taskPromptId?: string | null;
   resourceProject?: ResourceProject | null;
   machineSize?: MachineSizeEvidence | null;
