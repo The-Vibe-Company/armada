@@ -28,10 +28,20 @@ the returned events array, not headers/response metadata. An indivisible event
 larger than the requested budget is returned alone (the soft budget is exceeded).
 Above the hard 1 MiB events-array limit, it is replaced by one closed
 `kind: other, type: event_truncated` marker. Its `data.reason` is
-`event_exceeds_hard_limit`, with `originalBytes` and `limitBytes`; the payload
+`event_exceeds_hard_limit`, with `originalKind`, `originalBytes` and `limitBytes`; the payload
 is omitted, not retryable with a larger budget. The raw cursor still advances.
 Orchestrator envelopes retain their metadata and wrap this marker as an agent
-event (including for an oversized non-agent payload).
+event (including for an oversized non-agent payload). Markers preserve the
+conversation and prompt IDs when present. Non-agent envelope markers retain
+the original envelope kind in `data.originalKind` and use its timestamp.
+
+There are two `event_truncated` data shapes: the runtime journal's pre-existing
+marker has `{ originalKind, bytes }` (`bytes` counts serialized UTF-16 code units
+after redaction, at its 262144-unit journal limit). The history hard-limit marker
+has `{ originalKind, reason: "event_exceeds_hard_limit", originalBytes, limitBytes }`;
+`originalBytes` counts UTF-8 JSON events-array bytes, including an orchestrator
+envelope when present. Clients must accept both as closed gaps and must not rely
+on `reason` being present on journal markers.
 
 Coalescing combines only adjacent message events with matching explicit
 message/conversation/prompt IDs and known text modes, **starting from a native

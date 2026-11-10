@@ -408,8 +408,9 @@ export class OrchestratorRuntimeStore {
               revision: event.revision,
               kind: "agent",
               event: truncateEvent(
-                { id: event.id, at: 0, kind: "other", type: "oversized", data: null },
+                { id: event.id, at: Date.parse(event.at), kind: "other", type: "oversized", data: null },
                 originalBytes,
+                event.kind,
               ),
             },
     );

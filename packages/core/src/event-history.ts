@@ -113,12 +113,14 @@ export function buildEventPage(
 }
 
 /** Closed replacement for an indivisible event above the hard history limit. */
-export function truncateEvent(event: AgentEvent, originalBytes: number): AgentEvent {
+export function truncateEvent(event: AgentEvent, originalBytes: number, originalKind: string = event.kind): AgentEvent {
   return {
     id: event.id.slice(0, 256),
     at: event.at,
+    ...(event.conversationId ? { conversationId: event.conversationId } : {}),
+    ...(event.promptId ? { promptId: event.promptId } : {}),
     kind: "other",
     type: "event_truncated",
-    data: { reason: "event_exceeds_hard_limit", originalBytes, limitBytes: 1048576 },
+    data: { reason: "event_exceeds_hard_limit", originalKind, originalBytes, limitBytes: 1048576 },
   };
 }
