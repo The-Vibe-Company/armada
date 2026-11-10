@@ -8,7 +8,7 @@ import type {
   OrchestratorState,
   PromptStatus,
 } from "@armada/core";
-import { boundEventEntries, coalesceEventMessages, truncateEvent } from "@armada/core";
+import { boundEventEntries, coalesceEventMessages, reportedTurnUsage, truncateEvent } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
@@ -516,6 +516,25 @@ export class OrchestratorRuntimeStore {
             },
             event,
           );
+      }
+      if (
+        identity.sandboxId &&
+        page.events.some(
+          (event) =>
+            event.kind === "prompt" || (event.kind === "other" && ["result", "armada/turnUsage"].includes(event.type)),
+        )
+      ) {
+        const retained = await tx.query<{ event: AgentEvent }>(
+          `select event->'event' as event from public.orchestrator_runtime_events
+           where orchestrator_id=$1 and event->>'kind'='agent' order by sequence`,
+          [identity.id],
+        );
+        await tx.query(`update public.sandboxes set usage_turns=$4::jsonb where id=$1 and owner_id=$2 and org_id=$3`, [
+          identity.sandboxId,
+          identity.ownerId,
+          identity.orgId,
+          JSON.stringify(reportedTurnUsage(retained.rows.map((row) => row.event))),
+        ]);
       }
       // Cursor moves only in the transaction which durably mirrored every event.
       await tx.query(`update public.orchestrator_runtime set provider_cursor=$2 where orchestrator_id=$1`, [

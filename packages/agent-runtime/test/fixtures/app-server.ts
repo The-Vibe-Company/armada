@@ -122,7 +122,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       threadId: thread,
       turnId: `turn-${turn}`,
       tokenUsage: {
-        total: { inputTokens: 100 * turn, outputTokens: 20 * turn, cachedInputTokens: 30 * turn },
+        total: {
+          inputTokens: 100 * turn,
+          outputTokens: 20 * turn,
+          cachedInputTokens: 30 * turn,
+          cacheWriteInputTokens: 10 * turn,
+          reasoningOutputTokens: 4 * turn,
+        },
         last: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 10 },
       },
     });

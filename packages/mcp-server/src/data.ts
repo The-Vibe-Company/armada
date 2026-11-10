@@ -16,6 +16,7 @@ import {
   statusReasonOf,
   type TaskOutcome,
   type Visibility,
+  withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
@@ -433,6 +434,7 @@ export function createSqlData(sql: Sql): DataSource {
             .filter((row): row is SandboxListMetadata & { total: number } => row.id !== null)
             .map(({ total: _total, ...row }) => ({
               ...row,
+              usage: withUsageTotals(row.usage),
               createdAt: new Date(row.createdAt).toISOString(),
               stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
               expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),

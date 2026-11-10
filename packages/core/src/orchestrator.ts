@@ -2,6 +2,7 @@ import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { AgentEvent } from "./provider.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
+import type { SandboxUsage, SandboxUsageSummary } from "./sandbox-usage.ts";
 
 /** Proposed v1 wire contract. No routes or authorization are enabled by this module. */
 export const ORCHESTRATOR_CONTRACT_VERSION = 1 as const;
@@ -137,6 +138,7 @@ export interface OrchestratorDetail {
   waits: OrchestratorWaitLease[];
   delegation: OrchestratorDelegation | null;
   childSandboxIds: string[];
+  usage?: { own: SandboxUsage | null; children: SandboxUsageSummary };
 }
 
 export interface OrchestratorSkillReceipt {

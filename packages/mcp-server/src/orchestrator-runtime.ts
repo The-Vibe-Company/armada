@@ -93,7 +93,7 @@ export interface OrchestratorRuntimeOptions {
     ownerId: string,
     orgId: string,
     id: string,
-  ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds">>;
+  ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds" | "usage">>;
   /** Actual named-account/provider/golden/sizing authorization; no legacy account fallback. */
   resolveBackend(
     configuration: OrchestratorCreate,
