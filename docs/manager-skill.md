@@ -55,9 +55,12 @@ must explicitly update that pin and rebuild/audit affected goldens. Installing
 does not update existing destinations; preserve and inspect old copies before
 reinstallation. This is a rollout prerequisite, not permission to deploy.
 
-Delivery stays owned by the worker, but independent review must run through its
-own Armada identity in a fresh sandbox. See
-`ship-pr-dev/references/review-gate.md` and
-`armada-manager/references/delivery.md` in the installed packages for the
-minimal ticket/diff prompt, Bash permission gate, two-round budget and mandatory
-stop receipts. No worker login/quota means a blocked draft, not local self-review.
+Delivery stays owned by the worker: implementation, author self-check, PR and
+green latest-head CI. It ends with READY FOR REVIEW and needs no Armada identity.
+Independent review belongs to the coordinator alone, using its existing CLI or
+an orchestrator parent's scoped launch tool, never a worker credential.
+See armada-manager/references/reviewer.md for launch commands, the minimal
+issue/PR/review prompt, GitHub approval/request-changes, two-round budget,
+corrections to the original worker and mandatory stop receipts.
+The coordinator merges only an approved unchanged head with green CI and any
+required Real-provider verification section. READY FOR REVIEW is not approval.
