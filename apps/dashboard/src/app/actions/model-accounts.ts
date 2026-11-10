@@ -13,6 +13,7 @@ import {
   type AccountScope,
   checkAccountName,
   checkDefaultChoice,
+  HARNESS_PATH,
   KIND_INFO,
 } from "@/lib/model-accounts";
 
@@ -66,7 +67,7 @@ function secret(kind: AccountKind, raw: unknown): { ok: true; value: string } | 
 }
 
 function refresh() {
-  revalidatePath("/credentials");
+  revalidatePath(HARNESS_PATH);
   revalidatePath("/goldens");
 }
 

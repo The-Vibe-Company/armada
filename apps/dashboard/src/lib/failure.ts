@@ -7,14 +7,14 @@ export type FailureHelp = {
 
 const USAGE: FailureHelp = {
   title: "Usage limit reached",
-  hint: "The credential this agent runs on has hit its plan or billing limit. Wait for the limit to reset, or switch to another credential and send the prompt again.",
-  fix: { href: "/credentials", label: "Manage credentials" },
+  hint: "The account this agent runs on has hit its plan or billing limit. Wait for the limit to reset, or switch to another account and send the prompt again.",
+  fix: { href: "/harness", label: "Manage subscriptions" },
 };
 
 const AUTH: FailureHelp = {
-  title: "Credential expired",
-  hint: "The credential this agent runs on expired or was revoked. Replace it, then send the prompt again.",
-  fix: { href: "/credentials", label: "Replace the credential" },
+  title: "Account expired",
+  hint: "The account this agent runs on expired or was revoked. Reconnect it, then send the prompt again.",
+  fix: { href: "/harness", label: "Reconnect the account" },
 };
 
 const HELP: Record<string, FailureHelp> = {
@@ -40,9 +40,9 @@ const HELP: Record<string, FailureHelp> = {
   auth_expiry: AUTH,
   unauthorized: AUTH,
   provider_not_configured: {
-    title: "No credential for this agent",
-    hint: "Neither you nor the org has a key for this agent. Add one, then launch again.",
-    fix: { href: "/credentials", label: "Add a credential" },
+    title: "No subscription for this agent",
+    hint: "Neither you nor the org has a subscription or API key for this agent. Add one, then launch again.",
+    fix: { href: "/harness", label: "Add a subscription" },
   },
 };
 

@@ -46,6 +46,7 @@ import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import {
   accountProblem,
   accountsFor,
+  HARNESS_PATH,
   kindNote,
   type LaunchAccounts,
   launchDefault,
@@ -357,7 +358,7 @@ function AccountField({
     return (
       <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground" data-account-field="none">
         No {label} account.{" "}
-        <Link href="/credentials" className="underline">
+        <Link href={HARNESS_PATH} className="underline">
           Add one
         </Link>
       </p>

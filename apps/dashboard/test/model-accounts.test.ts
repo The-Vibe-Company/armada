@@ -3,10 +3,13 @@ import { createAccountControl } from "../src/lib/account-control.ts";
 import {
   type AccountUsage,
   accountsFromList,
+  addChoices,
   checkAccountChoice,
   checkDefaultChoice,
+  kindFor,
   launchDefault,
   type ModelAccount,
+  otherBilling,
   parseAuthCapabilities,
   parseUsage,
   terminalLogin,
@@ -407,5 +410,16 @@ test("the terminal sign-in is only the command the server reports, with the name
   }
   expect(parseAuthCapabilities({ nativeCLI: { codex_auth: "armada creds login codex" } })?.terminal).toEqual({
     codex_auth: "armada creds login codex",
+  });
+});
+
+describe("adding a subscription (#805)", () => {
+  test("each harness leads with its subscription; the API key is the same harness's other way in", () => {
+    expect(addChoices("subscription")).toEqual(["claude_oauth", "codex_auth"]);
+    expect(addChoices("api")).toEqual(["anthropic", "openai"]);
+    expect(kindFor("codex")).toBe("codex_auth");
+    expect(kindFor("claude", "api")).toBe("anthropic");
+    expect(otherBilling("claude_oauth")).toBe("anthropic");
+    expect(otherBilling("openai")).toBe("codex_auth");
   });
 });

@@ -44,6 +44,7 @@ import {
   type AccountUsage,
   type AuthCapabilities,
   accountProblem,
+  addChoices,
   creditText,
   formatDuration,
   formatMoney,
@@ -52,6 +53,7 @@ import {
   type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
+  otherBilling,
   relativeTime,
   STATUS_INFO,
   terminalLogin,
@@ -134,7 +136,7 @@ export function LaunchUses({
     );
   return (
     <p className="text-sm text-muted-foreground" data-launch-uses="none">
-      No account yet. Add one to launch {harnessLabel}.
+      No subscription yet. Add one to launch {harnessLabel}.
     </p>
   );
 }
@@ -613,11 +615,10 @@ function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }
 
 /* ---------------------------------------------------------------- add an account */
 
-const KIND_ORDER: AccountKind[] = ["claude_oauth", "codex_auth", "anthropic", "openai"];
-
 /**
- * Adds a named account. The subscription kinds come first: what a person usually has. Until the server offers a
- * native sign-in, the account is added from a value the person produces on their own machine and pastes here.
+ * Adds a subscription (#805): the dialog leads with the subscription sign-in of each harness, and an API key is the
+ * secondary way in ("Use an API key instead"), for the same harness. Until the server offers a native sign-in, the
+ * account is added from a value the person produces on their own machine and pastes here.
  */
 export function AddAccountDialog({
   orgId,
@@ -625,7 +626,7 @@ export function AddAccountDialog({
   isAdmin,
   capabilities,
   initialKind = "claude_oauth",
-  triggerLabel = "Add account",
+  triggerLabel = "Add a subscription",
   triggerVariant = "default",
 }: {
   orgId: string;
@@ -634,7 +635,7 @@ export function AddAccountDialog({
   /** What this deployment offers for connecting accounts; null offers paste only. */
   capabilities: AuthCapabilities | null;
   initialKind?: AccountKind;
-  /** The trigger's words, when it opens on one agent's kind (an empty agent's "Add a Codex account"). */
+  /** The trigger's words, when it opens on one harness's kind (an empty harness's "Add a Codex subscription"). */
   triggerLabel?: string;
   triggerVariant?: "default" | "outline";
 }) {
@@ -647,6 +648,7 @@ export function AddAccountDialog({
   const router = useRouter();
   const id = useId();
   const info = KIND_INFO[kind];
+  const subscription = info.billing === "subscription";
   // Only a personal account signs in from the terminal; an org account is pasted by its admin.
   const terminal = scope === "user" ? terminalLogin(capabilities, kind, name) : null;
   const defaultBox = (
@@ -685,28 +687,42 @@ export function AddAccountDialog({
         </DialogTrigger>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Add a model account</DialogTitle>
-            <DialogDescription>Add as many as you have. Each one is chosen by name when you launch.</DialogDescription>
+            <DialogTitle>{subscription ? "Add a subscription" : "Add an API key"}</DialogTitle>
+            <DialogDescription>
+              {subscription
+                ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
+                : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
+            </DialogDescription>
           </DialogHeader>
           <form key={generation} action={formAction} className="min-w-0 space-y-5">
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="kind" value={kind} />
             <input type="hidden" name="scope" value={scope} />
             <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Account</legend>
+              <legend className="text-sm font-medium">{subscription ? "Subscription" : "API key"}</legend>
               <div className="grid gap-2 sm:grid-cols-2">
-                {KIND_ORDER.map((value) => (
+                {addChoices(info.billing).map((value) => (
                   <ChoiceCard
                     key={value}
                     name={`${id}-kind`}
                     checked={kind === value}
                     onChange={() => setKind(value)}
-                    icon={KIND_INFO[value].billing === "subscription" ? <StarIcon /> : <KeyRoundIcon />}
+                    icon={subscription ? <StarIcon /> : <KeyRoundIcon />}
                     title={KIND_INFO[value].label}
-                    hint={`${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "api" ? ", billed per token" : ""}`}
+                    hint={`${KIND_INFO[value].harnessLabel}${subscription ? "" : ", billed per token"}`}
                   />
                 ))}
               </div>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto px-0 text-muted-foreground"
+                data-billing-switch
+                onClick={() => setKind(otherBilling(kind))}
+              >
+                {subscription ? "Use an API key instead" : "Use a subscription instead"}
+              </Button>
             </fieldset>
 
             {isAdmin && (
@@ -743,7 +759,7 @@ export function AddAccountDialog({
                 required
                 maxLength={MAX_ACCOUNT_NAME}
                 autoComplete="off"
-                placeholder={info.billing === "subscription" ? "Work, Personal…" : "Team key"}
+                placeholder={subscription ? "Work, Personal…" : "Team key"}
               />
             </div>
 
@@ -762,7 +778,7 @@ export function AddAccountDialog({
                     <SecretField idPrefix={id} kind={kind} />
                     {defaultBox}
                     {state && !state.ok && <ResultLine result={state} />}
-                    <SubmitButton>Add account</SubmitButton>
+                    <SubmitButton>{subscription ? "Add subscription" : "Add API key"}</SubmitButton>
                   </div>
                 </Disclosure>
               </>
@@ -770,16 +786,14 @@ export function AddAccountDialog({
               <>
                 <div className="space-y-3 rounded-md border p-3">
                   <p className="text-sm">
-                    <span className="font-medium">
-                      {info.billing === "subscription" ? "Sign in on your machine" : "Paste the key"}.
-                    </span>{" "}
+                    <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">{info.hint}</span>
                   </p>
                   <SecretField idPrefix={id} kind={kind} />
                 </div>
                 {defaultBox}
                 {state && !state.ok && <ResultLine result={state} />}
-                <SubmitButton>Add account</SubmitButton>
+                <SubmitButton>{subscription ? "Add subscription" : "Add API key"}</SubmitButton>
               </>
             )}
           </form>
@@ -872,8 +886,8 @@ export function HarnessAccounts({
       </div>
       {accounts.length === 0 && (
         <div data-launch-uses="none">
-          <Empty icon={<KeyRoundIcon />} title={`No ${harnessLabel} account yet`} action={emptyAction}>
-            Add one to launch {harnessLabel}. Each launch bills the account it names.
+          <Empty icon={<KeyRoundIcon />} title={`No ${harnessLabel} subscription yet`} action={emptyAction}>
+            Add one to launch {harnessLabel}. An API key works too.
           </Empty>
         </div>
       )}

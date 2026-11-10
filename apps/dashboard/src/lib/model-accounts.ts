@@ -228,6 +228,34 @@ export function kindNote(account: Pick<ModelAccount, "kind" | "name">): string |
   return account.name.toLowerCase() === label.toLowerCase() ? null : label;
 }
 
+/** The Harness page (#805): the coding harnesses and their subscriptions. It was `/credentials`, which redirects. */
+export const HARNESS_PATH = "/harness";
+
+/** The harness sections of the Harness page and the add dialog, in this order. */
+export const HARNESS_ORDER: readonly Harness[] = ["claude", "codex"];
+
+export type Billing = KindInfo["billing"];
+
+/** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
+export function kindFor(harness: Harness, billing: Billing = "subscription"): AccountKind {
+  const kind = ACCOUNT_KINDS.find(
+    (value) => KIND_INFO[value].harness === harness && KIND_INFO[value].billing === billing,
+  );
+  if (!kind) throw new Error(`no ${billing} kind for ${harness}`);
+  return kind;
+}
+
+/** The kinds the add dialog offers for one billing, one per harness in `HARNESS_ORDER`. */
+export function addChoices(billing: Billing): AccountKind[] {
+  return HARNESS_ORDER.map((harness) => kindFor(harness, billing));
+}
+
+/** The same harness's other way in: "use an API key instead" and back to its subscription. */
+export function otherBilling(kind: AccountKind): AccountKind {
+  const info = KIND_INFO[kind];
+  return kindFor(info.harness, info.billing === "subscription" ? "api" : "subscription");
+}
+
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {
   return accounts.filter((account) => KIND_INFO[account.kind].harness === harness);
 }
