@@ -18,7 +18,7 @@ import type { AuthIo } from "./auth-commands.ts";
 
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
-         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>]
+         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>] [--skill <org/slug@version>]
          [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
   capabilities
@@ -55,6 +55,7 @@ export type OrchestratorCommand = (ReadCommand | MutationCommand) & {
 /** Parse against the exported v1 contract, without resolving server-owned policy locally. */
 export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorCommand {
   const args = parseArgs(argv, [
+    "--skill",
     "--golden",
     "--model-account",
     "--idle-seconds",
@@ -85,6 +86,7 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       "--model-account",
       "--reasoning-effort",
       "--repo",
+      "--skill",
       "--idle-seconds",
       "--size",
       "--idempotency-key",
@@ -105,6 +107,8 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       // Actual #662 b6ca6e1 additive size field; shared #653 validator, no local policy.
       ...(single(args, "--size") === undefined ? {} : { size: parseMachineSize(single(args, "--size")) }),
     };
+    const skill = single(args, "--skill");
+    if (skill !== undefined) body.skill = skill;
     const repo = single(args, "--repo");
     const effort = single(args, "--reasoning-effort");
     if (repo !== undefined) body.repo = repo;

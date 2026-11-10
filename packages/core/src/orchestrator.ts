@@ -28,6 +28,8 @@ export interface OrchestratorCreate {
   provider: SandboxProviderId;
   harness: Harness;
   repo?: string;
+  /** Public Skillpack catalog reference, pinned as org/slug@version. */
+  skill?: string;
   /** Optional override; absent still uses the selected repository/golden policy. */
   size?: MachineSize;
   model: string;
@@ -53,8 +55,9 @@ export interface Orchestrator {
   updatedAt: string;
   lastActivityAt: string;
   idleDeadline: string | null;
-  /** Public reviewed commit used by armada skill install --revision. */
+  /** Legacy installer revision metadata; 40 zeroes means none. Does not select a skill. */
   skillRevision: string;
+  skillReceipt?: OrchestratorSkillReceipt | null;
   blockedReason: string | null;
 }
 
@@ -135,3 +138,15 @@ export interface OrchestratorDetail {
   delegation: OrchestratorDelegation | null;
   childSandboxIds: string[];
 }
+
+export interface OrchestratorSkillReceipt {
+  reference: string;
+  version: string;
+  skillId: string;
+  checksum: string;
+  origin: string;
+}
+
+/** Only anonymous catalog references are supported in the first slice. */
+export const ORCHESTRATOR_SKILL_PATTERN =
+  /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;

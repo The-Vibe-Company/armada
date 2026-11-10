@@ -11,6 +11,12 @@ Check that a refused launch keeps every field and explains why, and that stop an
 sending a new prompt (which resumes a stopped sandbox) work from the conversation.
 Orchestrators tab: each row shows its state (starting, ready, needs attention with a
 plain reason, stopped), name, agent, model, provider and last activity.
+Orchestrators and Sandboxes tabs: rows are grouped by status, each group a section with
+its count: Needs Attention, Active, In Transition, Stopped, then Other (failed, deleted
+or unknown); newest created first inside a group. Stopped starts collapsed when other
+rows are listed; tap its header to open it. Pull to refresh or wait for a refresh: rows
+stay still unless their status changes. Only loaded rows are ordered: scrolling to the
+bottom loads the next page, whose rows join their groups.
 New Orchestrator (+ on the Orchestrators tab): the form opens with your goldens, not
 "Not available yet" (unless the server has orchestrators turned off). Pick a name and
 a golden (its provider is shown); only provider and agent pairs the server enables

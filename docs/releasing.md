@@ -177,11 +177,12 @@ Only after both hosts succeed can npm publish. The server health version,
 dashboard landing's version badge and `armada --version` all use the same core
 package version; compare them after the release finishes.
 
-The opted-in release workflow is globally serialized, with cancellation off,
-including npm publication. The production job also shares the legacy migration
-lock. GitHub can replace a pending concurrency run; this is not an ordered job
-queue. Check the latest release run completed; dispatch the newest tag if a run
-was superseded. Do not run manual provider deployments during a release.
+The opted-in release workflow is globally serialized through npm publication,
+with cancellation off and queue: max retaining existing pending runs in FIFO
+order (up to 100 pending). New arrivals at capacity are rejected; drain the queue
+and retry a rejected run. The production job also shares the legacy migration
+lock; do not run manual migrations/history/repair/preview or provider deployments
+during a release. Check the intended release run completed before declaring success.
 
 A failure fails Actions loudly and stops later stages. **These independent
 services cannot provide an atomic transaction or guarantee rollback of already
@@ -209,3 +210,144 @@ this forward fix; an emergency host rollback is an owner incident action only
 with a verified schema-compatible prior release. To abandon cutover, freeze
 changes, finish/stop in-flight work, disable the repository variable and restore
 the original host autodeploy settings together; changing only one risks drift.
+
+## Staging-gated releases (owner opt-in)
+
+**Production is release-only, not per-merge.** Set both repository Actions variables
+**RELEASE_SYNCED_DEPLOYS=true** and **STAGING_GATED_DEPLOYS=true** after the owner
+cutover below. With neither set, existing behavior remains unchanged and the new
+staging workflow emits a disabled notice. Release-sync alone retains #714's
+release-only deployment behavior without the new smoke gate. The staging gate
+without release-sync is invalid and fails explicitly before deployment/publication.
+
+### Investigation and design
+
+Railway/Vercel Git deployments, independent migrations and deployment-event smoke
+do not form a production gate. Generic CI or hooks building moving main cannot bind
+a smoke to the promoted source. The #714 release uploader is reusable: it archives
+one validated SHA, waits for its Railway deployment ID and health, then uploads the
+same source to Vercel. This promotes the **same commit**, not the same image; builds
+use environment-specific settings.
+
+- Main pushes continuously run **Pinned staging smoke**: staging migrations →
+  staging server → staging dashboard → sandbox smoke, all from the triggering SHA.
+- A release (Release Please release creation, version tag push or existing tagged
+  recovery) validates its tag/SHA and binaries, then **calls the same staging
+  workflow with that exact validated SHA**. Only that successful dependency admits
+  production migrations → server → dashboard → npm. A skipped/no-op smoke cannot
+  authorize production. Ordinary main merges never enter production or publish npm.
+- Release re-smokes rather than trusting a historical check name, mutable branch,
+  latest deployment or cached attestation. This also covers tags created by
+  GITHUB_TOKEN (which do not trigger separate push workflows). A release commit
+  may be smoked twice (ordinary push, then release call): this deliberately buys
+  fresh, direct dependency evidence rather than an attestation lookup.
+- One non-cancelling lock serializes all staging deploy/smoke runs, including
+  release calls. Both this lock and release-production use **queue: max**:
+  [GitHub queues existing waiters in FIFO order instead of replacing them](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+  A main push cannot evict a release already waiting for staging, nor interrupt
+  an active smoke. GitHub permits 100 pending entries per group; at capacity it
+  rejects new arrivals, not existing waiters. Monitor/drain the queue before
+  release if saturated; retry a rejected run after capacity is available.
+  No cancellation or skipped staging run ever authorizes production.
+  Release's release-production lock serializes releases through npm;
+  production shares the migration lock. Later main runs may update staging after
+  the release smoke completes, but production uploads only the already-smoked SHA.
+  A tagged recovery deliberately re-deploys that release SHA to staging; dispatch
+  current main afterward if staging must immediately return to its tip. If newer
+  main migrations already advanced staging, Supabase may refuse the older release
+  checkout because of remote-only migration history, even with additive SQL.
+  This fails closed: cut a forward release including those migrations, or
+  freeze/drain merges before cutting the intended release. Never repair/remove
+  migration history just to force an older release through smoke.
+- Missing configuration fails closed in opted-in mode; failed staging visibly blocks
+  production and npm. Manual smoke remains diagnostic only and uses the separate
+  post-deploy-smoke-staging lock, so it can overlap a gated staging deployment.
+  Run diagnostics only after the pinned staging run completes and while no next
+  deployment is queued (freeze merges if needed); never treat their result as
+  release evidence. Independent staging
+  migrations/deployment-event smoke and standalone production migration applies
+  are disabled in gate mode; history/repair/preview remain operator tools.
+
+Existing smoke lifecycle expansion remains tracked by #819/#826/#827. This ticket
+gates on the existing sandbox smoke contract, not an unimplemented quality claim.
+Migrations must stay additive/compatible with old running code.
+
+### Exact owner cutover (no agent performs these operations)
+
+1. Freeze merges and drain release, migration, smoke and host deployment runs.
+   Record known-good Railway deployment IDs, Vercel URLs and source SHAs for both
+   environments; verify database history/backups with the database operator.
+2. GitHub Settings → Environments: allow **main and version tags v*** for staging
+   and production (tag-triggered reusable staging calls need staging tag access).
+   Deny arbitrary branches. Restrict dispatch/configuration to release owners;
+   optional production reviewers add approval before production mutation. Keep
+   npm OIDC protections unchanged.
+3. In **each** environment populate the exact secret table under release-sync
+   above, with its own values: SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_ID,
+   SUPABASE_DB_PASSWORD, RAILWAY_TOKEN, RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
+   RAILWAY_SERVICE_ID, ARMADA_SERVER_URL, VERCEL_TOKEN, VERCEL_ORG_ID,
+   VERCEL_PROJECT_ID. Supabase token: authorized account access-token settings;
+   project reference/password: matching project settings. Railway IDs: project
+   settings; token: project token scoped to that environment. Vercel token:
+   account Settings → Tokens; team/project IDs: matching project Settings.
+   Staging uses its existing separate dashboard project; CLI --prod means that
+   project's staging domain, not the production dashboard.
+4. In staging configure variable ARMADA_ORIGIN and secrets ARMADA_SMOKE_TOKEN,
+   ARMADA_SMOKE_CASES per [smoke setup](post-deploy-smoke.md). Mint the bearer for a
+   dedicated staging Armada user; cases reference staging goldens/model accounts
+   covering enabled pairs. ARMADA_SERVER_URL must match ARMADA_ORIGIN.
+5. Railway: disable production Git auto-deploy from main (disconnect its source if
+   needed). Also disable staging Git auto-deploy because the serialized workflow
+   now owns it. Keep domains/runtime variables, root Dockerfile and /healthz checks.
+   Vercel: on both dashboard projects move the production branch to a protected
+   non-developing branch such as production-disabled as described above; keep
+   PR previews, apps/dashboard root, workspace inclusion and environment variables.
+   Disable other hooks/writers that can promote main; an independent writer defeats
+   the staging lock. No deploy hook tokens are needed.
+6. Set repository RELEASE_SYNCED_DEPLOYS=true then STAGING_GATED_DEPLOYS=true
+   **last**, under the freeze. Dispatch main staging, then cut/recover a reviewed
+   release and verify below before lifting the freeze. Merely merging this PR does
+   not stop today's production Git auto-deploys. If incomplete, leave variables
+   off and restore prior host settings under the freeze.
+
+### Coordinator proof, emergency override and rollback
+
+Record production IDs/history. Verify an ordinary main merge updates staging but
+does not mutate production or publish npm. Cut a throwaway release with deliberately
+failing staging smoke (e.g. invalid staging golden): release staging must be red,
+production and npm skipped, production IDs/history unchanged. Restore the case;
+recover that same validated tag, verify green and compare full SHA in staging and
+production Railway messages, Vercel githubCommitSha metadata and release Actions.
+Exercise the review's cancellation scenario explicitly: keep the release-commit
+push smoke active, let Release finish check/binary and queue its staging call,
+then merge another main change. Verify the pending release call is retained,
+the new push queues behind it, and the release reaches production/npm only after
+its own smoke succeeds. No production source may differ from that successful
+staging-call SHA. Also verify a failed/cancelled staging call blocks both stages.
+Owner performs these deployed
+checks; local lint/tests cannot prove platform settings. Never intentionally fail
+production. Use a forward hotfix release if a newer stable tag supersedes recovery.
+
+Emergency override: owner freezes/drains writers and records incident approval,
+keeps RELEASE_SYNCED_DEPLOYS=true and all host Git deploys **disabled**, temporarily
+sets STAGING_GATED_DEPLOYS=false, then recovers a reviewed latest stable hotfix tag
+through Release. This explicitly bypasses smoke, not the release boundary or
+migration/server/dashboard/npm ordering. Record why, SHA and run URL; restore the
+gate variable before lifting the freeze. No standalone migration applies in parallel.
+
+Rollback: freeze/drain writers; owner restores recorded known-good Railway and
+Vercel deployments through provider rollback controls after checking compatibility
+with applied schema. Never automatically undo migration history/down-migrate.
+Prefer a new forward fix/revert release. Follow partial-release recovery above if
+schema/server advanced but dashboard/npm did not.
+
+### iOS TestFlight
+
+TestFlight remains independent: main pushes changing apps/ios (or manual main
+dispatch) verify, archive and upload to the Armada Internal tester group, using
+the testflight environment. It neither triggers nor authorizes server/dashboard
+production, migrations or npm and is not a release dependency. Its existing
+APP_STORE_CONNECT_API_* and IOS_DISTRIBUTION_CERTIFICATE_* secrets remain in that
+environment (see apps/ios/README.md); no new iOS credentials/settings are required.
+Changing TestFlight's beta cadence or coupling its app binary to release tags is
+outside this small deployment-gate PR.

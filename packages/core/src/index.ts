@@ -56,7 +56,13 @@ export type {
   SandboxStatus,
   ServiceToken,
 } from "./database.types.ts";
-export { boundEventEntries, buildEventPage, coalesceEventMessages, eventPageOptions } from "./event-history.ts";
+export {
+  boundEventEntries,
+  buildEventPage,
+  coalesceEventMessages,
+  eventPageOptions,
+  truncateEvent,
+} from "./event-history.ts";
 export {
   exchangeGitHubCode,
   fetchGitHubInstallations,

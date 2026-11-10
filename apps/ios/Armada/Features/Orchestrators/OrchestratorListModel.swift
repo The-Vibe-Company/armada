@@ -2,8 +2,8 @@ import ArmadaKit
 import Foundation
 import Observation
 
-/// The owner's orchestrators in the selected organization, newest page first as the server
-/// returns them, plus a create command whose outcome is not known yet. That command lives in
+/// The owner's orchestrators in the selected organization, in the order the server pages them
+/// (the view groups them by status, newest first, with `ListOrdering`), plus a create command whose outcome is not known yet. That command lives in
 /// ArmadaKit's durable store, so it survives dismissing the sheet and relaunching the app.
 @MainActor
 @Observable
