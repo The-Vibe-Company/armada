@@ -70,6 +70,9 @@ conflicts. A pending/uncertain operation, a non-ready parent, an active turn, or
 unproven native quiescence prevents changes. Running turns are **not queued**:
 the response is a closed `409 conflict`, without selection/revision changes.
 Wait until idle, read detail and submit a new request.
+Removing an ID that is not currently bound succeeds with an operation receipt
+and still advances the parent revision and MCP generation. This no-op receipt
+policy is tracked in [#860](https://github.com/The-Vibe-Company/armada/issues/860).
 
 A successful mutation commits the desired set and fences old gateway leases.
 Native preparation happens before the next admitted message. No VM or
@@ -83,8 +86,10 @@ conversation is recreated:
   updated user configuration at startup.
   This Python bridge is installed only for managed parents, with an interpreter
   precheck; ordinary Claude repository/cwd preparation keeps its direct native
-  wrapper. Unchanged configuration passes native mid-turn steer messages through
-  without attempting an MCP refresh. A private durable installation receipt
+  wrapper. Native mid-turn steer messages always pass through without attempting
+  an MCP refresh, even if configuration on disk has changed. Pending changes are
+  picked up at the next idle user message; the active turn keeps its current MCP
+  tools and native process. A private durable installation receipt
   includes the physical boot, MCP generation and generated wrapper hash, so
   unchanged messages do not reinstall the wrapper. Generic GitHub preparation
   preserves the managed installation under the same root-owned installer lock.

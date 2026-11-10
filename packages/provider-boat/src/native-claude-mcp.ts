@@ -81,10 +81,12 @@ try:
         try: message=json.loads(line)
         except Exception: message=None
         if isinstance(message,dict) and message.get("type")=="user":
-            current=fresh()
-            if current is not None:
-                if current!=last:
-                    if active: raise ValueError("turn_running")
+            # Native steer is valid during a turn. Do not even read pending
+            # disk configuration until idle: another writer must not turn steer
+            # into a refresh failure that terminates the live native process.
+            if not active:
+                current=fresh()
+                if current is not None and current!=last:
                     for name in known-set(current):
                         control({"subtype":"mcp_toggle","serverName":name,"enabled":False})
                     control({"subtype":"mcp_set_servers","servers":current})

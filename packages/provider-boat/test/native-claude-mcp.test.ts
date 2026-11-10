@@ -108,8 +108,19 @@ for line in sys.stdin:
     expect(steered.type).toBe("result");
     expect(steered.pid).toBe(first.pid);
     expect(steered.session_id).toBe(first.session_id);
+    expect((await send("hold")).type).toBe("assistant");
     configure(["armada_first", "armada_second"]);
-    expect((await send()).tools).toEqual(["armada_first", "armada_orchestrator", "armada_second"]);
+    const changedDuringTurn = await send("steer after configuration changed");
+    expect(changedDuringTurn.type).toBe("result");
+    expect(changedDuringTurn.tools).toEqual(["armada_first", "armada_orchestrator"]);
+    expect(changedDuringTurn.pid).toBe(first.pid);
+    expect(changedDuringTurn.session_id).toBe(first.session_id);
+    // The completed result above makes the next user message idle: only now
+    // should the pending disk configuration be installed into the same session.
+    const refreshedAtIdle = await send();
+    expect(refreshedAtIdle.tools).toEqual(["armada_first", "armada_orchestrator", "armada_second"]);
+    expect(refreshedAtIdle.pid).toBe(first.pid);
+    expect(refreshedAtIdle.session_id).toBe(first.session_id);
     configure(["armada_first"]);
     const removed = await send();
     expect(removed.tools).toEqual(["armada_first", "armada_orchestrator"]);
