@@ -281,7 +281,7 @@ struct OrchestratorDetail: Sendable {
             continuity: summary.continuity.rawValue,
             blockedReason: summary.blockedReason,
             revision: summary.revision,
-            operations: operations.map { (kind: $0.kind.rawValue, state: $0.state.rawValue, revision: $0.revision) },
+            operations: operations.map { (kind: $0.kind.rawValue, state: $0.state.rawValue, revision: $0.revision, errorCode: $0.errorCode) },
             agentWorking: agentWorking
         )
     }

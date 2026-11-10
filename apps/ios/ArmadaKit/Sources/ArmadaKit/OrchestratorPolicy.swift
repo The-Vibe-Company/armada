@@ -39,7 +39,7 @@ public struct OrchestratorControls: Sendable, Equatable {
 
     /// `agentWorking`: a turn of its conversation is queued or running (steer joins it).
     public init(state: String, continuity: String, blockedReason: String?, revision: Int,
-                operations: [(kind: String, state: String, revision: Int)], agentWorking: Bool) {
+                operations: [(kind: String, state: String, revision: Int, errorCode: String?)], agentWorking: Bool) {
         let openOperation = operations.first { $0.state == "pending" || $0.state == "uncertain" }
         open = openOperation.map { OpenOperation(kind: $0.kind, uncertain: $0.state == "uncertain") }
         let lost = continuity == "lost"
@@ -61,15 +61,20 @@ public struct OrchestratorControls: Sendable, Equatable {
         canRecover = (state == "blocked" && current.contains {
             ($0.kind == "create" && ($0.state == "pending" || $0.state == "uncertain"))
                 || ($0.kind == "stop" && $0.state == "uncertain")
+                // The server records these create failures as never having started a machine.
+                || ($0.kind == "create" && $0.state == "failed" && Self.recoverableCreateFailures.contains($0.errorCode ?? ""))
         }) || (state == "creating" && current.contains { $0.kind == "create" && $0.state == "uncertain" })
         composerNote = Self.note(state: state, continuity: continuity, open: open, canMessage: canMessage,
                                  canResume: canResume, phase: phase)
     }
 
+    /// Failed creates the server settles by recovery (it marks them as having forked nothing).
+    static let recoverableCreateFailures: Set<String> = ["create_preallocation_failed", "create_authority_revoked"]
+
     public init(detail: OrchestratorDetail, agentWorking: Bool) {
         self.init(state: detail.orchestrator.state.rawValue, continuity: detail.orchestrator.continuity.rawValue,
                   blockedReason: detail.orchestrator.blockedReason, revision: detail.orchestrator.revision,
-                  operations: detail.operations.map { ($0.kind.rawValue, $0.state.rawValue, $0.revision) },
+                  operations: detail.operations.map { ($0.kind.rawValue, $0.state.rawValue, $0.revision, $0.errorCode) },
                   agentWorking: agentWorking)
     }
 
