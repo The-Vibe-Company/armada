@@ -126,6 +126,7 @@ test("an edge 404 is a temporary outage, not a missing capability, and the next 
 test("only the Armada server's own unknown-route answer says provider setup is unsupported", () => {
   const unsupported = "This Armada server does not offer organization provider setup yet.";
   expect(explainSetupError(new ControlError("Unknown route.", 404, "not_found"))).toBe(unsupported);
+  expect(explainSetupError(new ControlError("Unknown route.", 404, "unknown_route"))).toBe(unsupported);
   expect(explainSetupError(new ControlError("not_found", 404))).toBe(unsupported);
   expect(explainSetupError(new ControlError("The Armada server answered 404.", 404))).toBe(
     "The Armada server could not be reached just now. Check again in a moment.",
