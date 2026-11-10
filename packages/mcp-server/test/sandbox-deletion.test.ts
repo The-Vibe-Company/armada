@@ -199,7 +199,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     await started;
     const resumed = await call(owner, "send", { id: raced, prompt: "resume" });
     expect(resumed.isError).toBe(true);
-    expect(resumed.text).toContain("could not be updated");
+    expect(resumed.text).toContain("error code: sandbox_not_ready");
     expect(boat.prompts).toHaveLength(0);
     release();
     expect((await deletion).status).toBe(200);

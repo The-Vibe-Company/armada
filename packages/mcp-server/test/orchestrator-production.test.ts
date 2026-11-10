@@ -329,23 +329,21 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     });
     expect(nativeReads).toBe(readsBeforeHistory);
     lines.length = 0;
-    expect(
-      (
-        await bundle.runtime.mutate(caller, {
-          orgId: p.org,
-          id,
-          action: "message",
-          key: "private-message-key",
-          expectedRevision: stoppedAgain.revision,
-          text: privateText,
-        })
-      ).state,
-    ).toBe("uncertain");
+    await expect(
+      bundle.runtime.mutate(caller, {
+        orgId: p.org,
+        id,
+        action: "message",
+        key: "private-message-key",
+        expectedRevision: stoppedAgain.revision,
+        text: privateText,
+      }),
+    ).rejects.toMatchObject({ code: "conflict", admission: "not_admitted" });
     expect(lines.map((line) => JSON.parse(line))).toEqual([
       expect.objectContaining({
         action: "message",
-        outcome: "uncertain",
-        stage: "native_admission",
+        outcome: "error",
+        stage: "request_lookup",
         reason: "runtime_conflict",
         orchestratorId: id,
       }),
