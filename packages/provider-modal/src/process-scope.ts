@@ -77,7 +77,11 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
   const output = capture ? child.stdout.readText() : Promise.resolve("");
   const [exit, text] = await Promise.all([child.wait(), output]);
   if (exit !== 0)
-    throw refusal("conflict", "Physical process identity/quiescence could not be proven; source retained.");
+    throw refusal(
+      "conflict",
+      "Physical process identity/quiescence could not be proven; source retained.",
+      "process_quiescence_failed",
+    );
   return text;
 }
 export async function captureProcessBaseline(sandbox: Sandbox, machine: Machine): Promise<ProcessBaseline> {
@@ -107,7 +111,11 @@ export async function quiesceSandboxProcesses(sandbox: Sandbox, machine: Machine
     machine.processBaseline.physicalId !== machine.physicalId ||
     machine.processBaseline.generation !== machine.generation
   )
-    throw refusal("conflict", "Trusted physical process baseline missing; source retained.");
+    throw refusal(
+      "conflict",
+      "Trusted physical process baseline missing; source retained.",
+      "process_baseline_missing",
+    );
   await invoke(
     sandbox,
     {

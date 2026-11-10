@@ -1,6 +1,16 @@
 import { ProviderError, type ProviderErrorCode } from "@armada/core";
-export function refusal(code: ProviderErrorCode, message: string): ProviderError {
-  return new ProviderError({ provider: "modal", code, message, retryable: code === "unavailable" });
+export function refusal(
+  code: ProviderErrorCode,
+  message: string,
+  modalFailure?: "process_quiescence_failed" | "process_baseline_missing" | "ssh_cleanup_failed" | "managed_state_busy",
+): ProviderError {
+  return new ProviderError({
+    provider: "modal",
+    code,
+    message,
+    retryable: code === "unavailable",
+    ...(modalFailure ? { details: { modalFailure } } : {}),
+  });
 }
 export function modalError(error: unknown): ProviderError {
   if (error instanceof ProviderError) return error;

@@ -188,6 +188,10 @@ function baseReason(error: unknown): string {
             const suffix =
               typeof failure === "string" &&
               [
+                "process_quiescence_failed",
+                "process_baseline_missing",
+                "ssh_cleanup_failed",
+                "managed_state_busy",
                 "AuthError",
                 "NotFoundError",
                 "AlreadyExistsError",
