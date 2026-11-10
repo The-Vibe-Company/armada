@@ -21,7 +21,8 @@ const TEXT: Record<Tone, string> = {
 
 /**
  * An item's state in a Build list (#808): an icon and plain words in the tone of the state. The sentence that
- * completes it is read aloud and shown on hover. The words carry the meaning; icon and colour only repeat it.
+ * completes it is read aloud; on screen, the item's panel says it in full (a row's whole surface opens the panel,
+ * so a hover title there would never show). The words carry the meaning; icon and colour only repeat it.
  */
 export function StateCell({
   tone,

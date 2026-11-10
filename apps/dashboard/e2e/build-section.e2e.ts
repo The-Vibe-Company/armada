@@ -96,6 +96,13 @@ test("on a phone the list fits the width and the panel is a sheet over it", asyn
   await expect(panel.getByRole("list", { name: "Repositories of web-frontend on Boat" })).toContainText(
     "acme/design-system",
   );
+  // A modal sheet: named by its title, the list behind it out of reach, Tab kept inside.
+  await expect(page.getByRole("dialog", { name: "web-frontend" })).toBeVisible();
+  await expect(page.locator("[inert]").filter({ has: row })).toHaveCount(1);
+  await page.keyboard.press("Shift+Tab");
+  expect(await sheet.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press("Tab");
+  expect(await sheet.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   await page.screenshot({ path: "test-results/environments-sheet-mobile.png", animations: "disabled" });
   await page.getByRole("button", { name: "Close the panel" }).click();
   await expect(sheet).toBeHidden();

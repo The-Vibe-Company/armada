@@ -13,6 +13,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -145,6 +146,23 @@ export function ResourceBrowser({
   const panelSubtitle = selected === NEW_ITEM ? create?.subtitle : current?.subtitle;
   const filterId = useId();
   const context = useMemo(() => ({ select, selected }), [select, selected]);
+  // Below the lg breakpoint the panel is a sheet over the list: a modal dialog, the list behind it inert.
+  const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
+  const sheet = selected !== null && !wide;
+  const panelRef = useRef<HTMLElement>(null);
+  // As a sheet, the panel is a modal dialog that keeps Tab inside; beside the list, a plain landmark.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !sheet) return;
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.addEventListener("keydown", trapFocus);
+    return () => {
+      panel.removeAttribute("role");
+      panel.removeAttribute("aria-modal");
+      panel.removeEventListener("keydown", trapFocus);
+    };
+  }, [sheet]);
 
   return (
     <Context.Provider value={context}>
@@ -168,7 +186,7 @@ export function ResourceBrowser({
           selected !== null && "lg:grid-cols-[minmax(0,1fr)_minmax(22rem,26rem)] xl:grid-cols-[minmax(0,1fr)_28rem]",
         )}
       >
-        <div className="@container min-w-0 space-y-3">
+        <div className="@container min-w-0 space-y-3" inert={sheet}>
           {rows.length >= FILTER_FROM && (
             <div className="relative max-w-sm">
               <SearchIcon
@@ -205,6 +223,7 @@ export function ResourceBrowser({
         </div>
         <aside
           id="resource-panel"
+          ref={panelRef}
           aria-labelledby="resource-panel-title"
           hidden={selected === null}
           className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:sticky lg:top-6 lg:z-auto lg:max-h-[calc(100dvh-3rem)] lg:rounded-xl lg:bg-card lg:shadow-xs"
@@ -342,4 +361,34 @@ function BlockerLink(props: ComponentProps<typeof Button>) {
 export function SelectItem({ item, ...props }: { item: string } & Omit<ComponentProps<typeof Button>, "onClick">) {
   const { select } = useBrowser();
   return <Button {...props} onClick={() => select(item)} aria-controls="resource-panel" />;
+}
+
+const WIDE = "(min-width: 64rem)";
+function subscribeWide(change: () => void): () => void {
+  const query = window.matchMedia(WIDE);
+  query.addEventListener("change", change);
+  return () => query.removeEventListener("change", change);
+}
+const readWide = () => window.matchMedia(WIDE).matches;
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+/** Keeps Tab inside the phone sheet: past its last control back to its first, and the other way round. */
+function trapFocus(event: KeyboardEvent) {
+  if (event.key !== "Tab" || !(event.currentTarget instanceof HTMLElement)) return;
+  const items = [...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (item) => item.getClientRects().length > 0,
+  );
+  const first = items[0];
+  const last = items.at(-1);
+  if (!first || !last) return;
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || !items.includes(active as HTMLElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }

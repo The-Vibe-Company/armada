@@ -671,7 +671,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
     ),
     fact:
       repos.length === 0 ? (
-        <span className="text-muted-foreground/80">No repository</span>
+        <span className="text-muted-foreground">No repository</span>
       ) : (
         <span className="font-mono text-xs" title={repos.map((r) => r.slug ?? r.url).join(", ")}>
           {repos.map((r) => r.slug ?? r.url).join(", ")}
