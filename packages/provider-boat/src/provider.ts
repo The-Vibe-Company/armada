@@ -499,8 +499,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       };
     },
 
-    async getPrompt(request: { sandboxId: string; promptId: string }): Promise<PromptState> {
-      const response = await call(() => api.promptRunStatus(request));
+    async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {
+      request.signal?.throwIfAborted();
+      const deadline = AbortSignal.timeout(10_000);
+      const signal = request.signal ? AbortSignal.any([request.signal, deadline]) : deadline;
+      const response = await call(() => api.promptRunStatus(request, { signal }));
+      signal.throwIfAborted();
       const run = response.promptRun;
       const status = promptStatus(run?.status);
       if (!run || status === undefined) throw unexpectedAnswer("prompt status");

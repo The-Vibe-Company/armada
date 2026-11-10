@@ -222,7 +222,9 @@ export class OrchestratorRuntime {
             const status = await backend.provider.getPrompt({
               sandboxId: identity.providerSandboxId,
               promptId: pending.promptId,
+              ...(signal ? { signal } : {}),
             });
+            signal?.throwIfAborted();
             diagnostics.observe("prompt_status", status.status);
             if (status.done) await this.options.store.finishPromptObservation(pending.operationId);
           } catch {

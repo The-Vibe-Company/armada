@@ -793,3 +793,23 @@ test("terminal Boat archival does not require the failing guest preservation hoo
   expect(captures).toBe(1);
   expect(requests).toEqual([`POST /api/v1/sandboxes/${ID}/stop`, `GET /api/v1/sandboxes/${ID}/stops/retirement-stop`]);
 });
+
+test("prompt status cancellation reaches HTTP and suppresses late native capture", async () => {
+  const controller = new AbortController();
+  let propagated = false,
+    captures = 0;
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    afterPrompt: async () => {
+      captures++;
+    },
+    fetch: (async (_input: unknown, init?: RequestInit) => {
+      controller.abort();
+      propagated = init?.signal?.aborted === true;
+      return Response.json({ ok: true, promptRun: { promptId: "p", status: "finished", done: true } });
+    }) as typeof fetch,
+  });
+  await expect(provider.getPrompt({ sandboxId: ID, promptId: "p", signal: controller.signal })).rejects.toThrow();
+  expect(propagated).toBe(true);
+  expect(captures).toBe(0);
+});
