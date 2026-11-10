@@ -11,12 +11,12 @@ test("CLI discovery is public and does not create an authentication cookie", asy
 });
 
 test("a signed-out visitor is sent to the login page and back after signing in", async ({ page }) => {
-  await page.goto("/credentials");
-  await expect(page).toHaveURL(/\/login\?next=%2Fcredentials/);
+  await page.goto("/harness");
+  await expect(page).toHaveURL(/\/login\?next=%2Fharness/);
   await expect(page.getByText("Sign in to Armada")).toBeVisible();
 
-  await signIn(page, "alice@example.com", "/credentials");
-  await expect(page.getByRole("heading", { name: "Credentials" })).toBeVisible();
+  await signIn(page, "alice@example.com", "/harness");
+  await expect(page.getByRole("heading", { name: "Harness" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Sandboxes" })).toBeVisible();
 });
 

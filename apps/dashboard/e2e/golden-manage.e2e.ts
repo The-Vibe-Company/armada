@@ -299,9 +299,9 @@ test("the main navigation groups Run, Build and Account and marks the current pa
   await expect(nav.getByRole("link", { name: "Goldens" })).toHaveAttribute("aria-current", "page");
   await expect(nav.getByRole("link", { name: "Goldens" })).toHaveAttribute("title", "Repositories and snapshots");
   await expect(nav.getByText("Build", { exact: true })).toBeVisible();
-  await nav.getByRole("link", { name: "Credentials" }).click();
-  await page.waitForURL("**/credentials");
-  await expect(nav.getByRole("link", { name: "Credentials" })).toHaveAttribute("aria-current", "page");
+  await nav.getByRole("link", { name: "Harness" }).click();
+  await page.waitForURL("**/harness");
+  await expect(nav.getByRole("link", { name: "Harness" })).toHaveAttribute("aria-current", "page");
 });
 
 test("an admin builds a Modal golden: the request names Modal and Modal's unbounded capacity is no limit", async ({

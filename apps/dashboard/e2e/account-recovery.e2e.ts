@@ -179,10 +179,7 @@ test("only the owner chooses; no usable account points to Credentials; Boat and 
   await legacy({ status: "stopped", owner_id: "00000000-0000-4000-8000-000000000001" });
   await post("accounts", { user: [CODEX] });
   await page.reload();
-  await expect(section(page).getByRole("link", { name: "Add one in Credentials" })).toHaveAttribute(
-    "href",
-    "/credentials",
-  );
+  await expect(section(page).getByRole("link", { name: "Add one in Harness" })).toHaveAttribute("href", "/harness");
   // Stopped: its last turn cannot be running any more, so only a resuming Send is offered.
   await expect(page.getByRole("button", { name: "Steer", exact: true })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveAttribute(

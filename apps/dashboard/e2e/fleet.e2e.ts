@@ -49,9 +49,9 @@ test("the board puts what needs the operator first and acts on each agent", asyn
   ]);
   await expect(rows(page).first()).toContainText(LABELS.failed);
   await expect(row(page, IDS.failed).locator("[data-failure]")).toContainText("Usage limit reached");
-  await expect(row(page, IDS.failed).getByRole("link", { name: "Manage credentials" })).toHaveAttribute(
+  await expect(row(page, IDS.failed).getByRole("link", { name: "Manage subscriptions" })).toHaveAttribute(
     "href",
-    "/credentials",
+    "/harness",
   );
   await expect(row(page, IDS.bobSecret).locator('[data-expiry="urgent"]')).toContainText(/Expires soon: \d+ min left/);
   await expect(row(page, IDS.running).locator('[data-expiry="normal"]')).toContainText("h");

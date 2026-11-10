@@ -124,7 +124,7 @@ test("a usage limit is explained in plain words", async ({ page }) => {
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.failed}`);
   await expect(page.getByText("Usage limit reached")).toBeVisible();
   await expect(page.getByText("hit its plan or billing limit")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Manage credentials" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Manage subscriptions" })).toBeVisible();
 });
 
 test("stopping a sandbox asks first, then stops it", async ({ page }) => {
