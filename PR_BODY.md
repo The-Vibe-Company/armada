@@ -33,10 +33,20 @@ On Boat and Modal, use a compatible golden with native Skillpack on PATH and pub
 No deploy or production/staging migration application performed in this session.
 
 ## Migration / deployment prerequisites
-- 20261110190000_sandbox_skills.sql adds public receipt JSON plus authenticated SELECT, no secrets. It is above reviewed main's maximum 20261110180000 and reserved 181000/182000; coordinator must recheck current main before transport push because GitHub is unavailable here.
+- 20261110192000_sandbox_skills.sql adds public receipt JSON plus authenticated SELECT, no secrets. It is above main's 20261110181000 and the reserved 20261110190000 (#872) / 20261110191000 (#889); coordinator must recheck current main before transport push because GitHub is unavailable here.
 - Apply migration before server rollout; native Skillpack CLI on compatible goldens, public catalog egress. No environment secret changes.
 - Skills are untrusted instructions, not a confinement boundary.
 
 
 ## Transport handoff
-Local-only commit: eeabf4234153c6eb041897274b053d147c8adabe. No push attempted (GitHub access unavailable). This PR description is PR_BODY.md at repo root and deliberately uncommitted. Coordinator transports commit and description, rechecks current migration ordering and all latest-SHA CI, and retains the ready (not draft) PR. No merge/deploy performed.
+Local-only head: acdd439988a0898a5834b7774d7a9033bf93fddc. No push attempted (GitHub access unavailable). Updated description changes are in PR_BODY.md at repo root and intentionally not committed (the coordinator previously tracked this file). Coordinator transports commit and description, rechecks current migration ordering and all latest-SHA CI, and retains the ready (not draft) PR. No merge/deploy performed.
+
+
+## Round 2 corrections
+Merged current origin/main, preserving launch-only nonempty skills digest suffix and #852 extend ttlSeconds branch. Exclusion writes now create the resolved info/exclude parent directory before append; existing real-Git tests also exercise a missing info directory. Renamed migration to 20261110192000_sandbox_skills.sql to avoid #872/#889 reservations; regenerated database types (no schema-content change from rename). Updated migration references. Round-2 final bun run verify passed: 1615 passed, 20 skipped, 0 failed, 18983 assertions. Targeted merge/skills/lifetime checks: 59 passed. Independent review: all eight candidate paths checked, no outstanding findings.
+
+Round-2 merged-main broad verification exposed a pre-existing fixture race: the steer semantic-refusal assertion sometimes received the background observation lease conflict instead. The fixture now retries that explicit retryable sandbox_not_ready admission code for steer too (as it already does for successful operations); it still requires no_running_turn and preserves the deliberate admission-conflict assertion. No production behavior or timeout/assertion relaxed. Fresh full verify passed after the fixture correction and native runtime refresh described below.
+
+
+## Final local verification / environment
+Merged main upgrades the pinned Claude native runtime from 2.1.319 to 2.1.322; initial broad validation detected the old ignored local binary. Rebuilt with bun packages/agent-runtime/build.ts, validated with bun scripts/validate-runtime-native.ts, and the actual runtime artifact test passed. Then reran bun run verify from scratch: 1615 passed, 20 skipped, 0 failed (18983 assertions), lint and strict typechecks passed. No source assertion/timeout was weakened. Database types regenerated from the renamed migration with no schema-content diff. No push attempted; latest-SHA CI and final remote conflict/migration checks remain with transport.
