@@ -188,7 +188,7 @@ describe("database", () => {
         "github_connections DELETE",
         "github_connections SELECT(created_at,github_id,installations,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
         "goldens DELETE",
-        "goldens INSERT",
+        "goldens INSERT(boat_sandbox_id,boat_snapshot_id,config,created_at,id,modal_app_id,modal_environment,modal_workspace,name,org_id,owner_id,provider,provider_sandbox_id,provider_snapshot_id,removed_at,size_policy,visibility)",
         "goldens SELECT",
         "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name,provider_sandbox_id,provider_snapshot_id)",
         "mcp_connections SELECT",
