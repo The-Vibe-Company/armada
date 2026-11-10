@@ -258,6 +258,9 @@ describe("honest failures", () => {
     const crash = { statusReason: "The harness exited unexpectedly.", lifecycleError: null };
     expect(boardState("failed", turn("failed", "crash"), crash).kind).toBe("failed");
     expect(boardState("failed", turn("finished"), crash).kind).toBe("failed");
+    const ready = outcomeView({ state: "ready", prNumber: 7 });
+    expect(boardState("failed", turn("finished"), crash, ready)).toMatchObject({ kind: "failed", outcome: ready });
+    expect(boardState("failed", turn("failed", "crash"), crash, ready).outcome).toBeUndefined();
     // A failed turn followed by one that finished on a live machine is history.
     expect(boardState("ready", turn("finished")).kind).toBe("finished");
     const launch = {
