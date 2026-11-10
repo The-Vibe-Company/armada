@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore, ProviderError } from "@armada/core";
+import { createSqlVaultStore, encryptSecret, type Provider, ProviderError } from "@armada/core";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
-import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS } from "./support.ts";
 
 // The shared HTTP/MCP boundary, real migrations and SQL activity CAS own deletion policy.
 // A mocked store would miss authorization, archive cleanup and concurrent resume admission.
@@ -191,6 +191,80 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     release();
     expect((await deletion).status).toBe(200);
     expect((await state(raced)).status).toBe("deleted");
+  } finally {
+    await server.close();
+  }
+});
+
+// Wrong-account not_found is not proof that the owner's retained resources are gone.
+// Exercise both real entrypoints with distinct provider accounts, not a fake policy store.
+test("admin deletion resolves private-source resources through their owner's provider account", async () => {
+  const retained = new Set(["bx_private_api", "bx_private_mcp"]);
+  const accounts: string[] = [];
+  const adminKey = "boat-admin-test-account-distinct";
+  const providerFor = (key: string): Provider =>
+    ({
+      id: "boat",
+      async delete({ sandboxId }: { sandboxId: string }) {
+        accounts.push(key === SECRETS.personalBoat ? "owner" : "wrong-account");
+        if (key !== SECRETS.personalBoat)
+          throw new ProviderError({ provider: "boat", code: "not_found", message: "Wrong account", retryable: false });
+        retained.delete(sandboxId);
+        return { status: "deleted" };
+      },
+    }) as Provider;
+  const server = await harness({ providerFor });
+  try {
+    const { people: p, db } = server;
+    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'boat',$2)", [
+      p.admin,
+      await encryptSecret(adminKey, ENCRYPTION_KEY),
+    ]);
+    const token = await server.token(p.admin);
+    const mcp = await server.client(token);
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0];
+    if (!golden) throw new Error("Missing private golden fixture.");
+    const vault = createSqlVaultStore(db);
+    const options: ControlOptions = {
+      authStore: server.auth,
+      store: vault,
+      encryptionKey: ENCRYPTION_KEY,
+      supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon" },
+      data: createSqlData(db),
+      providers: providerRegistry({ vault, encryptionKey: ENCRYPTION_KEY, providerFor }),
+    };
+    for (const transport of ["api", "mcp"]) {
+      const id = crypto.randomUUID();
+      const providerId = `bx_private_${transport}`;
+      await db.query(
+        `insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,stopped_at)
+        values($1,$2,$3,$4,$5,'claude','stopped',now())`,
+        [id, providerId, golden.id, p.org, p.owner],
+      );
+      await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
+        id,
+        new Uint8Array([1]),
+      ]);
+      if (transport === "api") {
+        const result = await handleControlRequest(
+          new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
+            method: "DELETE",
+            headers: { authorization: `Bearer ${token}` },
+          }),
+          options,
+        );
+        expect(result?.status).toBe(200);
+      } else {
+        const result = await call(mcp, "delete", { id });
+        expect(result.isError).toBe(false);
+      }
+      expect(retained.has(providerId)).toBe(false);
+      expect((await db.query("select status::text from sandboxes where id=$1", [id])).rows).toEqual([
+        { status: "deleted" },
+      ]);
+      expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
+    }
+    expect(accounts).toEqual(["owner", "owner"]);
   } finally {
     await server.close();
   }

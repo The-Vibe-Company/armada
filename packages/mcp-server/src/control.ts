@@ -657,6 +657,10 @@ async function dispatch(
           options.providers
             ? options.providers.resolve(target, scopedCaller)
             : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+        deletionProvider: (sandbox) =>
+          options.providers
+            ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
+            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
         ...(options.providerMetadata
           ? {
               providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
