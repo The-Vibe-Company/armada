@@ -32,9 +32,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
       async interrupt() {
         throw new Error("idle harness must not be interrupted");
       },
-      async conversations() {
-        return [];
-      },
+      async quiesce() {},
       async get() {
         return { id: "bx_recovery", name: "recovery", state: "ready" as const, providerState: "running", labels: {} };
       },
@@ -124,7 +122,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
     boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
     expect((await owner.get(id))?.preservationNote).toBe(
-      "Work preservation could not be verified (collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (collector_failed). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
@@ -214,7 +212,7 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
     expect(row?.preservation_note).toBe(
-      "Work preservation could not be verified (timeout). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (timeout). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(interrupts).toBe(0);
     expect(execs).toBe(0);

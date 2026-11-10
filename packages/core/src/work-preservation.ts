@@ -79,8 +79,15 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   let stage: CaptureFailure = "exec_failed";
+  async function execute(request: Parameters<Provider["exec"]>[0]) {
+    try {
+      return await provider.exec(request);
+    } catch {
+      throw new CaptureError("exec_failed");
+    }
+  }
   async function collect(): Promise<WorkPreservation> {
-    const result = await provider.exec({
+    const result = await execute({
       sandboxId,
       command: CAPTURE.replaceAll("ARMADA_TOKEN", token).replace(
         "ARMADA_PUBLIC_KEY",
@@ -108,7 +115,6 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       )
         throw new Error();
       const chunks: Buffer[] = [];
-      stage = "exec_failed";
       const count = Math.ceil(size / CHUNK_BYTES);
       for (let start = 0; start < count; start += 8) {
         if (expired) return { status: "failed", reason: "timeout" };
@@ -123,7 +129,7 @@ try { const n=fs.readSync(fd,data,0,data.length,${index * CHUNK_BYTES}); console
 finally { fs.closeSync(fd); }`,
             );
             const output = checkedOutput(
-              await provider.exec({ sandboxId, command, timeoutSeconds: 2, onlyIfRunning: true }),
+              await execute({ sandboxId, command, timeoutSeconds: 2, onlyIfRunning: true }),
             ).trim();
             if (output.length > 44_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(output)) throw new Error();
             const decoded = Buffer.from(output, "base64");

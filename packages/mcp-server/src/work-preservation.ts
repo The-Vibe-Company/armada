@@ -1,7 +1,7 @@
 import { decryptSecret, encryptSecret, type Provider, preserveWork, type Sql } from "@armada/core/server";
 
 function failureNote(reason: string): string {
-  return `Work preservation could not be verified (${reason}). Resume the sandbox and push or copy any local work before stopping again.`;
+  return `unpushed work could not be preserved (${reason}). Resume the sandbox and push or copy any local work before stopping again.`;
 }
 
 /** Never return command output or SDK errors: archives may contain credentials. */
@@ -46,17 +46,9 @@ async function captureAndStore(
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
     // Native runtimes acknowledge interrupt only after active turns settle.
     // The stop activity lease prevents new Armada turns during capture.
-    stage = "conversations";
-    reason = "conversations_failed";
-    const conversations = await provider.conversations(providerId);
-    if (expired()) return;
-    // Boat's interrupt endpoint is not needed for idle reviewers. Do not let an
-    // unnecessary harness operation prevent inspecting their local Git state.
-    if (conversations.some((conversation) => conversation.running)) {
-      stage = "quiesce";
-      reason = "quiesce_failed";
-      await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
-    }
+    stage = "quiesce";
+    reason = "quiesce_failed";
+    await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
     if (expired()) return;
     stage = "capture";
     reason = "capture_failed";
@@ -74,6 +66,8 @@ async function captureAndStore(
       );
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
     } else if (result.status === "clean") {
+      stage = "storage";
+      reason = "storage";
       // Clear stale warnings, but retain the latest recovery receipt if one exists.
       await sql.query(
         `update public.sandboxes set preservation_note=(

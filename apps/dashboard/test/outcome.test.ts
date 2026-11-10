@@ -106,6 +106,13 @@ describe("preservationView", () => {
       text: "Unpushed work could not be preserved (size_limit)",
       reason: "size_limit",
     });
+    const actionable =
+      "unpushed work could not be preserved (exec_failed). Resume the sandbox and push or copy any local work before stopping again.";
+    expect(preservationView(actionable, "stopped", ID, true)).toEqual({
+      kind: "failed",
+      reason: "exec_failed",
+      text: actionable.replace(/^unpushed/, "Unpushed"),
+    });
     expect(preservationView("something else", "stopped", ID, true)).toEqual({ kind: "other", text: "something else" });
   });
 

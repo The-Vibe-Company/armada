@@ -245,6 +245,16 @@ test("an unresolved conflict index fails closed because patches cannot restore i
 });
 
 test("collector failures are closed and provider output never becomes a reason", async () => {
+  expect(
+    await preserveWork(
+      {
+        exec: async () => {
+          throw new Error("private provider response");
+        },
+      },
+      "sandbox",
+    ),
+  ).toEqual({ status: "failed", reason: "exec_failed" });
   for (const [output, expected] of [
     [{ exitCode: 127 }, "collector_exit"],
     [{ exitCode: 137 }, "collector_signal"],
