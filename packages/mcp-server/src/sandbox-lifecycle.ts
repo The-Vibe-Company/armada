@@ -1,5 +1,6 @@
-import type { Provider, Sql } from "@armada/core/server";
+import { type Provider, ProviderError, type Sql } from "@armada/core/server";
 
+import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop } from "./work-preservation.ts";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
@@ -56,9 +57,11 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
       let terminal = false;
       let physicalExit = false;
       let error: string | null = null;
+      let resolved = false;
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
+        resolved = true;
         let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         physicalExit = info.physicalExitConfirmed === true;
         if (
@@ -66,6 +69,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           !["stopped", "deleted"].includes(info.state) &&
           (row.stop_requested_at !== null ||
             row.status === "stopping" ||
+            row.status === "starting" ||
             new Date(row.expires_at).getTime() <= Date.now())
         ) {
           signal?.throwIfAborted();
@@ -88,24 +92,37 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
         if (!terminal && new Date(row.expires_at).getTime() <= Date.now())
           error = "Lifetime expired; provider stop is not yet confirmed. Retrying.";
-      } catch {
+      } catch (caught) {
+        // A definitive absence for the exact registered identity is terminal.
+        // Never infer absence from transport errors or discover resources by name.
+        if (resolved && caught instanceof ProviderError && caught.code === "not_found") terminal = true;
         // No provider exception text: SDK errors may contain credential-bearing requests.
-        error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
+        else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
       await sql.query(
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
-        status=case when $7 then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
-        status_reason=case when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') else status_reason end,
-        stop_requested_at=case when $4 then null else stop_requested_at end,
+        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
+        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') else status_reason end,
+        stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
+        activity_lease_id=null,activity_until=null,
         lifecycle_error=$5::text,reconcile_after=now()+interval '1 minute',
         reconcile_lease=case when $6 then reconcile_lease else null end,
         reconcile_lease_until=case when $6 then reconcile_lease_until else null end
         where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
           and (activity_until is null or activity_until<now())`,
-        [row.id, token, row.lifecycle_generation, terminal, error, signal?.aborted ?? false, physicalExit],
+        [
+          row.id,
+          token,
+          row.lifecycle_generation,
+          terminal,
+          error,
+          signal?.aborted ?? false,
+          physicalExit,
+          INTERRUPTED_LAUNCH_REASON,
+        ],
       );
       return true;
     },

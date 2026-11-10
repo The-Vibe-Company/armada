@@ -73,7 +73,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           signal: init.signal ?? AbortSignal.timeout(timeoutMs),
         });
       } catch {
-        throw new AuthError("Armada could not reach the server.", "unavailable");
+        throw new AuthError(
+          path === "/api/v1/sandbox/launch"
+            ? "Launch outcome unknown. Run armada list to check before retrying."
+            : "Armada could not reach the server.",
+          "unavailable",
+        );
       }
 
       if (response.status === 401 && !environmentToken && saved) {
@@ -88,11 +93,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             signal: init.signal ?? AbortSignal.timeout(timeoutMs),
           });
         } catch {
-          throw new AuthError("Armada could not reach the server.", "unavailable");
+          throw new AuthError(
+            path === "/api/v1/sandbox/launch"
+              ? "Launch outcome unknown. Run armada list to check before retrying."
+              : "Armada could not reach the server.",
+            "unavailable",
+          );
         }
       }
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
+      if (path === "/api/v1/sandbox/launch" && response.status >= 500)
+        throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.
       if (isSandboxInteriorPath(path) && response.status !== 401) {
         const denied = response.status === 403;
