@@ -27,7 +27,8 @@ export async function GET(request: Request, context: Context) {
   const cursor = new URL(request.url).searchParams.get("cursor");
   try {
     const page = await readLogPages(gateway.logs, id, cursor);
-    const detail = (await gateway.status(id)) as { status?: string; prompt?: unknown };
+    // Status is optional telemetry. A failed status read must not discard successful logs.
+    const detail = (await gateway.status(id).catch(() => ({}))) as { status?: string; prompt?: unknown };
     return NextResponse.json({
       status: detail.status ?? sandbox.status,
       prompt: detail.prompt ?? null,

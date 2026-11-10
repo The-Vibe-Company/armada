@@ -12,7 +12,7 @@ export interface TurnModelEvidence {
 
 /**
  * Response metadata, not assistant prose or the provider's requested-model echo, is evidence.
- * Read the whole prompt history before claiming a match. In-place rewrites/retractions win;
+ * Read the complete target turn before declaring a match or mismatch. In-place rewrites/retractions win;
  * nested-agent and streaming responses do not establish the main thread's model.
  * Alias expansion is deliberately not guessed: provider aliases can change over time.
  */
@@ -31,7 +31,6 @@ export function turnModelEvidence(
   );
   const models = new Set(responses.flatMap((event) => (event.kind === "message" && event.model ? [event.model] : [])));
   const observedModel = models.size === 1 ? ([...models][0] ?? null) : null;
-  const mismatch = request.requestedModel !== null && [...models].some((model) => model !== request.requestedModel);
   const truncated = events.some(
     (event) =>
       event.kind === "other" &&
@@ -43,12 +42,14 @@ export function turnModelEvidence(
           "contextTruncated" in event.data &&
           event.data.contextTruncated === true)),
   );
-  const verified =
+  const decisive =
     request.complete &&
     !truncated &&
     request.requestedModel !== null &&
-    responses.length > 0 &&
-    responses.every((event) => event.kind === "message" && event.model === request.requestedModel);
+    observedModel !== null &&
+    responses.every((event) => event.kind === "message" && event.model !== undefined);
+  const mismatch = decisive && observedModel !== request.requestedModel;
+  const verified = decisive && observedModel === request.requestedModel;
   const modelSelectionReason = mismatch ? "model_selection_mismatch" : verified ? null : "model_selection_unverified";
   return {
     requestedModel: request.requestedModel,
@@ -57,6 +58,8 @@ export function turnModelEvidence(
     modelSelectionMessage:
       modelSelectionReason === null
         ? null
-        : `${mismatch ? "The observed response model differs from the requested model." : "The requested model could not be verified from complete response evidence."} Work may already have occurred. Do not retry automatically.`,
+        : mismatch
+          ? "The observed response model differs from the requested model. Work may already have occurred. Do not retry automatically."
+          : "The model selection has not been verified from available response evidence.",
   };
 }

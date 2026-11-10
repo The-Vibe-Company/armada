@@ -178,7 +178,15 @@ export function createProductionOrchestrators(input: {
           ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
           ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
         });
-        await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
+        try {
+          await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
+        } catch {
+          try {
+            console.error("armada: turn model request record unavailable; accepted prompt continues.");
+          } catch {
+            /* Logging must not change accepted work. */
+          }
+        }
         return {
           result: undefined,
           patch: {

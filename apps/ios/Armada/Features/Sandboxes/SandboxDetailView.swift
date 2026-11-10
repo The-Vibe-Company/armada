@@ -209,7 +209,8 @@ struct SandboxConversationView: View {
             if let turn = model.state?.turn {
                 InlineBanner(text: "Requested: \(turn.requestedModel ?? "unknown") · Observed: \(turn.observedModel ?? "unknown")", style: .info)
                 if let reason = turn.modelSelectionReason {
-                    InlineBanner(text: "\(reason): \(turn.modelSelectionMessage ?? "Work may already have occurred. Do not retry automatically.")", style: .warning)
+                    let mismatch = reason == "model_selection_mismatch"
+                    InlineBanner(text: "\(mismatch ? "Model selection changed" : "Model not verified"): \(turn.modelSelectionMessage ?? "Model evidence is unavailable.")", style: mismatch ? .warning : .info)
                 }
             }
             if case .reconnecting = model.feed.connection {

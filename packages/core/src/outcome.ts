@@ -68,24 +68,49 @@ export async function promptOutcome(
   return { state: "finished" };
 }
 
-async function promptEvents(
+/** Bounded newest-first read stopping at this prompt's own start, not sandbox creation. */
+export async function readPromptEvents(
   provider: Provider,
   request: { sandboxId: string; promptId: string; conversationId?: string },
-): Promise<AgentEvent[]> {
+): Promise<{ events: AgentEvent[]; complete: boolean }> {
   const all: AgentEvent[] = [];
   let cursor: string | undefined;
+  const seen = new Set<string>();
   for (let page = 0; page < OUTCOME_PAGES; page++) {
     const read = await provider.events({
       sandboxId: request.sandboxId,
+      direction: "backward",
       ...(cursor ? { cursor } : {}),
       ...(request.conversationId ? { conversationId: request.conversationId } : {}),
       limit: OUTCOME_PAGE_LIMIT,
     });
-    all.push(...read.events);
-    if (!read.hasMore || !read.cursor || read.cursor === cursor) break;
-    cursor = read.cursor;
+    all.unshift(...read.events);
+    const foundStart = read.events.some((event) => event.kind === "prompt" && event.promptId === request.promptId);
+    if (foundStart || !read.hasMore)
+      return {
+        events: dedupeEvents(all).filter((event) => event.promptId === request.promptId || !event.promptId),
+        complete: foundStart,
+      };
+    const next = read.olderCursor;
+    if (!next || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
   }
-  return dedupeEvents(all).filter((event) => event.promptId === request.promptId);
+  return {
+    events: dedupeEvents(all).filter((event) => event.promptId === request.promptId || !event.promptId),
+    complete: false,
+  };
+}
+
+async function promptEvents(
+  provider: Provider,
+  request: { sandboxId: string; promptId: string; conversationId?: string },
+): Promise<AgentEvent[]> {
+  try {
+    return (await readPromptEvents(provider, request)).events;
+  } catch {
+    return [];
+  } // Optional event evidence must not turn a provider-finished turn into a transport failure.
 }
 
 function failureReason(type: string, data: unknown): string {

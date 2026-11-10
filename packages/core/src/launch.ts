@@ -371,7 +371,15 @@ export async function launchSandbox(
             },
           );
         });
-      await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
+      try {
+        await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
+      } catch {
+        try {
+          console.error("armada: turn model request record unavailable; accepted prompt continues.");
+        } catch {
+          /* Logging must not change accepted work. */
+        }
+      }
       return {
         patch: {
           status: "running" as const,

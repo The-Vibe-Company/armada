@@ -1069,7 +1069,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             })
             .catch(unknownMutationOutcome);
           acknowledged = true;
-          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          try {
+            await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          } catch {
+            try {
+              (context.logError ?? console.error)(
+                "armada: turn model request record unavailable; accepted prompt continues.",
+              );
+            } catch {
+              /* Logging must not change accepted work. */
+            }
+          }
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];

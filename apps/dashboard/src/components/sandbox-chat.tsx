@@ -209,8 +209,18 @@ export function SandboxChat(props: Props) {
               Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
             </p>
             {turnModel.modelSelectionReason && (
-              <p className="text-destructive">
-                {turnModel.modelSelectionReason}: {turnModel.modelSelectionMessage}
+              <p
+                className={
+                  turnModel.modelSelectionReason === "model_selection_mismatch"
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                }
+                title={turnModel.modelSelectionReason}
+              >
+                {turnModel.modelSelectionReason === "model_selection_mismatch"
+                  ? "Model selection changed"
+                  : "Model not verified"}
+                : {turnModel.modelSelectionMessage}
               </p>
             )}
           </div>

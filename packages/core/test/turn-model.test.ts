@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AgentEvent } from "../src/provider.ts";
 import { turnModelEvidence } from "../src/turn-model.ts";
+import recording from "./fixtures/boat-claude-fable-recording.json";
 
 const message = (model: string | undefined, extra: Record<string, unknown> = {}): AgentEvent => ({
   id: "response",
@@ -14,14 +15,13 @@ const message = (model: string | undefined, extra: Record<string, unknown> = {})
   ...extra,
 });
 
-// Coordinator's redacted 2026-11-10 12:35Z recording, not an invented native SDK stream:
-// accepted request claude-fable-5-2; one main response model/text claude-sonnet-5;
-// native api-request already selected sonnet, no refusal-fallback notice.
-test("production recording fails the requested-model contract while retaining observed model", () => {
-  const evidence = turnModelEvidence([message("claude-sonnet-5", { text: "claude-sonnet-5" })], {
-    promptId: "turn",
+// Actual redacted `armada logs 8c26ce84 --all --json`, supplied by the coordinator.
+// The selection belongs to the launch request, not to a field invented in the log fixture.
+test("production recording retains the observed response and identifies the selection mismatch", () => {
+  const evidence = turnModelEvidence(recording.events as AgentEvent[], {
+    promptId: "5f58f2cc-d440-4897-a485-4be6e653df6b",
     requestedModel: "claude-fable-5-2",
-    complete: true,
+    complete: !recording.hasMore,
   });
   expect(evidence).toMatchObject({
     requestedModel: "claude-fable-5-2",
@@ -87,7 +87,7 @@ test.each([
     name: "multiple root models are not a last-event model",
     events: [message("chosen"), message("different", { id: "second" })],
     complete: true,
-    reason: "model_selection_mismatch",
+    reason: "model_selection_unverified",
     observed: null,
   },
 ])("$name", ({ events, complete, reason, observed }) => {
@@ -117,4 +117,24 @@ test("truncated response markers cannot turn a partial match into verified execu
       { promptId: "turn", requestedModel: "chosen", complete: true },
     ),
   ).toMatchObject({ modelSelectionReason: "model_selection_unverified" });
+});
+
+// These cases guard against turning unavailable evidence into a positive failure.
+test.each([
+  { name: "missing legacy request", requestedModel: null, complete: true, events: [message("different")] },
+  { name: "incomplete mismatch read", requestedModel: "chosen", complete: false, events: [message("different")] },
+  {
+    name: "truncated mismatch read",
+    requestedModel: "chosen",
+    complete: true,
+    events: [
+      message("different"),
+      { id: "gap", at: 2, kind: "other", promptId: "turn", type: "event_truncated", data: {} } as AgentEvent,
+    ],
+  },
+])("$name remains neutral", ({ requestedModel, complete, events }) => {
+  const evidence = turnModelEvidence(events, { promptId: "turn", requestedModel, complete });
+  expect(evidence.modelSelectionReason).toBe("model_selection_unverified");
+  expect(evidence.modelSelectionMessage).not.toContain("Work may already have occurred");
+  expect(evidence.modelSelectionMessage).not.toContain("Do not retry automatically");
 });

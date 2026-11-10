@@ -43,8 +43,9 @@ finished while the main response reported `claude-sonnet-5`. Claude Code
 refusal-fallback notices. Cost metadata additionally named Haiku for title
 generation; that is not main-turn model evidence. No settings file or model
 environment variable was found in the checked shell. The process had exited,
-so native argv was unavailable. These are coordinator-supplied summarized
-observations, not a raw SDK stream or independently rerun production probe.
+so native argv was unavailable. The exact normalized Armada logs recording is retained unchanged in
+`packages/core/test/fixtures/boat-claude-fable-recording.json`. Native-session
+observations above are coordinator supplied, not an independently rerun probe.
 
 This supports selection loss or mapping before the first main API request,
 not a refusal-driven fallback. The exact Boat boundary remains unknown.
@@ -65,13 +66,31 @@ Do not manufacture a native stream from the SDK's type declarations.
 
 The implementation persists the request per prompt (including send
 overrides), retains the next-send default, and exposes an unknown observed
-model as unknown. A closed selection-failure reason warns that work may already have occurred;
+model as unknown. Only a positively observed mismatch receives a closed failure reason warning that work may already have occurred;
 no automatic retry occurs. Completed root response metadata is used, never
 assistant prose or title-generation cost metadata. Partial, nested and
-retracted responses are excluded; aliases are not guessed. Missing or
-truncated evidence fails verification. Terminal evidence is retained per turn
+retracted native responses are excluded; aliases are not guessed. Missing or
+truncated evidence is neutral unverified, never a failed turn or an error banner.
+Legacy turns with no recorded request remain finished. Only decisive complete
+terminal evidence is retained per turn
 so historical requests are not compared with the sandbox default.
 
 Steer has no model-selection argument and Boat may return a steer-record ID
 rather than the actual run ID. A new run without recorded request provenance
 is unverified; Armada does not invent its request from the next-send default.
+
+Model-request and observation storage are best-effort telemetry: even a failed
+write or logger cannot change accepted work into failed work. Running status
+skips evidence and usage history scans; terminal evidence reads backwards to
+the target prompt boundary, not from sandbox creation. A missing/incomplete
+observation is retried on later reads rather than cached as a permanent result.
+
+The supplied Boat recording has no `parent_tool_use_id`, `is_reverted` or
+`is_retracted` at Armada event level. This patch does not infer those Boat fields
+or claim to have validated Boat subagent/retraction attribution. Distinct or
+ambiguous observed models remain neutral unknown rather than choosing a last
+response. Before asserting Boat nested-agent attribution, the coordinator must
+run a controlled Boat Claude turn spawning a different-model subagent, capture
+redacted `armada logs --all --json` plus status, and verify that only the main
+response establishes observed model. No such provider check was run here.
+Native Modal Claude's SDK parent metadata is handled separately.

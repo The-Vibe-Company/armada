@@ -5,6 +5,7 @@ import {
   type PromptOutcome,
   type Provider,
   promptOutcome,
+  readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
   type SandboxPatch,
@@ -93,25 +94,25 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  if (store.recordUsage) {
-    // Usage is optional telemetry: unavailable/truncated event history must not make status fail.
-    try {
-      const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
-      const collected = reportedTurnUsage(events);
-      await store.recordUsage(sandbox.id, collected);
-      sandbox = { ...sandbox, usage: { computeSeconds: sandbox.usage?.computeSeconds ?? null, ...collected } };
-    } catch {
-      /* Retain the last complete observation. */
-    }
-  }
   const info = await provider.get(sandbox.providerSandboxId);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
-    : await latestPrompt(provider, sandbox.providerSandboxId);
+    : sandbox.taskPromptId
+      ? { promptId: sandbox.taskPromptId, conversationId: null }
+      : await latestPrompt(provider, sandbox.providerSandboxId);
   let prompt: PromptReport | null = null;
   if (target) {
-    const recorded = await store.readTurnModel?.(sandbox.id, target.promptId);
-    const retained = recorded?.evidence as (TurnModelEvidence & { terminalOutcome?: PromptOutcome }) | null;
+    let recorded: { requestedModel: string | null; evidence: unknown } | null = null;
+    try {
+      recorded = (await store.readTurnModel?.(sandbox.id, target.promptId)) ?? null;
+    } catch {
+      /* Telemetry unavailable: neutral unknown. */
+    }
+    const cached = recorded?.evidence as (TurnModelEvidence & { terminalOutcome?: PromptOutcome }) | null;
+    const retained =
+      recorded?.requestedModel && cached && cached.modelSelectionReason !== "model_selection_unverified"
+        ? cached
+        : null;
     const outcome =
       retained?.terminalOutcome ??
       (await promptOutcome(provider, {
@@ -128,12 +129,24 @@ export async function readStatus(
         modelSelectionReason: retained.modelSelectionReason,
         modelSelectionMessage: retained.modelSelectionMessage,
       };
-    else {
+    else if (outcome.state === "running") {
+      evidence = {
+        requestedModel: recorded?.requestedModel ?? null,
+        observedModel: null,
+        modelSelectionReason: null,
+        modelSelectionMessage: null,
+      };
+    } else {
       let events: AgentEvent[] = [];
       let complete = false;
       try {
-        events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
-        complete = true;
+        const read = await readPromptEvents(provider, {
+          sandboxId: sandbox.providerSandboxId,
+          promptId: target.promptId,
+          ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+        });
+        events = read.events;
+        complete = read.complete;
       } catch {
         /* Missing history cannot prove exact-model execution. */
       }
@@ -142,10 +155,19 @@ export async function readStatus(
         requestedModel: recorded?.requestedModel ?? null,
         complete,
       });
-      if (outcome.state !== "running")
-        await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, { ...evidence, terminalOutcome: outcome });
+      // Unknown observations can be retried; telemetry persistence cannot change the outcome.
+      if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+        try {
+          await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, { ...evidence, terminalOutcome: outcome });
+        } catch {
+          /* Next read can retry telemetry storage. */
+        }
+      }
     }
-    const selectionFailed = outcome.state === "finished" && evidence.modelSelectionReason !== null;
+    const selectionFailed =
+      outcome.state === "finished" &&
+      recorded?.requestedModel != null &&
+      evidence.modelSelectionReason === "model_selection_mismatch";
     prompt = {
       ...evidence,
       promptId: target.promptId,
@@ -159,6 +181,17 @@ export async function readStatus(
     };
   }
 
+  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
+    // Usage is optional telemetry: unavailable/truncated event history must not make status fail.
+    try {
+      const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
+      const collected = reportedTurnUsage(events);
+      await store.recordUsage(sandbox.id, collected);
+      sandbox = { ...sandbox, usage: { computeSeconds: sandbox.usage?.computeSeconds ?? null, ...collected } };
+    } catch {
+      /* Retain the last complete observation. */
+    }
+  }
   const next = nextStatus(sandbox.status, info, prompt);
   const reason =
     next === "failed"
@@ -250,9 +283,23 @@ export async function latestPrompt(
   complete = false,
 ): Promise<{ promptId: string; conversationId: string | null } | null> {
   let latest: AgentEvent | undefined;
-  for (const event of await allEvents(provider, sandboxId, complete)) {
-    if (event.kind !== "prompt" || !event.promptId) continue;
-    if (!latest || event.at >= latest.at) latest = event;
+  let cursor: string | undefined;
+  for (let page = 0; page < EVENT_PAGES; page++) {
+    const read = await provider.events({
+      sandboxId,
+      direction: "backward",
+      limit: EVENT_PAGE_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const event of read.events) {
+      if (event.kind === "prompt" && event.promptId && (!latest || event.at >= latest.at)) latest = event;
+    }
+    if (latest || !read.hasMore) break;
+    if (!read.olderCursor || read.olderCursor === cursor) {
+      if (complete) throw new Error("Cannot prove latest turn: provider event cursor did not advance.");
+      break;
+    }
+    cursor = read.olderCursor;
   }
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
 }

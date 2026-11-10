@@ -151,8 +151,8 @@ test("send and steer clear outcomes before admission and fence replacement recei
     );
     boat.finish("bx_1", "prompt_3", "finished");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_2", outcome: { state: "ready" } })).isError).toBe(true);
-    // The restart has no recorded request provenance: it must not publish exact-model readiness.
-    expect((await call(mcp, "report", { id, prompt_id: "prompt_3", outcome: { state: "ready" } })).isError).toBe(true);
+    // Missing model provenance is neutral and does not retroactively fail legitimate completed work.
+    expect((await call(mcp, "report", { id, prompt_id: "prompt_3", outcome: { state: "ready" } })).isError).toBe(false);
     boat.provider.prompt = async () => {
       throw new Error("Ambiguous provider admission");
     };
