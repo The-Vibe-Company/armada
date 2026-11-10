@@ -177,9 +177,11 @@ type BoatMachine = {
   snapshotAvailable: boolean;
   conversation?: string;
   turnRunning?: boolean;
+  promptId?: string;
   bootId: string;
 };
 const boats = new Map<string, BoatMachine>();
+const modalPrompts = new Map<string, { id: string; conversationId: string; status: "running" | "interrupted" }>();
 let shortBoatConfirmation = false;
 const nativeFetch = globalThis.fetch;
 const realFetch = nativeFetch.bind(globalThis);
@@ -197,6 +199,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       version: number;
       requestId: string;
       op: string;
+      promptId?: string;
       input?: { command?: string; conversationId?: string };
     };
     if (packet.op === "prompt") {
@@ -207,13 +210,27 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       );
       conversations.set(id, conversationId);
       effects.push({ id, op: "prompt" });
+      const promptId = crypto.randomUUID();
+      modalPrompts.set(promptId, { id, conversationId, status: "running" });
       return Response.json({
         version: 1,
         requestId: packet.requestId,
-        result: { promptId: crypto.randomUUID(), conversationId, status: "running" },
+        result: { promptId, conversationId, status: "running" },
       });
     }
-    if (packet.op === "interrupt") effects.push({ id, op: "interrupt" });
+    if (packet.op === "getPrompt") {
+      const prompt = modalPrompts.get(packet.promptId ?? "");
+      assert(prompt?.id === id, "Only accepted fixture prompts can be read");
+      return Response.json({
+        version: 1,
+        requestId: packet.requestId,
+        result: { promptId: packet.promptId, ...prompt, done: prompt.status !== "running" },
+      });
+    }
+    if (packet.op === "interrupt") {
+      effects.push({ id, op: "interrupt" });
+      for (const prompt of modalPrompts.values()) if (prompt.id === id) prompt.status = "interrupted";
+    }
     if (packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY"))
       effects.push({ id, op: "preserve" });
     if (packet.op === "checkpoint") effects.push({ id, op: "checkpoint" });
@@ -290,7 +307,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     machine.conversation ??= crypto.randomUUID();
     machine.turnRunning = true;
     assert(!body.conversationId || body.conversationId === machine.conversation, "Boat conversation changed");
-    return json({ promptId: crypto.randomUUID(), conversationId: machine.conversation, status: "running" }, 202);
+    machine.promptId = crypto.randomUUID();
+    return json({ promptId: machine.promptId, conversationId: machine.conversation, status: "running" }, 202);
   }
   if (suffix === "/conversations")
     return json({
@@ -298,6 +316,17 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
         ? [{ id: machine.conversation, running: machine.turnRunning ?? false, lastHarness: "codex" }]
         : [],
     });
+  if (suffix.startsWith("/prompts/") && method === "GET") {
+    assert.equal(suffix, `/prompts/${machine.promptId}`);
+    return json({
+      promptRun: {
+        promptId: machine.promptId,
+        conversationId: machine.conversation,
+        status: machine.turnRunning ? "running" : "interrupted",
+        done: !machine.turnRunning,
+      },
+    });
+  }
   if (suffix === "/events") return json({ events: [], pageInfo: { hasMore: false } });
   throw Error(`Unexpected Boat route ${method} ${url.pathname}`);
 }) as typeof fetch;

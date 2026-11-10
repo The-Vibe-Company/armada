@@ -87,6 +87,14 @@ export function SandboxChat(props: Props) {
   const [status, setStatus] = useState(initialStatus);
   const [poll, setPoll] = useState<Poll>({ error: null, configured: true });
   const [hasMore, setHasMore] = useState(false);
+  const [turnModel, setTurnModel] = useState<{
+    promptId?: string;
+    conversationId?: string | null;
+    requestedModel?: string | null;
+    observedModel?: string | null;
+    modelSelectionReason?: string | null;
+    modelSelectionMessage?: string | null;
+  } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [chosen, setChosen] = useState<string | null>(null);
   const cursor = useRef<string | null>(null);
@@ -106,6 +114,7 @@ export function SandboxChat(props: Props) {
       setPoll((current) => ({ ...current, error: "The dashboard lost contact with the server. Retrying…" }));
       return { more: false, active: true };
     }
+    if (typeof body.prompt === "object" && body.prompt !== null) setTurnModel(body.prompt);
     const next = typeof body.status === "string" ? (body.status as SandboxStatus) : known.current;
     if (next !== known.current) {
       known.current = next;
@@ -191,6 +200,31 @@ export function SandboxChat(props: Props) {
           </div>
         </div>
 
+        {turnModel && (
+          <div className="px-4 py-2 text-sm" role="status">
+            <p>
+              Latest turn {turnModel.promptId ?? "unknown"} · Conversation {turnModel.conversationId ?? "unknown"}
+            </p>
+            <p>
+              Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
+            </p>
+            {turnModel.modelSelectionReason && (
+              <p
+                className={
+                  turnModel.modelSelectionReason === "model_selection_mismatch"
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                }
+                title={turnModel.modelSelectionReason}
+              >
+                {turnModel.modelSelectionReason === "model_selection_mismatch"
+                  ? "Model selection changed"
+                  : "Model not verified"}
+                : {turnModel.modelSelectionMessage}
+              </p>
+            )}
+          </div>
+        )}
         <Notices status={status} reason={reason} poll={poll} />
 
         <Transcript

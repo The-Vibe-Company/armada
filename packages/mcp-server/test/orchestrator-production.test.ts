@@ -353,6 +353,13 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     expect(placement.stops).toHaveLength(priorStops);
     if (priorQuiesce) provider.quiesce = priorQuiesce;
     else delete provider.quiesce;
+    expect(
+      (
+        await sql.query("select requested_model from sandbox_turn_models where sandbox_id=$1", [
+          childReceipt.result.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([{ requested_model: "gpt-6.1-sol" }, { requested_model: "gpt-6.1-sol" }]);
     const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
     expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
     const childRead = await scoped("read", { sandboxId: childReceipt.result.sandboxId });

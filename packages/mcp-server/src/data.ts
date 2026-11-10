@@ -1,4 +1,5 @@
 import {
+  createSqlSandboxStore,
   GoldenError,
   type GoldenRow,
   type GoldenStore,
@@ -234,6 +235,18 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordTurnModel(id, promptId, requestedModel) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
+      },
+      async readTurnModel(id, promptId) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        return createSqlSandboxStore(sql, { turnModels: true }).readTurnModel!(id, promptId);
+      },
+      async recordTurnModelEvidence(id, promptId, evidence) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
+      },
       async recordSkills(id, skills) {
         const result = await sql.query(
           "update public.sandboxes s set skills=$3::text::jsonb where s.id=$1::uuid and s.owner_id=$2::uuid returning id",

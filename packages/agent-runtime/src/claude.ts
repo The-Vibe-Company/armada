@@ -183,6 +183,8 @@ export class ClaudeDriver implements Driver {
               text: completedText.get(key) ?? "",
               partial: false,
               model: event.message.model,
+              responseKind: "assistant",
+              ...(event.parent_tool_use_id ? { parentToolUseId: event.parent_tool_use_id } : {}),
               tools,
             });
           } else if (event.type === "user") {
@@ -193,6 +195,8 @@ export class ClaudeDriver implements Driver {
                 if (block.type === "tool_result")
                   c.emit({
                     kind: "message",
+                    responseKind: "tool_result",
+                    ...(event.parent_tool_use_id ? { parentToolUseId: event.parent_tool_use_id } : {}),
                     text: "",
                     partial: false,
                     tools: [

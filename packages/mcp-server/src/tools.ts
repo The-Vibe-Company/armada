@@ -128,7 +128,7 @@ const effortInput = z.string().min(1).optional().describe("The reasoning effort;
 const modelOutput = {
   credentialId: z.string().nullable().optional(),
   credentialVersion: z.number().int().nullable().optional(),
-  model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
+  model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
   reasoningEffort: z.string().nullable(),
 };
 
@@ -230,6 +230,10 @@ const prompt = z.object({
   conversationId: z.string().nullable(),
   state: z.enum(["running", "finished", "interrupted", "failed"]),
   reason: z.string().nullable(),
+  requestedModel: z.string().nullable().optional(),
+  observedModel: z.string().nullable().optional(),
+  modelSelectionReason: z.enum(["model_selection_mismatch", "model_selection_unverified"]).nullable().optional(),
+  modelSelectionMessage: z.string().nullable().optional(),
 });
 
 const skillReceipts = z
@@ -1122,6 +1126,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             })
             .catch(unknownMutationOutcome);
           acknowledged = true;
+          try {
+            await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          } catch {
+            try {
+              (context.logError ?? console.error)(
+                "armada: turn model request record unavailable; accepted prompt continues.",
+              );
+            } catch {
+              /* Logging must not change accepted work. */
+            }
+          }
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];

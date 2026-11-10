@@ -142,7 +142,7 @@ export async function launchOrchestratorChild(input: {
         )
           throw new Error("Child registration identity mismatch.");
         return sql.transaction(async (tx) => {
-          const saved = await createSqlSandboxStore(tx).insert({
+          const saved = await createSqlSandboxStore(tx, { turnModels: true }).insert({
             ...record,
             credentialId: selection.credentialId,
             credentialVersion: selection.credentialVersion,

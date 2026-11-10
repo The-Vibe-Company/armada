@@ -354,7 +354,7 @@ export async function launchSandbox(
           : { status: github.status, message: github.message };
       if (github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      await setup(provider, ready.id, golden, secrets, progress);
+      await setup(provider, ready.id, record.id, golden, secrets, progress);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
@@ -424,6 +424,15 @@ export async function launchSandbox(
             },
           );
         });
+      try {
+        await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
+      } catch {
+        try {
+          console.error("armada: turn model request record unavailable; accepted prompt continues.");
+        } catch {
+          /* Logging must not change accepted work. */
+        }
+      }
       return {
         patch: {
           status: "running" as const,
@@ -513,13 +522,17 @@ function finish(
 async function setup(
   provider: Provider,
   sandboxId: string,
+  armadaSandboxId: string,
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets);
+    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
+      dir: repo.dir,
+      sandboxId: armadaSandboxId,
+    });
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
@@ -572,22 +585,42 @@ async function run(
   spec: ShellCommand,
   label: string,
   secrets: readonly string[],
+  repository?: { dir: string; sandboxId: string },
 ): Promise<void> {
-  const result = await provider.exec({
+  const request = {
     sandboxId,
     command: spec.command,
     cwd: spec.cwd,
     timeoutSeconds: spec.timeoutSeconds,
-  });
+  };
+  let result = await provider.exec(request);
+  // Production has shown intermittent refusals with either selector path. Retry only
+  // a completed Git ownership rejection once; keep the same user and ownership guard.
+  if (
+    repository !== undefined &&
+    !result.detached &&
+    !result.timedOut &&
+    result.exitCode === 128 &&
+    result.stderr.includes("detected dubious ownership in repository")
+  )
+    result = await provider.exec(request);
   if (result.detached) throw new LaunchError("init_failed", `${label} started in the background.`);
   if (result.timedOut) {
     throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
   }
   if (result.exitCode !== 0) {
-    throw new LaunchError(
+    const failure = new LaunchError(
       "init_failed",
       `${label} failed (exit ${result.exitCode}).${output(result.stderr, result.stdout, secrets)}`,
     );
+    // Inspect stderr before diagnostic-tail truncation; never bypass Git's ownership guard.
+    if (repository !== undefined && result.stderr.includes("detected dubious ownership in repository"))
+      throw new LaunchError(
+        "init_failed",
+        `Cannot update repository '${repository.dir}' in sandbox ${repository.sandboxId}: checkout ownership does not match the user running sandbox commands. Report this golden and sandbox ID to its administrator to check command-user and checkout UIDs before retrying.`,
+        { cause: failure, safeReason: "repository_ownership_mismatch" },
+      );
+    throw failure;
   }
 }
 

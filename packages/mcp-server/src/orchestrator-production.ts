@@ -104,7 +104,7 @@ export function createProductionOrchestrators(input: {
   });
   const stores = {
     goldens: createSqlGoldenStore(sql),
-    sandboxes: createSqlSandboxStore(sql),
+    sandboxes: createSqlSandboxStore(sql, { turnModels: true }),
     credentials: input.credentials,
     ...(input.connections ? { connections: input.connections } : {}),
   };
@@ -179,6 +179,15 @@ export function createProductionOrchestrators(input: {
           ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
           ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
         });
+        try {
+          await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
+        } catch {
+          try {
+            console.error("armada: turn model request record unavailable; accepted prompt continues.");
+          } catch {
+            /* Logging must not change accepted work. */
+          }
+        }
         return {
           result: undefined,
           patch: {
