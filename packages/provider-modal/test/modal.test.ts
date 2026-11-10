@@ -1282,7 +1282,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       [1, 2, 3, 4].map((n) => ({ sequence: n, event: event(n) })),
     );
     const tail = await f.provider.events({ sandboxId: row.id, direction: "backward", limit: 2, coalesce: true });
-    expect(tail.events).toMatchObject([{ text: "34", textMode: "snapshot" }]);
+    expect(tail.events).toMatchObject([{ text: "3", textMode: "delta" }, { text: "4", textMode: "delta" }]);
     expect(tail.hasMore).toBe(true);
     const older = await f.provider.events({
       sandboxId: row.id,

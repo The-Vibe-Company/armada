@@ -211,7 +211,7 @@ test("backward pages anchor older history separately from forward follow", async
     response([]),
   );
   const tail = await boat.provider.events({ sandboxId: ID, direction: "backward", limit: 2, coalesce: true });
-  expect(tail.events).toMatchObject([{ text: "34", textMode: "snapshot" }]);
+  expect(tail.events).toMatchObject([{ text: "3", textMode: "delta" }, { text: "4", textMode: "delta" }]);
   expect(tail.hasMore).toBe(true);
   const older = await boat.provider.events({
     sandboxId: ID,
