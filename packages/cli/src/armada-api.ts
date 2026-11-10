@@ -62,6 +62,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
   return {
     async request<T>(path: string, init: RequestInit = {}): Promise<T> {
       const url = apiUrl(origin, path);
+      const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
       let response: Response;
       try {
         response = await io.fetch(url, {
@@ -75,13 +76,17 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             accept: "application/json",
           },
           redirect: "error",
-          signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+          signal,
         });
-      } catch {
+      } catch (error) {
         throw new AuthError(
-          path === "/api/v1/sandbox/launch"
-            ? "Launch outcome unknown. Run armada list to check before retrying."
-            : "Armada could not reach the server.",
+          signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+            ? `The server did not answer in time; the operation may have been accepted.${
+                path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+              }`
+            : path === "/api/v1/sandbox/launch"
+              ? "Launch outcome unknown. Run armada list to check before retrying."
+              : "Armada could not reach the server.",
           "unavailable",
         );
       }
@@ -95,13 +100,17 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             ...{ timeout: false },
             headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" },
             redirect: "error",
-            signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+            signal,
           });
-        } catch {
+        } catch (error) {
           throw new AuthError(
-            path === "/api/v1/sandbox/launch"
-              ? "Launch outcome unknown. Run armada list to check before retrying."
-              : "Armada could not reach the server.",
+            signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+              ? `The server did not answer in time; the operation may have been accepted.${
+                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                }`
+              : path === "/api/v1/sandbox/launch"
+                ? "Launch outcome unknown. Run armada list to check before retrying."
+                : "Armada could not reach the server.",
             "unavailable",
           );
         }

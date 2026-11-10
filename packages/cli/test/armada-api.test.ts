@@ -205,16 +205,17 @@ test("a long-lived client uses the rotated refresh token on later requests and p
   expect((await session.read())?.refreshToken).toBe("refresh-2");
 });
 
-for (const failure of ["502", "network"] as const) {
+for (const failure of ["502", "network", "timeout"] as const) {
   test(`lost launch outcome (${failure}) advises checking without echoing server text`, async () => {
     const state = io({ ARMADA_TOKEN: token });
     state.fetch = (async () => {
       if (failure === "network") throw Error(token);
+      if (failure === "timeout") throw new DOMException(token, "TimeoutError");
       return Response.json({ error: { message: token } }, { status: 502 });
     }) as unknown as typeof fetch;
     const client = await createArmadaApiClient(state);
     await expect(client.request("/api/v1/sandbox/launch", { method: "POST" })).rejects.toThrow(
-      "Launch outcome unknown. Run armada list to check before retrying.",
+      "Run armada list to check before retrying.",
     );
   });
 }

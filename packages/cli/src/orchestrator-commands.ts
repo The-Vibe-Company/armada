@@ -227,19 +227,20 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
           method: "POST",
           headers: { "content-type": "application/json", "idempotency-key": command.key },
           body: JSON.stringify({ ...command.body, orgId: command.orgId }),
-          // Boat archival alone can take 150s, before history/receipt publication.
-          ...(command.action === "stop" ? { signal: AbortSignal.timeout(300_000) } : {}),
+          // Lifecycle work spans provider startup/archival and receipt publication.
+          // Match the control proxy budget rather than the default 10s read deadline.
+          ...(["stop", "resume", "recover"].includes(command.action) ? { signal: AbortSignal.timeout(660_000) } : {}),
         }),
       );
     } catch (error) {
       if (
-        command.action === "stop" &&
+        ["stop", "resume", "recover"].includes(command.action) &&
         error instanceof AuthError &&
         !(error instanceof ArmadaApiError) &&
         error.code === "unavailable"
       )
         throw new AuthError(
-          `Stop outcome unknown. Run armada orchestrator detail ${command.id} --org ${command.orgId} and check events before retrying with the same idempotency key.`,
+          `${error.message} Outcome unknown. Run armada orchestrator detail ${command.id} --org ${command.orgId} and check events before retrying with the same idempotency key.`,
           "unavailable",
         );
       throw error;
