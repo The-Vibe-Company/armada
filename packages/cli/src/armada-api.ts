@@ -122,9 +122,10 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           ? (payload as { error?: { code?: string } }).error?.code
           : undefined;
       if (response.status === 404 && !failureCode)
-        throw new AuthError(
-          `This Armada deployment does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
+        throw new ArmadaApiError(
           "unavailable",
+          response.status,
+          `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
         );
       if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode))
         throw new ArmadaApiError(failureCode, response.status, API_FAILURE_HELP[failureCode as ApiFailureCode]);

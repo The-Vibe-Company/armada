@@ -29,7 +29,7 @@ test.each([new Response("Not found", { status: 404 }), Response.json({ error: "N
       },
     );
     expect(code).not.toBe(0);
-    expect(error).toContain("This Armada deployment does not serve /api/v1/github/refresh");
+    expect(error).toContain("This Armada deployment at https://armada.test does not serve /api/v1/github/refresh");
     expect(error).not.toContain("untrusted response");
   },
 );
