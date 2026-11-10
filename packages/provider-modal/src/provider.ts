@@ -5,7 +5,7 @@ import { machineCapacity, ProviderError, parseMachineSize, resolveModelChoice } 
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
-import { ModalOperationError, modalError, refusal } from "./errors.ts";
+import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import {
   assertSameCheckpoint,
@@ -494,6 +494,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       (await store.watermark(row.info.id, row.generation)) !== result.watermark
     )
       throw refusal("conflict", "Checkpoint lacks a matching durably acknowledged event watermark; source retained.");
+    const pending = row.orchestratorCheckpoint?.receipt;
+    if (pending?.state === "pending") {
+      if (pending.physicalGeneration !== result.generation || result.watermark < pending.eventWatermark)
+        throw refusal("conflict", "Checkpoint event watermark regressed; source retained.");
+      // Driver close/final outbox flush can advance beyond the earlier observation.
+      // Seal only the checkpoint's independently verified durable ACK, before snapshot.
+      pending.eventWatermark = result.watermark;
+      pending.acknowledgedSequence = result.acknowledgedSequence;
+    }
     row.checkpointWatermark = result.watermark;
     await save(row);
   }
@@ -543,19 +552,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.info.state = "stopping";
       await save(row);
       if (!row.quiesced) {
-        await checkpoint(row, save);
-        await distribution.prepareSnapshot(sb, row);
+        await lifecycleStep("modal_checkpoint_runner", () => checkpoint(row, save));
+        await lifecycleStep("modal_checkpoint_scrub", () => distribution.prepareSnapshot(sb, row));
         row.quiesced = true;
       }
       row.phase = "snapshot";
       await save(row);
-      const image = await sb.snapshotFilesystem({ ttlMs: null });
+      const image = await lifecycleStep("modal_checkpoint_snapshot", () => sb.snapshotFilesystem({ ttlMs: null }));
       if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
       row.recoveryImageId = image.imageId;
       row.phase = "terminate";
       await save(row);
     }
-    await sb.terminate({ wait: true });
+    await lifecycleStep("modal_checkpoint_terminate", () => sb.terminate({ wait: true }));
     if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
     row.phase = "stopped";
     row.info.state = "stopped";
@@ -964,7 +973,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           !request.model ||
           !["claude", "codex"].includes(request.harness)
         )
-          throw refusal("conflict", "Native checkpoint requires an exact active parent identity.");
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "modal_checkpoint_identity",
+            message: "Native checkpoint requires an exact active parent identity.",
+            retryable: false,
+          });
         const observed = await runner.call<{
           physicalGeneration: string;
           state: string;
@@ -986,7 +1001,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           observed.eventWatermark < 0 ||
           observed.acknowledgedSequence !== observed.eventWatermark
         )
-          throw refusal("conflict", "Native checkpoint lacks quiescence/session/durable event acknowledgement.");
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "modal_checkpoint_observation",
+            message: "Native checkpoint lacks quiescence/session/durable event acknowledgement.",
+            retryable: false,
+          });
         row.orchestratorCheckpoint = {
           receipt: {
             version: 1,
@@ -1008,7 +1029,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await save(row); // Durable dispatch before checkpoint/snapshot/termination.
         await stopLeased(row, save);
         const complete = checkpointReceipt(row, request.operationId);
-        if (!complete || complete.state !== "stopped") throw refusal("conflict", "Native checkpoint evidence changed.");
+        if (!complete || complete.state !== "stopped")
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "modal_checkpoint_receipt",
+            message: "Native checkpoint evidence changed.",
+            retryable: false,
+          });
         row.orchestratorCheckpoint.receipt = complete;
         await save(row);
         return complete;

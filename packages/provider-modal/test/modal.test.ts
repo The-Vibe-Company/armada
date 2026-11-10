@@ -2946,3 +2946,47 @@ test.each(["checkpoint", "snapshot"] as const)(
     }
   },
 );
+
+test("orchestrator stop seals the final acknowledged checkpoint watermark, not its earlier observation", async () => {
+  const f = fixture();
+  const parent = await runningFork(f);
+  f.onRpc(async (row, op) => {
+    if (op === "observeOrchestrator")
+      return {
+        physicalGeneration: String(row.generation),
+        state: "quiescent",
+        nativeSessionId: "native",
+        eventWatermark: 0,
+        acknowledgedSequence: 0,
+      };
+    if (op === "checkpoint") {
+      await appendModalEvents(db, scope, parent.id, "1", [
+        {
+          sequence: 1,
+          event: {
+            id: crypto.randomUUID(),
+            at: 1,
+            kind: "prompt",
+            text: "done",
+            promptId: "p",
+            conversationId: "logical",
+            status: "finished",
+          },
+        },
+      ]);
+      return { generation: "1", watermark: 1, acknowledgedSequence: 1 };
+    }
+  });
+  const request = {
+    sandboxId: parent.id,
+    operationId: crypto.randomUUID(),
+    physicalGeneration: "1",
+    conversationId: "logical",
+    harness: "codex" as const,
+    model: "gpt-6.1-sol",
+  };
+  const receipt = await f.provider.checkpointOrchestrator(request);
+  expect(receipt).toMatchObject({ state: "stopped", eventWatermark: 1, acknowledgedSequence: 1 });
+  expect(await f.provider.readOrchestratorCheckpoint(request)).toEqual(receipt);
+  expect((await f.provider.get(parent.id)).state).toBe("stopped");
+});

@@ -121,6 +121,14 @@ const CODES = new Set([
   "capacity",
 ]);
 const MODAL_BOOT_CODES = new Set([
+  "modal_checkpoint_identity",
+  "modal_checkpoint_runner",
+  "modal_checkpoint_scrub",
+  "modal_checkpoint_snapshot",
+  "modal_checkpoint_terminate",
+  "modal_checkpoint_observation",
+  "modal_checkpoint_receipt",
+  "modal_recovery_binding",
   "modal_boot_binding",
   "modal_boot_runtime",
   "modal_boot_baseline",

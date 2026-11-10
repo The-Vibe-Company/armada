@@ -42,3 +42,29 @@ export class ModalOperationError extends ProviderError {
 export function modalFailureReceipt(error: unknown): import("./ports.ts").ModalResourceReceipt | undefined {
   return error instanceof ModalOperationError ? error.receipt : undefined;
 }
+
+/** Closed lifecycle labels only; never retain SDK messages or causal payloads. */
+export async function lifecycleStep<T>(
+  code:
+    | "modal_checkpoint_runner"
+    | "modal_checkpoint_scrub"
+    | "modal_checkpoint_snapshot"
+    | "modal_checkpoint_terminate"
+    | "modal_checkpoint_observation"
+    | "modal_checkpoint_receipt"
+    | "modal_recovery_binding",
+  work: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    const safe = modalError(error);
+    throw new ProviderError({
+      provider: "modal",
+      code: safe.code,
+      message: "Modal lifecycle step failed; source retained for reconciliation.",
+      retryable: safe.retryable,
+      providerCode: code,
+    });
+  }
+}
