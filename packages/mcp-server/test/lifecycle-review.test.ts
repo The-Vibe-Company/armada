@@ -291,3 +291,22 @@ test("initial launch preserves sequential 600-second setup command budgets", asy
     await f.server.close();
   }
 });
+
+test("manual stop retires an interrupted registration whose exact provider identity is absent", async () => {
+  const f = await fixture();
+  const provider = createBoatProvider({
+    apiKey: "test-key",
+    fetch: (async () =>
+      Response.json({ error: { code: "sandbox_not_found", message: "Absent" } }, { status: 404 })) as typeof fetch,
+  });
+  try {
+    await f.insert();
+    await f.scoped.sandboxes.update(f.id, { status: "starting" });
+    expect((await f.control("stop", provider))?.status).toBe(200);
+    const stopped = await f.scoped.sandboxes.get(f.id);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.stoppedAt).not.toBeNull();
+  } finally {
+    await f.server.close();
+  }
+});
