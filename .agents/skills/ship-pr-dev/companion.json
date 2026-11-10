@@ -1,13 +1,22 @@
 {
   "$schema": "https://skillpack.app/schemas/companion-manifest.v2.schema.json",
   "name": "ship-pr-dev",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "title": "Ship PR",
   "description": "Deliver a verified PR with an author self-check and latest-SHA green CI; hand off READY FOR REVIEW to the coordinator, never merge.",
   "notes": "Worker owns implementation, author self-check, PR and CI. No worker Armada identity or launch authority. Coordinator owns independent review via a fresh sandbox, GitHub review submission, two-round budget and confirmed stop; only an approved green head can merge. See armada-manager/references/reviewer.md. Worker terminal receipt: READY FOR REVIEW: PR #<n> head <sha>.",
   "metadata": {
     "companionSkillId": "bccb0c35-71bf-4fe8-ad7c-7a931889fa84",
     "changelog": [
+      {
+        "version": "2.0.0",
+        "date": "2026-11-10",
+        "changes": [
+          "Breaking ownership change: replace in-session independent review with author self-check and READY FOR REVIEW handoff.",
+          "Coordinator alone launches a fresh reviewer using existing CLI or scoped parent authority, collects an exact-head GitHub review and confirms cleanup; workers receive no Armada identity.",
+          "Require Real-provider verification evidence or a named coordinator deployed check for lifecycle/provider/runtime changes; align evals and telemetry with this contract."
+        ]
+      },
       {
         "version": "1.6.0",
         "date": "2026-09-23",
