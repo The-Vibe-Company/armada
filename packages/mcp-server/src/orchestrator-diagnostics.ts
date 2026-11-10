@@ -246,6 +246,16 @@ function baseReason(error: unknown): string {
                 : undefined;
     if (family && CODES.has(code)) {
       if (family === "provider") {
+        if (error instanceof ProviderError && error.provider === "boat" && code === "invalid_request") {
+          // Only closed protocol vocabulary is safe here: never messages or field values.
+          const status = error.status;
+          const providerCode = error.providerCode;
+          const parameter = error.details?.parameter ?? error.details?.field;
+          const statuses = [400, 401, 403, 404, 409, 422, 429, 500, 502, 503];
+          const codes = ["invalid_request", "validation_error", "invalid_params", "bad_request"];
+          const parameters = ["sandboxId", "conversation", "cursor", "limit", "sort", "operationId"];
+          return `${family}_${code}${typeof status === "number" && statuses.includes(status) ? `_http_${status}` : ""}${typeof providerCode === "string" && codes.includes(providerCode) ? `_boat_${providerCode}` : ""}${typeof parameter === "string" && parameters.includes(parameter) ? `_parameter_${parameter}` : ""}`;
+        }
         // Only closed provider-owned boot labels, never arbitrary SDK diagnostics.
         try {
           const boot: unknown = Reflect.get(error, "providerCode");

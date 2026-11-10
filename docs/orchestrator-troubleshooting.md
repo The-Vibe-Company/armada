@@ -253,6 +253,30 @@ credentials or guest output containing secrets. The production-composition test
 proves request dispatch, event publication and reconnect against documented Boat
 responses; it cannot explain an upstream accepted-but-never-delivered turn.
 
+### Boat invalid-request polling and retirement (#779)
+
+Managed owner polling and stop-history reads now use the ordinary sandbox page
+size (200), rather than the managed-only 500. Both go through the same SDK events
+method, sandbox provider ID, ascending sort and cursor. Managed reads additionally
+filter by their persisted conversation. The stop POST uses the same endpoint and
+arguments; managed stop additionally confirms the archival receipt and mirrors
+history before publishing `stopped`. A history refusal can therefore leave stop
+uncertain even after Boat archived the machine.
+
+For remaining refusals, `provider_invalid_request` diagnostics append only known
+HTTP statuses, closed Boat codes (`invalid_request`, `validation_error`,
+`invalid_params`, `bad_request`) and allow-listed parameter names from
+`details.parameter` or `details.field`. Unknown labels, messages and values are
+omitted, not sanitized into logs.
+
+After deployment, an operator must smoke both Boat harnesses: send, observe a
+finished turn, stop, resume with the same conversation, and stop again. Retire
+the four blocked parents (`d31da303…`, `96f80008…`, `d1230efd…`, `e57e5266…`)
+using the detail/recover commands above with each parent's current revision.
+Keep the original revision/key for retries and verify both Armada `stopped` and
+Boat archival. This is an operator follow-up, not performed by this patch or its
+fake-fetch tests. Do not enable Boat pairs based only on transport tests.
+
 ### Boat pull ownership and closed observations
 
 Boat `/prompt` is posted synchronously by owner send. The accepted receipt now
