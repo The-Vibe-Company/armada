@@ -107,7 +107,10 @@ function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean
 }
 
 function fail(status: number, error: string): Response {
-  return NextResponse.json({ error }, { status, headers: { "cache-control": "no-store" } });
+  return NextResponse.json(
+    status === 404 ? { error: { code: "unknown_route", message: "Unknown route." } } : { error },
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /** Bound raw streamed bytes before decoding/forwarding, including absent/chunked length. */

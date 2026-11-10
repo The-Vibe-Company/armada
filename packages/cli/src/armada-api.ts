@@ -121,7 +121,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
           : undefined;
-      if (response.status === 404 && !failureCode)
+      // Older control servers used not_found for both resource misses and route misses.
+      // Compare only the fixed legacy sentinel; never echo untrusted response text.
+      const legacyUnknownRoute =
+        failureCode === "not_found" &&
+        (payload as { error?: { message?: unknown } }).error?.message === "Unknown route.";
+      if (response.status === 404 && (!failureCode || failureCode === "unknown_route" || legacyUnknownRoute))
         throw new ArmadaApiError(
           "unavailable",
           response.status,

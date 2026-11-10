@@ -12,6 +12,9 @@ const id = "11111111-1111-4111-8111-111111111111";
 // Independent architecture contract: inventory the CLI, never the proxy's allow-list.
 // Literal/flow-union routes are static; operations' mutable route dispatch is exercised
 // with its source-declared commands/actions. Unknown route expressions fail closed.
+// For a new routing pattern, extend strings() with finite CLI-derived values, or
+// add a real-dispatch probe below for mutable routing. Never copy the proxy list;
+// mutation-check that removing the new route makes this guard fail.
 test("every CLI POST control route is admitted by the dashboard proxy", async () => {
   const files = readdirSync(cli)
     .filter((name) => name.endsWith(".ts"))

@@ -256,7 +256,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             ? await options.invitations.accept(caller, body.token)
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
     } else result = await dispatch(deletion ? "sandbox/delete" : route, caller, body, options);
-    if (result === undefined) return fail(404, "not_found", "Unknown route.");
+    if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
         (route === "golden/create" || route === "golden/update") &&
