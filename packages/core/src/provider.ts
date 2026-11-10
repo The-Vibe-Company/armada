@@ -24,6 +24,8 @@ export interface GitHubRuntimeConfiguration {
 export interface OrchestratorCreateRecoveryRequest {
   version: 1;
   createOperationId: string;
+  /** Explicit destructive recovery of an uncertain stop, never native continuity. */
+  stopOperationId?: string;
   recoveryOperationId: string;
   orchestratorId: string;
   ownerId: string;
