@@ -242,6 +242,8 @@ by a main-tip check before either environment is mutated. If main moves during
 smoke, production may reject that run: dispatch current main instead. This is
 deliberately conservative. No external/manual writer may change staging during
 smoke. Legacy deployment-event smoke and standalone staging migrations are disabled.
+Manual smoke dispatch (including orchestrator mode) remains available for diagnostics;
+it never authorizes a production promotion.
 Production history/repair/preview remain operator tools, not an alternate apply
 path. npm releases remain independent; release-sync deployment is disabled.
 

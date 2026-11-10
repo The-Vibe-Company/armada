@@ -15,11 +15,10 @@ permissions:
 jobs:
   smoke:
     if: >-
-      vars.STAGING_GATED_DEPLOYS != 'true' &&
-      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'deployment_status' &&
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (vars.STAGING_GATED_DEPLOYS != 'true' && github.event_name == 'deployment_status' &&
        github.event.deployment_status.state == 'success' &&
-       github.event.deployment.environment == (vars.ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT || 'armada / staging')))
+       github.event.deployment.environment == (vars.ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT || 'armada / staging'))
     # Skipped deployment events must not evict a queued staging smoke.
     # Never cancel a runner while it owns live compute.
     concurrency:

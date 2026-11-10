@@ -5,6 +5,7 @@
 > owns staging migrations/deployment/smoke and production migrations/deployment
 > from one SHA under a whole-pipeline lock. Independent automatic staging and
 > production migration applies and deployment-event smoke below are disabled.
+> Manual smoke dispatch remains available, but never authorizes promotion.
 > Missing gate configuration blocks promotion, never counts as a green smoke.
 > Manual history/repair/preview remain operator tools. Cutover, deliberately red
 > smoke proof, emergency override and rollback are in that runbook.
