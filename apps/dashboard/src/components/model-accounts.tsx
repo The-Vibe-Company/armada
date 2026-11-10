@@ -3,7 +3,7 @@
 import type { Harness } from "@armada/core";
 import { CopyIcon, KeyRoundIcon, PlusIcon, StarIcon, UserIcon, UsersIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useEffect, useId, useState } from "react";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useState } from "react";
 import {
   addAccount,
   makeDefaultAccount,
@@ -37,6 +37,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import {
   type AccountKind,
@@ -368,7 +369,7 @@ export function AccountRow({
             )}
             <RenameDialog account={account} orgId={orgId} onResult={setResult} />
             <ReplaceDialog account={account} orgId={orgId} reconnect={problem !== null} onResult={setResult} />
-            <RemoveDialog account={account} orgId={orgId} onResult={setResult} />
+            <RemoveDialog account={account} orgId={orgId} />
           </div>
         )}
       </div>
@@ -409,6 +410,8 @@ function InlineAction({
 }
 
 /** A dialog whose form closes it on success and keeps a refusal inside it, next to the fields. */
+function ignoreResult() {}
+
 function useDialogAction(action: Action, onResult: (result: ActionResult) => void) {
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
@@ -531,16 +534,18 @@ function ReplaceDialog({
   );
 }
 
-function RemoveDialog({
-  account,
-  orgId,
-  onResult,
-}: {
-  account: ModelAccount;
-  orgId: string;
-  onResult: (result: ActionResult) => void;
-}) {
-  const { open, setOpen, state, formAction } = useDialogAction(removeAccount, onResult);
+/** A successful removal takes the account's row, and its result line, off the page: a toast names what went. */
+function RemoveDialog({ account, orgId }: { account: ModelAccount; orgId: string }) {
+  const toast = useToast();
+  const remove = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const result = await removeAccount(previous, data);
+      if (result.ok) toast({ tone: "success", title: `Removed ${account.name}.` });
+      return result;
+    },
+    [toast, account.name],
+  );
+  const { open, setOpen, state, formAction } = useDialogAction(remove, ignoreResult);
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogTrigger asChild>
