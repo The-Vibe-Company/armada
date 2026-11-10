@@ -55,6 +55,36 @@ errors can additionally carry a closed `reason` and `retryAfterSeconds`.
 Golden errors use the explicit golden mappings above. The shared-tool adapter
 defaults unrecognized marker codes to 400; this is a fallback, not a new code.
 
+## Auth and token routes under `/api/v1/`
+
+These routes are dispatched before the main control error handler. They use the
+control error envelope, but **not** its shared typed-failure precedence. OAuth
+protocol endpoints outside this namespace remain outside this catalogue.
+
+| Route / failure | HTTP and code | Client meaning |
+| --- | --- | --- |
+| `auth/authorize` invalid browser login | 400 invalid | Correct provider, callback and PKCE/state inputs. |
+| `auth/email/start` invalid request or other failure | 400 invalid | Correct email login inputs; this catch also masks dependency failures. |
+| `auth/email/start` caught error message containing `Too many` | 429 rate_limited | Back off before starting email login again. |
+| `auth/email/verify` any caught failure | 401 unauthorized | Email code refused; request/verify a valid code. |
+| `auth/exchange`, `auth/refresh`: ProviderRoutingError | 503 provider_not_configured or provider_mismatch | Server routing unavailable; do not switch provider identity. |
+| `auth/exchange`, `auth/refresh`: LaunchError | 400, original launch code | Inspect the code; shared failure categories are not remapped here. |
+| `auth/exchange`, `auth/refresh`: VaultError | 400, original vault code | Original code survives even for missing_credential, conflict, credential_refused or unavailable. |
+| `auth/exchange`, `auth/refresh`: any other caught failure | 401 unauthorized | Login exchange/refresh refused; this can mask a dependency failure. |
+| `token/list`: any caught failure | 401 unauthorized | Authenticate again; catch also covers non-auth failures. |
+| `token/create`: invalid/conflicting org selectors | 400 invalid or 403 forbidden | Correct selectors and caller scope. |
+| `token/create`: any caught failure | 401 unauthorized | Token creation refused. |
+| `token/revoke`: scope rejection or any caught failure | 403 forbidden | Revocation refused. |
+| All above: unsupported method | 405 invalid | Use GET for auth/authorize, POST for the others. |
+
+The exchange/refresh VaultError catch maps **every** VaultError code to 400,
+unlike the main handler's STATUS map (for example missing_credential 404,
+conflict 409, credential_refused 422) and its earlier normalization of unavailable
+to dependency_unavailable 503. LaunchError is also always 400 here, even when
+its code is a shared failure category. ProviderRoutingError remains 503. The
+fallback is unauthorized 401 rather than the main handler's internal 500.
+These are existing route-specific behaviors, not recommended client semantics.
+
 ## Orchestrator routes
 
 Runtime errors expose not_found (404), conflict (409), invalid_request (400),
@@ -71,11 +101,13 @@ The successful fresh-Boat-conversation note does not mean the resume failed.
 ## Transport exceptions and known inconsistencies
 
 Unknown non-MCP paths use HTTP 404 `{error:"not_found"}` in `http.ts`;
-MCP drain uses 503 `temporarily_unavailable` with Retry-After. Auth routes have
-their own method, input and session handling; OAuth routes retain OAuth error
-vocabulary rather than this control envelope.
+MCP drain uses 503 `temporarily_unavailable` with Retry-After. OAuth routes retain
+OAuth error vocabulary rather than this control envelope.
 
 Direct ProviderError mapping and shared-tool mapping differ for not_found
 (direct: 503, tool: 404), sandbox_not_ready/no_running_turn, billing/quota and
 internal as listed above. Do not silently change these in a refactor. The audit
-follow-up calls for table-driven route-contract tests before normalization.
+follow-up [#833](https://github.com/The-Vibe-Company/armada/issues/833) calls for
+table-driven route-contract tests before normalization, including auth email-start
+rate_limited 429 versus provider/tool 503/400, exchange/refresh VaultError 400
+versus the main handler, and the auth fallback 401 versus control fallback 500.

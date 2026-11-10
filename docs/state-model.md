@@ -58,12 +58,19 @@ Boat never earns a native checkpoint claim.
 ## Disagreement and exit inventory
 
 - Parent ready and pending create can coexist during publication; clients must
-  inspect the operation. See the follow-up inventory for readiness coverage.
+  inspect the operation. This is an intentional publication/admission distinction,
+  not a new readiness guarantee; retain both checks. Deployed cycle coverage is
+  tracked in [#832](https://github.com/The-Vibe-Company/armada/issues/832).
 - Provider stopped/archived and SQL stopping can disagree until reconciliation;
   neither a timeout nor an HTTP failure proves that stop failed physically.
+- Loss of membership or provider credentials can strand an ordinary stopping
+  row: high-risk [#857](https://github.com/The-Vibe-Company/armada/issues/857)
+  tracks a trusted, exact-identity cleanup exit without restoring removed authority.
 - A blocked parent has only the recover paths supported by its recorded shape.
   There is no general delete/reset transition. Do not repair by SQL or infer
-  quiescence from empty events.
+  quiescence from empty events. High-risk
+  [#858](https://github.com/The-Vibe-Company/armada/issues/858) tracks a narrow
+  owner retirement exit for unsupported blocked receipt shapes.
 - Preservation docs formerly required Python although the collector uses Bun;
   corrected in this audit. Preservation failure is a note, not a stop veto.
 - Error surfaces disagree on several HTTP mappings; the catalogue records actual

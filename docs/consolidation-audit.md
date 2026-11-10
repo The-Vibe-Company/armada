@@ -8,8 +8,10 @@ conformance. No production/staging calls, migrations or deployments were made.
 
 | Risk | Finding / next reviewable PR |
 | --- | --- |
+| High | [#857](https://github.com/The-Vibe-Company/armada/issues/857): stopping ordinary sandboxes can lose their reconciliation authority; define a fenced cleanup exit. |
+| High | [#858](https://github.com/The-Vibe-Company/armada/issues/858): unsupported blocked parent receipt shapes lack a supported retirement exit. |
 | High | [#832](https://github.com/The-Vibe-Company/armada/issues/832): ordinary staging smoke lacks resume/second stop, unlike the quality bar. |
-| Medium | [#833](https://github.com/The-Vibe-Company/armada/issues/833): direct/provider and shared-tool HTTP mappings disagree. Pin contracts before normalization. |
+| Medium | [#833](https://github.com/The-Vibe-Company/armada/issues/833): direct/provider and shared-tool HTTP mappings disagree. Include auth-route 429/400/401 exceptions; pin contracts before normalization. |
 | Low | [#834](https://github.com/The-Vibe-Company/armada/issues/834): historical delivery narratives remain in orchestrator guides. |
 | Low | [#835](https://github.com/The-Vibe-Company/armada/issues/835): HTTP-to-MCP adapter hardcodes server version 2.0.2 instead of shared VERSION. |
 
@@ -18,6 +20,11 @@ Three safe corrections are included here: preservation runtime requirements
 and smoke capability documentation; AGENTS server entrypoint and obsolete
 dependency snapshot claims. These are behavior-preserving documentation changes.
 No uncertain test or legacy recovery branch is deleted merely for being old.
+[#835](https://github.com/The-Vibe-Company/armada/issues/835) is deferred to keep
+this audit documentation-only: replacing the literal is tiny, but proving the
+adapter advertises the correct identity needs a protocol-boundary assertion, not
+a source-text check. The three truth corrections above are the safe fixes chosen
+for this PR; #835 can land independently without lifecycle or documentation work.
 
 ## Production failures versus offline proof
 
