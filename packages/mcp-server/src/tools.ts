@@ -1011,14 +1011,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
         },
         async (signal) => {
-          const receipt = await provider.prompt({
-            sandboxId: found.providerSandboxId,
-            harness: found.harness,
-            text: args.prompt,
-            signal,
-            ...(conversation ? { conversationId: conversation } : {}),
-            ...(choice ?? {}),
-          });
+          const receipt = await provider
+            .prompt({
+              sandboxId: found.providerSandboxId,
+              harness: found.harness,
+              text: args.prompt,
+              signal,
+              ...(conversation ? { conversationId: conversation } : {}),
+              ...(choice ?? {}),
+            })
+            .catch(unknownMutationOutcome);
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];
@@ -1083,11 +1085,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         found,
         { clearTaskOutcome: true },
         async () => {
-          const receipt = await provider.steer({
-            sandboxId: found.providerSandboxId,
-            text: args.text,
-            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-          });
+          const receipt = await provider
+            .steer({
+              sandboxId: found.providerSandboxId,
+              text: args.text,
+              ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+            })
+            .catch(unknownMutationOutcome);
           return {
             patch: {
               status: "running",
@@ -1143,10 +1147,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!provider.capabilities[found.harness].interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
-      await provider.interrupt({
-        sandboxId: found.providerSandboxId,
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-      });
+      await provider
+        .interrupt({
+          sandboxId: found.providerSandboxId,
+          ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+        })
+        .catch(unknownMutationOutcome);
       return { id: found.id, interrupted: true };
     },
   );
@@ -1196,13 +1202,19 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             found.providerSandboxId,
             "before",
           )) ?? [];
-        const result = await provider.exec({
-          sandboxId: found.providerSandboxId,
-          command: args.command,
-          cwd: args.cwd ?? "/home/user",
-          timeoutSeconds: args.timeout_seconds ?? 120,
-        });
-        if (result.detached) throw new ToolError("unknown", "The command started in the background.");
+        const result = await provider
+          .exec({
+            sandboxId: found.providerSandboxId,
+            command: args.command,
+            cwd: args.cwd ?? "/home/user",
+            timeoutSeconds: args.timeout_seconds ?? 120,
+          })
+          .catch(unknownMutationOutcome);
+        if (result.detached)
+          throw new ToolError(
+            "outcome_unknown",
+            "The command started in the background. Check sandbox status before retrying.",
+          );
         const nativeAfter =
           (await context.launchCredentials.nativeSecrets?.(
             nativeActor,
@@ -1475,4 +1487,15 @@ function describe(error: unknown): { code: string; message: string } {
   if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
   if (error instanceof DataError) return { code: "dependency_unavailable", message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };
+}
+
+/** This catch belongs on the dispatch itself, never on preparation or provider reads. */
+function unknownMutationOutcome(error: unknown): never {
+  if (!(error instanceof ProviderError) || error.code === "unavailable" || error.code === "unknown")
+    throw new LaunchError(
+      "outcome_unknown",
+      "The operation outcome is unknown. Check sandbox status before retrying.",
+      { cause: error },
+    );
+  throw error;
 }

@@ -589,7 +589,7 @@ describe("control API", () => {
           details: { keepSource: true, sourceSandboxId: "retained-source" },
         },
       });
-      // A read/preparation failure above is retryable; losing a mutation receipt is not.
+      // Retained resource evidence and lost mutation receipts both require reconciliation.
       const boat = fakeBoat();
       let dispatched = 0;
       boat.provider.get = async (id) => ({ id, name: "failure", state: "ready", providerState: "ready", labels: {} });

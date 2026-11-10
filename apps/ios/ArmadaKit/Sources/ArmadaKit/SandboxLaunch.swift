@@ -498,7 +498,9 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
         switch code {
         case "payment_required":
             help = ("Provider plan limit reached", "The provider refused to start a machine for this plan or billing state. An admin can check the provider account, then launch again.")
-        case "unauthorized", "credential_refused":
+        case "credential_refused":
+            help = ("Model account credential refused", "The selected account was refused, revoked or expired. Its owner can replace or reconnect that model account from the dashboard or the CLI, then launch again.")
+        case "unauthorized":
             help = ("Provider credential refused", "The provider did not accept the organization's provider credential. An admin reconnects it from the dashboard or the CLI.")
         case "no_credentials", "missing_credential":
             help = ("No model account for this agent", "Neither you nor the organization has an account this agent can use. Add one from the dashboard or the CLI, then launch again.")
