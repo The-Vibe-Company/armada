@@ -12,8 +12,8 @@ test("a label that starts with the query ranks before a word, a keyword and a su
   expect(labels("SE")[0]).toBe("Settings");
   // A word inside a label: "Launch a sandbox" (word "sandbox") comes after "Sandboxes" (label start).
   expect(labels("sandbox")).toEqual(["Sandboxes", "Launch a sandbox", "Connect a sandbox provider"]);
-  // A keyword only: "mcp" finds Connections.
-  expect(labels("mcp")).toEqual(["Connections"]);
+  // A keyword only: "mcp" finds Tools.
+  expect(labels("mcp")).toEqual(["Tools"]);
   // A substring anywhere, last.
   expect(labels("ials")).toEqual(["Credentials"]);
 });

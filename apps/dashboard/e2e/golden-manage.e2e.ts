@@ -33,7 +33,7 @@ test("an admin builds a multi-repo golden: one locked request, a clear result, n
 }) => {
   await post("/__test/reset", { novaOrg: true });
   await post("/__test/golden-gate", { hold: true });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
 
   await expect(page.locator('[data-capacity-provider="boat"][data-capacity="available"]')).toContainText("0 of 1");
   const form = createForm(page);
@@ -103,7 +103,7 @@ test("a refused build shows the server's reason, keeps the form and is not retri
   await post("/__test/golden-gate", {
     fail: { status: 409, code: "conflict", message: "This backend has reached its golden capacity." },
   });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const form = createForm(page);
   await form.getByLabel("Name").fill("second");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
@@ -120,7 +120,7 @@ test("a refused build shows the server's reason, keeps the form and is not retri
 test("a build whose gateway gives up says it may still finish, and is not retried", async ({ page }) => {
   await post("/__test/reset", { novaOrg: true });
   await post("/__test/golden-gate", { fail: { status: 504, message: "upstream request timeout" } });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const form = createForm(page);
   await form.getByLabel("Name").fill("slow");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
@@ -136,7 +136,7 @@ test("the capacity is the number the server reads for the selected org, fetched 
 }) => {
   await post("/__test/reset", { novaOrg: true });
   await post("/__test/capabilities", { maxGoldens: 3 });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const card = page.locator('[data-capacity-provider="boat"][data-capacity="available"]');
   await expect(card).toContainText("0 of 3");
 
@@ -162,7 +162,7 @@ test("a capacity the server cannot read is shown as unavailable, with no invente
   await post("/__test/capabilities", {
     fail: { status: 503, code: "unavailable", message: "No Boat credential is configured for this org." },
   });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const card = page.locator('[data-capacity-provider="boat"][data-capacity="unavailable"]');
   await expect(card).toContainText("Capacity unavailable");
   await expect(card.locator("[data-capacity-reason]")).toHaveText("No Boat credential is configured for this org.");
@@ -192,7 +192,7 @@ test("a capacity the server cannot read is shown as unavailable, with no invente
 
 test("a form the server would refuse is stopped before any request", async ({ page }) => {
   await post("/__test/reset", { novaOrg: true });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const form = createForm(page);
   await form.getByLabel("Name").fill("leaky");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("https://gitlab.com/acme/web.git");
@@ -208,7 +208,7 @@ test("live unbound rows require reconciliation without automatic rebuild guidanc
       { goldenId: "00000000-0000-4000-8000-000000000021", relation: "other_backend" },
     ],
   });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const conflict = page.locator("[data-legacy-conflict]");
   await expect(conflict).toContainText("2 Boat goldens need backend reconciliation");
   await expect(conflict).toContainText("does not choose, merge or delete");
@@ -223,7 +223,7 @@ test("live unbound rows require reconciliation without automatic rebuild guidanc
 });
 
 test("an admin edits and rebuilds the existing golden from what it records", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const card = page.locator('[data-golden="shared-golden"]');
   await card.getByText("Edit and rebuild").click();
   const form = card.locator('form[data-golden-form="update"]');
@@ -255,7 +255,7 @@ test("an admin edits and rebuilds the existing golden from what it records", asy
 });
 
 test("a member sees why they cannot rebuild an org golden or create one for the org", async ({ page }) => {
-  await signIn(page, "bob@example.com", "/goldens");
+  await signIn(page, "bob@example.com", "/environments");
   await expect(page.locator('[data-golden="shared-golden"] [data-rebuild-blocked]')).toHaveText(
     "Only an org admin rebuilds an org golden.",
   );
@@ -267,7 +267,7 @@ test("a member sees why they cannot rebuild an org golden or create one for the 
 });
 
 test("the launch form starts the agent in a recorded repository, sent as repo", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   const dialog = page.getByRole("dialog");
   // A golden with several repositories asks for the project next to the agent, without opening Advanced.
@@ -284,7 +284,7 @@ test("the launch form starts the agent in a recorded repository, sent as repo", 
 });
 
 test("a launch with no repository chosen keeps the legacy behaviour", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Launch" }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
@@ -294,10 +294,13 @@ test("a launch with no repository chosen keeps the legacy behaviour", async ({ p
 });
 
 test("the main navigation groups Run, Build and Account and marks the current page", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const nav = page.getByRole("navigation", { name: "Main" });
-  await expect(nav.getByRole("link", { name: "Goldens" })).toHaveAttribute("aria-current", "page");
-  await expect(nav.getByRole("link", { name: "Goldens" })).toHaveAttribute("title", "Repositories and snapshots");
+  await expect(nav.getByRole("link", { name: "Environments" })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("link", { name: "Environments" })).toHaveAttribute(
+    "title",
+    "Goldens: what a sandbox contains when it starts",
+  );
   await expect(nav.getByText("Build", { exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Credentials" }).click();
   await page.waitForURL("**/credentials");
@@ -308,7 +311,7 @@ test("an admin builds a Modal golden: the request names Modal and Modal's unboun
   page,
 }) => {
   await post("/__test/reset", { novaOrg: true, novaModal: true });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const modalCard = page.locator('[data-capacity-provider="modal"]');
   await expect(modalCard).toHaveAttribute("data-capacity", "unknown");
   await expect(modalCard).toContainText("No golden limit on Modal.");
@@ -351,7 +354,7 @@ test("with only Boat connected, Boat is used without a choice and a forged Modal
   page,
 }) => {
   await post("/__test/reset", { novaOrg: true });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   await expect(page.locator("[data-capacity-provider]")).toHaveCount(1);
   await expect(page.locator('[data-capacity-provider="boat"][data-capacity="available"]')).toContainText("0 of 1");
 
@@ -376,7 +379,7 @@ test("same-name goldens on Boat and Modal are listed apart, and rebuild and laun
   page,
 }) => {
   await post("/__test/reset", { modalTwin: true, acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const boat = page.locator('[data-golden-group="boat"] [data-golden="shared-golden"]');
   const modal = page.locator('[data-golden-group="modal"] [data-golden="shared-golden"]');
   await expect(boat).toHaveAttribute("data-golden-provider", "boat");
@@ -447,7 +450,7 @@ test("an admission whose answer is lost is recovered by its saved key after a re
   await post("/__test/reset", { novaOrg: true });
   // The server admits the job, then a gateway in front of it loses the 202.
   await post("/__test/golden-gate", { hold: true, loseAnswer: true });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const form = await fillCreate(page, "nova-web", "acme/web");
   await form.getByRole("button", { name: "Build golden" }).click();
   await expect(form.getByRole("alert")).toContainText("may still finish");
@@ -473,7 +476,7 @@ test("a status read that fails pauses polling and keeps the job locked; checking
 }) => {
   await post("/__test/reset", { novaOrg: true });
   await post("/__test/golden-gate", { hold: true });
-  await signIn(page, "carol@example.com", "/goldens");
+  await signIn(page, "carol@example.com", "/environments");
   const form = await fillCreate(page, "nova-web", "acme/web");
   await form.getByRole("button", { name: "Build golden" }).click();
   await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
@@ -497,7 +500,7 @@ test("a build is tracked by its own form: never by the twin on the other provide
 }) => {
   await post("/__test/reset", { modalTwin: true, multiOrg: true, acmeModal: true });
   await post("/__test/golden-gate", { hold: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const modal = page.locator('[data-golden-group="modal"] [data-golden="shared-golden"]');
   const boat = page.locator('[data-golden-group="boat"] [data-golden="shared-golden"]');
   await modal.getByText("Edit and rebuild").click();
@@ -533,10 +536,10 @@ test("a build is tracked by its own form: never by the twin on the other provide
   await page.getByLabel("Active organization").selectOption("00000000-0000-4000-8000-000000000011");
   // The switch is done only when its action has redirected to the bare page and Zenith's rows are shown: the
   // Goldens heading was already visible, and navigating before the action finishes would abort it.
-  await expect(page).toHaveURL(/\/goldens$/);
+  await expect(page).toHaveURL(/\/environments$/);
   await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
   const before = (await mockState()).goldenStatusCalls.length;
-  await page.goto(`/goldens?${tracked.searchParams.toString()}`);
+  await page.goto(`/environments?${tracked.searchParams.toString()}`);
   await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
   await expect(page.locator("form[data-golden-form] [role=status]")).toHaveCount(0);
   await page.waitForLoadState("networkidle");
@@ -552,7 +555,7 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   await post("/__test/golden-gate", { hold: true });
   // Poll timers run on a controlled clock, advanced explicitly below instead of waiting.
   await page.clock.install();
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const form = createForm(page);
   if (!(await form.isVisible())) await page.getByText("Show the create form").click();
   await form.getByRole("radio", { name: /Modal/ }).check();
@@ -565,7 +568,7 @@ test("an org switch that re-renders the page in place leaves the old org's creat
 
   // Another tab selects Zenith. This tab still shows Acme until its page is next rendered.
   const other = await context.newPage();
-  await other.goto("/goldens");
+  await other.goto("/environments");
   await other.getByLabel("Active organization").selectOption("00000000-0000-4000-8000-000000000011");
   await expect(other.locator('[data-golden="zenith-golden"]')).toBeVisible();
   await other.close();
@@ -595,16 +598,16 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   page,
   context,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   // A crafted link cannot announce a removal: neither a live golden's id nor a bare name shows a confirmation.
   for (const removed of ["00000000-0000-4000-8000-000000000020", "shared-golden"]) {
-    await page.goto(`/goldens?removed=${removed}`);
+    await page.goto(`/environments?removed=${removed}`);
     await expect(page.locator('[data-golden="shared-golden"]')).toBeVisible();
     await expect(page.locator("[data-golden-removed]")).toHaveCount(0);
   }
   // Another tab still shows the launch dialog of the golden about to be removed.
   const stale = await context.newPage();
-  await stale.goto("/goldens");
+  await stale.goto("/environments");
   await stale.getByRole("button", { name: "Launch from shared-golden" }).click();
 
   const card = page.locator('[data-golden="shared-golden"]');
@@ -619,7 +622,7 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
 
   await card.getByRole("button", { name: "Remove golden" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove golden" }).click();
-  await expect(page).toHaveURL(/\/goldens\?removed=00000000-0000-4000-8000-000000000020$/);
+  await expect(page).toHaveURL(/\/environments\?removed=00000000-0000-4000-8000-000000000020$/);
   await expect(page.locator("[data-golden-removed]")).toContainText("Removed shared-golden");
   // The tombstone stays readable in the database; the page itself must leave it out.
   await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
@@ -663,7 +666,7 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
 test("only the owner or an org admin is offered removal, and a forged removal is refused before the server", async ({
   page,
 }) => {
-  await signIn(page, "bob@example.com", "/goldens");
+  await signIn(page, "bob@example.com", "/environments");
   await expect(
     page.locator('[data-golden="shared-golden"]').getByRole("button", { name: "Remove golden" }),
   ).toHaveCount(0);
@@ -683,7 +686,7 @@ test("only the owner or an org admin is offered removal, and a forged removal is
 test("removed unbound history is not a slot or a reconciliation warning; old metadata has no usage", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.locator('[data-golden="shared-golden"]').getByRole("button", { name: "Remove golden" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove golden" }).click();
   await expect(page.locator("[data-golden-removed]")).toBeVisible();

@@ -69,7 +69,7 @@ export default async function ConnectionsPage({ searchParams }: Props) {
           <AlertDescription>
             <p>{list.message}</p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/connections">Try again</Link>
+              <Link href="/tools">Try again</Link>
             </Button>
           </AlertDescription>
         </Alert>

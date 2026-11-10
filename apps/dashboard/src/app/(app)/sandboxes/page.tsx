@@ -59,7 +59,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
     </Button>
   ) : selected ? (
     <Button asChild>
-      <Link href="/goldens">
+      <Link href="/environments">
         <LinkPendingIcon>
           <RocketIcon />
         </LinkPendingIcon>

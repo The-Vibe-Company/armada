@@ -110,7 +110,7 @@ export default async function OrchestratorsPage() {
           {creatable.length === 0 ? (
             <>
               An orchestrator runs from a snapshotted golden.{" "}
-              <Link href="/goldens" className="font-medium underline underline-offset-4">
+              <Link href="/environments" className="font-medium underline underline-offset-4">
                 Build one
               </Link>
             </>

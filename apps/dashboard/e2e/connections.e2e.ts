@@ -41,7 +41,7 @@ for (const mobile of [false, true]) {
     page,
   }) => {
     if (mobile) await page.setViewportSize({ width: 390, height: 844 });
-    await signIn(page, "alice@example.com", "/connections");
+    await signIn(page, "alice@example.com", "/tools");
     const personal = page.getByRole("region", { name: "Your connections" });
     const shared = page.getByRole("region", { name: "Acme connections" });
     await expect(personal.locator('[data-connection="Alice Linear"]')).toContainText("alice@linear.test");
@@ -67,7 +67,7 @@ for (const mobile of [false, true]) {
 }
 
 test("a member manages personal connections only and cannot add org ones", async ({ page }) => {
-  await signIn(page, "bob@example.com", "/connections");
+  await signIn(page, "bob@example.com", "/tools");
   await expect(card(page, "Bob Notes")).toBeVisible();
   await expect(card(page, "Alice Linear")).toHaveCount(0);
   await expect(card(page, "Acme Docs")).toContainText("Managed by the org's admins.");
@@ -79,7 +79,7 @@ test("a member manages personal connections only and cannot add org ones", async
 });
 
 test("a pasted URL auto-detects OAuth, signs in through the server and reports the stored status", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   let dialog = await openAdd(page);
   await dialog.getByRole("radio", { name: /Org \(Acme\)/ }).check();
   await expect(dialog.getByText("Sign in with a service account")).toBeVisible();
@@ -93,7 +93,7 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
     if (request.url().includes("/auth/mcp/callback")) callbacks.push(request.url());
   });
   await page.getByRole("link", { name: "Allow" }).click();
-  await expect(page).toHaveURL(/\/connections\?connection=[0-9a-f-]{36}&oauth=returned$/);
+  await expect(page).toHaveURL(/\/tools\?connection=[0-9a-f-]{36}&oauth=returned$/);
   const notice = page.locator('[data-oauth-return="connected"]');
   await expect(notice).toContainText("Acme Tracker is connected");
   await expect(notice).toContainText("Signed in as service@oauth.test");
@@ -118,23 +118,23 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
 
   // The same code again (a replayed or reloaded callback) is refused and nothing of it is shown.
   await page.goto(callbackUrl.pathname + callbackUrl.search);
-  await expect(page).toHaveURL(/\/connections\?oauth=failed$/);
+  await expect(page).toHaveURL(/\/tools\?oauth=failed$/);
   await expect(page.locator('[data-oauth-return="failed"]')).toContainText("Sign-in could not be completed");
   await expect(page.locator("body")).not.toContainText(String(relayed?.body.code));
 
   // Declining at the server comes back as a cancelled sign-in, without the provider's own text.
   await card(page, "Acme Sentry").getByRole("button", { name: "Reconnect" }).click();
   await page.getByRole("link", { name: "Deny" }).click();
-  await expect(page).toHaveURL(/\/connections\?oauth=denied$/);
+  await expect(page).toHaveURL(/\/tools\?oauth=denied$/);
   await expect(page.locator('[data-oauth-return="failed"]')).toContainText("Sign-in was cancelled");
   await expect(page.locator("body")).not.toContainText("The user said no");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "test-results/oauth-denied-mobile.png" });
   await page.setViewportSize({ width: 1280, height: 720 });
   // A crafted return link cannot claim success: the page rereads the real status.
-  await page.goto(`/connections?connection=${ALICE_LINEAR.replace("61", "99")}&oauth=returned`);
+  await page.goto(`/tools?connection=${ALICE_LINEAR.replace("61", "99")}&oauth=returned`);
   await expect(page.locator('[data-oauth-return="failed"]')).toContainText("could not be found");
-  await page.goto(`/connections?connection=00000000-0000-4000-8000-000000000063&oauth=returned`);
+  await page.goto(`/tools?connection=00000000-0000-4000-8000-000000000063&oauth=returned`);
   await expect(page.locator('[data-oauth-return="failed"]')).toContainText("Acme Sentry is not connected");
 
   dialog = await openAdd(page);
@@ -149,7 +149,7 @@ test("a callback without a dashboard session goes to sign-in and keeps nothing o
 });
 
 test("disabling a connection takes it out of launches until it is enabled again", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   const docs = card(page, "Acme Docs");
   await menu(page, "Acme Docs", "Disable");
   await expect(docs.getByRole("status")).toContainText("Acme Docs is disabled. New launches cannot select it.");
@@ -161,26 +161,26 @@ test("disabling a connection takes it out of launches until it is enabled again"
     enabled: false,
   });
 
-  await page.goto("/goldens");
+  await page.goto("/environments");
   await openLaunch(page, "shared-golden");
   await expect(page.getByRole("dialog").getByRole("checkbox", { name: "Acme Docs" })).toBeDisabled();
-  await expect(page.getByRole("dialog").getByText("Disabled. Enable it on the Connections page first.")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Disabled. Enable it on the Tools page first.")).toBeVisible();
 
-  await page.goto("/connections");
+  await page.goto("/tools");
   await menu(page, "Acme Docs", "Enable");
   await expect(docs.getByRole("status")).toContainText("Acme Docs is enabled.");
   await expect(docs).toContainText("Connected");
 
   // A member gets no Disable control on an org connection.
   await page.context().clearCookies();
-  await signIn(page, "bob@example.com", "/connections");
+  await signIn(page, "bob@example.com", "/tools");
   await expect(card(page, "Acme Docs").getByRole("button", { name: "More actions for Acme Docs" })).toHaveCount(0);
 });
 
 test("a bearer token is write-only: refused tokens are reported, and the field never keeps the value", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   const dialog = await openAdd(page);
   await dialog.getByLabel("Name").fill("Internal API");
   await dialog.getByLabel("Server URL").fill("https://api.internal.test/mcp?api_key=abc");
@@ -244,7 +244,7 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
 test("a stdio server is imported, must pin its package and is configured for launch, never run here", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   const dialog = await openAdd(page);
   await dialog.getByRole("radio", { name: /stdio command/ }).check();
   await expect(dialog.getByText("Runs in each sandbox launched with it")).toBeVisible();
@@ -311,7 +311,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await legacy.getByRole("button", { name: "Configure Repo Files" }).click();
   await expect(legacy.getByRole("status")).toContainText("Repo Files is configured for launch.");
 
-  await page.goto("/goldens");
+  await page.goto("/environments");
   await openLaunch(page, "shared-golden");
   await expect(page.getByRole("dialog").getByRole("checkbox", { name: "files", exact: true })).toBeEnabled();
   await expect(page.getByRole("dialog").getByText("Starts inside the sandbox").first()).toBeVisible();
@@ -320,7 +320,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
 test("a launch picks personal and org connections alike, from any golden, with no visibility choice", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden");
   const linear = dialog.getByRole("checkbox", { name: "Alice Linear" });
   const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
@@ -366,7 +366,7 @@ test("a launch picks personal and org connections alike, from any golden, with n
   expect(launch).not.toHaveProperty("repo");
 
   // A forged launch naming a connection that is not connected is refused before it reaches the server.
-  await page.goto("/goldens");
+  await page.goto("/environments");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   await page
     .getByRole("dialog")
@@ -388,9 +388,9 @@ test("a launch picks personal and org connections alike, from any golden, with n
 
 test("switching organization switches the connections and their launch choices", async ({ page }) => {
   await fetch(`${MOCK}/__test/reset`, { method: "POST", body: JSON.stringify({ multiOrg: true }) });
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   await page.getByLabel("Active organization").selectOption(ZENITH);
-  await expect(page).toHaveURL(/\/connections$/);
+  await expect(page).toHaveURL(/\/tools$/);
   await expect(card(page, "Zenith Search")).toBeVisible();
   await expect(card(page, "Acme Docs")).toHaveCount(0);
   await expect(card(page, "Alice Linear")).toHaveCount(0);
@@ -416,7 +416,7 @@ test("a sandbox's applied connections come from the registry, and a failed read 
 test("a catalog service adds a second named account through its sign-in, and Slack shows its setup instead", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   const services = page.getByRole("region", { name: "Services" });
   const slack = services.locator('[data-service="slack"]');
   await expect(slack).toContainText("Setup required");
@@ -500,14 +500,14 @@ test("a catalog service adds a second named account through its sign-in, and Sla
 
   // A server without the catalog still lists every connection and offers a custom server.
   await fetch(`${MOCK}/__test/fail-catalog`, { method: "POST" });
-  await page.goto("/connections");
+  await page.goto("/tools");
   await expect(page.locator("[data-catalog-unavailable]")).toContainText("does not offer the service catalog yet");
   await expect(card(page, "Work Linear")).toBeVisible();
   await expect(page.getByRole("button", { name: "Custom server" })).toBeVisible();
 });
 
 test("rename and include-by-default change metadata only, and an unreachable server offers Retry", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   await menu(page, "Alice Linear", "Rename");
   const dialog = page.getByRole("dialog", { name: "Rename Alice Linear" });
   await expect(dialog.getByLabel("Name")).toHaveValue("Alice Linear");
@@ -549,7 +549,7 @@ test("rename and include-by-default change metadata only, and an unreachable ser
 test("only a deliberate choice sends connections, even none; otherwise the server applies the defaults", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const open = async () => {
     return openLaunch(page, "shared-golden");
   };
@@ -562,7 +562,7 @@ test("only a deliberate choice sends connections, even none; otherwise the serve
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
 
   // Untouched, the launch names no connections: the server snapshots the defaults, personal ones included (#681).
-  await page.goto("/goldens");
+  await page.goto("/environments");
   dialog = await open();
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
@@ -571,7 +571,7 @@ test("only a deliberate choice sends connections, even none; otherwise the serve
   // A list that could not be loaded is not a choice of none: the launch still leaves the defaults to the server. (Only
   // the dashboard's list read fails here; in a full registry outage the server refuses the launch instead.)
   await fetch(`${MOCK}/__test/fail-connection-list`, { method: "POST" });
-  await page.goto("/goldens");
+  await page.goto("/environments");
   dialog = await open();
   await expect(dialog.getByRole("alert")).toContainText("A launch uses your default connections");
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
@@ -586,7 +586,7 @@ test("only a deliberate choice sends connections, even none; otherwise the serve
 });
 
 test("a default that is not connected holds the launch until it is reconnected or left out", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/connections");
+  await signIn(page, "alice@example.com", "/tools");
   // One connected and one disconnected org default, and a personal default that is not configured.
   for (const name of ["Acme Docs", "Acme Sentry", "Repo Files"]) {
     const toggle = card(page, name).getByRole("switch", { name: `Include ${name} by default` });
@@ -594,7 +594,7 @@ test("a default that is not connected holds the launch until it is reconnected o
     await expect(toggle).toHaveAttribute("aria-checked", "true");
   }
 
-  await page.goto("/goldens");
+  await page.goto("/environments");
   const open = () => openLaunch(page, "shared-golden");
   let dialog = await open();
   const held = dialog.locator("[data-unready-defaults]");
@@ -605,7 +605,7 @@ test("a default that is not connected holds the launch until it is reconnected o
   await expect(held).toContainText("are defaults but are not connected.");
   await expect(held).toContainText("Acme Sentry");
   await expect(held).toContainText("Repo Files");
-  await expect(held.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/connections");
+  await expect(held.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/tools");
   await expect(launch).toBeDisabled();
   // Changing other connections is not a decision about the missing default: the launch stays held.
   await docs.uncheck();
@@ -627,7 +627,7 @@ test("a default that is not connected holds the launch until it is reconnected o
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
 
   // A deliberate empty selection launches with none.
-  await page.goto("/goldens");
+  await page.goto("/environments");
   dialog = await open();
   await dialog.locator("[data-unready-defaults]").getByRole("button", { name: "Continue without them" }).click();
   await dialog.getByRole("checkbox", { name: "Acme Docs" }).uncheck();

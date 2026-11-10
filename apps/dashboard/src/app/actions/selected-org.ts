@@ -28,12 +28,12 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
       ? PROVIDER_SETTINGS_PATH
       : section === "orgs"
         ? `/orgs/${id}`
-        : section === "goldens"
-          ? "/goldens"
+        : section === "environments" || section === "goldens"
+          ? "/environments"
           : section === "credentials"
             ? "/credentials"
-            : section === "connections"
-              ? "/connections"
+            : section === "tools" || section === "connections"
+              ? "/tools"
               : section === "settings"
                 ? "/settings"
                 : "/sandboxes";

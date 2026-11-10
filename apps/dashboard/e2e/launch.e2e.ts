@@ -29,7 +29,7 @@ async function expectPinnedLaunch(page: Page) {
 }
 
 test("a task-only launch sends the configured defaults through the launch API", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden", { advanced: false });
   // The task comes first and has focus; the overrides stay collapsed behind a summary of what will be used.
   const task = dialog.getByLabel("Task");
@@ -68,7 +68,7 @@ test("a task-only launch sends the configured defaults through the launch API", 
 
 test("the open Advanced area scrolls inside the dialog with Launch still on screen", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 664 });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden");
   await dialog.getByLabel("Alice Linear").uncheck();
   await dialog.getByLabel("Acme Docs").check();
@@ -91,7 +91,7 @@ test("errors are never hidden: an invalid override opens Advanced, a refused lau
 }) => {
   // Modal stays connected, so only the golden's own provider is missing once Boat is cleared.
   await post("/__test/reset", { acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden");
   await dialog.getByLabel("Model", { exact: true }).selectOption("other");
   await dialog.locator("[data-launch-advanced] > summary").click();
@@ -173,7 +173,7 @@ test("on a phone the keyboard never covers Launch, the field being typed or an e
   const keyboard = await emulateKeyboard(page);
   await page.setViewportSize({ width: 390, height: 664 });
   await post("/__test/reset", { acmeModal: true });
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden", { advanced: false });
   const task = dialog.getByLabel("Task");
   const launch = dialog.getByRole("button", { name: "Launch", exact: true });
@@ -211,7 +211,7 @@ test("on a phone the keyboard never covers Launch, the field being typed or an e
 });
 
 test("Ctrl+Enter launches from the task, as the Launch button does", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden", { advanced: false });
   const task = dialog.getByLabel("Task");
   await task.fill("First line");

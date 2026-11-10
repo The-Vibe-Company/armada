@@ -217,7 +217,7 @@ export default async function GoldensPage({ searchParams }: Props) {
           <AlertDescription>
             <p>{setup.message}</p>
             {/* A document request, not a client navigation: the router would reuse its cached render (staleTimes). */}
-            <a className="underline underline-offset-4" href="/goldens">
+            <a className="underline underline-offset-4" href="/environments">
               Check again
             </a>
           </AlertDescription>

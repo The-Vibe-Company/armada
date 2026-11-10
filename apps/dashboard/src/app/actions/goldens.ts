@@ -25,7 +25,7 @@ export async function setGoldenVisibility(_previous: ActionResult | null, data: 
     return fail("That golden is not available in this scope.");
   const { error } = await supabase.rpc("set_golden_visibility", { target_golden: golden, new_visibility: visibility });
   if (error) return fail(explainDbError(error));
-  revalidatePath("/goldens");
+  revalidatePath("/environments");
   return done(visibility === "org" ? "Shared with the org." : "Now private to you.");
 }
 
@@ -91,7 +91,7 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   }
   if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
   if (result.state === "succeeded") {
-    revalidatePath("/goldens");
+    revalidatePath("/environments");
     revalidatePath("/sandboxes");
   }
   // An admitted job, not a finished build: the form polls its status. No snapshot is assumed here.
@@ -111,7 +111,7 @@ export async function goldenBuildStatus(jobId: string) {
   const result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/status", { jobId });
   if (!isGoldenBuildStatus(result)) throw new Error("Unexpected build status.");
   if (result.state === "succeeded") {
-    revalidatePath("/goldens");
+    revalidatePath("/environments");
     revalidatePath("/sandboxes");
   }
   return result;
@@ -170,9 +170,9 @@ export async function removeGolden(_previous: ActionResult | null, data: FormDat
     return fail(error.message);
   }
   if (!isGoldenRemoval(result) || result.id !== target.id) return fail("The Armada server sent an unexpected answer.");
-  revalidatePath("/goldens");
+  revalidatePath("/environments");
   revalidatePath("/sandboxes");
-  redirect(`/goldens?removed=${target.id}`);
+  redirect(`/environments?removed=${target.id}`);
 }
 
 /** The server's idempotency key shape: 16–128 letters, digits, underscores or hyphens. */
@@ -242,6 +242,6 @@ export async function saveSizePolicy(_previous: ActionResult | null, data: FormD
   }
   if (!isSizePolicyResult(result) || result.goldenId !== target.id)
     return fail("The Armada server sent an unexpected answer.");
-  revalidatePath("/goldens");
+  revalidatePath("/environments");
   return done("Size defaults saved. They apply to the next launch; running sandboxes keep their size.");
 }

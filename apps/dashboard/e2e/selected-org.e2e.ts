@@ -73,7 +73,7 @@ for (const mobile of [false, true]) {
     ).toHaveCount(0);
     await page.reload();
     await expect(select).toHaveValue(ZENITH);
-    await page.goto("/goldens");
+    await page.goto("/environments");
     await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
     await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
     await page.goto("/credentials");
@@ -119,7 +119,7 @@ test("forged and removed preferences fall back; forged switch is refused server-
 test("mutation targets cannot escape the selected org even when the viewer administers the other org", async ({
   page,
 }) => {
-  await signIn(page, "alice@example.com", "/goldens");
+  await signIn(page, "alice@example.com", "/environments");
   await page.getByLabel("Active organization").selectOption(ZENITH);
   await expect(page.locator('[data-golden="zenith-golden"]')).toBeVisible();
   const golden = page.locator('[data-golden="zenith-golden"]');
