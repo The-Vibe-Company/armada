@@ -82,7 +82,7 @@ export async function lifecycleStep<T>(
     const category = safe.details?.processCategory;
     const failure = safe.details?.processFailure;
     const modalFailure = safe.details?.modalFailure;
-    console.warn(
+    (safe.retryable ? console.warn : console.error)(
       JSON.stringify({
         event: "modal_lifecycle_step_failed",
         stage: code,

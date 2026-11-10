@@ -261,7 +261,7 @@ const server = await startServer(
     ARMADA_ORCHESTRATOR_PAIRS: "boat:claude,boat:codex",
     ARMADA_ORCHESTRATOR_SKILL_REVISION: "a".repeat(40),
   },
-  { log: () => {}, logError: (line) => logs.push(line) },
+  { log: (line) => logs.push(line), logError: (line) => logs.push(line) },
 );
 const origin = `http://127.0.0.1:${server.port}`;
 async function cli(args: string[], expected = 0) {

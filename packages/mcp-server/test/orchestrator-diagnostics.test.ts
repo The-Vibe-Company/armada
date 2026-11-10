@@ -1,7 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { LaunchError, ProviderError, VaultError } from "@armada/core/server";
 import { lifecycleStep, modalError } from "../../provider-modal/src/errors.ts";
-import { OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
+import { OrchestratorDiagnostics, orchestratorDiagnosticLog } from "../src/orchestrator-diagnostics.ts";
 
 test("diagnostics project only safe codes/UUIDs and retain failure identity across cleanup/publication", () => {
   const lines: string[] = [];
@@ -401,4 +401,66 @@ test("Boat invalid requests expose only closed HTTP/code/parameter metadata", ()
     "provider_invalid_request_http_400",
   ]);
   expect(lines.join("")).not.toContain("private-");
+});
+
+// One owner-boundary regression covers severity without replaying orchestrator effects.
+test("structured diagnostic severity follows outcomes through the production sink", async () => {
+  const entries: { level: string; value: string }[] = [];
+  const sink = (level: string) => (line: string) => {
+    const record = JSON.parse(line);
+    entries.push({ level, value: record.value ?? record.outcome ?? record.event });
+  };
+  const diagnostics = new OrchestratorDiagnostics(
+    orchestratorDiagnosticLog({ info: sink("info"), warn: sink("warn"), error: sink("error") }),
+    "message",
+  );
+  const observations = [
+    ["prompt_dispatch", "accepted", "info"],
+    ["prompt_dispatch", "not_confirmed", "warn"],
+    ...["queued", "running", "finished"].map((value) => ["prompt_status", value, "info"]),
+    ...["failed", "interrupted", "unknown", "unavailable"].map((value) => [
+      "prompt_status",
+      value,
+      value === "failed" ? "error" : "warn",
+    ]),
+    ...["empty", "published", "fenced", "failed"].map((value) => [
+      "events_poll",
+      value,
+      value === "failed" ? "error" : value === "fenced" ? "warn" : "info",
+    ]),
+    ["resume_continuity", "unverified", "warn"],
+    ["resume_continuity", "previous_conversation_not_continued", "warn"],
+    ["resume_fallback", "conversation_metadata_missing", "warn"],
+    ["resume_fallback", "conversation_harness_mismatch", "warn"],
+  ] as const;
+  for (const [kind, value] of observations)
+    diagnostics.observe(kind as Parameters<OrchestratorDiagnostics["observe"]>[0], value!);
+  const outcomes = ["uncertain", "failed", "error", "publication_failed"] as const;
+  for (const outcome of outcomes) diagnostics.report(outcome);
+  expect(entries).toEqual([
+    ...observations.map(([, value, level]) => ({ level, value })),
+    ...outcomes.map((value) => ({ level: value === "uncertain" ? "warn" : "error", value })),
+  ]);
+
+  const warn = spyOn(console, "warn").mockImplementation(sink("warn"));
+  const error = spyOn(console, "error").mockImplementation(sink("error"));
+  try {
+    for (const retryable of [true, false]) {
+      const failure = new ProviderError({ provider: "modal", code: "unavailable", message: "safe", retryable });
+      await expect(
+        lifecycleStep("modal_checkpoint_snapshot", async () => {
+          throw failure;
+        }),
+      ).rejects.toMatchObject({
+        retryable,
+      });
+    }
+    expect(entries.slice(-2)).toEqual([
+      { level: "warn", value: "modal_lifecycle_step_failed" },
+      { level: "error", value: "modal_lifecycle_step_failed" },
+    ]);
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+  }
 });

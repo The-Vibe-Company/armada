@@ -27,6 +27,7 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
 import type { createOrchestratorServices } from "./orchestrator-composition.ts";
+import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
@@ -235,7 +236,11 @@ export async function startServer(
         encryptionKey: config.encryptionKey,
         requestedPairs: config.orchestratorPairs,
         skillRevision: config.orchestratorSkillRevision,
-        diagnosticLog: options.logError ?? console.error,
+        diagnosticLog: orchestratorDiagnosticLog({
+          info: options.log ?? console.info,
+          warn: console.warn,
+          error: options.logError ?? console.error,
+        }),
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
