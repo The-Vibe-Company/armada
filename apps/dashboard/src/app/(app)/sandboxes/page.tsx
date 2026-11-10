@@ -7,6 +7,7 @@ import { CreatedAt } from "@/components/created-at";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderName } from "@/components/provider-mark";
+import { RowCost } from "@/components/sandbox-cost";
 import { StatusBadge } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,7 @@ import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycl
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
-import { costFigure, costTitle } from "@/lib/sandbox-cost";
+import { costFigure } from "@/lib/sandbox-cost";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -278,20 +279,7 @@ function CostCell({ cost }: { cost: SandboxCost | undefined }) {
         <span className="sr-only">Usage not visible</span>
       </span>
     );
-  const figure = costFigure(cost);
-  if (figure.kind !== "priced")
-    return (
-      <span className="text-xs whitespace-nowrap text-muted-foreground" title={figure.text} data-row-cost={figure.kind}>
-        {/* The column stays narrow: the full words are its title, under the name on a phone and on the page. */}
-        {figure.kind === "none" ? "No usage yet" : figure.text}
-      </span>
-    );
-  return (
-    <span className="font-medium tabular-nums" title={costTitle(cost)} data-row-cost="priced">
-      {figure.partial ? "≥ " : ""}
-      {figure.text}
-    </span>
-  );
+  return <RowCost cost={cost} />;
 }
 
 /** On a phone the cost column is folded under the name, with the same words. */

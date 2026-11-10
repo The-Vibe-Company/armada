@@ -4,6 +4,7 @@ import {
   type PromptStatus,
   parseGoldenConfig,
   type Sandbox,
+  type SandboxCost,
   type SandboxStatus,
 } from "@armada/core";
 import { projectChat, toolSummary } from "./chat.ts";
@@ -418,6 +419,8 @@ export type FleetRow = {
   replaced: number;
   /** The viewer acknowledged this row: it is out of "Needs you" and stays in "All". */
   dismissed: boolean;
+  /** What its reported tokens cost at list prices (#875), or null when it was not computed. */
+  cost: SandboxCost | null;
 };
 
 type SandboxRow = Pick<
@@ -441,6 +444,7 @@ export function fleetRow(
   turn: TurnSummary | null,
   viewerId: string,
   now: Date,
+  cost: SandboxCost | null = null,
 ): FleetRow {
   const lifecycle = readLifecycle(sandbox);
   const outcome = parseTaskOutcome(sandbox.task_outcome);
@@ -507,6 +511,7 @@ export function fleetRow(
     ]),
     replaced: 0,
     dismissed: false,
+    cost,
   };
 }
 

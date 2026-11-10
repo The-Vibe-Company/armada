@@ -2,6 +2,7 @@ import { MODEL_PRICES_AS_OF, type SandboxCost } from "@armada/core";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDuration } from "@/lib/lifecycle";
 import { costFigure, costTitle, formatTokens, formatUsd } from "@/lib/sandbox-cost";
+import { cn } from "@/lib/utils";
 
 /**
  * What a sandbox's reported tokens would cost at list prices: the total, its tokens, turns and compute time, and the
@@ -132,4 +133,29 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
 
 function tokens(value: number | null): string {
   return value === null ? "–" : formatTokens(value);
+}
+
+/**
+ * A row's one small cost figure (the sandboxes list, the fleet board): the amount, or the short words for no usage or
+ * an unknown price. Its title says whether the amount is an estimate or the API equivalent, and what it leaves out.
+ */
+export function RowCost({ cost, className }: { cost: SandboxCost; className?: string }) {
+  const figure = costFigure(cost);
+  if (figure.kind !== "priced")
+    return (
+      <span
+        className={cn("text-xs whitespace-nowrap text-muted-foreground", className)}
+        title={figure.text}
+        data-row-cost={figure.kind}
+      >
+        {/* A row stays narrow: the full words are its title, and on the sandbox's page. */}
+        {figure.kind === "none" ? "No usage yet" : figure.text}
+      </span>
+    );
+  return (
+    <span className={cn("font-medium tabular-nums", className)} title={costTitle(cost)} data-row-cost="priced">
+      {figure.partial ? "≥ " : ""}
+      {figure.text}
+    </span>
+  );
 }
