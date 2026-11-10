@@ -755,6 +755,40 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(row.id)).phase).toBe("snapshot");
     await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
   });
+  test.each(["scrub", "snapshot"] as const)(
+    "ordinary stop bounds failed %s and terminates without stale disk recovery",
+    async (stage) => {
+      const f = fixture();
+      const row = await runningFork(f);
+      let scrubs = 0;
+      if (stage === "scrub")
+        f.onScrub(async () => {
+          scrubs++;
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            retryable: false,
+            message: "unsafe upstream payload",
+            details: { processCategory: "privileged_writer", processFailure: "unproven" },
+          });
+        });
+      else f.failSnapshot(true);
+      await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({
+        providerCode: stage === "scrub" ? "modal_checkpoint_scrub" : "modal_checkpoint_snapshot",
+      });
+      expect(f.log).not.toContain("terminate");
+      await f.provider.stop({ sandboxId: row.id });
+      expect(await f.provider.get(row.id)).toMatchObject({
+        state: "stopped",
+        stopNote: "checkpoint_failed_disk_not_retained",
+      });
+      expect((await f.store.get(row.id)).recoveryImageId).toBeUndefined();
+      expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
+      if (stage === "scrub") expect(scrubs).toBe(1);
+      await f.provider.stop({ sandboxId: row.id });
+      expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
+    },
+  );
   test("checkpoint, scrub, save, commit and terminate; resume retains logical ID with fenced new generation", async () => {
     const f = fixture();
     const row = await runningFork(f);

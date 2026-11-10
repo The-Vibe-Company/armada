@@ -79,6 +79,24 @@ export async function lifecycleStep<T>(
     return await work();
   } catch (error) {
     const safe = modalError(error);
+    const category = safe.details?.processCategory;
+    const failure = safe.details?.processFailure;
+    console.warn(
+      JSON.stringify({
+        event: "modal_lifecycle_step_failed",
+        stage: code,
+        reason: safe.code,
+        providerStatusClass: safe.status === undefined ? "unknown" : safe.status <= 16 ? "grpc" : "http",
+        ...(typeof category === "string" &&
+        ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
+          ? { processCategory: category }
+          : {}),
+        ...(typeof failure === "string" &&
+        ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
+          ? { processFailure: failure }
+          : {}),
+      }),
+    );
     throw new ProviderError({
       provider: "modal",
       code: safe.code,
