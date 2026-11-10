@@ -531,7 +531,14 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
     }) as typeof fetch,
   };
 
-  const deps: GitHubResolveDeps = { store, encryptionKey: KEY, app: APP, fetch: github.fetch, now: () => NOW };
+  const deps: GitHubResolveDeps = {
+    store,
+    encryptionKey: KEY,
+    app: APP,
+    fetch: github.fetch,
+    now: () => NOW,
+    minimumLifetimeMs: 60 * 60 * 1000,
+  };
   return { rows, store, github, deps };
 }
 

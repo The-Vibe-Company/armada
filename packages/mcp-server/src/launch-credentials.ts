@@ -44,7 +44,10 @@ export function launchCredentials(
       if (!github) throw new VaultError("unavailable", "GitHub authorization is not configured.");
       if (provider.id !== "boat" || provider.configureGitHub)
         throw new VaultError("unavailable", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-      const access = await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId);
+      const access = await resolveGitHubAccess(
+        { ...github, encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
+        actor.userId,
+      );
       if (access.status !== "connected" || !access.expiresAt)
         throw new VaultError(
           "unavailable",
@@ -134,7 +137,9 @@ export function launchCredentials(
         ...(credentialId !== undefined ? { credentialId } : {}),
         ...(credentialVersion !== undefined ? { credentialVersion } : {}),
       });
-      const access = github ? await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId) : undefined;
+      const access = github
+        ? await resolveGitHubAccess({ ...github, encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 }, actor.userId)
+        : undefined;
       return toHarnessCredentials(resolved, access);
     },
   };

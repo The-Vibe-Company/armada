@@ -15,8 +15,7 @@ const GITHUB_INSTALLATIONS_URL = "https://api.github.com/user/installations";
 const REQUEST_TIMEOUT_MS = 15_000;
 const INSTALLATIONS_PER_PAGE = 100;
 const INSTALLATIONS_MAX_PAGES = 10;
-/** A new sandbox must not start on the tail of its owner's eight-hour token window. */
-const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 60 * 60 * 1000;
+const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
 
 export const GITHUB_CLIENT_ID_ENV = "GITHUB_APP_CLIENT_ID";
 export const GITHUB_CLIENT_SECRET_ENV = "GITHUB_APP_CLIENT_SECRET";
@@ -312,6 +311,8 @@ export const GITHUB_REVOKED =
   "Your GitHub connection was revoked or has expired, so git push and gh in this sandbox are not signed in as you. Reconnect GitHub in the dashboard under Settings.";
 
 export interface GitHubResolveDeps {
+  /** Trusted caller policy: launches require one hour; on-demand brokers need only the refresh margin. */
+  minimumLifetimeMs?: number;
   store: GitHubConnectionStore;
   encryptionKey: string | undefined;
   /** Null when the server has no GitHub App configured. */
@@ -330,6 +331,7 @@ export interface GitHubResolveDeps {
  * Throws only for a missing or malformed encryption key and for a database failure.
  */
 export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: string): Promise<GitHubAccess> {
+  const minimumLifetimeMs = Math.max(ACCESS_TOKEN_EXPIRY_MARGIN_MS, deps.minimumLifetimeMs ?? 0);
   const request = { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.now ? { now: deps.now } : {}) };
   return deps.store.withGitHubConnectionRefresh(userId, async (store, connection) => {
     // A waiter may acquire the lock after the token it observed at request time has expired.
@@ -344,7 +346,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
     if (
       connection.accessTokenEnc &&
       connection.accessExpiresAt &&
-      connection.accessExpiresAt.getTime() > now.getTime() + ACCESS_TOKEN_EXPIRY_MARGIN_MS
+      connection.accessExpiresAt.getTime() > now.getTime() + minimumLifetimeMs
     ) {
       try {
         return await connectedFromToken(
@@ -404,13 +406,11 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
     if (!(await store.rotateGitHubToken(userId, connection.refreshTokenEnc, next)))
       throw new Error("GitHub connection changed while its refresh lock was held.");
     // Persist rotation even when GitHub issues a surprisingly short lifetime: never replay it.
-    if (
-      tokens.accessExpiresAt.getTime() <=
-      (deps.now ?? (() => new Date()))().getTime() + ACCESS_TOKEN_EXPIRY_MARGIN_MS
-    )
+    if (tokens.accessExpiresAt.getTime() <= (deps.now ?? (() => new Date()))().getTime() + minimumLifetimeMs)
       return {
         status: "unavailable",
-        message: "GitHub issued a token with less than one hour remaining; GitHub was not set up in this sandbox.",
+        message:
+          "GitHub issued a token without the required remaining lifetime; GitHub was not set up in this sandbox.",
       };
     return connectedFromToken(connection, tokens.accessToken, request, store, userId, false, tokens.accessExpiresAt);
   });
