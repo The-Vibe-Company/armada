@@ -14,6 +14,7 @@ import { type Image, ModalClient, type Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createManagedParentMcp } from "../../mcp-server/src/mcp-managed-parent.ts";
+import { createManagedOrchestratorRuntime } from "../../mcp-server/src/orchestrator-managed-runtime.ts";
 import { createModalOrchestratorNativeAdapter } from "../../mcp-server/src/orchestrator-modal-native.ts";
 import { OrchestratorRuntimeStore } from "../../mcp-server/src/orchestrator-runtime-store.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
@@ -2525,7 +2526,7 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
   });
   f.onRpc(async (row, op) =>
     op === "observeOrchestrator"
-      ? { ...native(row), state: "quiescent", eventWatermark: 0, acknowledgedSequence: 0 }
+      ? { ...native(row), state: "quiescent", evidence: "a".repeat(64), eventWatermark: 0, acknowledgedSequence: 0 }
       : op === "resumeNativeSession"
         ? native(row)
         : undefined,
@@ -2609,6 +2610,37 @@ test("orchestrator native checkpoint is operation-correlated and restore verifie
     f.provider.restoreOrchestratorCheckpoint({ sandboxId: parent.id, operationId: crypto.randomUUID(), checkpoint }),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(f.creates).toBe(after);
+  const secondStop = await runtimeStore.reserve({
+    ownerId: scope.userId,
+    orgId: scope.orgId,
+    id: created.identity.id,
+    action: "stop",
+    key: "checkpoint-stop-2",
+    expectedRevision: resume.operation.revision,
+    payload: {},
+  });
+  const machine = {
+    orchestratorId: created.identity.id,
+    sandboxId: publicSandboxId,
+    providerSandboxId: parent.id,
+    generation: String(secondStop.identity.generation),
+  };
+  const managedStop = createManagedOrchestratorRuntime({
+    sql: db,
+    authority: { revoke: async () => {}, scrubBeforeCheckpoint: async () => {} } as never,
+    resolveManaged: async () =>
+      adapter.managed(f.provider, machine, {
+        orgId: scope.orgId,
+        ownerId: scope.userId,
+        goldenId: sqlGolden.id,
+        provider: "modal",
+      }),
+  });
+  expect(await managedStop.stopOwner(machine, secondStop.operation.id)).toMatchObject({
+    state: "stopped",
+    continuity: "native",
+    physicalGeneration: "2",
+  });
 });
 
 test("unknown native checkpoint dispatch never repeats snapshot and unacknowledged native events prevent stop", async () => {
