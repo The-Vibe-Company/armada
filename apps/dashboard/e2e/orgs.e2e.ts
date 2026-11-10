@@ -45,9 +45,13 @@ test("a saved role stays shown and Save leaves until the next change", async ({ 
   await bob.getByLabel("Role of bob@example.com").selectOption("admin");
   await bob.getByRole("button", { name: "Save" }).click();
   await expect(bob.getByRole("button", { name: "Save" })).toHaveCount(0);
-  await expect(bob.getByLabel("Role of bob@example.com")).toHaveValue("admin");
+  // Demoting another admin is not confirmed, and the select keeps showing member (not its first option, admin).
+  await bob.getByLabel("Role of bob@example.com").selectOption("member");
+  await bob.getByRole("button", { name: "Save" }).click();
+  await expect(bob.getByRole("button", { name: "Save" })).toHaveCount(0);
+  await expect(bob.getByLabel("Role of bob@example.com")).toHaveValue("member");
   await page.reload();
-  await expect(bob.getByLabel("Role of bob@example.com")).toHaveValue("admin");
+  await expect(bob.getByLabel("Role of bob@example.com")).toHaveValue("member");
 });
 
 test("a member sees the roster but no controls", async ({ page }) => {
