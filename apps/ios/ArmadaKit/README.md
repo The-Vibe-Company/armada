@@ -146,7 +146,9 @@ behind the poll delay; then the stream is polled. A catch-up read is
 100 provider pages in one response) or the orchestrator events route's largest
 page (500). A catch-up `logs/read` may stay silent for `catchUpTimeout` (120 s)
 instead of 30 s; once a catch-up read fails, that loader reads ordinary pages
-only, so a history too long for one response never loops. The clock is
+only, so a history too long for one response never loops. Today `armada serve`
+keeps Bun's default 10 s idle timeout, so a catch-up the server cannot finish
+within it fails once and the loader continues page by page. The clock is
 injected; tests use a recording one.
 Reading a conversation from its end is #812; until it ships, the history is
 still read from the oldest event, but in one round trip instead of one per page.
