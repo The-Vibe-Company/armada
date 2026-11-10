@@ -30,8 +30,8 @@ class NativeContinuityLost extends Error {}
 // Only explicit admission refusals are safe. In particular, conflict can mean
 // request_outcome_unknown on Modal; retryability is not delivery evidence.
 class PromptRefused extends Error {
-  constructor(readonly code: string) {
-    super(code);
+  constructor(readonly refusal: ProviderError) {
+    super(refusal.code);
   }
 }
 
@@ -529,7 +529,7 @@ export class OrchestratorRuntime {
                 "rate_limited",
               ].includes(error.code)
             )
-              throw new PromptRefused(error.code);
+              throw new PromptRefused(error);
           }
           throw error;
         }
@@ -657,13 +657,13 @@ export class OrchestratorRuntime {
       const refused = error instanceof PromptRefused;
       const state = lost || refused ? ("failed" as const) : ("uncertain" as const);
       const errorCode = refused
-        ? error.code
+        ? error.refusal.code
         : unavailable
           ? "boat_conversation_unavailable"
           : lost
             ? "native_continuity_lost"
             : "runtime_uncertain";
-      diagnostics.report(state, error);
+      diagnostics.report(state, refused ? error.refusal : error);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.

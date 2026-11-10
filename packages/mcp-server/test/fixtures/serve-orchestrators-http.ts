@@ -580,7 +580,21 @@ try {
     await sql.query("update sandboxes set reconcile_lease_until=now()+interval '1 minute' where id=$1", [sandboxId]);
     await ordinary("send", { id: sandboxId, prompt: "hello" }, 409);
     await sql.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
-    await ordinary("send", { id: sandboxId, prompt: "hello" });
+    const sent = await ordinary("send", { id: sandboxId, prompt: "hello" });
+    if (reason === failures[0]) {
+      const refused = await ordinary(
+        "steer",
+        {
+          id: sandboxId,
+          text: "too late",
+          conversation_id: sent.conversationId,
+        },
+        409,
+      );
+      assert.equal(refused.error.code, "no_running_turn");
+      // The refused mutation must release its lease, not strand ordinary send.
+      await ordinary("send", { id: sandboxId, prompt: "new turn", conversation_id: sent.conversationId });
+    }
     const stopped = await ordinary("stop", { id: sandboxId });
     assert.equal(stopped.status, "stopped");
     const row = (
