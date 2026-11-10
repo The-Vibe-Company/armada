@@ -1,5 +1,5 @@
 import { ORCHESTRATOR_SKILL_PATTERN, type OrchestratorSkillReceipt } from "./orchestrator.ts";
-import type { Provider } from "./provider.ts";
+import type { ExecResult, Provider } from "./provider.ts";
 
 export function validateSkillPins(skills: unknown): asserts skills is string[] {
   if (
@@ -51,21 +51,39 @@ export function parseSkillReceipt(output: string, skill: string, harness: string
   return receipt;
 }
 
+/** Trusted server transport seam for #841, never a public launch/config field.
+ * A private transport may close over a resolved credential, applying it only to
+ * installCommand via ephemeral process environment. Never persist credentials,
+ * attach them to the sandbox environment, or use private transport in goldens.
+ * Return receiptCommand output only after a successful synchronous installation.
+ */
+export type SkillInstallTransport = (commands: {
+  installCommand: string;
+  receiptCommand: string;
+}) => Promise<ExecResult>;
+
 export async function installSkill(
   provider: Provider,
   sandboxId: string,
   projectDir: string,
   harness: string,
   skill: string,
+  transport?: SkillInstallTransport,
 ): Promise<OrchestratorSkillReceipt> {
   validateSkillPins([skill]);
   try {
-    const result = await provider.exec({
-      sandboxId,
-      cwd: projectDir,
-      timeoutSeconds: 300,
-      command: `${skillInstallCommand(skill, projectDir, harness)} >/dev/null && cat ${quote(projectDir + "/.companion/skills.lock.json")}`,
-    });
+    const commands = {
+      installCommand: skillInstallCommand(skill, projectDir, harness),
+      receiptCommand: `cat ${quote(projectDir + "/.companion/skills.lock.json")}`,
+    };
+    const result = await (transport
+      ? transport(commands)
+      : provider.exec({
+          sandboxId,
+          cwd: projectDir,
+          timeoutSeconds: 300,
+          command: `${commands.installCommand} >/dev/null && ${commands.receiptCommand}`,
+        }));
     if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0)
       throw new Error("install_failed");
     return parseSkillReceipt(result.stdout, skill, harness);

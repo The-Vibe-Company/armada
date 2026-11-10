@@ -28,3 +28,20 @@ Coordinator deployed check (not performed in development): on Boat and Modal,
 launch a compatible Skillpack-equipped golden with a currently public pin,
 inspect status receipts and ask the first turn to read the installed skill.
 An unavailable release must fail/stop without a first turn.
+
+## Private-install integration seam (#841)
+The owner requires private skills; this public-only slice does not satisfy that
+requirement by itself. #841 owns encrypted user/org credential resolution and
+command-only ephemeral environment injection. The server-only installSkill helper
+accepts a trusted SkillInstallTransport closure: it receives separate install and
+receipt-read commands and must return lock output only after successful install.
+This keeps credential transport out of reference validation and receipt parsing;
+#841 can reuse both without rewriting the public path. No request/config accepts
+a transport or credential. Catalog receipt validation remains catalog-only;
+#841 must explicitly validate its private workspace provenance contract.
+
+Never use credential-bearing transports for golden builds, write a Skillpack
+login/profile, add credentials to golden config or sandbox persistent environment,
+or snapshot a credential-bearing builder. #868 must remain public-only and build
+with no credentials; private installs belong only in fresh, non-snapshotted
+launch sandboxes. No golden build code is introduced or changed here.
