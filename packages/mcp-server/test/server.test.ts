@@ -928,18 +928,23 @@ describe("tools", () => {
     expectNoSecret(ran.text);
   });
 
-  test("stop removes the machine and records stopped", async () => {
-    const { token, client, people, boat, db } = await start();
+  test("stop without a provider timestamp retains observed compute time", async () => {
+    const { token, client, people, boat, db, clock } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    await db.query("update sandboxes set usage_running_since=$2::timestamptz - interval '12 seconds' where id=$1", [
+      launched.data.id,
+      clock.now.toISOString(),
+    ]);
     expect((await call(mcp, "stop", { id: launched.data.id })).data).toMatchObject({ status: "stopped" });
     expect(boat.stops).toEqual(["bx_1"]);
-    const row = await db.query<{ status: string; stopped_at: Date | null }>(
-      "select status::text as status, stopped_at from sandboxes where id = $1",
+    const row = await db.query<{ status: string; stopped_at: Date | null; seconds: number | null }>(
+      "select status::text as status, stopped_at, usage_runtime_seconds as seconds from sandboxes where id = $1",
       [launched.data.id],
     );
     expect(row.rows[0]?.status).toBe("stopped");
-    expect(row.rows[0]?.stopped_at).not.toBeNull();
+    expect(row.rows[0]?.stopped_at?.toISOString()).toBe(clock.now.toISOString());
+    expect(row.rows[0]?.seconds).toBe(12);
   });
 
   test("a member of another org sees none of this org's goldens or sandboxes", async () => {

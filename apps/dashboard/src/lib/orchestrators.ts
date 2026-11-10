@@ -17,6 +17,10 @@ import {
   type OrchestratorState,
   type OrchestratorWaitLease,
   resolveModelChoice,
+  type SandboxUsage,
+  type SandboxUsageSummary,
+  type TokenUsageTotals,
+  type TurnTokenUsage,
 } from "@armada/core";
 import { parseEventPage } from "./events.ts";
 import { accountsFromList, isUsable, KIND_INFO } from "./model-accounts.ts";
@@ -215,6 +219,72 @@ export function parseOrchestratorList(value: unknown, orgId: string): Orchestrat
   return { items, cursor: str(value.cursor) ? value.cursor : null, unreadable };
 }
 
+const TOKEN_FIELDS = ["inputTokens", "outputTokens", "cachedTokens", "cacheWriteTokens", "reasoningTokens"] as const;
+const nullableCount = (value: unknown): value is number | null => value === null || count(value);
+const elapsed = (value: unknown): value is number | null =>
+  value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+
+function parseTokenTotals(value: unknown): TokenUsageTotals | null {
+  if (!isRecord(value) || !TOKEN_FIELDS.every((field) => nullableCount(value[field]))) return null;
+  return Object.fromEntries(TOKEN_FIELDS.map((field) => [field, value[field]])) as unknown as TokenUsageTotals;
+}
+
+function parseSandboxUsage(value: unknown): SandboxUsage | null {
+  if (
+    !isRecord(value) ||
+    !elapsed(value.computeSeconds) ||
+    !nullableCount(value.turnCount) ||
+    !Array.isArray(value.turns)
+  )
+    return null;
+  const turns: TurnTokenUsage[] = [];
+  for (const turn of value.turns) {
+    if (!isRecord(turn) || !str(turn.promptId) || !strOrNull(turn.model)) return null;
+    if (!["inputTokens", "outputTokens", "cachedTokens"].every((field) => nullableCount(turn[field]))) return null;
+    if (
+      !["cacheWriteTokens", "reasoningTokens"].every((field) => turn[field] === undefined || nullableCount(turn[field]))
+    )
+      return null;
+    turns.push({
+      promptId: turn.promptId,
+      model: turn.model,
+      inputTokens: turn.inputTokens as number | null,
+      outputTokens: turn.outputTokens as number | null,
+      cachedTokens: turn.cachedTokens as number | null,
+      ...(turn.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: turn.cacheWriteTokens as number | null }),
+      ...(turn.reasoningTokens === undefined ? {} : { reasoningTokens: turn.reasoningTokens as number | null }),
+    });
+  }
+  const tokenTotals = value.tokenTotals === undefined ? undefined : parseTokenTotals(value.tokenTotals);
+  if (tokenTotals === null) return null;
+  return {
+    computeSeconds: value.computeSeconds,
+    turnCount: value.turnCount,
+    turns,
+    ...(tokenTotals ? { tokenTotals } : {}),
+  };
+}
+
+function parseOrchestratorUsage(value: unknown): NonNullable<OrchestratorDetail["usage"]> {
+  const invalid = () => new OrchestratorContractError("The Armada server sent malformed orchestrator usage.");
+  if (!isRecord(value) || !isRecord(value.children)) throw invalid();
+  const own = value.own === null ? null : parseSandboxUsage(value.own);
+  const tokens = parseTokenTotals(value.children);
+  if (
+    (value.own !== null && own === null) ||
+    !tokens ||
+    !elapsed(value.children.computeSeconds) ||
+    !nullableCount(value.children.turnCount)
+  )
+    throw invalid();
+  const children: SandboxUsageSummary = {
+    ...tokens,
+    computeSeconds: value.children.computeSeconds,
+    turnCount: value.children.turnCount,
+  };
+  return { own, children };
+}
+
 /** `GET /orchestrators/:id`. Operations, waits and children of another orchestrator are dropped. */
 export function parseOrchestratorDetail(value: unknown, id: string): OrchestratorDetail {
   if (!isRecord(value)) throw new OrchestratorContractError("The Armada server sent no orchestrator.");
@@ -237,6 +307,7 @@ export function parseOrchestratorDetail(value: unknown, id: string): Orchestrato
     waits,
     delegation: delegation?.orchestratorId === id ? delegation : null,
     childSandboxIds: [...new Set(children)],
+    ...(value.usage === undefined ? {} : { usage: parseOrchestratorUsage(value.usage) }),
   };
 }
 

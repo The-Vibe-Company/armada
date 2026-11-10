@@ -1,5 +1,12 @@
 import type { AgentEvent } from "./provider.ts";
 
+/**
+ * Harness-native counters, not disjoint pricing buckets. For Codex, cachedTokens
+ * and cacheWriteTokens are subsets of inputTokens; do not add them to input.
+ * Claude inputTokens excludes separately reported cache-read/cache-creation
+ * tokens. Reasoning tokens are a subset of output when the harness reports them.
+ * Cross-harness totals retain these definitions, not a unique-token or price sum.
+ */
 export interface TurnTokenUsage {
   promptId: string;
   model: string | null;

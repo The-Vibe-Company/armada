@@ -1045,7 +1045,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         await data.sandboxes.update(found.id, {
           status: "stopped",
           stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
-          ...(machine.stoppedAt ? {} : { usageRuntimeUnknown: true }),
           ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
         });
       }
@@ -1459,7 +1458,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
               ...(terminal
                 ? {
                     stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                    usageRuntimeUnknown: !stoppedAt && found.stoppedAt === null,
                   }
                 : {}),
             },
