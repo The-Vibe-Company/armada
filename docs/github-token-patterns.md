@@ -177,5 +177,7 @@ requires retiring affected workers: gate-off does not uninstall existing wrapper
 The small #879 fix remains independently useful: a new sandbox must receive more
 than one hour of advertised remaining life, and `armada github refresh <sandbox>`
 repairs running legacy Boat workers through private stdin plus an ephemeral file.
-**It is explicit recovery, not automatic refresh.** Later rotations require another
-repair; it is not a replacement for enabling the on-demand runtime after proof.
+**The command is explicit recovery, not per-command automatic refresh.** PR #881
+also repairs legacy Boat credentials before each authorized next prompt; an
+already-running turn can still need the explicit command. Neither is instant
+fan-out or a replacement for an on-demand runtime after proof.

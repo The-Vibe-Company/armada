@@ -4,7 +4,7 @@ Decision proposal for #879, 2026-11-10. **Recommend option 6: explicit server-si
 publish-by-bundle as the default managed delivery path.** Keep the minimal
 one-hour remaining-lifetime guard independently shippable. This document does not
 implement the proposal, enable the gated runtime, or authorize a deployment.
-The existing legacy repair command is a tactical bridge, not the recommendation.
+The legacy explicit/next-prompt repair in PR #881 is a tactical bridge, not the recommendation.
 
 ## Separate authorship from authority
 
@@ -188,8 +188,8 @@ for opt-in **App identity**, but does not satisfy a strict human PR actor contra
 Option 5 trades OAuth rotation for key/CA lifecycle and is not a universal shortcut.
 
 1. Ship the minimal remaining-lifetime guard independently; it prevents one acute
-   failure without selecting an architecture. Existing legacy repair is a manual
-   bridge and must not be marketed as automatic renewal or this recommendation.
+   failure without selecting an architecture. Existing explicit/next-prompt legacy
+   repair is a bridge, not per-command automatic renewal or this recommendation.
 2. Get owner acceptance of the tool-based publish contract, size/LFS limits and
    human-versus-App API identity. No option 6 implementation is authorized by this
    proposal. Treat the already-authored legacy bridge separately from that decision.
