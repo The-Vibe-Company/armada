@@ -21,11 +21,12 @@ test("actual serve composition routes the CLI/web/iOS owner API over HTTP withou
     expect(line).toBeDefined();
     const receipt = JSON.parse(line!.slice("SERVE_HTTP_ROUTE_RECEIPT ".length));
     expect(receipt.baseline).toBe("green");
+    expect(receipt.sandboxSkills).toBe(true);
     expect(receipt.proxyRecovery).toBe(true);
     expect(receipt.replayProviderReads).toBe(0);
-    expect(receipt.effects.allocations).toBe(15);
-    expect(receipt.effects.allocationAttempts).toBe(15);
-    expect(receipt.effects.terminations).toBe(13);
+    expect(receipt.effects.allocations).toBe(17);
+    expect(receipt.effects.allocationAttempts).toBe(17);
+    expect(receipt.effects.terminations).toBe(15);
     expect(receipt.effects.modelCalls).toBe(0);
     expect(receipt.effects.epochInstalls).toBe(1);
     expect(

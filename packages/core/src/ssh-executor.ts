@@ -15,10 +15,10 @@ export interface SshExecDeps {
 /** Token is first stdin line. The one quoted remote command reads it before running the script. */
 export async function sshStdinCheckout(
   provider: Provider,
-  input: { sandboxId: string; token: string; script: string },
+  input: { sandboxId: string; token: string; script: string; timeoutMs?: number },
   deps: SshExecDeps = {},
 ): Promise<void> {
-  await sshExchange(provider, input, deps, false);
+  await sshExchange(provider, input, deps, false, input.timeoutMs);
 }
 
 /** Private fixed-path hydration; no auth value enters exec argv or command journals. */
@@ -206,6 +206,21 @@ ARMADA_PRIVATE_AUTH
   } catch {
     throw Error("Private native auth exchange failed.");
   }
+}
+
+/** Private Skillpack transport: key and script use SSH stdin, never provider exec or argv. */
+export async function sshPrivateSkillCommand(
+  provider: Provider,
+  input: { sandboxId: string; key: string; script: string },
+  deps: SshExecDeps = {},
+): Promise<string> {
+  return sshExchange(
+    provider,
+    { sandboxId: input.sandboxId, token: input.key, script: input.script },
+    deps,
+    true,
+    600_000,
+  );
 }
 
 async function sshExchange(

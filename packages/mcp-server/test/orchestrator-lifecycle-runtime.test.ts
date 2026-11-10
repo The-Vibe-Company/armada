@@ -8,6 +8,7 @@ import {
   reserveOrchestratorOperation,
   type Sql,
 } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createLifecycleAwareOrchestratorRuntime } from "../src/orchestrator-lifecycle-integration.ts";
 import { database, fakeBoat } from "./support.ts";
@@ -136,6 +137,95 @@ test("actual shared runtime caller persists owner activity, and journal cursor c
     expect(await services.store.appendEvents(identity, page, null)).toBe(true);
     expect((await db.query("select event_id from orchestrator_activity")).rows).toHaveLength(1);
     expect(await services.store.appendEvents(identity, page, null)).toBe(false);
+    const usageEvent = {
+      id: "usage-result",
+      at: 1794311658248,
+      conversationId: identity.conversationId!,
+      promptId: page.events.find((event) => event.kind === "prompt")!.promptId!,
+      kind: "other" as const,
+      type: "armada/turnUsage",
+      data: { model: "gpt-6.1-sol", inputTokens: 13136, outputTokens: 5, cachedTokens: 0 },
+    };
+    expect(
+      await services.store.appendEvents(identity, { events: [usageEvent], cursor: "usage-page" }, page.cursor ?? null),
+    ).toBe(true);
+    const usageDetail = await services.runtime.detail(owner, p.org, identity.id);
+    expect(usageDetail.usage?.own?.turns[0]?.inputTokens).toBe(13136);
+    expect(usageDetail.usage?.children.inputTokens).toBe(0);
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "child-usage",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      status: "ready",
+      model: "m",
+      reasoningEffort: "high",
+      visibility: "private",
+    });
+    await db.query(
+      "insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id) values($1,$2,$3,$4)",
+      [child.id, identity.id, p.org, p.owner],
+    );
+    await db.query("update sandboxes set usage_turns=$2::jsonb where id=$1", [
+      child.id,
+      JSON.stringify({
+        turnCount: 1,
+        turns: [{ promptId: "child-turn", model: "gpt-6.1-sol", inputTokens: 10, outputTokens: 2, cachedTokens: 0 }],
+      }),
+    ]);
+    const withChild = await services.runtime.detail(owner, p.org, identity.id);
+    expect(withChild.usage?.own?.tokenTotals?.inputTokens).toBe(13136);
+    expect(withChild.usage?.children.inputTokens).toBe(10);
+    expect(withChild.usage?.children.reasoningTokens).toBeNull();
+    // Duplicate upstream IDs cannot rewrite durable accounting with conflicting payloads.
+    expect(
+      await services.store.appendEvents(
+        identity,
+        {
+          events: [{ ...usageEvent, data: { ...usageEvent.data, inputTokens: 999 } }],
+          cursor: "replayed",
+        },
+        "usage-page",
+      ),
+    ).toBe(true);
+    const secondPrompt = {
+      id: "second-prompt",
+      at: usageEvent.at + 1,
+      promptId: "second-turn",
+      conversationId: identity.conversationId!,
+      kind: "prompt" as const,
+      text: "next",
+      status: "finished" as const,
+    };
+    expect(
+      await services.store.appendEvents(identity, { events: [secondPrompt], cursor: "second-prompt" }, "replayed"),
+    ).toBe(true);
+    expect(
+      await services.store.appendEvents(
+        identity,
+        {
+          events: [
+            {
+              ...usageEvent,
+              id: "second-usage",
+              promptId: "second-turn",
+              data: { ...usageEvent.data, inputTokens: 10, outputTokens: 2 },
+            },
+          ],
+          cursor: "second-usage",
+        },
+        "second-prompt",
+      ),
+    ).toBe(true);
+    // Provider history/status collection must not replace the journal's snapshot.
+    await createSqlData(sql)(owner).sandboxes.recordUsage!(parent.id, { turnCount: 0, turns: [] });
+    const accumulated = await services.runtime.detail(owner, p.org, identity.id);
+    expect(accumulated.usage?.own?.turnCount).toBe(2);
+    expect(accumulated.usage?.own?.tokenTotals?.inputTokens).toBe(13146);
+
     await expect(
       callOrchestrator(services.runtime, { ...owner, userId: p.admin }, "detail", { orgId: p.org, id: identity.id }),
     ).rejects.toThrow("not_found");

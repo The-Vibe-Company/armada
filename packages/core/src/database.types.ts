@@ -2447,6 +2447,7 @@ export type Database = {
           usage_runtime_seconds: number | null;
           usage_running_since: string | null;
           usage_turns: Json | null;
+          skills: Json;
         };
         Insert: {
           id?: string;
@@ -2496,6 +2497,7 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
         };
         Update: {
           id?: string;
@@ -2545,6 +2547,7 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
         };
         Relationships: [
           {
@@ -2631,7 +2634,7 @@ export type Database = {
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal";
+      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal" | "skillpack";
       credential_scope: "user" | "org";
       harness: "claude" | "codex";
       member_role: "admin" | "member";

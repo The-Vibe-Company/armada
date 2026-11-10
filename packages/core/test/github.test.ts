@@ -46,6 +46,7 @@ describe("GitHub access at launch", () => {
     expect(access).toEqual({
       status: "connected",
       token: ACCESS_1,
+      expiresAt: new Date(NOW.getTime() + 28_800_000),
       identity: { login: "octocat", id: 583231, name: "The Octocat", email: "583231+octocat@users.noreply.github.com" },
     });
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
@@ -81,7 +82,7 @@ describe("GitHub access at launch", () => {
 
   test("checks cache expiry after acquiring the owner refresh lock", async () => {
     const world = await setup({ refresh: REFRESH_1 });
-    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 600 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 7200 });
     await resolveGitHubAccess(world.deps, USER);
     let enter!: () => void;
     let release!: () => void;
@@ -99,7 +100,7 @@ describe("GitHub access at launch", () => {
     let now = NOW;
     world.deps.now = () => now;
     const pending = resolveGitHubAccess(world.deps, USER);
-    now = new Date(NOW.getTime() + 601_000);
+    now = new Date(NOW.getTime() + 7201_000);
     world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
     release();
     await held;
@@ -138,26 +139,75 @@ describe("GitHub access at launch", () => {
     expect(world.github.tokenRequests).toHaveLength(1);
   });
 
-  test("three concurrent launches serialize one refresh and share the cached access token", async () => {
+  test("twelve concurrent and sequential launches retain access until a genuine rotation", async () => {
     const world = await setup({ refresh: REFRESH_1 });
-    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
-    const access = await Promise.all([
-      resolveGitHubAccess(world.deps, USER),
-      resolveGitHubAccess(world.deps, USER),
-      resolveGitHubAccess(world.deps, USER),
-    ]);
-    expect(access.map((item) => item.status)).toEqual(["connected", "connected", "connected"]);
+    let current = "";
+    let refreshCount = 0;
+    const upstream = world.deps.fetch!;
+    // GitHub documents that refresh invalidates BOTH the old access and refresh token.
+    world.deps.fetch = (async (input, init) => {
+      if (String(input).includes("/login/oauth/access_token")) {
+        if (current) world.github.invalidAccess.add(current);
+        refreshCount++;
+        current = refreshCount === 1 ? ACCESS_1 : ACCESS_2;
+        world.github.refreshes.push({
+          access_token: current,
+          refresh_token: refreshCount === 1 ? REFRESH_2 : REFRESH_3,
+          expires_in: 28_800,
+        });
+      }
+      return upstream(input, init);
+    }) as typeof fetch;
+    const tokens: string[] = [];
+    const retain = (access: Awaited<ReturnType<typeof resolveGitHubAccess>>) => {
+      expect(access.status).toBe("connected");
+      if (access.status === "connected") tokens.push(access.token);
+    };
+    for (const access of await Promise.all(Array.from({ length: 12 }, () => resolveGitHubAccess(world.deps, USER))))
+      retain(access);
+    for (let i = 0; i < 12; i++) retain(await resolveGitHubAccess(world.deps, USER));
+    for (const token of tokens)
+      expect(
+        (
+          await upstream("https://api.github.com/user", {
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).status,
+      ).toBe(200);
+    expect(refreshCount).toBe(1);
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
-    expect(world.rows.get(USER)?.revokedAt).toBeNull();
+
+    // Incident #879: a launch six minutes before owner expiry used to inherit the old token.
+    world.deps.now = () => new Date(NOW.getTime() + (7 * 60 + 54) * 60 * 1000);
+    const renewed = await resolveGitHubAccess(world.deps, USER);
+    expect(renewed).toMatchObject({ status: "connected", token: ACCESS_2 });
+    expect(
+      (
+        await upstream("https://api.github.com/user", {
+          headers: { authorization: `Bearer ${tokens[0]}` },
+        })
+      ).status,
+    ).toBe(401);
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
+  });
+
+  test("a freshly issued token without the safe launch lifetime is reported unavailable, never handed out", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 1800 });
+    const access = await resolveGitHubAccess(world.deps, USER);
+    expect(access).toMatchObject({ status: "unavailable" });
+    expect(JSON.stringify(access)).not.toContain(ACCESS_1);
+    expect(await decryptSecret(new Uint8Array(world.rows.get(USER)?.refreshTokenEnc ?? []), KEY)).toBe(REFRESH_2);
+    expect(world.github.userAuthorizations).toEqual([]);
   });
 
   test("uses a sealed cached access token until its expiry margin, then refreshes", async () => {
     const world = await setup({ refresh: REFRESH_1 });
-    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 600 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 7200 });
     await resolveGitHubAccess(world.deps, USER);
     await resolveGitHubAccess(world.deps, USER);
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
-    world.deps.now = () => new Date(NOW.getTime() + 6 * 60 * 1000);
+    world.deps.now = () => new Date(NOW.getTime() + 66 * 60 * 1000);
     world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
     await resolveGitHubAccess(world.deps, USER);
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
@@ -176,6 +226,7 @@ describe("GitHub access at launch", () => {
       expect(result).toEqual({
         status: "connected",
         token: ACCESS_2,
+        expiresAt: new Date(NOW.getTime() + 28_800_000),
         identity: gitIdentity({ id: 583231, login: "octocat", name: "The Octocat" }),
       });
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
@@ -480,7 +531,14 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
     }) as typeof fetch,
   };
 
-  const deps: GitHubResolveDeps = { store, encryptionKey: KEY, app: APP, fetch: github.fetch, now: () => NOW };
+  const deps: GitHubResolveDeps = {
+    store,
+    encryptionKey: KEY,
+    app: APP,
+    fetch: github.fetch,
+    now: () => NOW,
+    minimumLifetimeMs: 60 * 60 * 1000,
+  };
   return { rows, store, github, deps };
 }
 

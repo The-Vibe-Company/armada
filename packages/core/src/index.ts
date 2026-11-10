@@ -26,6 +26,7 @@ export {
   resolveCredential,
   resolveCredentials,
   resolveModalTokens,
+  resolveSkillpackCredential,
   toHarnessCredentials,
 } from "./credentials.ts";
 export {
@@ -168,6 +169,14 @@ export {
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
 export {
+  MODEL_PRICE_SOURCES,
+  MODEL_PRICES,
+  MODEL_PRICES_AS_OF,
+  type ModelPrice,
+  modelPrice,
+  type PriceVendor,
+} from "./model-prices.ts";
+export {
   type HarnessModels,
   MODEL_CATALOG,
   type ModelChoice,
@@ -245,6 +254,16 @@ export {
 } from "./sandbox.ts";
 export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
 export {
+  COST_BASIS_LABELS,
+  type CostBasis,
+  combineCosts,
+  costBasis,
+  type SandboxCost,
+  sandboxCost,
+  type TurnCost,
+  turnCost,
+} from "./sandbox-cost.ts";
+export {
   DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   SANDBOX_STOP_MARGIN_SECONDS,
@@ -265,7 +284,16 @@ export {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
-export { reportedTurnUsage, type SandboxUsage, type TurnTokenUsage } from "./sandbox-usage.ts";
+export {
+  reportedTurnUsage,
+  type SandboxUsage,
+  type SandboxUsageSummary,
+  summarizeSandboxUsage,
+  sumSandboxUsage,
+  type TokenUsageTotals,
+  type TurnTokenUsage,
+  withUsageTotals,
+} from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
   type AccountMutation,

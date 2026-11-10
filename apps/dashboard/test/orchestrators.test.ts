@@ -521,3 +521,36 @@ test("a sized create refused as invalid says the server does not take a size yet
   expect(error.failure).toBe("rejected");
   expect(error.message).toContain("Choose Default");
 });
+
+test("detail preserves measured own and child usage, unknown fields and older servers, and rejects malformed usage", () => {
+  const tokens = {
+    inputTokens: 13136,
+    outputTokens: 5,
+    cachedTokens: 0,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  };
+  const usage = {
+    own: {
+      computeSeconds: 12.5,
+      turnCount: 1,
+      turns: [{ promptId: "turn-1", model: "gpt-5", ...tokens }],
+      tokenTotals: tokens,
+    },
+    children: { computeSeconds: null, turnCount: 2, ...tokens },
+  };
+  expect(detail({}, { usage }).usage).toEqual(usage);
+  expect(detail().usage).toBeUndefined();
+  expect(detail({}, { usage: { ...usage, own: null } }).usage?.own).toBeNull();
+  for (const malformed of [
+    null,
+    {},
+    { ...usage, own: {} },
+    { ...usage, own: { ...usage.own, computeSeconds: -1 } },
+    { ...usage, own: { ...usage.own, turns: [{ ...usage.own.turns[0], inputTokens: "13136" }] } },
+    { ...usage, children: { ...usage.children, inputTokens: -1 } },
+    { ...usage, children: { ...usage.children, turnCount: 0.5 } },
+    { ...usage, children: { ...usage.children, computeSeconds: Infinity } },
+  ])
+    expect(() => detail({}, { usage: malformed })).toThrow(OrchestratorContractError);
+});

@@ -2,10 +2,12 @@ import { expect, test } from "bun:test";
 import * as core from "@armada/core/server";
 import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provider-modal";
 import type { Caller } from "../src/caller.ts";
+import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // SQL composition regression, not native conformance. Placement I/O is fake;
@@ -29,6 +31,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let fault: "none" | "launcher" | "fork" | "initialization" | "skills" | "epoch" = "none";
   let throwLogger = false;
   const lines: string[] = [];
+  const childPreparation: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
   const provider: core.Provider &
     Pick<ModalProvider, "checkpointOrchestrator" | "readOrchestratorCheckpoint" | "restoreOrchestratorCheckpoint"> = {
@@ -49,9 +52,17 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     },
     async exec(request) {
       const result = await placement.provider.exec(request);
+      if (request.command.startsWith("skillpack install ")) {
+        childPreparation.push("install");
+        return { ...result, stdout: catalogLock("codex") };
+      }
       return fault === "initialization" || (fault === "skills" && request.command.includes("/skills/armada-tools"))
         ? { ...result, exitCode: 127, stdout: privateText, stderr: privateText }
         : result;
+    },
+    async prompt(request) {
+      childPreparation.push("prompt");
+      return placement.provider.prompt(request);
     },
     async get(id, options) {
       nativeReads++;
@@ -268,22 +279,51 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           body: JSON.stringify(body),
         }),
       );
-    const childResponse = await scoped(
-      "launch",
-      {
-        selection: {
-          goldenId: golden.id,
-          harness: "codex",
-          credentialId: account.id,
-          credentialVersion: account.version,
-          model: "gpt-6.1-sol",
-        },
-      },
-      "production-child",
-    );
+    childPreparation.length = 0;
+    const childSelection = {
+      goldenId: golden.id,
+      harness: "codex",
+      credentialId: account.id,
+      credentialVersion: account.version,
+      model: "gpt-6.1-sol",
+      skills: [catalogReference],
+      prompt: "Read the installed notes skill before coding.",
+    };
+    const childResponse = await scoped("launch", { selection: childSelection }, "production-child");
     expect(childResponse?.status).toBe(200);
     const childReceipt = (await childResponse?.json()) as { result: { state: string; sandboxId: string } };
     expect(childReceipt.result.state).toBe("succeeded");
+    expect(childPreparation).toEqual(["install", "prompt"]);
+    expect(
+      (
+        await sql.query<{ skills: unknown; conversation_ids: string[] }>(
+          "select skills,conversation_ids from public.sandboxes where id=$1",
+          [childReceipt.result.sandboxId],
+        )
+      ).rows[0],
+    ).toEqual({ skills: [catalogReceipt], conversation_ids: ["conv_2"] });
+    const unrelatedStore = createSqlData(sql)({ ...caller, userId: p.admin }).sandboxes;
+    await expect(unrelatedStore.recordSkills!(childReceipt.result.sandboxId, [])).rejects.toThrow(
+      "Skill receipts could not be recorded.",
+    );
+    const replayedChild = await scoped("launch", { selection: childSelection }, "production-child");
+    expect(await replayedChild?.json()).toEqual({ result: childReceipt.result });
+    const conflictingSkills = await scoped(
+      "launch",
+      {
+        selection: { ...childSelection, skills: ["example/other@1.0.0"] },
+      },
+      "production-child",
+    );
+    expect(conflictingSkills?.status).toBe(503);
+    expect(await conflictingSkills?.json()).toEqual({
+      error: {
+        code: "scoped_operation_unavailable",
+        message: "scoped_operation_unavailable",
+      },
+    });
+    expect(childPreparation).toEqual(["install", "prompt"]);
+
     expect(
       (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
     ).toEqual([{ sandbox_id: childReceipt.result.sandboxId }]);
@@ -358,6 +398,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "registration",
       "initialization",
       "skills",
+      "private-skill",
+      "expired-skill-key",
+      "undecryptable-skill-key",
       "epoch",
       "completion",
       "failure_publication",
@@ -374,9 +417,29 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         await db.exec(`create function diagnostic_publication_fault() returns trigger language plpgsql as $$ begin
         if new.state='succeeded' or (new.state='uncertain' and ${scenario === "failure_publication" ? "true" : "false"}) then raise exception using errcode='40001',message='synthetic-private-sql'; end if; return new; end $$;
         create trigger diagnostic_publication_fault before update on orchestrator_operations for each row execute function diagnostic_publication_fault()`);
+      const storedSkillKey = scenario === "expired-skill-key" || scenario === "undecryptable-skill-key";
+      if (storedSkillKey) {
+        const orgKey = await core.encryptSecret("cmp_pat_" + "b".repeat(48), ENCRYPTION_KEY);
+        await sql.query(
+          "insert into public.credentials(scope,owner_id,kind,value_enc) values('org',$1,'skillpack',$2::bytea)",
+          [p.org, orgKey],
+        );
+        await sql.query(
+          "insert into public.credentials(scope,owner_id,kind,value_enc,expires_at) values('user',$1,'skillpack',$2::bytea,$3::timestamptz)",
+          [
+            p.owner,
+            scenario === "expired-skill-key" ? orgKey : new Uint8Array([1, 2, 3]),
+            scenario === "expired-skill-key" ? "2000-01-01T00:00:00Z" : null,
+          ],
+        );
+      }
       const admitted = await bundle.runtime.create(
         caller,
-        { ...config, name: `diagnostic-${scenario}` },
+        {
+          ...config,
+          name: `diagnostic-${scenario}`,
+          ...(scenario === "private-skill" || storedSkillKey ? { skill: "notes@1.0.0" } : {}),
+        },
         `diagnostic-${scenario}`,
       );
       expect(admitted.state).toBe("pending");
@@ -387,6 +450,24 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(operation?.state).toBe(
         scenario === "launcher" ? "failed" : scenario === "failure_publication" ? "pending" : "uncertain",
       );
+      if (storedSkillKey) {
+        const expectedReason =
+          scenario === "expired-skill-key" ? "skillpack_credential_refused" : "skillpack_install_failed";
+        expect(operation?.errorCode).toBe(expectedReason);
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          expectedReason,
+        );
+        await sql.query("delete from public.credentials where kind='skillpack' and owner_id in ($1,$2)", [
+          p.owner,
+          p.org,
+        ]);
+      }
+      if (scenario === "private-skill") {
+        expect(operation?.errorCode).toBe("skillpack_credential_missing");
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          "skillpack_credential_missing",
+        );
+      }
       if (scenario === "registration")
         await db.exec(
           "drop trigger diagnostic_registration_fault on sandboxes; drop function diagnostic_registration_fault()",
@@ -402,6 +483,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         registration: ["registration", "sql_check"],
         initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
+        "private-skill": ["skills", "skillpack_credential_missing"],
+        "expired-skill-key": ["skills", "skillpack_credential_refused"],
+        "undecryptable-skill-key": ["skills", "skillpack_install_failed"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
         failure_publication: ["completion", "sql_serialization"],

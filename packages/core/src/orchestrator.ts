@@ -2,6 +2,7 @@ import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { AgentEvent } from "./provider.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
+import type { SandboxUsage, SandboxUsageSummary } from "./sandbox-usage.ts";
 
 /** Proposed v1 wire contract. No routes or authorization are enabled by this module. */
 export const ORCHESTRATOR_CONTRACT_VERSION = 1 as const;
@@ -28,7 +29,7 @@ export interface OrchestratorCreate {
   provider: SandboxProviderId;
   harness: Harness;
   repo?: string;
-  /** Public Skillpack catalog reference, pinned as org/slug@version. */
+  /** Exact Skillpack pin: org/slug@version for catalog, slug@version for the authenticated workspace. */
   skill?: string;
   /** Optional override; absent still uses the selected repository/golden policy. */
   size?: MachineSize;
@@ -137,9 +138,12 @@ export interface OrchestratorDetail {
   waits: OrchestratorWaitLease[];
   delegation: OrchestratorDelegation | null;
   childSandboxIds: string[];
+  usage?: { own: SandboxUsage | null; children: SandboxUsageSummary };
 }
 
 export interface OrchestratorSkillReceipt {
+  /** Authenticated registry workspace; absent for anonymous public catalog receipts. */
+  workspaceId?: string;
   reference: string;
   version: string;
   skillId: string;
@@ -147,6 +151,6 @@ export interface OrchestratorSkillReceipt {
   origin: string;
 }
 
-/** Only anonymous catalog references are supported in the first slice. */
+/** Qualified references select anonymous catalog; bare slugs select the authenticated workspace. */
 export const ORCHESTRATOR_SKILL_PATTERN =
-  /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
+  /^(?:[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;

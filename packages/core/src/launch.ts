@@ -28,6 +28,7 @@ import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { installSkill, validateSkillPins } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
@@ -38,6 +39,7 @@ export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS)
 const OUTPUT_LIMIT = 2000;
 
 export interface LaunchRequest {
+  skills?: string[];
   credentialId?: string;
   size?: MachineSize;
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
@@ -60,6 +62,9 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
+  /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
+  refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
+
   resolve(
     actor: GoldenActor,
     harness: Harness,
@@ -106,6 +111,8 @@ export interface LaunchStores {
 
 /** What a launch did about GitHub. A launch without a connection still succeeds, and says so here. */
 export interface GitHubLaunchInfo {
+  /** Advertised expiry of the injected token, not a guarantee against owner rotation. */
+  tokenExpiresAt?: string;
   status: GitHubStatus;
   /** The account git and gh act as in the sandbox. */
   login?: string;
@@ -157,6 +164,16 @@ export async function launchSandbox(
   request: LaunchRequest,
   options: LaunchOptions = {},
 ): Promise<LaunchResult> {
+  try {
+    validateSkillPins(request.skills ?? []);
+  } catch {
+    throw new LaunchError(
+      "invalid_request",
+      "Skills require distinct public org/slug@exact-version pins (maximum 20).",
+    );
+  }
+  if (request.skills?.length && !stores.sandboxes.recordSkills)
+    throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
   const harness = checkHarness(provider, request.harness);
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
@@ -335,10 +352,46 @@ export async function launchSandbox(
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
           : { status: github.status, message: github.message };
+      if (github.status === "connected" && github.expiresAt)
+        launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
       await setup(provider, ready.id, record.id, golden, secrets, progress);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
+      if (request.skills?.length) {
+        const receipts = [];
+        for (const skill of request.skills)
+          receipts.push(
+            await installSkill(
+              provider,
+              ready.id,
+              repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
+              harness,
+              skill,
+            ),
+          );
+        if (repositoryDir !== null) {
+          // Local Git metadata only: do not stage third-party launch skills with worker changes.
+          const paths = [
+            "/.companion/skills.lock.json",
+            "/.companion/skills.lock.json.lock",
+            ...request.skills.flatMap((skill) => {
+              const slug = skill.split("@")[0]!.split("/")[1];
+              return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
+            }),
+          ];
+          const excluded = await provider.exec({
+            sandboxId: ready.id,
+            cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
+            timeoutSeconds: 30,
+            command: `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
+          });
+          if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
+            throw new Error("Skillpack checkout exclusions could not be prepared.");
+        }
+        await stores.sandboxes.recordSkills!(record.id, receipts);
+        record.skills = receipts;
+      }
       progress("initialization_mcp");
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
@@ -401,6 +454,7 @@ export async function launchSandbox(
           // physical readiness, native preparation, credential setup and prompt overhead.
           deadlineMs:
             15 * 60_000 +
+            (request.skills?.length ?? 0) * 300_000 +
             1000 *
               (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
                 golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),

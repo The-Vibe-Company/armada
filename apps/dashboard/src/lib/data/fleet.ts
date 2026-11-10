@@ -12,9 +12,11 @@ import {
   type TurnSummary,
 } from "@/lib/fleet";
 import { GatewayError } from "@/lib/gateway";
+import { costOfRow } from "@/lib/sandbox-cost";
 import type { Supabase } from "@/lib/supabase/server";
 import { viewerGateway } from "./gateway";
 import { listGoldenHistory } from "./goldens";
+import { credentialKinds } from "./sandboxes";
 import { selectedOrganization } from "./selected-org";
 import type { Viewer } from "./viewer";
 
@@ -81,11 +83,22 @@ export async function readBoard(supabase: Supabase, viewer: Viewer, now: Date): 
       }
     }),
   );
+  const kinds = await credentialKinds(
+    supabase,
+    shown.map((row) => row.credential_id),
+  );
   const goldenById = new Map(goldens.map((golden) => [golden.id, golden]));
   const acknowledged = new Set(readAcks((await cookies()).get(ACK_COOKIE)?.value, viewer.id));
   const board = buildBoard(
     shown.map((row, index) =>
-      fleetRow(row, goldenById.get(row.golden_id) ?? null, turns[index] ?? null, viewer.id, now),
+      fleetRow(
+        row,
+        goldenById.get(row.golden_id) ?? null,
+        turns[index] ?? null,
+        viewer.id,
+        now,
+        costOfRow(row, kinds.get(row.credential_id ?? "") ?? null),
+      ),
     ),
     acknowledged,
   );

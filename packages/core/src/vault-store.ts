@@ -27,12 +27,14 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         }
         const existing = input.id
           ? await tx.query<{ kind: CredentialKind; version: number }>(
-              "select kind, version from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind not in ('boat','modal') and status <> 'deleted' for update",
+              "select kind, version from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind in ('claude_oauth','anthropic','openai','codex_auth') and status <> 'deleted' for update",
               [input.id, input.scope, owner],
             )
           : { rows: [] };
         if (input.id && !existing.rows.length) throw new VaultError("not_found", "No such account.");
         const kind = existing.rows[0]?.kind ?? input.kind;
+        if (!kind || !["claude_oauth", "anthropic", "openai", "codex_auth"].includes(kind))
+          throw new VaultError("invalid", "Named accounts require a model credential.");
         if (input.kind && existing.rows[0] && input.kind !== kind)
           throw new VaultError("invalid", "An account kind cannot change.");
         if (input.action !== "set" && !input.id) throw new VaultError("invalid", "Account id is required.");
@@ -59,7 +61,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           await tx.query("update public.credentials set status='deleted' where id=$1", [id]);
         } else {
           await tx.query(
-            "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal')",
+            "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind in ('claude_oauth','anthropic','openai','codex_auth')",
             [input.scope, owner, kind],
           );
           await tx.query("update public.credentials set is_default=true where id=$1", [id]);
@@ -169,7 +171,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     },
 
     async upsertCredential(scope, ownerId, kind, valueEnc) {
-      if (kind !== "boat" && kind !== "modal") {
+      if (kind !== "boat" && kind !== "modal" && kind !== "skillpack") {
         if (!sql.transaction) throw new VaultError("unavailable", "Credential writes require a transaction.");
         await sql.transaction(async (tx) => {
           await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [ownerId]);
@@ -179,7 +181,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           );
           if (found.rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
           const ambiguous = await tx.query(
-            "select kind from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status <> 'deleted' and kind not in ('boat','modal') and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) group by kind having count(*) > 1",
+            "select kind from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status <> 'deleted' and kind in ('claude_oauth','anthropic','openai','codex_auth') and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) group by kind having count(*) > 1",
             [scope, ownerId, kind],
           );
           if (ambiguous.rows.length) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
@@ -195,16 +197,16 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             );
           // Legacy kind writes preserve the old harness preference through explicit defaults.
           const preferred = await tx.query<{ id: string }>(
-            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status='active' and name='Default' and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal') order by case when kind in ('claude_oauth','openai') then 0 else 1 end limit 1",
+            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status='active' and name='Default' and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind in ('claude_oauth','anthropic','openai','codex_auth') order by case when kind in ('claude_oauth','openai') then 0 else 1 end limit 1",
             [scope, ownerId, kind],
           );
           const named = await tx.query(
-            "select 1 from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and name <> 'Default' and kind not in ('boat','modal')",
+            "select 1 from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and name <> 'Default' and kind in ('claude_oauth','anthropic','openai','codex_auth')",
             [scope, ownerId],
           );
           if (preferred.rows[0] && !named.rows.length) {
             await tx.query(
-              "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal')",
+              "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind in ('claude_oauth','anthropic','openai','codex_auth')",
               [scope, ownerId, kind],
             );
             await tx.query("update public.credentials set is_default=true where id=$1", [preferred.rows[0].id]);
@@ -213,7 +215,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         return;
       }
       await sql.query(
-        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind in ('boat','modal') do update set value_enc=excluded.value_enc`,
+        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind not in ('claude_oauth','anthropic','openai','codex_auth') do update set value_enc=excluded.value_enc`,
         [scope, ownerId, kind, valueEnc],
       );
     },
@@ -228,7 +230,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         if (rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
         if (!rows[0]) return false;
         await tx.query(
-          kind === "boat" || kind === "modal"
+          kind === "boat" || kind === "modal" || kind === "skillpack"
             ? "delete from public.credentials where id=$1"
             : "update public.credentials set status='deleted' where id=$1",
           [rows[0].id],
