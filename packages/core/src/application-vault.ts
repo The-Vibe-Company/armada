@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { encryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
-import { VaultError } from "./vault.ts";
+import { VaultError } from "./vault-error.ts";
 
 type Kind = "variable" | "secret";
 type Operation = "list" | "read" | "set" | "update" | "rotate" | "revoke" | "delete" | "upload" | "commit";
@@ -65,7 +65,7 @@ function value(input: unknown, kind: Kind): string {
   if (
     typeof input !== "string" ||
     input.includes("\0") ||
-    !input.isWellFormed() ||
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(input) ||
     Buffer.byteLength(input, "utf8") > 8192 ||
     (kind === "secret" && !input.length)
   )
@@ -153,6 +153,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
       if (input.scope === "org" && role !== "admin")
         throw new VaultError("forbidden", "Application vault access denied.");
       const key = name(input.name, kind);
+      if (kind === "secret" && typeof input.value === "string" && key.includes(input.value)) invalid();
       const payload =
         kind === "variable"
           ? value(input.value, kind)
@@ -195,6 +196,12 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
       ((operation === "update" || operation === "rotate") && current.status !== "active")
     )
       throw new VaultError("conflict", "Application vault resource is not active.");
+    if (
+      kind === "secret" &&
+      typeof input.value === "string" &&
+      (typeof input.name === "string" ? input.name : current.name).includes(input.value)
+    )
+      invalid();
     const changes: string[] = ["version=version+1", "epoch=epoch+1", "updated_at=now()"];
     const params: unknown[] = [id, expected];
     if (operation === "update" || operation === "rotate") {
@@ -231,6 +238,15 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
     return { item: metadata(row) };
   }
   return {
+    /** Called by the server's existing retention worker; no tombstone or active object is removed. */
+    async purgeExpired(): Promise<void> {
+      await transaction(async (tx) => {
+        await tx.query("delete from public.application_secret_uploads where expires_at<=clock_timestamp()");
+        await tx.query(
+          "delete from public.application_vault_audit where created_at<=clock_timestamp()-interval '90 days'",
+        );
+      });
+    },
     async command(
       actor: ApplicationVaultActor,
       kind: Kind,
@@ -249,7 +265,8 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
         upload: ["org", "operation", "id", "expectedVersion", "scope", "name", "value", "expiresAt"],
         commit: ["org", "uploadReference"],
       };
-      if (!allowed[operation] || Object.keys(input).some((key) => !allowed[operation]?.includes(key))) invalid();
+      if (!Object.hasOwn(allowed, operation) || Object.keys(input).some((key) => !allowed[operation]?.includes(key)))
+        invalid();
       if (
         (kind === "secret" && operation === "read") ||
         (kind === "variable" && ["rotate", "upload", "commit"].includes(operation)) ||
@@ -257,6 +274,9 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
         (ingress === "mcp" && kind === "secret" && ["set", "rotate", "upload"].includes(operation))
       )
         invalid();
+      if (kind === "variable" && input.expiresAt !== undefined) invalid();
+      if (operation === "update" && input.name === undefined && input.value === undefined) invalid();
+      if (operation === "upload" && input.operation === "rotate" && input.scope !== undefined) invalid();
       return transaction(async (tx) => {
         if (operation === "upload") {
           if (kind !== "secret" || (input.operation !== "set" && input.operation !== "rotate")) invalid();
@@ -280,6 +300,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
           if (scope !== "personal" && scope !== "org") invalid();
           if (scope === "org" && role !== "admin")
             throw new VaultError("forbidden", "Application vault access denied.");
+          if (typeof key === "string" && typeof input.value === "string" && key.includes(input.value)) invalid();
           const reference = randomBytes(32).toString("base64url");
           const ciphertext = await encryptSecret(value(input.value, kind), encryptionKey);
           await tx.query("delete from public.application_secret_uploads where expires_at<=now()");
@@ -316,7 +337,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
               value_enc: Uint8Array;
               secret_expires_at: string | null;
             }>(
-              `delete from public.application_secret_uploads where hash=$1 and actor_id=$2 and org_id=$3 and expires_at>now() returning operation,target_id,expected_version,scope,name,value_enc,secret_expires_at`,
+              `delete from public.application_secret_uploads where hash=$1 and actor_id=$2 and org_id=$3 and expires_at>clock_timestamp() returning operation,target_id,expected_version,scope,name,value_enc,secret_expires_at`,
               [hash(input.uploadReference), actor.userId, orgId],
             )
           ).rows[0];

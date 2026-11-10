@@ -22,7 +22,7 @@ create table public.application_secrets (
   owner_id uuid not null references auth.users(id),
   scope text not null check (scope in ('personal','org')),
   name text not null check (name ~ '^[A-Z][A-Z0-9_]{0,127}$'),
-  value_enc bytea,
+  value_enc bytea check (octet_length(value_enc) between 29 and 8220),
   version integer not null default 1 check (version > 0),
   epoch integer not null default 1 check (epoch > 0),
   status text not null default 'active' check (status in ('active','revoked','deleted')),
@@ -43,7 +43,7 @@ create table public.application_secret_uploads (
   expected_version integer,
   scope text not null check (scope in ('personal','org')),
   name text not null,
-  value_enc bytea not null,
+  value_enc bytea not null check (octet_length(value_enc) between 29 and 8220),
   secret_expires_at timestamptz,
   expires_at timestamptz not null default now() + interval '5 minutes',
   check ((operation='set' and target_id is null and expected_version is null)
@@ -88,3 +88,6 @@ grant select on public.readable_variables to authenticated;
 grant select (id,org_id,owner_id,scope,name,version,epoch,status,expires_at,created_at,updated_at) on public.application_secrets to authenticated;
 grant select on public.application_vault_audit to authenticated;
 -- No JWT writes, including ciphertext writes: all mutation authorization/CAS/audit is server-owned.
+
+create index application_secret_uploads_expiry on public.application_secret_uploads(expires_at);
+create index application_vault_audit_expiry on public.application_vault_audit(created_at);

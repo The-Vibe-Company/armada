@@ -302,7 +302,10 @@ export async function startServer(
     lifecycle,
     options.logError,
     goldenRetirements,
-    () => pruneResourceObservations(sql, new Date()),
+    async () => {
+      await control.applicationVault?.purgeExpired();
+      await pruneResourceObservations(sql, new Date());
+    },
     orchestrators
       ? [
           orchestrators.runtime.createWorker,

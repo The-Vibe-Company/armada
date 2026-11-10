@@ -605,6 +605,8 @@ async function dispatch(
 ): Promise<unknown> {
   if (route.startsWith("variables/") || route.startsWith("secrets/")) {
     if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
+    if (!/^(variables|secrets)\/[a-z]+$/.test(route))
+      throw new VaultError("invalid", "Invalid application vault request.");
     const [resource, operation] = route.split("/");
     return options.applicationVault.command(
       caller,
