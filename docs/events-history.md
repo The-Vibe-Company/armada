@@ -43,9 +43,10 @@ backward page to forward polling at its newest cursor.
 
 ## Synthetic 2,000-event measurement
 
-Real Boat SDK with fake fetch, 2,000 identified fragments. Forward drain:
-**20 requests, 356449 response bytes, 2000 events, 22.11 ms**. Latest 100 raw
-events coalesced: **1 request, 501 response bytes, 1 message event, 1.32 ms**.
+Real Boat SDK with fake fetch, 2,000 identified fragments. Baseline provider
+source from main (a16e4352), forward drain:
+**20 requests, 356449 response bytes, 2000 events, 3.93 ms**. Latest 100 raw
+events coalesced: **1 request, 501 response bytes, 1 message event, 2.88 ms**.
 Timings are local CPU, not production/network/phone latency. The after read
 intentionally loads the current window, not all 2,000 events. Reproduction
 and raw results are in ignored Ship PR artifacts.
