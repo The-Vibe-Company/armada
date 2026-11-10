@@ -12,18 +12,16 @@ function finishMatched(boat: FakeBoat, promptId: string) {
   const index = Number(promptId.split("_")[1]) - 1;
   const model = boat.prompts[index]?.model;
   if (!model) throw new Error("Fixture needs an explicit requested model");
-  boat
-    .sandbox("bx_1")
-    .events.push({
-      id: `response_${promptId}`,
-      at: index + 1,
-      kind: "message",
-      promptId,
-      model,
-      text: "done",
-      partial: false,
-      tools: [],
-    });
+  boat.sandbox("bx_1").events.push({
+    id: `response_${promptId}`,
+    at: index + 1,
+    kind: "message",
+    promptId,
+    model,
+    text: "done",
+    partial: false,
+    tools: [],
+  });
   boat.finish("bx_1", promptId, "finished");
 }
 
