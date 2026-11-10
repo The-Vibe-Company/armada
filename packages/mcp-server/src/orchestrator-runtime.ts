@@ -203,7 +203,8 @@ export class OrchestratorRuntime {
       const page = await backend.provider.events({
         sandboxId: identity.providerSandboxId,
         conversationId: identity.conversationId,
-        limit: 500,
+        // Match the ordinary Boat poll page size; larger requests can be refused.
+        limit: 200,
         ...(upstream ? { cursor: upstream } : {}),
         ...(signal ? { signal } : {}),
       });
