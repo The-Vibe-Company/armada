@@ -411,9 +411,9 @@ export interface EventsRequest {
   direction?: "forward" | "backward";
   /** Raw events inspected, before optional page-local coalescing (1..1000; default 100). */
   limit?: number;
-  /** UTF-8 JSON events-array budget (256..1048576; default 262144). Oversized events are refused. */
+  /** UTF-8 JSON events-array budget (256..1048576; default 262144). A larger event is returned alone, or replaced by event_truncated above 1 MiB. */
   maxBytes?: number;
-  /** Coalesce consecutive, explicitly identified message fragments within this page only. */
+  /** Coalesce consecutive identified messages only from an authoritative snapshot; delta-only runs remain raw. */
   coalesce?: boolean;
 }
 
