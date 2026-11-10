@@ -28,13 +28,16 @@ Record exact commands and skipped checks. Rerun affected checks after any source
 
 ## D. Single Review Gate
 
-Follow `review-gate.md` for the `review-code-dev` v2 Alibaba contract: version check, portable OCR setup, frozen branch plus in-scope workspace coverage, one isolated reviewer, upstream severity and required artifacts. Provide the original need and approved plan when supplied, with a criterion-to-implementation-to-evidence map; require this single reviewer to assess both. Use the risk tier as a depth hint and frontend/security/API concerns as focus instructions within the same review.
-
-Fix critical/high/medium findings under `readiness-gates.md`. Resume the same primary for affected files/contracts after corrections; no old specialist router, parser scripts, or native fallback is assumed. Review remains read-only and the coordinator owns every fix and Git operation.
+Follow `review-gate.md`: push a frozen candidate and open a draft first,
+then launch one fresh Armada reviewer sandbox with only the ticket and diff
+instruction. The reviewer bootstraps OCR there; no author brief or transcript.
+Use at most two rounds, always stop, and confirm cleanup. Changed source requires
+a fresh round; no same-session substitute. Require the Real-provider verification
+section for lifecycle, provider-adapter and agent-runtime changes.
 
 ## E. Commit And PR
 
-Recheck status, stage intentional paths, inspect the staged diff, and use commitzen commits. Push normally. Create or update a PR only after local gates pass unless the user explicitly requests a visible draft with blockers.
+Recheck status, stage intentional paths, inspect the staged diff, and use commitzen commits. Push normally. Open a draft before review, and mark ready only after all gates pass.
 
 PR titles are commitzen. The body must distinguish verified facts, skipped checks, residual risk, and human decisions. For UI changes, add shareable current screenshots to the PR through an available authorized mechanism. A machine-local path is not a PR attachment; if no mechanism is available, state the missing attachment precisely.
 

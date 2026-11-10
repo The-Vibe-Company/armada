@@ -136,17 +136,21 @@ Workers may diagnose a non-obvious failure, but the coordinator runs and records
 
 ### 5. Run One Independent Review Gate
 
-Follow `references/review-gate.md` using `review-code-dev` v2 (Alibaba delegation) once the branch and local checks are coherent. The coordinator prepares OCR with the dependency's portable bootstrap; one isolated read-only host reviewer performs the upstream workflow. No additional LLM endpoint or key is required.
+Follow `references/review-gate.md` using `review-code-dev` v2 (Alibaba delegation) once the branch and local checks are coherent. Use the dependency's portable bootstrap in the reviewer sandbox; one fresh read-only Armada reviewer sandbox performs the upstream workflow. No additional LLM endpoint or key is required.
 
-Pass the goal, original request/ticket and approved plan when supplied, a criterion-to-implementation-to-evidence map, frozen branch/workspace scope, changed-file inventory, risk tier, required focus areas, prepared OCR paths and output contract. The single reviewer checks both the original need and any approved plan against the delivered behavior. `quick`/`standard`/`deep` are caller depth hints, not OCR flags or legacy skill modes. Frontend/accessibility/responsive/state coverage belongs inside this same review. Git ownership and fixes stay with the coordinator.
-
-Treat critical/high as blockers; fix medium by default and require explicit human acceptance for any remaining medium risk. Preserve upstream severity and map to P0–P3 only for existing ship-state consumers. Complete coverage is required even when findings are empty. OCR setup failure is a review blocker, not a trigger for the removed native fallback.
-
-After fixes, rerun affected checks and resume the same reviewer on the changed files and affected contracts. Carry forward only evidence whose reviewed content is unchanged; refresh the full scope when necessary. Record `review-gate.md` with the dependency version, OCR version, exact reviewed content, severity counts and coverage before commit/push. Hooks or later changes must not silently invalidate the review.
+Follow `references/review-gate.md`: launch through the worker's own Armada
+identity, with only the issue and frozen-diff review instruction, no author
+transcript or prepared narrative. Prefer a different available harness/model.
+One reviewer per round, at most two rounds, always stop and verify cleanup.
+The reviewer prepares OCR in its own sandbox. Missing launch authority/auth is
+a blocker, never permission to substitute a same-session reviewer.
+For lifecycle, provider-adapter or agent-runtime changes require a
+**Real-provider verification** PR section stating live evidence or the exact
+deployed check the coordinator must run. Never claim mocks prove live behavior.
 
 ### 6. Commit, Push, PR, And CI
 
-After local gates pass:
+Push a coherent candidate and open a draft before independent review; after all gates pass, mark it ready:
 
 1. Recheck status and staged diff.
 2. Use a safe branch; when creating one under Codex, prefer `codex/<purpose>` unless repo guidance or the user says otherwise.

@@ -39,10 +39,11 @@ Stay in the coordinator for one-tool-call edits, deterministic discovery, checks
 
 ### Primary reviewer
 
-- Read-only and isolated.
-- Dispatched by the coordinator using this host matrix and a fresh context; runs `review-code-dev` v2 Alibaba delegation.
-- Performs the review and required focus areas directly, with no nested review agents. Returns the contract in `review-gate.md`; never fixes code.
-- OCR bootstrap and deterministic preview/rule preparation stay with the coordinator. If no isolated adapter exists, report the independent-review blocker rather than silently self-approving.
+- Must run in a fresh Armada sandbox through the worker's own identity, not the
+  host matrix above. Follow `review-gate.md` for minimal inputs, harness/model
+  diversity, two-round limit, returned results and mandatory stop confirmation.
+- No author transcript, nested reviewers, fixes or Git/PR mutations.
+- Missing launch/auth/permission/quota is a blocker, not a local-review fallback.
 
 ### CI investigator
 
