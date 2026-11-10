@@ -88,6 +88,8 @@ export function SandboxChat(props: Props) {
   const [poll, setPoll] = useState<Poll>({ error: null, configured: true });
   const [hasMore, setHasMore] = useState(false);
   const [turnModel, setTurnModel] = useState<{
+    promptId?: string;
+    conversationId?: string | null;
     requestedModel?: string | null;
     observedModel?: string | null;
     modelSelectionReason?: string | null;
@@ -200,6 +202,9 @@ export function SandboxChat(props: Props) {
 
         {turnModel && (
           <div className="px-4 py-2 text-sm" role="status">
+            <p>
+              Latest turn {turnModel.promptId ?? "unknown"} · Conversation {turnModel.conversationId ?? "unknown"}
+            </p>
             <p>
               Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
             </p>
