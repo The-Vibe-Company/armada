@@ -28,12 +28,28 @@ describe("launch database", () => {
         resolve: async () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN }, secrets: [TOKEN], codexAuthJson: false }),
       };
       // Keep golden visibility and subsequent sandbox reads under the user role,
-      // but model physical registration through the trusted server connection.
+      // but model physical registration and accepted turn receipts through the server connection.
       const stores = {
         goldens,
         credentials,
         sandboxes: {
           ...sandboxes,
+          async update(id: string, patch: Parameters<typeof sandboxes.update>[1]) {
+            // The API-only client cannot write trusted provider receipts. The
+            // launch service records them; raw user-role updates below still
+            // exercise the sandbox's actual grants and RLS independently.
+            await db.exec("savepoint server_receipt");
+            try {
+              await db.exec("set local role service_role");
+              await sandboxes.update(id, patch);
+              await db.exec("release savepoint server_receipt");
+            } catch (error) {
+              await db.exec("rollback to savepoint server_receipt; release savepoint server_receipt");
+              throw error;
+            } finally {
+              await db.exec("set local role authenticated");
+            }
+          },
           async insert(input: Parameters<typeof sandboxes.insert>[0]) {
             await db.exec("savepoint server_registration");
             try {
@@ -59,6 +75,9 @@ describe("launch database", () => {
         }),
       );
       expect(mine.sandbox).toMatchObject({ ownerId: people.owner, harness: "claude", status: "running" });
+      await expect(
+        asUser(db, people.owner, () => sandboxes.update(mine.sandbox.id, { taskPromptId: "forged-receipt" })),
+      ).rejects.toThrow(/permission denied/);
       expect(boat.forks[0]).toMatchObject({ noEnv: true, env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } });
 
       await expect(

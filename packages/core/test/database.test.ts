@@ -105,6 +105,7 @@ describe("database", () => {
         "organization_invitations",
         "orgs",
         "resource_observations",
+        "sandbox_work_recovery",
         "sandboxes",
         "service_tokens",
       ]);
@@ -282,6 +283,7 @@ describe("database", () => {
         "notify_subscriptions.secret_enc",
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
+        "sandbox_work_recovery.archive_enc",
       ]);
 
       const checks = await db.query<{ def: string }>(`

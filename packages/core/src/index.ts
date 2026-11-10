@@ -252,6 +252,7 @@ export {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
+export type { TaskOutcome } from "./task-outcome.ts";
 export {
   type AccountMutation,
   addMember,
