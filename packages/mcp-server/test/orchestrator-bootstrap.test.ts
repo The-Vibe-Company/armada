@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Provider } from "@armada/core";
 import { bootstrapOrchestrator } from "../src/orchestrator-bootstrap.ts";
 
@@ -77,4 +80,55 @@ describe("orchestrator bootstrap", () => {
       expect(commands).toHaveLength(0);
     },
   );
+});
+
+test("bootstrap uses existing CLI or pinned public installer without executing registry scripts", async () => {
+  for (const existing of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), "armada-installer-"));
+    const trace = join(root, "arguments");
+    const project = "/home/user/repo'$(false)";
+    try {
+      const program = '#!/bin/sh\nprintf "%s\\n" "$@" > "$TRACE"\nprintf "Source: %s\\n" "$SOURCE"\n';
+      await writeFile(join(root, "npx"), program, { mode: 0o700 });
+      if (existing) await writeFile(join(root, "armada"), program, { mode: 0o700 });
+      const provider = {
+        exec: async ({ command }: { command: string }) => {
+          const child = Bun.spawn(["/bin/sh", "-c", command], {
+            cwd: root,
+            env: { PATH: root, TRACE: trace, SOURCE: source },
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const [stdout, stderr, exitCode] = await Promise.all([
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+            child.exited,
+          ]);
+          return { detached: false, stdout, stderr, exitCode, timedOut: false, truncated: false };
+        },
+      } as unknown as Provider;
+      let configured = false;
+      await bootstrapOrchestrator(provider, {
+        sandboxId: "fixture",
+        projectDir: project,
+        skillRevision: revision,
+        configureAuthority: async () => {
+          configured = true;
+        },
+      });
+      expect(configured).toBe(true);
+      expect((await readFile(trace, "utf8")).trimEnd().split("\n")).toEqual([
+        ...(existing ? [] : ["--yes", "--ignore-scripts", "--package", "@the-vibe-company/armada@2.14.0", "armada"]),
+        "skill",
+        "install",
+        "--project",
+        project,
+        "--yes",
+        "--revision",
+        revision,
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });

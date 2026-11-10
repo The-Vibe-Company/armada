@@ -125,3 +125,26 @@ test("known provider readiness, billing and harness refusals retain their safe r
   ]);
   expect(lines.join("\n")).not.toContain("synthetic-private-provider-detail");
 });
+
+test("Modal boot labels are allowlisted while opaque provider diagnostics stay private", () => {
+  const lines: string[] = [];
+  for (const providerCode of ["modal_boot_baseline", "private-provider-detail"]) {
+    const diagnostic = new OrchestratorDiagnostics((line) => lines.push(line), "create");
+    diagnostic.stage("fork");
+    diagnostic.report(
+      "uncertain",
+      new ProviderError({
+        provider: "modal",
+        code: "conflict",
+        providerCode,
+        message: "private-provider-detail",
+        retryable: false,
+      }),
+    );
+  }
+  expect(lines.map((line) => JSON.parse(line).reason)).toEqual([
+    "provider_conflict_modal_boot_baseline",
+    "provider_conflict",
+  ]);
+  expect(lines.join("\n")).not.toContain("private-provider-detail");
+});

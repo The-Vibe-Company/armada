@@ -77,7 +77,7 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
 
 Usage:
-  armada orchestrator --help               Persistent coordinator create/list/detail/send/steer/stop/resume/events/capabilities
+  armada orchestrator --help               Persistent coordinator create/list/detail/send/steer/stop/resume/recover/events/capabilities
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]

@@ -43,36 +43,40 @@ const receipt = {
   errorCode: null,
 };
 
-test("registered resume sends exact candidate route, org selector, key and revision without prompt", async () => {
-  const h = harness(() => Response.json(receipt, { status: 202 }));
-  expect(
-    await h.invoke([
-      "resume",
-      "parent-1",
-      "--org",
-      "org-1",
-      "--expected-revision",
-      "7",
-      "--idempotency-key",
+test.each(["resume", "recover"])(
+  "registered %s sends exact candidate route, org selector, key and revision without prompt",
+  async (action) => {
+    const response = { ...receipt, kind: action === "recover" ? "stop" : "resume" };
+    const h = harness(() => Response.json(response, { status: 202 }));
+    expect(
+      await h.invoke([
+        action,
+        "parent-1",
+        "--org",
+        "org-1",
+        "--expected-revision",
+        "7",
+        "--idempotency-key",
+        "same-key",
+        "--json",
+      ]),
+    ).toEqual({ code: 0, out: `${JSON.stringify(response)}\n`, err: "" });
+    expect(h.requests).toHaveLength(1);
+    const request = h.requests[0] as Request;
+    expect([
+      request.method,
+      request.url,
+      request.headers.get("idempotency-key"),
+      request.headers.get("authorization"),
+    ]).toEqual([
+      "POST",
+      `https://armada.test/api/v1/orchestrators/parent-1/${action}`,
       "same-key",
-      "--json",
-    ]),
-  ).toEqual({ code: 0, out: `${JSON.stringify(receipt)}\n`, err: "" });
-  expect(h.requests).toHaveLength(1);
-  const request = h.requests[0] as Request;
-  expect([
-    request.method,
-    request.url,
-    request.headers.get("idempotency-key"),
-    request.headers.get("authorization"),
-  ]).toEqual([
-    "POST",
-    "https://armada.test/api/v1/orchestrators/parent-1/resume",
-    "same-key",
-    "Bearer test-armada-bearer",
-  ]);
-  expect(await request.json()).toEqual({ orgId: "org-1", expectedRevision: 7 });
-});
+      "Bearer test-armada-bearer",
+    ]);
+    expect(await request.json()).toEqual({ orgId: "org-1", expectedRevision: 7 });
+  },
+);
 
 test("rejects keys that HTTP headers would trim before making any request", async () => {
   const h = harness(() => {

@@ -174,6 +174,8 @@ export {
   type InterruptRequest,
   isFinalPromptStatus,
   type ListRequest,
+  type OrchestratorCreateRecoveryProof,
+  type OrchestratorCreateRecoveryRequest,
   type Page,
   PROMPT_STATUSES,
   type PrepareNativeHarnessCwdRequest,

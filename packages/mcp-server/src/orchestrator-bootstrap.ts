@@ -33,11 +33,19 @@ export async function bootstrapOrchestrator(
     throw new Error("orchestrator_invalid_bootstrap");
   }
   const source = `https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills`;
+  // Public installer-only pin, independent of server rollout/npm release races.
+  // Existing goldens need not already contain the Armada CLI; use the same
+  // reviewed installer rather than a second copier or unpinned remote script.
+  const installer = `install_armada_skills() {
+    if command -v armada >/dev/null 2>&1; then armada "$@";
+    else npx --yes --ignore-scripts --package @the-vibe-company/armada@2.14.0 armada "$@"; fi
+  }`;
   let installed = false;
   try {
     const result = await provider.exec({
       sandboxId,
-      command: `armada skill install --project ${quote(projectDir)} --yes --revision ${quote(revision)}`,
+      command: `${installer}
+install_armada_skills skill install --project ${quote(projectDir)} --yes --revision ${quote(revision)}`,
       cwd: projectDir,
       timeoutSeconds: 300,
     });

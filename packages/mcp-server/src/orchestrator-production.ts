@@ -19,6 +19,7 @@ import {
 } from "./orchestrator-backend-resolver.ts";
 import { launchOrchestratorChild } from "./orchestrator-child-launch.ts";
 import type { OrchestratorChildExecutor } from "./orchestrator-children.ts";
+import { createOrchestratorCreateRecovery } from "./orchestrator-create-recovery.ts";
 import type { OrchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-native.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
@@ -199,6 +200,7 @@ export function createProductionOrchestrators(input: {
       skillRevision: input.skillRevision,
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs: ["modal:codex"],
+      recoverCreate: createOrchestratorCreateRecovery(sql, input.providers),
       resolveBackend: selection.resolveBackend,
       managed: { sql, resolveManaged: selection.resolveManaged },
     },

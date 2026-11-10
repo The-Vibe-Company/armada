@@ -75,15 +75,64 @@ payload** returns the original receipt. It does not launch again, repair bootstr
 or retry the effect. A changed payload under that key is a conflict. The read-only
 reconcile endpoint likewise discovers the receipt, not a successful allocation.
 
-`stop` is not currently an escape hatch for a pending/uncertain owner operation:
-new mutations are rejected by the busy-operation fence. `resume` also requires a
-verified native stopped conversation; it cannot recover an incomplete create.
-There is no honest self-service stop/retry command that clears such uncertainty.
-Do not edit receipts, drop state, reset the create key, or create a replacement
-until the original resource outcome is positively established by the operator.
-A missing provider listing alone does not prove a delayed allocation cannot land.
-Retain identities/history and the exact original provider correlation while the
-operator reconciles; never turn a read-only reconcile request into a hidden retry.
+`stop` by itself is not an escape hatch for a pending/uncertain create. For the
+specific Modal case with **no public sandbox/conversation binding** and an
+uncertain first create, the owner can explicitly recover through Armada:
+
+```sh
+armada orchestrator recover ID --org ORG --expected-revision ORIGINAL_REVISION \
+  --idempotency-key RECOVERY_KEY --json
+```
+
+This reserves a fenced stop-kind recovery receipt, discovers the original Modal
+reservation by its **create operation UUID**, and validates owner/org, immutable
+App/environment/source, original labels, logical/physical identity and generation.
+It does not fork, run a model, resolve model-account values, or use caller-supplied
+cloud IDs. It terminates the exact owned resource through Armada's Modal provider
+and settles the old create as failed/parent stopped only after positive terminal
+proof is durable. A missing lookup/404, wrong tags, new generation or an old generic
+`deleted` row is not sufficient proof. Logical identity and history are retained.
+
+Keep the exact recovery key and ORIGINAL revision after an uncertain response;
+never substitute the new revision or a fresh recovery key. Successful receipt
+replay performs no cloud effect. Repeating an **unconfirmed** recovery manually
+may retry idempotent termination of the same freshly revalidated physical
+identity; it never allocates/starts/restores a machine or targets a replacement.
+The CLI does not automatically retry. The separate provider observation port
+never terminates anything. If proof remains unconfirmed, do not create a
+replacement or edit operation rows: retain the correlated provider receipt and
+follow the operator recovery instructions in the PR. Ordinary `stop` can settle
+normally after confirmed recovery clears the original uncertain-create fence.
+This recovery is not a native resume; an orchestrator that never began a native
+conversation has no verified conversation to resume.
+
+A **fresh create name/key is another allocation**, not an idempotent retry. It is
+safe from duplicating this original resource only after exact recovery succeeds.
+An empty ordinary list or a missing default Modal CLI profile proves nothing about
+the server's pinned workspace/environment/App. Never perform a hand-written cloud
+delete or drop logical history as an uncertainty workaround.
+
+## Booting machine failures before public registration
+
+A saved physical ID in provider phase `booting`, while public `sandboxId` remains
+null, means the failure is inside `ModalProvider.fork` boot confirmation, before
+ordinary sandbox registration. The relevant calls are runtime preparation,
+process-baseline capture, fresh-filesystem sanitization, private startup/harness
+environment, health and active-publication. It is not the later public skill CLI
+or epoch delivery. Exhausting the normal health loop takes at least roughly 30s;
+a 3.5s failure cannot be that exhausted-loop timeout, though individual startup or
+publication failures can be fast. Safe provider boot codes distinguish these
+substeps; do not infer a unique exception from `phase=booting` alone.
+
+Saved goldens contain the Runner artifact from their build date. A fresh logical
+fork now installs this server's verified public bundle before baseline/bootstrap,
+with pinned Bun and strict root-owned/non-writable/symlink checks. The payload goes
+over stdin, not argv, and contains no bootstrap secret. Native checkpoint restore
+generations do not silently rewrite code/native state/journal. Existing goldens
+without an `armada` CLI use the same installer via explicitly pinned public npm
+CLI 2.14.0 with registry scripts disabled; skill revision/provenance/conflict checks
+remain mandatory. These compatibility repairs do not assert the exact old
+swallowed exception has been recovered.
 
 ## Secret-safe server diagnostics
 
@@ -105,7 +154,7 @@ nonzero installer exit, timeout, detached execution, truncated output and missin
 provenance have distinct safe reasons. They do not bypass the pinned installer,
 conflict refusal, credential lifecycle, epoch fencing or native guarantees.
 
-The Modal golden still needs the reviewed `armada` CLI on PATH supporting
-`skill install --project --yes --revision`, public Git access and no conflicting
-managed skill package directories. These are prerequisites, not a diagnosis of
+The Modal golden needs public Git/npm access and no conflicting managed skill
+package directories; an existing reviewed CLI is used when present, otherwise the
+pinned public installer fallback is used. These are prerequisites, not a diagnosis of
 any particular incident. See [runtime enablement](orchestrator-runtime.md).

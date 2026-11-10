@@ -127,16 +127,18 @@ function fixture(
                         namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
                         processes: [{ pid: 1, start: "1" }],
                       })
-                    : input && "command" in input
-                      ? JSON.stringify({
-                          detached: false,
-                          exitCode: 0,
-                          stdout: "",
-                          stderr: "",
-                          timedOut: false,
-                          truncated: false,
-                        })
-                      : "";
+                    : typeof input?.bundle === "string" && typeof input.sha256 === "string"
+                      ? `ARMADA_RUNTIME_INSTALLED ${createHash("sha256").update(Buffer.from(input.bundle, "base64")).digest("hex")}`
+                      : input && "command" in input
+                        ? JSON.stringify({
+                            detached: false,
+                            exitCode: 0,
+                            stdout: "",
+                            stderr: "",
+                            timedOut: false,
+                            truncated: false,
+                          })
+                        : "";
                 },
               },
               wait: async () => 0,
@@ -238,6 +240,7 @@ function fixture(
     provider,
     store,
     client,
+    distribution,
     log,
     bootstraps,
     requestedRuntimes,
@@ -2641,3 +2644,69 @@ test("receipt-bound removed-owner cleanup can drain only its exact Modal machine
     ]);
   }
 });
+
+test("boot runtime preparation precedes baseline, fresh cleanup, Runner start and readiness", async () => {
+  const f = fixture();
+  f.distribution.prepareRuntime = async () => {
+    f.log.push("runtime-overlay");
+  };
+  f.distribution.captureProcessBaseline = async (_sb, row) => {
+    f.log.push("baseline");
+    return {
+      version: 1,
+      physicalId: row.physicalId!,
+      generation: row.generation,
+      namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
+      processes: [{ pid: 1, start: "1" }],
+    };
+  };
+  const result = await f.provider.createGolden({ name: `ordered-boot-${crypto.randomUUID()}` });
+  expect(result.state).toBe("ready");
+  expect(f.log).toEqual(["runtime-overlay", "baseline", "fresh-1", "start-1", "health"]);
+});
+
+test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as const)(
+  "boot stage %s preserves the normalized error and durable booting receipt",
+  async (stage) => {
+    const f = fixture();
+    const fail = async () => {
+      throw new ProviderError({
+        provider: "modal",
+        code: "unavailable",
+        retryable: true,
+        status: 503,
+        message: "synthetic-private-runtime-env",
+      });
+    };
+    if (stage === "runtime") f.distribution.prepareRuntime = fail;
+    if (stage === "baseline") f.distribution.captureProcessBaseline = fail;
+    if (stage === "fresh") f.distribution.prepareFreshMachine = fail;
+    if (stage === "start") f.distribution.start = fail;
+    if (stage === "active_publication")
+      await db.exec(`create function boot_publication_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='40001',message='synthetic-private-sql'; end $$;
+    create trigger boot_publication_fault before update of record on modal_machines for each row when (new.record->>'phase'='active') execute function boot_publication_fault()`);
+    try {
+      let failure: unknown;
+      try {
+        await f.provider.createGolden({ name: `failed-boot-${crypto.randomUUID()}` });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(ProviderError);
+      expect(failure).toMatchObject({
+        providerCode: `modal_boot_${stage}`,
+        code: stage === "active_publication" ? "unknown" : "unavailable",
+      });
+      if (stage !== "active_publication") expect(failure).toMatchObject({ retryable: true, status: 503 });
+      const receipt = modalFailureReceipt(failure);
+      expect(receipt).toMatchObject({ phase: "booting", registryConfirmed: true, generation: 1 });
+      expect((await f.store.get(receipt!.sandboxId)).phase).toBe("booting");
+      expect(f.creates).toBe(1);
+      expect(JSON.stringify(failure)).not.toContain("synthetic-private-runtime-env");
+      expect(JSON.stringify(failure)).not.toContain("synthetic-private-sql");
+    } finally {
+      if (stage === "active_publication")
+        await db.exec("drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()");
+    }
+  },
+);

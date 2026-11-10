@@ -24,19 +24,22 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   capabilities
   detail <id> --org <id>
   send|steer <id> <text> --org <id> --expected-revision <revision> --idempotency-key <key>
-  stop|resume <id> --org <id> --expected-revision <revision> --idempotency-key <key>
+  stop|resume|recover <id> --org <id> --expected-revision <revision> --idempotency-key <key>
   events <id> --org <id> [--cursor <cursor>] [--limit <1..500>] [--all|--follow]
   Omit --size to use server repository > golden > legacy defaults.
   All commands accept --json. Events with --json emit one JSON page per line,
   including the server cursor for reconnect. Reuse the original key and identical
   arguments after an uncertain mutation; inspect detail/events for completion.
+  Recover nonallocatingly terminates an exact uncertain pre-registration create;
+  repeat its original key/arguments to retry only that exact termination.
+  Completed recovery receipts replay read-only; recovery never forks.
   Resume restores native state without sending a prompt. The server decides
   availability, account access, continuity and lifecycle; no local quota policy.
 `;
 
 type ReadCommand = { action: "list" | "detail" | "events" | "capabilities"; id?: string; query: URLSearchParams };
 type MutationCommand = {
-  action: "create" | "message" | "steer" | "stop" | "resume";
+  action: "create" | "message" | "steer" | "stop" | "resume" | "recover";
   id?: string;
   key: string;
   orgId: string;
@@ -130,7 +133,13 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
         query.set("limit", String(integer(args, "--limit", 1, action === "list" ? 100 : 500)));
     }
     command = { action, ...(positionals[0] === undefined ? {} : { id: positionals[0] }), query };
-  } else if (action === "send" || action === "steer" || action === "stop" || action === "resume") {
+  } else if (
+    action === "send" ||
+    action === "steer" ||
+    action === "stop" ||
+    action === "resume" ||
+    action === "recover"
+  ) {
     const message = action === "send" || action === "steer";
     if (positionals.length !== (message ? 2 : 1) || (message && !positionals[1]?.trim()))
       usage(`${action} needs one ID${message ? " and one nonempty text argument" : ""}.`);
@@ -145,7 +154,7 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       orgId: required(args, "--org"),
       body: message ? { ...fence, text: positionals[1] as string } : fence,
     };
-  } else usage("Choose create, list, detail, send, steer, stop, resume events or capabilities.");
+  } else usage("Choose create, list, detail, send, steer, stop, resume, recover, events or capabilities.");
   for (const option of args.options.keys()) {
     if (!allowed.has(option)) usage(`${option} is not supported by ${action}.`);
     single(args, option);

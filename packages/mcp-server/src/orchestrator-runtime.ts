@@ -49,6 +49,10 @@ export interface OrchestratorRuntimeBackend {
 export interface OrchestratorRuntimeOptions {
   diagnosticLog?: OrchestratorDiagnosticLog;
   enabledPairs?: readonly OrchestratorPair[];
+  recoverCreate?: (
+    input: { ownerId: string; orgId: string; id: string; expectedRevision: number; key: string },
+    diagnostics?: OrchestratorDiagnostics,
+  ) => Promise<OrchestratorOperation>;
   store: OrchestratorRuntimeStore;
   authority: OrchestratorRuntimeFoundation["authority"];
   skillRevision: string;
@@ -365,6 +369,22 @@ export class OrchestratorRuntime {
               });
         return { conversationId: receipt.conversationId };
       });
+    } catch (error) {
+      diagnostics.reportUnhandled(error);
+      throw error;
+    }
+  }
+
+  async recover(
+    caller: Caller,
+    input: { orgId: string; id: string; expectedRevision: number; key: string },
+  ): Promise<OrchestratorOperation> {
+    const diagnostics = new OrchestratorDiagnostics(this.options.diagnosticLog, "recover");
+    diagnostics.bind({ orchestratorId: input.id });
+    try {
+      const ownerId = this.owner(caller, input.orgId);
+      if (!this.options.recoverCreate) throw new OrchestratorRuntimeError("unavailable");
+      return await this.options.recoverCreate({ ...input, ownerId }, diagnostics);
     } catch (error) {
       diagnostics.reportUnhandled(error);
       throw error;
