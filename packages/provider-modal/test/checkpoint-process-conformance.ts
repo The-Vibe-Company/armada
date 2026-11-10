@@ -99,17 +99,37 @@ if (process.argv.includes("--parent")) {
   const deadline = setTimeout(() => {
     throw Error("Real MCP startup deadline exceeded");
   }, 30000);
-  const started = await reader.read();
-  clearTimeout(deadline);
-  if (started.done || !new TextDecoder().decode(started.value).includes('"ready":true'))
-    throw Error("Both real MCP servers must start");
+  const decoder = new TextDecoder();
+  let frame = "";
+  try {
+    while (!frame.includes("\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw Error("Both real MCP servers must start");
+      frame += decoder.decode(chunk.value, { stream: true });
+      if (frame.length > 4096) throw Error("Invalid startup frame");
+    }
+    if (JSON.parse(frame.slice(0, frame.indexOf("\n"))).ready !== true) throw Error("Both real MCP servers must start");
+  } finally {
+    clearTimeout(deadline);
+  }
+  // Without CAP_SYS_PTRACE, dropping CAP_KILL can also deny reading another
+  // process's namespace. That must fail closed before it attempts any signals.
+  const canInspect =
+    (await Bun.spawn(["setpriv", "--bounding-set=-kill", "readlink", "/proc/1/ns/pid"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }).exited) === 0;
   dropKill = true;
   try {
     await quiesceSandboxProcesses(sdk, machine);
     throw Error("Missing CAP_KILL unexpectedly accepted");
   } catch (error) {
     const details = (error as { details?: { processCategory?: string; processFailure?: string } }).details;
-    if (details?.processCategory !== "runtime_or_mcp" || details.processFailure !== "pidfd_signal") throw error;
+    if (
+      details?.processCategory !== (canInspect ? "runtime_or_mcp" : "unknown") ||
+      details.processFailure !== (canInspect ? "pidfd_signal" : "unproven")
+    )
+      throw error;
   }
   dropKill = false;
   await quiesceSandboxProcesses(sdk, machine);

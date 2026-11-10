@@ -15,8 +15,11 @@ sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/te
 
 The disposable namespace starts a flock/runuser launcher, Codex app-server and two
 real stdio MCP servers. Both MCP startup acknowledgements are required. With
-CAP_KILL removed, the real scrub refuses and identifies `runtime_or_mcp`;
-with normal privileges, it kills every non-control process. This does **not**
+CAP_KILL removed, the real scrub refuses and identifies `runtime_or_mcp` when
+namespace inspection is permitted. On hosts without CAP_SYS_PTRACE it refuses
+earlier with `unknown` because the restricted process cannot read PID1's namespace.
+Both configurations are checked locally. With normal privileges it kills every
+non-control process. This does **not**
 prove that missing CAP_KILL is the production cause. The pre-change code fails
 the diagnostic assertion; the unrestricted tree already quiesced on main.
 
