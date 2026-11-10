@@ -170,7 +170,7 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
 };
 
 /** Within one scope, the first kind a harness finds wins. The two Claude kinds never reach the sandbox together. */
-const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
+export const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
   claude: ["claude_oauth", "anthropic"],
   codex: ["openai", "codex_auth"],
 };
