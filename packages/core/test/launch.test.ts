@@ -423,7 +423,10 @@ describe("launch", () => {
       golden: golden("org"),
       exec: (command) =>
         command.includes("'pull'")
-          ? { exitCode: 128, stderr: "fatal: detected dubious ownership in repository at '/home/user/web'" }
+          ? {
+              exitCode: 128,
+              stderr: "fatal: detected dubious ownership in repository at '/home/user/web'\n" + "x".repeat(2500),
+            }
           : { exitCode: 0 },
     });
     const failure = await launchSandbox(world.provider, world.stores, owner, {
@@ -433,9 +436,14 @@ describe("launch", () => {
     }).catch((error: unknown) => error as LaunchError);
     expect(failure).toBeInstanceOf(LaunchError);
     const error = failure as LaunchError;
-    expect(error.code).toBe("init_failed");
+    expect(error.code).toBe("repository_ownership_mismatch");
+    expect(error.safeReason).toBe("repository_ownership_mismatch");
+    expect(error.cause).toBeInstanceOf(LaunchError);
+    expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
+    expect(error.message).toContain("bx_1");
     expect(error.message).toContain("checkout ownership");
-    expect(error.message).toContain("rebuild");
+    expect(error.message).toContain("Report this golden and sandbox ID");
+    expect(error.message).not.toContain("rebuild");
     expect(error.message).not.toContain("fatal:");
     expect(error.message).not.toContain("safe.directory");
     expect(world.rows.get(error.sandboxId ?? "")).toMatchObject({ status: "failed", statusReason: error.message });

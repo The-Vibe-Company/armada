@@ -465,21 +465,7 @@ async function setup(
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
-    try {
-      await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets);
-    } catch (error) {
-      // Do not disable Git's ownership guard or expose its raw safe.directory workaround.
-      if (
-        error instanceof LaunchError &&
-        error.code === "init_failed" &&
-        error.message.includes("detected dubious ownership in repository")
-      )
-        throw new LaunchError(
-          "init_failed",
-          `Cannot update repository '${repo.dir}': checkout ownership does not match the sandbox command user. Ask the golden owner to rebuild and snapshot the golden with repositories owned by the sandbox user, then retry the launch.`,
-        );
-      throw error;
-    }
+    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, repo.dir);
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
@@ -532,6 +518,7 @@ async function run(
   spec: ShellCommand,
   label: string,
   secrets: readonly string[],
+  repository?: string,
 ): Promise<void> {
   const result = await provider.exec({
     sandboxId,
@@ -544,10 +531,18 @@ async function run(
     throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
   }
   if (result.exitCode !== 0) {
-    throw new LaunchError(
+    const failure = new LaunchError(
       "init_failed",
       `${label} failed (exit ${result.exitCode}).${output(result.stderr, result.stdout, secrets)}`,
     );
+    // Inspect stderr before diagnostic-tail truncation; never bypass Git's ownership guard.
+    if (repository !== undefined && result.stderr.includes("detected dubious ownership in repository"))
+      throw new LaunchError(
+        "repository_ownership_mismatch",
+        `Cannot update repository '${repository}' in sandbox ${sandboxId}: checkout ownership does not match the user running sandbox commands. Report this golden and sandbox ID to its administrator to check command-user and checkout UIDs for the selected machine size before retrying.`,
+        { cause: failure, safeReason: "repository_ownership_mismatch" },
+      );
+    throw failure;
   }
 }
 

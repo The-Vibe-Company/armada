@@ -15,6 +15,7 @@ export const LAUNCH_FAILURE_REASONS = [
   "github_setup_timeout",
   "github_setup_nonzero",
   "native_auth_write_failed",
+  "repository_ownership_mismatch",
   "visibility_not_persisted",
 ] as const;
 export type LaunchFailureReason = (typeof LAUNCH_FAILURE_REASONS)[number];
@@ -30,6 +31,8 @@ export type LaunchErrorCode =
   | "start_failed"
   /** A `git pull` or an init command failed. The message holds its output. */
   | "init_failed"
+  /** Non-retryable until checkout ownership or the provider command user is corrected. */
+  | "repository_ownership_mismatch"
   /** The sandbox is set up but the first prompt was refused. */
   | "prompt_failed";
 
