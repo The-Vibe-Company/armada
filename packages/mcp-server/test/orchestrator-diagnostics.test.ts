@@ -106,6 +106,22 @@ test("unknown/hostile codes and failed synchronous/asynchronous log sinks cannot
   new OrchestratorDiagnostics(async () => {
     throw Error("untrusted-secret-code");
   }, "stop").report("uncertain");
+  expect(() =>
+    diagnostics.report(
+      "uncertain",
+      new ProviderError({
+        provider: "modal",
+        code: "conflict",
+        retryable: false,
+        message: "safe",
+        details: {
+          get processCategory() {
+            throw Error("untrusted-secret-code");
+          },
+        },
+      }),
+    ),
+  ).not.toThrow();
   await Promise.resolve();
 });
 
@@ -233,4 +249,31 @@ test.each([
   expect(record).toMatchObject({ stage: "recovery_publication", errorClass });
   expect(record.sqlState).toBe(sqlState);
   expect(lines.join("")).not.toContain("private-");
+});
+
+test("publication preserves native Bun SQLSTATE and database identifiers, never SQL detail", () => {
+  const lines: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "recover");
+  diagnostics.report("publication_failed", {
+    name: "PostgresError",
+    code: "ERR_POSTGRES_SERVER_ERROR",
+    errno: "23514",
+    table: "orchestrator_operations",
+    constraint: "orchestrator_operations_state_check",
+    detail: "private-row-values",
+    query: "private-query",
+  });
+  expect(JSON.parse(lines[0]!)).toMatchObject({
+    sqlState: "23514",
+    table: "orchestrator_operations",
+    constraint: "orchestrator_operations_state_check",
+  });
+  diagnostics.report("publication_failed", {
+    code: "private-code",
+    table: "private/table",
+    constraint: "private constraint",
+  });
+  expect(JSON.parse(lines[1]!)).not.toHaveProperty("table");
+  expect(JSON.parse(lines[1]!)).not.toHaveProperty("constraint");
+  expect(lines.join("")).not.toContain("private");
 });

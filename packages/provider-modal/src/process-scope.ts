@@ -1,3 +1,4 @@
+import { ProviderError } from "@armada/core";
 import type { Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, ProcessBaseline } from "./ports.ts";
@@ -7,6 +8,13 @@ import type { Machine, ProcessBaseline } from "./ports.ts";
 const controller = String.raw`
 import { readFileSync,readlinkSync,readdirSync } from "node:fs";
 import { dlopen,FFIType } from "bun:ffi";
+// Only bounded exit codes cross the remote boundary, never an exception or /proc text.
+let survivorCode=40;
+function category(row){
+  let comm="";try{comm=readFileSync("/proc/"+row.pid+"/comm","utf8").trim();}catch{}
+  return comm==="codex"?41:["bun","bun.exe","node"].includes(comm)?42:row.uid===0?43:44;
+}
+try {
 const input=JSON.parse(await Bun.stdin.text());
 const namespace=()=>({pid:readlinkSync("/proc/self/ns/pid"),mount:readlinkSync("/proc/self/ns/mnt")});
 function identity(pid){
@@ -35,14 +43,16 @@ if(input.op==="capture"){
   const libc=dlopen("libc.so.6",{pidfd_open:{args:[FFIType.i32,FFIType.u32],returns:FFIType.i32},pidfd_send_signal:{args:[FFIType.i32,FFIType.i32,FFIType.ptr,FFIType.u32],returns:FFIType.i32},close:{args:[FFIType.i32],returns:FFIType.i32}});
   const owned=new Map();
   function excluded(row){const expected=controls.get(row.pid)??ancestry.get(row.pid);if(expected!==undefined && expected!==row.start)throw Error("trusted_process_identity_changed");return expected!==undefined;}
+  function fail(row,message){survivorCode=category(row)+(message==="writer_pidfd_unavailable"?10:message==="writer_signal_unverifiable"?20:30);throw Error(message);}
   function pin(row){
+
     const old=owned.get(row.pid);if(old){if(old.start!==row.start)throw Error("writer_pid_reused");return old;}
     const fd=libc.symbols.pidfd_open(row.pid,0);
-    if(fd<0){if(!identity(row.pid))return;throw Error("writer_pidfd_unavailable");}
-    const now=identity(row.pid);if(!now || now.start!==row.start){libc.symbols.close(fd);if(now)throw Error("writer_identity_changed");return;}
+    if(fd<0){if(!identity(row.pid))return;fail(row,"writer_pidfd_unavailable");}
+    const now=identity(row.pid);if(!now || now.start!==row.start){libc.symbols.close(fd);if(now)fail(row,"writer_identity_changed");return;}
     const pinned={...row,fd};owned.set(row.pid,pinned);return pinned;
   }
-  function signal(row,sig){if(libc.symbols.pidfd_send_signal(row.fd,sig,null,0)<0){const now=identity(row.pid);if(now && now.start===row.start && !["Z","X"].includes(now.state))throw Error("writer_signal_unverifiable");}}
+  function signal(row,sig){if(libc.symbols.pidfd_send_signal(row.fd,sig,null,0)<0){const now=identity(row.pid);if(now && now.start===row.start && !["Z","X"].includes(now.state))fail(row,"writer_signal_unverifiable");}}
   try {
     // Freeze additional root/user writers first. A detached child reparented to PID1 is still
     // additional, and a child racing enumeration is frozen by the next sweep before deletion.
@@ -62,10 +72,20 @@ if(input.op==="capture"){
       for(const row of rows){const pinned=pin(row);if(pinned){signal(pinned,19);signal(pinned,9);}}
       await Bun.sleep(10);
     }
-    if(!clean || all().some(row=>!excluded(row)&&!["Z","X"].includes(row.state)))throw Error("writer_quiescence_unproven");
+    const remaining=all().find(row=>!excluded(row)&&!["Z","X"].includes(row.state));
+    if(!clean || remaining){if(remaining)survivorCode=category(remaining);throw Error("writer_quiescence_unproven");}
   } finally {for(const row of owned.values())libc.symbols.close(row.fd);libc.close();}
 }
+} catch { process.exit(survivorCode); }
 `;
+
+const PROCESS_FAILURES: Readonly<Record<number, string>> = {
+  40: "unknown",
+  41: "codex",
+  42: "runtime_or_mcp",
+  43: "privileged_writer",
+  44: "user_writer",
+};
 
 async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promise<string> {
   const child = await sandbox.exec(
@@ -77,11 +97,24 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
   const output = capture ? child.stdout.readText() : Promise.resolve("");
   const [exit, text] = await Promise.all([child.wait(), output]);
   if (exit !== 0)
-    throw refusal(
-      "conflict",
-      "Physical process identity/quiescence could not be proven; source retained.",
-      "process_quiescence_failed",
-    );
+    throw new ProviderError({
+      provider: "modal",
+      code: "conflict",
+      message: "Physical process identity/quiescence could not be proven; source retained.",
+      retryable: false,
+      details: {
+        modalFailure: "process_quiescence_failed",
+        processCategory: PROCESS_FAILURES[exit >= 50 && exit < 80 ? 40 + (exit % 10) : exit] ?? "unknown",
+        processFailure:
+          exit >= 50 && exit < 60
+            ? "pidfd_open"
+            : exit >= 60 && exit < 70
+              ? "pidfd_signal"
+              : exit >= 70 && exit < 80
+                ? "identity_changed"
+                : "unproven",
+      },
+    });
   return text;
 }
 export async function captureProcessBaseline(sandbox: Sandbox, machine: Machine): Promise<ProcessBaseline> {
