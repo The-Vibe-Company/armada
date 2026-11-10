@@ -237,18 +237,21 @@ export async function operation(
   }
   // A long operation gets its server budget plus transport grace, without retrying an ambiguous write.
   const seconds =
-    command === "stop"
-      ? 645
-      : command === "wait"
-        ? Number(body.timeout_seconds ?? 60)
-        : command === "exec"
-          ? Number(body.timeout_seconds ?? 120)
-          : undefined;
+    command === "wait"
+      ? Number(body.timeout_seconds ?? 60)
+      : command === "exec"
+        ? Number(body.timeout_seconds ?? 120)
+        : undefined;
   const result = await control(
     auth,
     route,
     body,
-    seconds === undefined ? undefined : AbortSignal.timeout((seconds + 15) * 1_000),
+    // Match the control proxy ceiling: Modal stop includes checkpoint and termination phases.
+    command === "stop"
+      ? AbortSignal.timeout(660_000)
+      : seconds === undefined
+        ? undefined
+        : AbortSignal.timeout((seconds + 15) * 1_000),
   ).catch((error: unknown) => {
     if (command === "stop" && error instanceof AuthError && error.code === "unavailable")
       throw new AuthError(

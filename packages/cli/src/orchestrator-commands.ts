@@ -229,9 +229,7 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
           body: JSON.stringify({ ...command.body, orgId: command.orgId }),
           // Lifecycle work spans provider startup/archival and receipt publication.
           // Match the control proxy budget rather than the default 10s read deadline.
-          ...(["stop", "resume", "recover"].includes(command.action)
-            ? { signal: AbortSignal.timeout(660_000) }
-            : {}),
+          ...(["stop", "resume", "recover"].includes(command.action) ? { signal: AbortSignal.timeout(660_000) } : {}),
         }),
       );
     } catch (error) {
