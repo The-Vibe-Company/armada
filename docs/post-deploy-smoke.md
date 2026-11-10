@@ -109,8 +109,32 @@ The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
 the sandbox and checks provider state. The optional path also exercises
 orchestrator create → send → stop → resume → stop. It requires `goldenId`;
-currently the orchestrator supports Modal/Codex only. Use a separate cases file
-containing only supported pairs for that run.
+the smoke reads `orchestrators/capabilities` once and validates every selected
+pair before **any** sandbox or orchestrator allocation. A disabled or absent
+pair fails the run; it is never silently skipped. Use a separate cases file
+containing only enabled pairs for that run. Ordinary-only runs do not use this
+orchestrator capability gate.
+
+### Pair prerequisites
+
+| Pair | Staging prerequisites |
+| --- | --- |
+| Boat × Claude | Boat golden with the git checkout; Claude model account available to the smoke user |
+| Boat × Codex | Boat golden with the git checkout; Codex model account available to the smoke user |
+| Modal × Claude | Modal golden with the git checkout; Claude model account available to the smoke user |
+| Modal × Codex | Modal golden with the git checkout; Codex model account available to the smoke user |
+
+Goldens are provider-specific: a Boat golden cannot stand in for a Modal golden.
+Use a **separate Boat account and account key for staging**: Boat allows one
+golden per account. Configure that key in Armada's staging credential store,
+never in the cases file or workflow. For orchestrator runs, every selected pair
+must additionally be enabled on the staging server and reported enabled by its
+capabilities endpoint; include that provider's `goldenId` in each case.
+These prerequisites do not imply a pair is enabled today.
+
+This first matrix slice adds preflight only. Sandbox resume/recall,
+orchestrator post-resume recall, bounded recovery/terminal-state assertions,
+timings/job summaries and expanded closed failure labels remain follow-up work.
 
 The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
 a successful GitHub `deployment_status` for environment exactly `armada / staging`

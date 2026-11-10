@@ -166,6 +166,34 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     fail("poll_limit_exceeded");
   }
+  // Validate the entire selected matrix before any billable mutation. A later
+  // disabled case must not be discovered after earlier cases have allocated.
+  if (orchestrator) {
+    let index = 0;
+    try {
+      const capabilities = await request<{
+        version: number;
+        enabled: boolean;
+        pairs?: { provider: string; harness: string; enabled: boolean }[];
+      }>("orchestrators/capabilities");
+      if (capabilities?.version !== 1 || !Array.isArray(capabilities.pairs))
+        fail("invalid_response");
+      for (const [caseIndex, item] of cases.entries()) {
+        index = caseIndex;
+        if (
+          capabilities.enabled !== true ||
+          !capabilities.pairs.some(
+            (pair) => pair?.provider === item.provider && pair.harness === item.harness && pair.enabled === true,
+          )
+        )
+          fail("pair_disabled");
+        report(index, "orchestrator_capabilities");
+      }
+    } catch (error) {
+      report(index, "orchestrator_capabilities", error);
+      return false;
+    }
+  }
   let passed = true;
   for (const [index, item] of cases.entries()) {
     async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
@@ -348,21 +376,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       orchestratorStopped = true;
     }
     try {
-      await step("orchestrator_capabilities", async () => {
-        const capabilities = await request<{
-          version: number;
-          enabled: boolean;
-          pairs?: { provider: string; harness: string; enabled: boolean }[];
-        }>(`${root}/capabilities`);
-        if (
-          capabilities?.version !== 1 ||
-          !capabilities.enabled ||
-          !capabilities.pairs?.some(
-            (pair) => pair.provider === item.provider && pair.harness === item.harness && pair.enabled,
-          )
-        )
-          fail("pair_disabled");
-      });
       await step("orchestrator_create", async () => {
         createAttempted = true;
         const operation = await request<OrchestratorOperation>(
