@@ -118,7 +118,12 @@ export async function readStatus(
   }
 
   const next = nextStatus(sandbox.status, info, prompt);
-  const reason = next === "failed" ? (failureReason(info) ?? sandbox.statusReason) : null;
+  const reason =
+    next === "failed"
+      ? (failureReason(info) ?? sandbox.statusReason)
+      : (next === "stopped" || next === "stopping") && sandbox.statusReason === "expired"
+        ? "expired"
+        : null;
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,
@@ -153,6 +158,7 @@ function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptRep
   if (info.state === "stopped") return current === "failed" && !prompt ? "failed" : "stopped";
   if (info.state === "stopping") return current === "failed" && !prompt ? "failed" : "stopping";
   if (info.state === "failed") return "failed";
+  if (current === "stopping") return "stopping";
   if (info.state === "starting") return current === "running" ? "running" : "starting";
   if (!prompt) return current === "starting" ? "ready" : current === "running" ? "running" : current;
   switch (prompt.state) {
@@ -185,11 +191,11 @@ function report(
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,
     status,
-    statusReason: status === "failed" ? sandbox.statusReason : null,
+    statusReason: status === "failed" || status === "stopped" || status === "stopping" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
-    expiresAt: expiresAt ? expiresAt.toISOString() : null,
+    expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
     prompt,
     settled: machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting"),
   };

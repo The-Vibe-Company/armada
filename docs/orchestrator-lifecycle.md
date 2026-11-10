@@ -200,18 +200,27 @@ Construction rejects the generic owner `/mcp` path, and backend resolution
 rejects a different URL before any owner-side SDK action. #662 continues to own
 the private compare-install/ACK/scrub adapter; no grant enters URL, argv or files.
 
-The stateless MCP names `launch`, `read`, `message`, `stop` map to actual #661
-`worker:launch`, `worker:read`, `worker:message`, `worker:stop`. Each data/effect
-call goes through the actual scoped child service/`Authority.admit`, not a forged
+The stateless MCP names `launch`, `read`, `message`, `stop`, `extend` map to
+`worker:launch`, `worker:read`, `worker:message`, `worker:stop`, `worker:extend`.
+Each data/effect call goes through the actual scoped child service/`Authority.admit`, not a forged
 `Caller`, owner API dispatcher or generic sandbox API. Initialize/tool-list data
 are static protocol metadata, not proof of an authenticated principal. Neither
 owner sessions nor service tokens are accepted as epoch credentials here.
 
-Private REST POST `/api/v1/orchestrator-tools/{launch,read,message,stop}` shares
+Private REST POST `/api/v1/orchestrator-tools/{launch,read,message,stop,extend}` shares
 the same strict argument validation. Mutations require the `Idempotency-Key`
 header; MCP mutations require the `idempotencyKey` argument. Payloads are read
 with a bounded stream. Unknown fields, methods, admin/credential/exec/general
-owner actions deny. Repeated MCP/REST mutations share the same durable receipts.
+owner actions deny. Repeated MCP/REST mutations, including `extend`, share the
+same durable receipts. The scoped MCP `extend` takes `sandboxId`, `ttlSeconds`
+and `idempotencyKey`; REST takes `sandboxId` and `ttlSeconds` with the header
+above. It can extend only the current parent epoch's own children under
+`worker:extend`, not arbitrary owner/admin resources. Ordinary sandbox extension
+uses the normal owner/admin and visibility checks instead. Both paths keep the
+server/provider lifetime bounds; Modal must leave five minutes before the
+existing physical deadline and never replaces the running machine. Existing
+parent epochs do not gain the new scope automatically: stop/resume the parent
+to install a fresh scoped grant.
 
 Known proposed `wait_record`, `wait_renew`, `wait_complete` routes return
 `admit_wait_not_supported` and are not listed as MCP tools. They will require the
@@ -321,8 +330,8 @@ credential prerequisites and orderly stop → unset setting → restart rollback
 Identities and durable history are retained; no automatic bulk deletion occurs.
 
 Delegated waits remain precisely unsupported: the actual authority has `admit`
-for `worker:launch`, `worker:read`, `worker:message`, `worker:stop`, but no
-`admitWait` or `work:wait` scope. The private gateway rejects known wait mutations
+for `worker:launch`, `worker:read`, `worker:message`, `worker:stop`,
+`worker:extend`, but no `admitWait` or `work:wait` scope. The private gateway rejects known wait mutations
 with `admit_wait_not_supported` and does not list them as MCP tools. Owner-only
 wait APIs are not an authority substitute. Supporting delegated waits needs an
 explicit reviewed consent/scope decision, a new migration if required, atomic

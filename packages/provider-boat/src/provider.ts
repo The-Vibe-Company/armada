@@ -615,6 +615,38 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       return page;
     },
 
+    async quiesce(request) {
+      await provider.interrupt(request);
+      const conversations = await provider.conversations(request.sandboxId);
+      if (
+        conversations.some(
+          (conversation) =>
+            (!request.conversationId || conversation.id === request.conversationId) && conversation.running,
+        )
+      )
+        throw new ProviderError({
+          provider: PROVIDER_ID,
+          code: "sandbox_not_ready",
+          message: "Agent interruption is pending; refusing to stop before turns settle.",
+          retryable: true,
+        });
+    },
+
+    async extendLifetime(request) {
+      const before = await provider.get(request.sandboxId);
+      if (!["ready", "running"].includes(before.state)) throw invalidRequest("Only running compute can be extended.");
+      const response = await call(() =>
+        api.update(
+          { sandboxId: request.sandboxId, updateSandboxRequest: { ttlSeconds: ttl(request.ttlSeconds, defaultTtl) } },
+          { signal: AbortSignal.timeout(10_000) },
+        ),
+      );
+      if (!response.sandbox) throw unexpectedAnswer("sandbox");
+      const info = sandboxInfo(response.sandbox);
+      if (!info.expiresAt) throw unexpectedAnswer("expiry");
+      return info.expiresAt;
+    },
+
     async stop(request: { sandboxId: string }): Promise<void> {
       await options.beforeStop?.(provider, request.sandboxId);
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));

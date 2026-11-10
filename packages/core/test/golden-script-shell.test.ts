@@ -16,16 +16,19 @@ function extract(script: string, startMarker: string, endMarker: string): string
 
 function fakeBin(dir: string, names: readonly string[]): void {
   mkdirSync(dir, { recursive: true });
-  for (const name of names) {
+  for (const name of new Set([...names, ...(names.includes("npm") ? ["sudo"] : [])])) {
     const path = join(dir, name);
     const body =
-      name === "npm"
-        ? `#!/bin/sh
-if [ "$1" = "install" ] && [ "$2" = "--global" ] && [ "$3" = "--prefix" ]; then mkdir -p "$4/bin"; printf '#!/bin/sh\necho PINNED\n' > "$4/bin/bun"; chmod +x "$4/bin/bun"; fi
+      name === "sudo"
+        ? '#!/bin/sh\n[ "$1" = -n ] || exit 95\nshift\nexec "$@"\n'
+        : name === "npm"
+          ? `#!/bin/sh
+if [ "$1" = "install" ] && [ "$2" = "--global" ] && [ "$3" = "--prefix" ] && [ "\${5#bun@}" != "$5" ]; then mkdir -p "$4/bin"; printf '#!/bin/sh\necho PINNED\n' > "$4/bin/bun"; chmod +x "$4/bin/bun"; fi
+if [ "$1" = install ] && [ "$2" = --global ] && [ "$3" = --prefix ] && [ "$5" = @anthropic-ai/claude-code@2.1.322 ]; then mkdir -p "$4/bin"; printf '#!/bin/sh\necho "2.1.322 (Claude Code)"\n' > "$4/bin/claude"; chmod +x "$4/bin/claude"; fi
 echo "FAKE npm called with: $*"
 exit 0
 `
-        : `#!/bin/sh
+          : `#!/bin/sh
 echo "FAKE ${name} called with: $*"
 exit 0
 `;
@@ -57,7 +60,9 @@ test("real shell: the baseline tolerates a repo with no package.json, pins acros
       { owner: "acme", repo: "nopin", id: 1, installationId: 2, branch: "main" },
       { owner: "acme", repo: "haspin", id: 2, installationId: 2, branch: "main" },
     ]);
-    const script = goldenScript(prepared).replace(/\/home\/user/g, home);
+    const script = goldenScript(prepared)
+      .replace(/\/home\/user/g, home)
+      .replaceAll("/usr/local", join(home, "system"));
     const block = extract(script, 'bun_pin=""', "npm install --global @openai/codex");
 
     const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
@@ -68,7 +73,7 @@ test("real shell: the baseline tolerates a repo with no package.json, pins acros
     expect(result.stdout).toContain("FAKE npm called with: install --global --prefix");
     expect(result.stdout).toContain("bun@9.9.9");
     expect(result.stdout).toContain("@playwright/test@2.0.0");
-    expect(result.stdout).toContain("FAKE npm called with: install --global @anthropic-ai/claude-code");
+    expect(result.stdout).toContain("@anthropic-ai/claude-code@2.1.322");
     expect(result.stdout).toContain("FAKE npm called with: install --global @openai/codex");
   } finally {
     rmSync(base, { recursive: true, force: true });
@@ -88,7 +93,9 @@ test("real shell: pinned Bun persists for a fresh shell", () => {
     writeFileSync(join(home, ".bun-npm", "bin", "bun"), "#!/bin/sh\necho PINNED\n", { mode: 0o755 });
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
     const block = extract(
-      goldenScript(prepared).replace(/\/home\/user/g, home),
+      goldenScript(prepared)
+        .replace(/\/home\/user/g, home)
+        .replaceAll("/usr/local", join(home, "system")),
       'bun_pin=""',
       "npm install --global @openai/codex",
     );
@@ -111,25 +118,58 @@ test("real shell: pinned Bun persists for a fresh shell", () => {
   }
 });
 
-test("real shell: the baseline does not install claude/codex when they are already present", () => {
-  const base = mkdtempSync(join(tmpdir(), "armada-baseline-"));
+// Linux CI has passwordless sudo; mount isolation keeps the host installation untouched.
+(process.platform === "linux" ? test : test.skip).each([
+  ["2.1.319", "2.1.322", true],
+  ["2.1.322", "2.1.322", true],
+  ["2.1.323", "2.1.322", true],
+  ["2.1.319", "2.1.319", false],
+])("real shell: Boat absolute Claude pin (%s, installer yields %s, success=%s)", (initial, installed, success) => {
+  const base = mkdtempSync(join(tmpdir(), "armada-claude-prefix-"));
   try {
-    const home = join(base, "home");
+    const local = join(base, "local");
     const bin = join(base, "bin");
-    mkdirSync(join(home, "web"), { recursive: true });
-    fakeBin(bin, ["npm", "curl", "bunx", "bun", "claude", "codex"]);
-
-    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
-    const script = goldenScript(prepared).replace(/\/home\/user/g, home);
-    const block = extract(script, 'bun_pin=""', "npm install --global @openai/codex");
-
-    const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home },
-      encoding: "utf8",
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout).not.toContain("claude-code");
-    expect(result.stdout).not.toContain("@openai/codex");
+    mkdirSync(join(local, "bin"), { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(local, "bin/claude"), `#!/bin/sh\necho "${initial} (Claude Code)"\n`, { mode: 0o755 });
+    // npm fixture installs an executable into the actual requested prefix, not just a log receipt.
+    writeFileSync(
+      join(bin, "npm"),
+      `#!/bin/sh
+set -eu
+[ "$1" = install ] && [ "$2" = --global ] && [ "$3" = --prefix ] && [ "$4" = /usr/local ] && [ "$5" = @anthropic-ai/claude-code@2.1.322 ] || exit 95
+printf '#!/bin/sh\necho "${installed} (Claude Code)"\n' > "$4/bin/claude"
+printf 'installed\n' >> "${base}/receipt"
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] || exit 95\nshift\nexec "$@"\n', { mode: 0o755 });
+    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
+    const block = extract(goldenScript(prepared), "armada_phase=harness", "npm install --global @openai/codex");
+    writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = spawnSync(
+      "sudo",
+      [
+        "-n",
+        "unshare",
+        "--mount",
+        "--fork",
+        "/bin/bash",
+        "-euc",
+        'mount --make-rprivate /; mount --bind "$1" /usr/local; export PATH="$2:/usr/bin:/bin"; /bin/bash -euc "$3"; /usr/local/bin/claude --version',
+        "fixture",
+        local,
+        bin,
+        block,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(result.status).toBe(success ? 0 : 96);
+    const version = spawnSync(join(local, "bin/claude"), ["--version"], { encoding: "utf8" });
+    expect(version.stdout.trim()).toBe(`${installed} (Claude Code)`);
+    if (initial === "2.1.322") expect(() => readFileSync(join(base, "receipt"))).toThrow();
+    else expect(readFileSync(join(base, "receipt"), "utf8")).toBe("installed\n");
+    if (!success) expect(result.stderr).toContain("does not match the managed pin");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -264,11 +304,7 @@ chmod 555 "$ARMADA_TEST_IMAGE_BIN"
       { mode: 0o700 },
     );
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
-    const block = extract(
-      goldenScript(prepared).replace(/\/home\/user/g, home),
-      'bun_pin=""',
-      "npm install --global @openai/codex",
-    );
+    const block = extract(goldenScript(prepared).replace(/\/home\/user/g, home), 'bun_pin=""', "armada_phase=chromium");
     const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
       env: {
         PATH: `${system}:${bin}:/usr/bin:/bin`,

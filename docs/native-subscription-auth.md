@@ -121,7 +121,7 @@ Tests use synthetic native peers, real process/IPC boundaries and real migration
 No real provider consent, production deployment or production migration was
 performed by this implementation.
 
-Pinned runtime: Claude SDK 0.3.319 / Claude Code 2.1.319; Codex 0.167.0.
+Pinned runtime: Claude SDK 0.3.322 / Claude Code 2.1.322; Codex 0.167.0.
 
 - [Claude authentication](https://code.claude.com/docs/en/authentication)
 - [Claude hosted-use conditions](https://code.claude.com/docs/en/legal-and-compliance)
