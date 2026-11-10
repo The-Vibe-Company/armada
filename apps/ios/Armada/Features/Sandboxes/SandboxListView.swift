@@ -78,6 +78,9 @@ struct SandboxListView: View {
     @Environment(AppModel.self) private var app
     @State private var model: SandboxListModel?
     @State private var showingAccount = false
+    @State private var newSandbox: NewSandboxModel?
+    @State private var showingNewSandbox = false
+    @State private var launched: SandboxSummary?
 
     var body: some View {
         NavigationStack {
@@ -89,12 +92,38 @@ struct SandboxListView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     AccountButton(showing: $showingAccount)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("New Sandbox", systemImage: "plus", action: startNewSandbox)
+                        .disabled(app.organization == nil)
+                        .accessibilityIdentifier("sandboxes.new")
+                }
             }
             .navigationDestination(for: SandboxSummary.self) { sandbox in
                 SandboxDetailView(sandbox: sandbox)
             }
+            // A launch lands directly in the new sandbox's conversation, following its first turn.
+            .navigationDestination(item: $launched) { sandbox in
+                SandboxConversationView(sandbox: sandbox)
+            }
             .sheet(isPresented: $showingAccount) {
                 AccountView()
+            }
+            .sheet(isPresented: $showingNewSandbox) {
+                if let newSandbox {
+                    NewSandboxView(
+                        model: newSandbox,
+                        onLaunched: { sandbox in
+                            showingNewSandbox = false
+                            self.newSandbox = nil
+                            launched = sandbox
+                            Task { await model?.load() }
+                        },
+                        onShowList: {
+                            showingNewSandbox = false
+                            Task { await model?.load() }
+                        }
+                    )
+                }
             }
         }
         .task(id: app.organization?.id) {
@@ -105,6 +134,15 @@ struct SandboxListView: View {
             }
             await model?.load()
         }
+    }
+
+    /// Reuses the open form of this organization so a dismissed or refused launch keeps its fields.
+    private func startNewSandbox() {
+        guard let orgID = app.organization?.id else { return }
+        if newSandbox?.orgID != orgID {
+            newSandbox = NewSandboxModel(launcher: app.sandboxes as? any SandboxLauncher, orgID: orgID) { app.sessionEnded() }
+        }
+        showingNewSandbox = true
     }
 
     @ViewBuilder
