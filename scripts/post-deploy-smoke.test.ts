@@ -514,7 +514,11 @@ test("GitHub runtime slice requires staging assertions and disposable repository
   for (const overrides of [
     {},
     { ARMADA_SMOKE_GITHUB_GATE: "true" },
-    { ARMADA_SMOKE_GITHUB_GATE: "true", ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40), ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40) },
+    {
+      ARMADA_SMOKE_GITHUB_GATE: "true",
+      ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
+      ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
+    },
   ]) {
     const fake = fixture();
     expect(await postDeploySmoke({ ...env, ...overrides }, ["--github-runtime"], fake.io)).toBe(false);
@@ -530,20 +534,32 @@ test("GitHub slice validates native receipts twice and cleans scratch before san
       return undefined;
     });
     const staging = {
-      ...env, ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
-      ARMADA_SMOKE_GITHUB_GATE: "true", ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
+      ...env,
+      ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+      ARMADA_SMOKE_GITHUB_GATE: "true",
+      ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
       ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
-      ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, disposableRepository: "https://github.com/smoke/disposable.git" }]),
+      ARMADA_SMOKE_CASES: JSON.stringify([
+        { ...selected, disposableRepository: "https://github.com/smoke/disposable.git" },
+      ]),
     };
-    const io = { ...fake.io, fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(staging.ARMADA_URL, env.ARMADA_URL), init) };
+    const io = {
+      ...fake.io,
+      fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(staging.ARMADA_URL, env.ARMADA_URL), init),
+    };
     expect(await postDeploySmoke(staging, ["--github-runtime"], io)).toBe(!failReceipt);
     const sends = fake.calls.filter((call) => call.path === "sandbox/send");
     expect(sends).toHaveLength(failReceipt ? 1 : 2);
     expect(String(sends[0]?.body.prompt)).toContain("push origin HEAD:refs/heads/armada-runtime-smoke-");
-    const cleanup = fake.calls.findIndex((call) => String(call.body.command).includes("push origin --delete armada-runtime-smoke-"));
+    const cleanup = fake.calls.findIndex((call) =>
+      String(call.body.command).includes("push origin --delete armada-runtime-smoke-"),
+    );
     expect(cleanup).toBeGreaterThan(0);
     expect(fake.calls.findIndex((call) => call.path === "sandbox/stop")).toBeGreaterThan(cleanup);
     expect(fake.lines.join("")).not.toContain("secret");
-    if (!failReceipt) expect(fake.receipts()).toContainEqual(expect.objectContaining({ step: "enablement", complete: false, renewal: "manual_required" }));
+    if (!failReceipt)
+      expect(fake.receipts()).toContainEqual(
+        expect.objectContaining({ step: "enablement", complete: false, renewal: "manual_required" }),
+      );
   }
 });
