@@ -419,6 +419,15 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         expect(failedParent.state).toBe("stopped");
         expect(failedParent.conversationId).toBeNull();
         expect(failedParent.skillReceipt).toBeNull();
+        await expect(
+          bundle.runtime.mutate(caller, {
+            orgId: p.org,
+            id: failedParent.id,
+            action: "resume",
+            key: `resume-failed-${scenario}`,
+            expectedRevision: failedParent.revision,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
         const sandbox = (
           await sql.query<{ status: string; stopped_at: unknown }>(
             "select status,stopped_at from public.sandboxes where id=$1",

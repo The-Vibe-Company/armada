@@ -360,6 +360,10 @@ export class OrchestratorRuntime {
         },
       });
       if (prior) return this.recorded(prior, diagnostics);
+      // Resume does not bootstrap skills. A failed create must be replaced, not
+      // promoted to ready without its explicitly requested skill (including Boat).
+      if (input.action === "resume" && identity.configuration.skill && !identity.skillReceipt)
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       if (["message", "steer"].includes(input.action) && identity.state !== "ready")
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
       diagnostics.stage("backend_resolution");
