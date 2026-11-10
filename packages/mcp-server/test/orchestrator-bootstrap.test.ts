@@ -28,6 +28,7 @@ test.each([
   "wrong version",
   "wrong checksum",
   "invalid reference",
+  "reserved reference",
 ])("bootstrap %s", async (mode) => {
   const calls: string[] = [];
   const provider = {
@@ -53,7 +54,16 @@ test.each([
     sandboxId: "parent",
     projectDir: "/home/user/repo",
     skillRevision: "a".repeat(40),
-    ...(mode === "plain" ? {} : { skill: mode === "invalid reference" ? "--evil" : reference }),
+    ...(mode === "plain"
+      ? {}
+      : {
+          skill:
+            mode === "invalid reference"
+              ? "--evil"
+              : mode === "reserved reference"
+                ? "example/armada-tools@1.0.0"
+                : reference,
+        }),
     harness: "codex",
     recordReceipt: async () => {
       calls.push("receipt");
@@ -72,8 +82,46 @@ test.each([
     );
   } else {
     await expect(run).rejects.toThrow(
-      mode === "invalid reference" ? "orchestrator_invalid_bootstrap" : "orchestrator_skill_bootstrap_failed",
+      mode === "invalid reference" || mode === "reserved reference"
+        ? "orchestrator_invalid_bootstrap"
+        : "orchestrator_skill_bootstrap_failed",
     );
-    expect(calls).toEqual(mode === "invalid reference" ? [] : ["install"]);
+    expect(calls).toEqual(mode === "invalid reference" || mode === "reserved reference" ? [] : ["install"]);
+  }
+});
+
+// Real shell boundary: repeated preparation is safe, but unrelated content is never replaced.
+test("built-in reference preserves conflicting files", async () => {
+  const { mkdtemp, readFile, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(`${tmpdir()}/armada-reference-`);
+  const provider = {
+    exec: async ({ command }: { command: string }) => {
+      const child = Bun.spawn(["/bin/sh", "-c", command], { stdout: "pipe", stderr: "pipe" });
+      return {
+        detached: false,
+        timedOut: false,
+        truncated: false,
+        exitCode: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      };
+    },
+  } as unknown as Provider;
+  const request = {
+    sandboxId: "parent",
+    projectDir: root,
+    skillRevision: "a".repeat(40),
+    configureAuthority: async () => {},
+  };
+  try {
+    await bootstrapOrchestrator(provider, request);
+    await bootstrapOrchestrator(provider, request);
+    const path = `${root}/.agents/skills/armada-tools/SKILL.md`;
+    await writeFile(path, "user content");
+    await expect(bootstrapOrchestrator(provider, request)).rejects.toThrow("orchestrator_skill_bootstrap_failed");
+    expect(await readFile(path, "utf8")).toBe("user content");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

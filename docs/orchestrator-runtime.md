@@ -19,7 +19,7 @@ Enable only the desired pairs (default remains off):
 
 ```sh
 ARMADA_ORCHESTRATOR_PAIRS=boat:claude,boat:codex,modal:codex
-ARMADA_ORCHESTRATOR_SKILL_REVISION=0976883b70ee3ddedef5f965064bd75a248c5b6e
+# Optional legacy metadata only; no longer selects an orchestration skill.
 ```
 
 Use the existing Boat golden **two-repos-prod-test**, its ID from
@@ -59,7 +59,7 @@ Configure the server running this PR with:
 
 ```sh
 ARMADA_ORCHESTRATOR_PAIRS=modal:codex
-ARMADA_ORCHESTRATOR_SKILL_REVISION=0976883b70ee3ddedef5f965064bd75a248c5b6e
+# Optional legacy metadata only; no longer selects an orchestration skill.
 ```
 
 The skill revision is an immutable, public, reviewed commit containing the four
@@ -355,3 +355,9 @@ Existing account/foundation, runtime215, native-binding216 and lifecycle217
 schema must already be deployed in migration order; this PR adds no migration.
 Modal × Codex is opt-in under the approved operator postflight procedure above;
 Boat pairs are separately opt-in best-effort; Modal × Claude remains disabled. Rollback retains identity/history/native state.
+
+## Skill selection
+
+Managed parents now receive only a minimal Armada tool reference by default.
+Select a public Skillpack method with create `--skill org/slug@version`; see
+[CLI orchestrators](cli-orchestrators.md#optional-skillpack-method).

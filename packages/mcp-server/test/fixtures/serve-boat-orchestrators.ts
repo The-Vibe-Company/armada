@@ -135,7 +135,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     return json({
       type: "command.finished",
       success: true,
-      exitCode: 0,
+      exitCode: JSON.stringify(body).includes("example/missing") ? 1 : 0,
       stdout: catalogLock(JSON.stringify(body).includes("claude-code") ? "claude-code" : "codex"),
       stderr: "",
       timedOut: false,
@@ -443,6 +443,34 @@ try {
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
   }
+  const beforeFailurePrompts = prompts;
+  const failed = await cli([
+    "create",
+    "missing method",
+    "--org",
+    orgId,
+    "--golden",
+    golden.id,
+    "--provider",
+    "boat",
+    "--agent",
+    "codex",
+    "--model",
+    core.resolveModelChoice("codex", {}).model,
+    "--model-account",
+    models.get("codex")!,
+    "--skill",
+    "example/missing@1.0.0",
+    "--idempotency-key",
+    "missing-method",
+  ]);
+  let blocked: core.OrchestratorDetail = await cli(["detail", failed.orchestratorId, "--org", orgId]);
+  for (let i = 0; i < 150 && blocked.orchestrator.state === "creating"; i++)
+    blocked = await cli(["detail", failed.orchestratorId, "--org", orgId]);
+  assert.equal(blocked.orchestrator.state, "blocked");
+  assert.equal(blocked.orchestrator.skillReceipt, null);
+  assert.equal(blocked.orchestrator.conversationId, null);
+  assert.equal(prompts, beforeFailurePrompts, "Failed installation must not start a turn");
   assert(logs.some((line) => line.includes('"kind":"prompt_dispatch"') && line.includes('"value":"accepted"')));
   assert(logs.some((line) => line.includes('"kind":"prompt_status"') && line.includes('"value":"finished"')));
   assert(logs.some((line) => line.includes('"kind":"events_poll"') && line.includes('"value":"published"')));

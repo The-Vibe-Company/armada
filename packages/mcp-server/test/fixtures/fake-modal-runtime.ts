@@ -69,7 +69,7 @@ export function fakeModalRuntime(input: {
       else if (packet.op === "exec")
         result = {
           detached: false,
-          exitCode: 0,
+          exitCode: packet.input?.command?.includes("example/missing") ? 1 : 0,
           stdout: packet.input?.command?.includes("ARMADA_RECOVERY")
             ? preservationFailure === "output_invalid"
               ? "not-json"

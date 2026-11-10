@@ -5,11 +5,17 @@ const toolReference = `---
 name: armada-tools
 description: Armada launcher tool reference, not an orchestration method.
 ---
-Use armada --help and armada <command> --help to discover launch, status, logs,
-send, wait and stop. The delegated MCP tools expose the same child operations.
-Launch only through the delegated Armada connection; keep returned child IDs.
-Wait/read child results and stop children when needed. Authority is scoped to
-this parent's owner, organization and owned children, with expiry and child limits.
+The delegated MCP connection exposes launch, read, message and stop (not the
+owner API). Use the tool schemas exposed by that connection:
+- launch: {idempotencyKey, selection:{goldenId,harness,credentialId,
+  credentialVersion,model,prompt?,repo?,size?,reasoningEffort?}}.
+  Select only authorized golden/account references; retain the returned child ID.
+- read: {sandboxId}. Poll this to observe child status/results; no wait tool exists.
+- message: {idempotencyKey,sandboxId,text}. Send another turn to an owned child.
+- stop: {idempotencyKey,sandboxId}. Stop an owned child when needed.
+Reuse each mutation's key and identical arguments after an uncertain response.
+Authority is limited to this parent's owner/org, allowed accounts/goldens,
+owned children, expiry and active-child limits. Never use the owner's API token.
 No ticket routing, review, merge or scheduling policy is supplied by Armada.
 `;
 
@@ -22,7 +28,6 @@ export async function bootstrapOrchestrator(
     /** Legacy metadata; no longer selects an installer or method. */
     skillRevision: string;
     skill?: string | undefined;
-    expectedReceipt?: OrchestratorSkillReceipt | null | undefined;
     harness?: "claude" | "codex";
     recordReceipt?: (receipt: OrchestratorSkillReceipt | null) => Promise<void>;
     configureAuthority: () => Promise<void>;
@@ -33,13 +38,18 @@ export async function bootstrapOrchestrator(
   if (
     !projectDir.startsWith("/") ||
     [...projectDir].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) ||
-    (skill !== undefined && (skill.length > 256 || !ORCHESTRATOR_SKILL_PATTERN.test(skill)))
+    (skill !== undefined &&
+      (skill.length > 256 ||
+        !ORCHESTRATOR_SKILL_PATTERN.test(skill) ||
+        skill.split("/")[1]?.startsWith("armada-tools@")))
   ) {
     request.diagnostics?.captureReason("skill_configuration_invalid");
     throw new Error("orchestrator_invalid_bootstrap");
   }
   const referenceDir = `${projectDir}/${request.harness === "claude" ? ".claude" : ".agents"}/skills/armada-tools`;
-  const referenceCommand = `mkdir -p ${quote(referenceDir)} && printf '%s' ${quote(toolReference)} > ${quote(`${referenceDir}/SKILL.md`)}`;
+  const referenceFile = quote(`${referenceDir}/SKILL.md`);
+  // Never follow a redirected destination or overwrite an unrelated package.
+  const referenceCommand = `test ! -L ${quote(referenceDir)} && mkdir -p ${quote(referenceDir)} && if test -e ${referenceFile}; then test ! -L ${referenceFile} && test "$(cat ${referenceFile})" = "$(printf '%s' ${quote(toolReference)})"; else (set -C; printf '%s' ${quote(toolReference)} > ${referenceFile}); fi`;
   let receipt: OrchestratorSkillReceipt | null = null;
   try {
     const [reference, version] = skill?.split("@") ?? [];
@@ -82,7 +92,14 @@ export async function bootstrapOrchestrator(
         checksum: entry.checksum,
         origin: workspace.apiUrl,
       };
-      if (request.expectedReceipt && JSON.stringify(request.expectedReceipt) !== JSON.stringify(receipt))
+      if (
+        request.expectedReceipt &&
+        Object.keys(receipt).some(
+          (key) =>
+            request.expectedReceipt?.[key as keyof OrchestratorSkillReceipt] !==
+            receipt?.[key as keyof OrchestratorSkillReceipt],
+        )
+      )
         throw new Error("receipt_changed");
     }
   } catch {

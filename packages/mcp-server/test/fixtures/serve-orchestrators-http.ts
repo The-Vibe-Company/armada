@@ -570,6 +570,37 @@ try {
     assert.equal(row.status, "stopped");
     assert.equal(row.preservation_note, `unpushed work could not be preserved (${reason})`);
   }
+  const epochsBeforeFailure = effects.epochInstalls;
+  const callsBeforeFailure = effects.modelCalls;
+  const failed = await cli(
+    [
+      "create",
+      "missing method",
+      "--org",
+      orgId,
+      "--golden",
+      golden.id,
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-6.1-sol",
+      "--model-account",
+      modelId,
+      "--skill",
+      "example/missing@1.0.0",
+      "--idempotency-key",
+      "missing-method",
+    ],
+    202,
+  );
+  const blocked = await waitForOperation(failed.orchestratorId, failed.id);
+  assert.equal(blocked.detail.orchestrator.state, "blocked");
+  assert.equal(blocked.detail.orchestrator.skillReceipt, null);
+  assert.equal(blocked.detail.orchestrator.conversationId, null);
+  assert.equal(effects.epochInstalls, epochsBeforeFailure, "No delegated authority after failed install");
+  assert.equal(effects.modelCalls, callsBeforeFailure, "No first turn after failed install");
   console.log(
     `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects })}`,
   );

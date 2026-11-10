@@ -18,7 +18,7 @@ import type { AuthIo } from "./auth-commands.ts";
 
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
-         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>]
+         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>] [--skill <org/slug@version>]
          [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
   capabilities
