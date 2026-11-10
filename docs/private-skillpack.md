@@ -378,8 +378,9 @@ persisted private. Modal store namespaces include visibility. Re-resolving that
 sandbox for cleanup therefore selected a different store. New creates now bind
 the private working target from the outset, while retaining the original golden
 visibility for source credentials/App authority. Recovery already uses this
-split-source contract. The old scope-free provider fake hid the mismatch; the
-production assembly test now checks the factory's immutable target.
+split-source contract. The old scope-free provider fake hid the mismatch; the existing
+production resolver integration test now checks both working-target privacy and
+source authority at the factory boundary.
 
 This fixes new creates, not historical stranded allocations. Do not introduce a
 cross-scope fallback or delete older resources by name: use exact, fenced create
