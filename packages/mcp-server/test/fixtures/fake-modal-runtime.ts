@@ -15,6 +15,7 @@ type Vm = {
   grant?: Grant;
   epoch: boolean;
   mcp: boolean;
+  prompts?: Map<string, { promptId: string; conversationId: string; status: "finished"; done: true }>;
 };
 export function fakeModalRuntime(input: {
   appName: string;
@@ -59,6 +60,7 @@ export function fakeModalRuntime(input: {
         version: number;
         requestId: string;
         op: string;
+        promptId?: string;
         input?: { command?: string; conversationId?: string };
         configuration?: { revision: string; servers: object };
         token?: string;
@@ -129,12 +131,19 @@ export function fakeModalRuntime(input: {
         };
       else if (packet.op === "interrupt") result = {};
       else if (packet.op === "steer") return Response.json({ error: "no_running_turn" }, { status: 409 });
-      else if (packet.op === "prompt")
-        result = {
+      else if (packet.op === "prompt") {
+        const accepted = {
           promptId: crypto.randomUUID(),
           conversationId: packet.input?.conversationId ?? crypto.randomUUID(),
-          status: "finished",
+          status: "finished" as const,
+          done: true as const,
         };
+        (vm.prompts ??= new Map()).set(accepted.promptId, accepted);
+        result = accepted;
+      } else if (packet.op === "getPrompt") {
+        result = vm.prompts?.get(packet.promptId ?? "");
+        assert(result, "Only accepted fixture prompt ids can be read");
+      } else if (packet.op === "events") result = { events: [], hasMore: false };
       else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };
       else {
