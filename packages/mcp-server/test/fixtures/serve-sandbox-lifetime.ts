@@ -167,6 +167,8 @@ type BoatMachine = {
   desktopAvailable: boolean;
   snapshotAvailable: boolean;
   conversation?: string;
+  turnRunning?: boolean;
+  bootId: string;
 };
 const boats = new Map<string, BoatMachine>();
 let shortBoatConfirmation = false;
@@ -219,6 +221,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       archiveAfter: new Date(Date.now() + body.ttlSeconds * 1000).toISOString(),
       desktopAvailable: false,
       snapshotAvailable: false,
+      bootId: crypto.randomUUID(),
     };
     boats.set(id, machine);
     effects.push({ id, op: "allocate", ttlSeconds: body.ttlSeconds });
@@ -237,7 +240,10 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     return json({ sandbox: machine });
   }
   if (suffix === "/commands") {
-    if (body.command?.includes("ARMADA_RECOVERY")) effects.push({ id: machine.id, op: "preserve" });
+    if (body.command?.includes("ARMADA_RECOVERY")) {
+      assert(!machine.turnRunning, "Preservation must wait for terminal turn evidence");
+      effects.push({ id: machine.id, op: "preserve" });
+    }
     return json({
       type: "command.finished",
       success: true,
@@ -246,11 +252,14 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       stderr: "",
       stdout: body.command?.includes("ARMADA_RECOVERY")
         ? JSON.stringify({ status: "failed", reason: "missing_bun" })
-        : "",
+        : body.command === "cat /proc/sys/kernel/random/boot_id"
+          ? machine.bootId
+          : "",
     });
   }
   if (suffix === "/interrupt") {
     effects.push({ id: machine.id, op: "interrupt" });
+    machine.turnRunning = false;
     return json({});
   }
   if (suffix === "/stop") {
@@ -266,12 +275,15 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   if (suffix === "/prompt") {
     effects.push({ id: machine.id, op: "prompt" });
     machine.conversation ??= crypto.randomUUID();
+    machine.turnRunning = true;
     assert(!body.conversationId || body.conversationId === machine.conversation, "Boat conversation changed");
     return json({ promptId: crypto.randomUUID(), conversationId: machine.conversation, status: "running" }, 202);
   }
   if (suffix === "/conversations")
     return json({
-      conversations: machine.conversation ? [{ id: machine.conversation, running: true, lastHarness: "codex" }] : [],
+      conversations: machine.conversation
+        ? [{ id: machine.conversation, running: machine.turnRunning ?? false, lastHarness: "codex" }]
+        : [],
     });
   if (suffix === "/events") return json({ events: [], pageInfo: { hasMore: false } });
   throw Error(`Unexpected Boat route ${method} ${url.pathname}`);
@@ -334,6 +346,33 @@ async function row(id: string) {
   assert(found);
   return found;
 }
+/** No gateway request registers this lease in memory: renewal must come from the HTTP extend composition. */
+async function unusedBoatLease(sandboxId: string, nativeId: string): Promise<string> {
+  const connection = crypto.randomUUID(),
+    grant = crypto.randomUUID(),
+    lease = crypto.randomUUID();
+  const machine = boats.get(nativeId);
+  assert(machine);
+  await sql.query(
+    "insert into mcp_connections(id,org_id,owner_id,scope,name,transport,url,auth_type) values($1,$2,$3,'personal','lifetime renewal','http','https://unused-mcp.invalid','none')",
+    [connection, orgId, ownerId],
+  );
+  await sql.query("insert into mcp_grants(id,connection_id,status) values($1,$2,'connected')", [grant, connection]);
+  await sql.query("insert into mcp_bindings(sandbox_id,connection_id,grant_id) values($1,$2,$3)", [
+    sandboxId,
+    connection,
+    grant,
+  ]);
+  await sql.query(
+    "insert into mcp_bootstraps(sandbox_id,physical_generation,revision,configured) values($1,$2,'installed',true) on conflict(sandbox_id) do update set physical_generation=excluded.physical_generation,revision=excluded.revision,configured=true",
+    [sandboxId, JSON.stringify(["boat", nativeId, machine.bootId])],
+  );
+  await sql.query(
+    "insert into mcp_leases(id,sandbox_id,connection_id,grant_id,org_id,owner_id,generation,sandbox_generation,hash,operations,expires_at) select $1,$2,$3,$4,$5,$6,1,mcp_generation,$7,array['tools'],now()+interval '30 seconds' from sandboxes where id=$2",
+    [lease, sandboxId, connection, grant, orgId, ownerId, "b".repeat(64)],
+  );
+  return lease;
+}
 const scenarios: {
   provider: "boat" | "modal";
   active: boolean;
@@ -359,6 +398,7 @@ try {
           effects.find((item) => item.id === before.provider_sandbox_id && item.op === "allocate")?.ttlSeconds,
           420,
         );
+      const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
       const deniedBefore = effects.length;
       await request("extend", { id, ttl_seconds: 600 }, 404, memberId);
       assert.equal(effects.length, deniedBefore, "Denied member must not mutate provider state");
@@ -368,6 +408,17 @@ try {
         200,
         active ? adminId : ownerId,
       );
+      if (unusedLease) {
+        const renewed = (
+          await sql.query<{ expires_at: Date }>("select expires_at from mcp_leases where id=$1", [unusedLease])
+        ).rows[0];
+        assert(renewed);
+        assert.equal(
+          new Date(renewed.expires_at).toISOString(),
+          boats.get(before.provider_sandbox_id)?.archiveAfter,
+          "HTTP extend must renew even an unused/restart-lost MCP lease to the confirmed physical deadline",
+        );
+      }
       assert.equal(extended.id, id);
       assert.equal(extended.ttlSeconds, 600);
       assert(new Date(extended.expiresAt).getTime() > new Date(before.expires_at).getTime());
@@ -399,11 +450,20 @@ try {
         shortBoatConfirmation = true;
         await request("extend", { id, ttl_seconds: 900 }, 400);
         shortBoatConfirmation = false;
-        assert.equal(
-          new Date((await row(id)).expires_at).toISOString(),
-          acceptedDeadline,
-          "Insufficient provider margin must not publish",
+        const shortened = await row(id);
+        assert(
+          ["stopping", "stopped"].includes(shortened.status),
+          "A provider cap that shortens the old lifetime must schedule stop",
         );
+        assert(new Date(shortened.expires_at).getTime() < new Date(acceptedDeadline).getTime());
+        const lease = (
+          await sql.query<{ activity_lease_id: string | null; stop_requested_at: Date | null }>(
+            "select activity_lease_id,stop_requested_at from sandboxes where id=$1",
+            [id],
+          )
+        ).rows[0]!;
+        assert.equal(lease.activity_lease_id, null, "Preservation must not wait for an unknown-outcome lease");
+        assert(lease.stop_requested_at || shortened.status === "stopped");
       } else {
         // Simulate an older VM whose physical grant has less headroom than the server maximum.
         const originalGrant = (await nativeStore.get(before.provider_sandbox_id)).grantExpiresAt;
@@ -426,7 +486,7 @@ try {
   // manual helper invocation or reliance on the worker's one-second idle timer.
   await server.stop(true);
   await server.workerDone;
-  const expirationStart = effects.length;
+  const expirationStart = 0;
   for (const { id } of scenarios)
     await sql.query(
       "update sandboxes set expires_at=now()-interval '1 second',reconcile_after=now()-interval '1 second',reconcile_lease_until=null,activity_until=null where id=$1",
