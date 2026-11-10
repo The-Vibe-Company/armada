@@ -295,7 +295,7 @@ function ScopedGoldenForm({
                   Only me
                 </label>
               </div>
-              <p id={`${id}-visibility-hint`} className="text-xs text-muted-foreground">
+              <p id={`${id}-visibility-hint`} className="max-w-64 text-xs text-muted-foreground">
                 {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org goldens."}
               </p>
             </fieldset>

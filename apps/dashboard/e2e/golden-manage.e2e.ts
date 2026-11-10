@@ -577,7 +577,7 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   // The build finishes; this tab's poll revalidates the page, which re-renders in place for Zenith (same URL).
   await post("/__test/golden-release");
   await page.clock.runFor(2_500);
-  // The create view stays open over the re-rendered list, which now holds Zenith's golden.
+  // The create dialog stays open over the re-rendered list, which now holds Zenith's golden.
   await expect(page.locator('[data-golden="zenith-golden"]')).toBeAttached();
   expect(page.url()).toBe(tracked);
   await openCreate(page);

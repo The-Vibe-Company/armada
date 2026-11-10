@@ -63,20 +63,24 @@ export async function goldenPanel(page: Page, name: string, provider?: "boat" | 
   return panel;
 }
 
-/** Goes back from the create view to the list, when the create view shows. */
-export async function leaveCreate(page: Page): Promise<void> {
-  const view = page.locator("[data-create-view]");
-  if (!(await view.isVisible())) return;
-  await view.getByRole("button", { name: /^Back to / }).click();
-  await expect(view).toBeHidden();
+/** The create dialog of the Environments page. */
+export function createDialog(page: Page): Locator {
+  return page.getByRole("dialog", { name: "Create a golden" });
 }
 
-/** Opens the create view, and its form when Boat is full and it starts folded; returns the create form. */
+/** Closes the create dialog, when it shows, so the list behind it can be used. */
+export async function leaveCreate(page: Page): Promise<void> {
+  const dialog = createDialog(page);
+  if (!(await dialog.isVisible())) return;
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+}
+
+/** Opens the create dialog, and its form when Boat is full and it starts folded; returns the create form. */
 export async function openCreate(page: Page): Promise<Locator> {
   const form = page.locator('form[data-golden-form="create"]');
-  if (!(await page.locator('[data-panel="new"]').isVisible()))
-    await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect(page.locator('[data-panel="new"]')).toBeVisible();
+  if (!(await createDialog(page).isVisible())) await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(createDialog(page)).toBeVisible();
   if (!(await form.isVisible())) await page.getByText("Show the create form").click();
   await expect(form).toBeVisible();
   return form;
