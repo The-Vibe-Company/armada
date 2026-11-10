@@ -1,5 +1,6 @@
 import {
   type CredentialKind,
+  combineCosts,
   costBasis,
   type Harness,
   type SandboxCost,
@@ -93,4 +94,39 @@ export function costTitle(cost: SandboxCost): string {
     ? `, without ${cost.unpricedTurns} unpriced turn${cost.unpricedTurns === 1 ? "" : "s"}`
     : "";
   return `${cost.label}${left}`;
+}
+
+/** An orchestrator's cost: its own sandbox's, each worker's, and the two together. Plain data, for a client component. */
+export type OrchestratorCost = {
+  /** Its own and its readable workers' together. */
+  total: SandboxCost;
+  /** Its own sandbox's, or null when it has none or its row is not readable. */
+  own: SandboxCost | null;
+  /** Its readable workers' together. */
+  workers: SandboxCost;
+  children: Record<string, SandboxCost>;
+  /** Workers whose row the viewer cannot read (removed, or not theirs): left out of the total. */
+  unseen: number;
+};
+
+export function orchestratorCost(
+  ownId: string | null,
+  childIds: readonly string[],
+  costs: ReadonlyMap<string, SandboxCost>,
+): OrchestratorCost {
+  const own = ownId ? (costs.get(ownId) ?? null) : null;
+  const children: Record<string, SandboxCost> = {};
+  let unseen = 0;
+  for (const id of new Set(childIds)) {
+    const cost = costs.get(id);
+    if (cost) children[id] = cost;
+    else unseen += 1;
+  }
+  return {
+    total: combineCosts([...(own ? [own] : []), ...Object.values(children)]),
+    own,
+    workers: combineCosts(Object.values(children)),
+    children,
+    unseen,
+  };
 }

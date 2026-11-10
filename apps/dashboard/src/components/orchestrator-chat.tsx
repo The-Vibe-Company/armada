@@ -1,6 +1,6 @@
 "use client";
 
-import type { MachineSize, OrchestratorDetail } from "@armada/core";
+import type { MachineSize, OrchestratorDetail, SandboxCost } from "@armada/core";
 import {
   AlertTriangleIcon,
   ChevronRightIcon,
@@ -29,6 +29,7 @@ import { type OrchestratorResult, orchestratorCommand } from "@/app/actions/orch
 import { OrchestratorStateBadge } from "@/components/orchestrator-badge";
 import { ProviderName } from "@/components/provider-mark";
 import { Transcript } from "@/components/sandbox-chat";
+import { RowCost } from "@/components/sandbox-cost";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -67,6 +68,7 @@ import {
   unsettledAfterReread,
 } from "@/lib/orchestrators";
 import { relativeAge } from "@/lib/relative-time";
+import { costFigure, type OrchestratorCost } from "@/lib/sandbox-cost";
 import { cn } from "@/lib/utils";
 
 /** While something can change soon (a turn, a transition), the page reads every couple of seconds. */
@@ -81,7 +83,7 @@ type Connection =
   | { state: "reconnecting"; message: string }
   | { state: "stopped"; failure: OrchestratorFailure | "contract"; message: string };
 
-type Facts = { golden: string; harnessLabel: string };
+type Facts = { golden: string; harnessLabel: string; cost?: OrchestratorCost };
 
 /**
  * An orchestrator as one persistent conversation: its messages and tool calls (the sandbox chat's own transcript),
@@ -572,6 +574,26 @@ function Composer({
   );
 }
 
+/**
+ * Its cost (#875): its own and its workers' together, labelled by what the figure means, then each part. A worker the
+ * viewer cannot read is left out and counted as hidden; nothing recorded reads "No usage yet", never $0.00.
+ */
+function costRows(cost: OrchestratorCost): [string, string][] {
+  const text = (part: SandboxCost | null) => {
+    if (!part) return "No usage yet";
+    const figure = costFigure(part);
+    if (figure.kind === "none") return "No usage yet";
+    return figure.kind === "priced" && figure.partial ? `≥ ${figure.text}` : figure.text;
+  };
+  const workers = Object.keys(cost.children).length;
+  const unseen = cost.unseen > 0 ? `, ${cost.unseen} hidden` : "";
+  return [
+    [cost.total.label, text(cost.total)],
+    ["Its own", text(cost.own)],
+    [`Its ${workers} worker${workers === 1 ? "" : "s"}${unseen}`, workers > 0 ? text(cost.workers) : "None yet"],
+  ];
+}
+
 /** The quiet column: facts, workers, waits, problems and authority, each folded until opened. */
 function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: OrchestratorFeedEvent[]; facts: Facts }) {
   const [now, setNow] = useState(() => Date.now());
@@ -606,6 +628,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
       ? []
       : [["Workers at once", `at most ${config.maxActiveChildren}`] as [string, string]]),
     ...(idleFact ? [["Idle stop", idleFact] as [string, string]] : []),
+    ...(facts.cost ? costRows(facts.cost) : []),
   ];
   return (
     <aside
@@ -632,6 +655,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
               >
                 {child.slice(0, 8)}
               </Link>
+              {facts.cost?.children[child] && <RowCost cost={facts.cost.children[child]} className="ml-2 text-xs" />}
             </li>
           ))}
         </ul>

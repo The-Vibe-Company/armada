@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { costFigure, costOfRow, formatUsd, usageFromRow } from "@/lib/sandbox-cost";
+import { costFigure, costOfRow, formatUsd, orchestratorCost, usageFromRow } from "@/lib/sandbox-cost";
 
 const turns = (list: unknown[], turnCount: unknown = list.length) => ({ turnCount, turns: list });
 
@@ -57,5 +57,29 @@ describe("cost figure", () => {
     expect(formatUsd(1234.5)).toBe("$1,234.50");
     expect(formatUsd(0.001)).toBe("<$0.01");
     expect(formatUsd(0)).toBe("$0.00");
+  });
+});
+
+describe("orchestrator cost", () => {
+  test("its own and its readable workers' together; an unreadable worker is counted as unseen, never as zero", () => {
+    const priced = (id: string) => ({
+      promptId: id,
+      model: "claude-sonnet-5-5",
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cachedTokens: 0,
+    });
+    const costs = new Map([
+      ["own", costOfRow({ harness: "claude", usage_turns: turns([priced("a")]) }, "anthropic")],
+      ["w1", costOfRow({ harness: "claude", usage_turns: turns([priced("b")]) }, "claude_oauth")],
+    ]);
+    const cost = orchestratorCost("own", ["w1", "w2", "w1"], costs);
+    expect(cost.total.usd).toBeCloseTo(4, 10);
+    expect(cost.total.label).toBe("API-equivalent cost");
+    expect(cost.own?.usd).toBeCloseTo(2, 10);
+    expect(cost.workers.usd).toBeCloseTo(2, 10);
+    expect(Object.keys(cost.children)).toEqual(["w1"]);
+    expect(cost.unseen).toBe(1);
+    expect(costFigure(orchestratorCost(null, [], new Map()).total).kind).toBe("none");
   });
 });
