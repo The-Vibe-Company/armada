@@ -1499,8 +1499,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             signal.throwIfAborted();
             if (preservation === "pending")
               return {
-                result: { id: found.id, status: "stopping" as const },
-                patch: { status: "stopping" as const, stopRequested: true },
+                result: {
+                  id: found.id,
+                  status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+                },
+                patch: {
+                  status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+                  stopRequested: true,
+                },
               };
           }
           let terminal = false;

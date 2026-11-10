@@ -334,6 +334,25 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "production-child-message",
     );
     expect(await messagedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    const priorQuiesce = provider.quiesce;
+    const priorStops = placement.stops.length;
+    provider.quiesce = async () => {
+      throw new core.ProviderError({
+        provider: "modal",
+        code: "sandbox_not_ready",
+        retryable: true,
+        message: "Interruption pending",
+      });
+    };
+    const pendingStop = await scoped(
+      "stop",
+      { sandboxId: childReceipt.result.sandboxId },
+      "production-child-stop-pending",
+    );
+    expect(await pendingStop?.json()).toMatchObject({ result: { state: "uncertain" } });
+    expect(placement.stops).toHaveLength(priorStops);
+    if (priorQuiesce) provider.quiesce = priorQuiesce;
+    else delete provider.quiesce;
     const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
     expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
     const childRead = await scoped("read", { sandboxId: childReceipt.result.sandboxId });

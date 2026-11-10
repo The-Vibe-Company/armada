@@ -28,20 +28,25 @@ export async function preserveBeforeStop(
   try {
     return await Promise.race([
       captureAndStore(sql, provider, id, providerId, () => expired, progress),
-      new Promise<void>((resolve) => {
+      new Promise<"pending" | void>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
           const diagnostic = { errorClass: "timeout", providerStatus: null };
           const reason = closedFailure(progress.stage, "timeout", diagnostic);
+          const pending = ["observe", "quiesce"].includes(progress.stage);
           console.warn(
             JSON.stringify({
-              event: "work_preservation_failed",
+              event: pending ? "work_preservation_deferred" : "work_preservation_failed",
               sandboxId: id,
               stage: progress.stage,
               reason,
               ...diagnostic,
             }),
           );
+          if (pending) {
+            resolve("pending");
+            return;
+          }
           void sql
             .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, failureNote("timeout")])
             .catch(() => {});

@@ -219,7 +219,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
 
 // Distinct lifecycle contract: a timed-out observation must never admit later
 // interrupt/exec work after the caller is free to stop the machine.
-test("the stop deadline publishes timeout and fences a late active provider observation", async () => {
+test.each(["observe", "quiesce"])("the stop deadline queues a late %s without capture or a warning", async (stage) => {
   const { db, people } = await database();
   const originalTimeout = globalThis.setTimeout;
   try {
@@ -233,16 +233,31 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       [id, golden.id, people.org, people.owner],
     );
     const boat = fakeBoat();
-    let release: ((info: Awaited<ReturnType<typeof boat.provider.get>>) => void) | undefined;
+    const info = {
+      id: "bx_late_recovery",
+      name: "late",
+      state: "ready" as const,
+      providerState: "running",
+      labels: {},
+    };
+    let release: (() => void) | undefined;
     let expire: (() => void) | undefined;
     let interrupts = 0;
     let execs = 0;
     const provider = {
       ...boat.provider,
       get: () =>
-        new Promise<Awaited<ReturnType<typeof boat.provider.get>>>((resolve) => {
+        stage === "observe"
+          ? new Promise<Awaited<ReturnType<typeof boat.provider.get>>>((resolve) => {
+              release = () => resolve(info);
+            })
+          : Promise.resolve(info),
+      quiesce: () => {
+        interrupts++;
+        return new Promise<void>((resolve) => {
           release = resolve;
-        }),
+        });
+      },
       async interrupt() {
         interrupts++;
       },
@@ -266,19 +281,18 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       return originalTimeout(callback, ms, ...args);
     }) as typeof setTimeout;
     const stopped = preserveBeforeStop(sql, provider, id, "bx_late_recovery");
+    await Promise.resolve();
     if (!expire || !release) throw new Error("Expected pending provider observation and deadline");
     expire();
-    await stopped;
-    release({ id: "bx_late_recovery", name: "late", state: "ready", providerState: "running", labels: {} });
+    expect(await stopped).toBe("pending");
+    release();
     await Promise.resolve();
     await Promise.resolve();
     const row = (
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
-    expect(row?.preservation_note).toBe(
-      "unpushed work could not be preserved (timeout). Resume the sandbox and push or copy any local work before stopping again.",
-    );
-    expect(interrupts).toBe(0);
+    expect(row?.preservation_note ?? null).toBeNull();
+    expect(interrupts).toBe(stage === "observe" ? 0 : 1);
     expect(execs).toBe(0);
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
   } finally {

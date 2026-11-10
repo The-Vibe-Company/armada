@@ -97,7 +97,15 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
               row.preservation_note?.startsWith("unpushed work could not be preserved")
             )
           )
-            await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {});
+            if (
+              (await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {})) === "pending"
+            )
+              throw new ProviderError({
+                provider: provider.id,
+                code: "sandbox_not_ready",
+                retryable: true,
+                message: "Interruption is pending; retry stop after turns settle.",
+              });
           signal?.throwIfAborted();
           await operation(signal, () => provider.stop({ sandboxId: row.provider_sandbox_id }));
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
