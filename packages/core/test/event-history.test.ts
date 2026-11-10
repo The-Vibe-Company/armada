@@ -62,4 +62,19 @@ test("UTF-8 byte boundary retains raw continuation even after coalescing and ret
   ]);
   expect(hard.cursor).toBe("2");
   expect(hard.hasMore).toBe(true);
+  const hugeContext = buildEventPage(
+    [
+      {
+        cursor: "3",
+        event: { ...message("3", ""), conversationId: "c".repeat(1048576), promptId: "p".repeat(1048576) },
+      },
+    ],
+    {},
+    false,
+    "test",
+  );
+  expect(new TextEncoder().encode(JSON.stringify(hugeContext.events)).length).toBeLessThanOrEqual(1048576);
+  expect(hugeContext.events).toMatchObject([{ data: { contextTruncated: true } }]);
+  expect(hugeContext.events[0]).not.toHaveProperty("conversationId");
+  expect(hugeContext.events[0]).not.toHaveProperty("promptId");
 });

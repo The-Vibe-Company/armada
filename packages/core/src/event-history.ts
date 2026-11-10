@@ -117,10 +117,18 @@ export function truncateEvent(event: AgentEvent, originalBytes: number, original
   return {
     id: event.id.slice(0, 256),
     at: event.at,
-    ...(event.conversationId ? { conversationId: event.conversationId } : {}),
-    ...(event.promptId ? { promptId: event.promptId } : {}),
+    ...(event.conversationId && event.conversationId.length <= 256 ? { conversationId: event.conversationId } : {}),
+    ...(event.promptId && event.promptId.length <= 256 ? { promptId: event.promptId } : {}),
     kind: "other",
     type: "event_truncated",
-    data: { reason: "event_exceeds_hard_limit", originalKind, originalBytes, limitBytes: 1048576 },
+    data: {
+      reason: "event_exceeds_hard_limit",
+      originalKind,
+      originalBytes,
+      limitBytes: 1048576,
+      ...((event.conversationId?.length ?? 0) > 256 || (event.promptId?.length ?? 0) > 256
+        ? { contextTruncated: true }
+        : {}),
+    },
   };
 }

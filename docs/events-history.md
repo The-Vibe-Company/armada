@@ -32,7 +32,10 @@ Above the hard 1 MiB events-array limit, it is replaced by one closed
 is omitted, not retryable with a larger budget. The raw cursor still advances.
 Orchestrator envelopes retain their metadata and wrap this marker as an agent
 event (including for an oversized non-agent payload). Markers preserve the
-conversation and prompt IDs when present. Non-agent envelope markers retain
+conversation and prompt IDs when present and at most 256 characters each.
+Oversized context IDs are omitted with `data.contextTruncated: true`, not
+clipped into misleading identities, so the marker itself remains bounded.
+Non-agent envelope markers retain
 the original envelope kind in `data.originalKind` and use its timestamp.
 
 There are two `event_truncated` data shapes: the runtime journal's pre-existing
