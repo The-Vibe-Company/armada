@@ -862,6 +862,8 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   const conversations = (target.conversation_ids ?? []) as string[];
 
   switch (message.params?.name) {
+    case "status":
+      return text({ status: target.status, prompt: null });
     case "logs": {
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
