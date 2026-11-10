@@ -461,7 +461,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         signal.throwIfAborted();
         await options.beforePrompt?.(provider, request.sandboxId);
       }
-      if (options.beforePrompt && (request.harness === "codex" || provider.configureGitHub)) {
+      if (options.beforePrompt) {
         await installNativeCwdWrapper(
           async (r) => {
             const result = await provider.exec(r);

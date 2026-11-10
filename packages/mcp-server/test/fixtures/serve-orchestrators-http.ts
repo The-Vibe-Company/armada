@@ -10,13 +10,11 @@ import { ArmadaApiError, createArmadaApiClient } from "../../../cli/src/armada-a
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
+import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
-const sql: core.Sql = {
-  query: (q, values) => db.query(q, values),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, values) => tx.query(q, values) })),
-};
+const sql = fixtureSql(db);
 const key = Buffer.alloc(32, 17).toString("base64");
 const ownerId = crypto.randomUUID(),
   orgId = crypto.randomUUID(),
@@ -432,6 +430,8 @@ try {
   assert.equal(routes.at(-1)?.code, null);
   // Actual async CREATE through serve+proxy, with actual default-zero managed
   // MCP preparation. The external allocation cannot finish before admission.
+  const selected = await connectionFixture(sql, key, ownerId, orgId);
+  fake.expectConnections(1);
   const admitted = await cli(
     [
       "create",
@@ -450,6 +450,8 @@ try {
       modelId,
       "--idempotency-key",
       "serve-actual-create",
+      "--connections",
+      selected.first.id,
     ],
     202,
   );
@@ -464,12 +466,37 @@ try {
   assert.equal(effects.allocationAttempts, 1);
   assert.equal(effects.allocations, 1);
   assert.equal(effects.modelCalls, 0);
-  assert.equal(effects.mcpConfigurations, 0, "Default-zero keeps the real lifecycle's no-prior-bootstrap fast path.");
+  assert.equal(effects.mcpConfigurations, 1, "Explicit parent selection must configure MCP before authority.");
   assert.equal(effects.epochInstalls, 1);
   await assert.rejects(
     core.createSqlMcpRegistry(sql, key).sandboxConnections(ownerId, orgId, initialized.detail.orchestrator.sandboxId),
     (error: unknown) => error instanceof core.VaultError && error.code === "not_found",
   );
+  const parentProviderId = (
+    await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+      initialized.detail.orchestrator.sandboxId,
+    ])
+  ).rows[0]!.provider_sandbox_id;
+  await exerciseConnections({
+    detail: initialized.detail,
+    selected,
+    request: async (path, body, key) => {
+      const response = await socketFetch(`${origin}${path}`, {
+        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
+        headers: {
+          authorization: `Bearer ${token.token}`,
+          "content-type": "application/json",
+          ...(key ? { "idempotency-key": key } : {}),
+        },
+      });
+      return { status: response.status, value: await response.json() };
+    },
+    running: fake.running,
+    expectServers: (ids) => fake.expectConnections(ids.length, parentProviderId),
+    sawPrompt: (ids) =>
+      assert.deepEqual(fake.lastPromptServers(), ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
+  });
+  fake.expectConnections(0);
   // The same production bundle must keep ordinary child MCP preparation,
   // not pass children into its parent-only private preparation port.
   const epochToken = [...fake.privateTokens].find((value) => value.startsWith("armada_epoch_"));

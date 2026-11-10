@@ -2,6 +2,8 @@ import { AuthError } from "@armada/auth";
 import {
   ORCHESTRATOR_CONTRACT_VERSION,
   ORCHESTRATOR_DEFAULTS,
+  type OrchestratorConnectionMutation,
+  type OrchestratorConnections,
   type OrchestratorCreate,
   type OrchestratorDetail,
   type OrchestratorEvent,
@@ -23,6 +25,8 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
          [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
   capabilities
+  connections list <id> --org <id>
+  connections add|remove <id> <connection-id,...> --org <id> --expected-revision <revision> --idempotency-key <key>
   detail <id> --org <id>
   send|steer <id> <text> --org <id> --expected-revision <revision> --idempotency-key <key>
   stop|resume|recover <id> --org <id> --expected-revision <revision> --idempotency-key <key>
@@ -39,13 +43,17 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   availability, account access, continuity and lifecycle; no local quota policy.
 `;
 
-type ReadCommand = { action: "list" | "detail" | "events" | "capabilities"; id?: string; query: URLSearchParams };
+type ReadCommand = {
+  action: "list" | "detail" | "events" | "capabilities" | "connections_list";
+  id?: string;
+  query: URLSearchParams;
+};
 type MutationCommand = {
-  action: "create" | "message" | "steer" | "stop" | "resume" | "recover";
+  action: "create" | "message" | "steer" | "stop" | "resume" | "recover" | "connections_add" | "connections_remove";
   id?: string;
   key: string;
   orgId: string;
-  body: OrchestratorCreate | OrchestratorFence | OrchestratorMessage;
+  body: OrchestratorCreate | OrchestratorFence | OrchestratorMessage | OrchestratorConnectionMutation;
 };
 export type OrchestratorCommand = (ReadCommand | MutationCommand) & {
   json: boolean;
@@ -64,7 +72,9 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
     "--limit",
     "--size",
   ]);
-  const [action, ...positionals] = args.positionals;
+  const [rawAction, ...rawPositionals] = args.positionals;
+  const action = rawAction === "connections" ? `connections_${rawPositionals[0]}` : rawAction;
+  const positionals = rawAction === "connections" ? rawPositionals.slice(1) : rawPositionals;
   const common = {
     json: args.options.has("--json"),
     all: args.options.has("--all"),
@@ -75,7 +85,24 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
     for (const name of names) allowed.add(name);
   };
   let command: ReadCommand | MutationCommand;
-  if (action === "create") {
+  if (action === "connections_list") {
+    if (positionals.length !== 1) usage("connections list needs one orchestrator ID.");
+    allow("--org");
+    command = { action, id: positionals[0]!, query: new URLSearchParams({ orgId: required(args, "--org") }) };
+  } else if (action === "connections_add" || action === "connections_remove") {
+    if (positionals.length !== 2 || !positionals[1]?.trim())
+      usage("connections add/remove needs an orchestrator ID and comma-separated connection IDs.");
+    allow("--org", "--expected-revision", "--idempotency-key");
+    const connections = positionals[1]!.split(",");
+    if (connections.some((id) => !id.trim())) usage("Connection IDs must be nonempty.");
+    command = {
+      action,
+      id: positionals[0]!,
+      orgId: required(args, "--org"),
+      key: idempotencyKey(args),
+      body: { expectedRevision: integer(args, "--expected-revision", 0, Number.MAX_SAFE_INTEGER), connections },
+    };
+  } else if (action === "create") {
     if (positionals.length !== 1 || !positionals[0]?.trim()) usage("create needs one name.");
     allow(
       "--org",
@@ -229,7 +256,9 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
   const root = "/api/v1/orchestrators";
   if ("body" in command) {
     const path =
-      command.action === "create" ? root : `${root}/${encodeURIComponent(command.id ?? "")}/${command.action}`;
+      command.action === "create"
+        ? root
+        : `${root}/${encodeURIComponent(command.id ?? "")}/${command.action.replace("_", "/")}`;
     let result: OrchestratorOperation;
     try {
       result = versioned(
@@ -264,6 +293,17 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
     );
     auth.out(
       `${command.json ? JSON.stringify(result) : `Orchestrators ${result.enabled ? "enabled" : "disabled"}: ${result.reason}`}\n`,
+    );
+    return 0;
+  }
+  if (command.action === "connections_list") {
+    const result = versioned(
+      await client.request<OrchestratorConnections>(
+        `${root}/${encodeURIComponent(command.id ?? "")}/connections?${command.query}`,
+      ),
+    );
+    auth.out(
+      `${command.json ? JSON.stringify(result) : result.connections.map((c) => `${c.id}\t${c.name}`).join("\n") || "No connections."}\n`,
     );
     return 0;
   }

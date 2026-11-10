@@ -62,6 +62,7 @@ export interface OrchestratorRuntimeBackend {
     conversationContinued: boolean;
     reason?: "conversation_metadata_missing" | "conversation_harness_mismatch";
   }>;
+  assertIdle?(identity: RuntimeIdentity): Promise<void>;
   prepareMcp?(identity: RuntimeIdentity): Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
   revalidate(identity: RuntimeIdentity): Promise<void>;
@@ -133,6 +134,7 @@ export class OrchestratorRuntime {
       version: 1,
       orchestrator: wireOrchestrator(identity),
       operations: await this.options.store.operations(ownerId, orgId, id),
+      connections: await this.options.store.connections(identity),
       ...lifecycle,
     };
   }
@@ -149,6 +151,41 @@ export class OrchestratorRuntime {
     const upstreamHasMore = await this.pullEvents(identity);
     const retained = await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
     return { ...retained, hasMore: retained.hasMore || upstreamHasMore };
+  }
+
+  async connections(caller: Caller, orgId: string, id: string) {
+    const identity = await this.options.store.read(this.owner(caller, orgId), orgId, id);
+    return { version: 1 as const, connections: await this.options.store.connections(identity) };
+  }
+  async changeConnections(
+    caller: Caller,
+    input: {
+      orgId: string;
+      id: string;
+      action: "connections_add" | "connections_remove";
+      key: string;
+      expectedRevision: number;
+      connections: string[];
+    },
+  ): Promise<OrchestratorOperation> {
+    const ownerId = this.owner(caller, input.orgId);
+    const prior = await this.options.store.lookupRequest({
+      ownerId,
+      orgId: input.orgId,
+      id: input.id,
+      action: input.action,
+      key: input.key,
+      payload: { expectedRevision: input.expectedRevision, connections: input.connections },
+    });
+    if (prior) return prior;
+    const identity = await this.options.store.read(ownerId, input.orgId, input.id);
+    if (identity.state !== "ready" || identity.revision !== input.expectedRevision)
+      throw new OrchestratorRuntimeError("conflict", "not_admitted");
+    const backend = await this.options.resolveBackend(identity.configuration, ownerId, identity);
+    if (!backend.assertIdle) throw new OrchestratorRuntimeError("unavailable");
+    await backend.revalidate(identity);
+    await backend.assertIdle(identity);
+    return this.options.store.changeConnections({ ...input, ownerId });
   }
 
   async reconcile(
@@ -457,6 +494,7 @@ export class OrchestratorRuntime {
         const machine = await backend.provider.get(current.providerSandboxId);
         if (machine.state !== "ready" && machine.state !== "running") throw new OrchestratorRuntimeError("conflict");
         const configuration = { ...current.configuration, ...backend.selection };
+        if (input.action === "message") await backend.prepareMcp?.(current);
         diagnostics.stage(input.action === "steer" ? "steer" : "message");
         let dispatched = false;
         try {
@@ -545,6 +583,8 @@ export class OrchestratorRuntime {
   ): Promise<void> {
     await validate?.();
     if (!identity.providerSandboxId) throw new OrchestratorRuntimeError("unavailable");
+    diagnostics.stage("initialization_mcp");
+    await backend.prepareMcp?.(identity);
     diagnostics.stage("skills");
     await bootstrapOrchestrator(backend.provider, {
       diagnostics,

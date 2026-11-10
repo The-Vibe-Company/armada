@@ -237,6 +237,11 @@ export function parseOrchestratorDetail(value: unknown, id: string): Orchestrato
     waits,
     delegation: delegation?.orchestratorId === id ? delegation : null,
     childSandboxIds: [...new Set(children)],
+    connections: Array.isArray(value.connections)
+      ? value.connections
+          .filter((c): c is { id: string; name: string } => isRecord(c) && str(c.id) && str(c.name))
+          .map((c) => ({ id: c.id, name: c.name }))
+      : [],
   };
 }
 

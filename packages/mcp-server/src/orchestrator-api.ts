@@ -1,4 +1,10 @@
-import { API_FAILURE_STATUS, MACHINE_SIZES, ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
+import {
+  API_FAILURE_STATUS,
+  MACHINE_SIZES,
+  ORCHESTRATOR_DEFAULTS,
+  type OrchestratorCreate,
+  VaultError,
+} from "@armada/core";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { type OrchestratorPair, orchestratorCapabilities } from "./orchestrator-activation.ts";
@@ -18,7 +24,17 @@ export async function callOrchestrator(
   if (!service) throw new OrchestratorRuntimeError("unavailable");
   if (typeof args.orgId !== "string") throw new OrchestratorRuntimeError("invalid_request");
   if (
-    ["create", "message", "steer", "stop", "resume", "recover", "reconcile"].includes(action) &&
+    [
+      "create",
+      "message",
+      "steer",
+      "stop",
+      "resume",
+      "recover",
+      "reconcile",
+      "connections_add",
+      "connections_remove",
+    ].includes(action) &&
     (!key || !/^[ -~]{1,128}$/.test(key))
   )
     throw new OrchestratorRuntimeError("invalid_request");
@@ -49,6 +65,9 @@ export async function callOrchestrator(
     stop: ["orgId", "id", "expectedRevision"],
     resume: ["orgId", "id", "expectedRevision"],
     recover: ["orgId", "id", "expectedRevision"],
+    connections_list: ["orgId", "id"],
+    connections_add: ["orgId", "id", "expectedRevision", "connections"],
+    connections_remove: ["orgId", "id", "expectedRevision", "connections"],
   };
   if (action !== "create" && (!fields[action] || Object.keys(args).some((key) => !fields[action]?.includes(key))))
     throw new OrchestratorRuntimeError("invalid_request");
@@ -107,6 +126,28 @@ export async function callOrchestrator(
     return service.create(caller, args as unknown as OrchestratorCreate, key ?? "");
   }
   if (typeof args.id !== "string") throw new OrchestratorRuntimeError("invalid_request");
+  if (action === "connections_list") return service.connections(caller, args.orgId, args.id);
+  if (action === "connections_add" || action === "connections_remove") {
+    if (
+      !Number.isSafeInteger(args.expectedRevision) ||
+      Number(args.expectedRevision) < 0 ||
+      !Array.isArray(args.connections) ||
+      args.connections.length < 1 ||
+      args.connections.length > 100 ||
+      args.connections.some(
+        (id) => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+      )
+    )
+      throw new OrchestratorRuntimeError("invalid_request");
+    return service.changeConnections(caller, {
+      orgId: args.orgId,
+      id: args.id,
+      action,
+      key: key ?? "",
+      expectedRevision: Number(args.expectedRevision),
+      connections: args.connections as string[],
+    });
+  }
   if (action === "recover") {
     if (!Number.isSafeInteger(args.expectedRevision) || Number(args.expectedRevision) < 0)
       throw new OrchestratorRuntimeError("invalid_request");
@@ -167,14 +208,27 @@ export async function orchestratorHttp(
         ? ["capabilities", "reconcile"].includes(parts[0] ?? "")
           ? parts[0]!
           : "detail"
-        : (parts[1] ?? "");
+        : parts[1] === "connections"
+          ? `connections_${parts[2] ?? "list"}`
+          : (parts[1] ?? "");
   try {
     if (
-      (read && !["list", "detail", "events", "capabilities"].includes(action)) ||
+      (read && !["list", "detail", "events", "capabilities", "connections_list"].includes(action)) ||
       (!read &&
         (request.method !== "POST" ||
-          !["create", "message", "steer", "stop", "resume", "recover", "reconcile"].includes(action))) ||
-      parts.length > 2
+          ![
+            "create",
+            "message",
+            "steer",
+            "stop",
+            "resume",
+            "recover",
+            "reconcile",
+            "connections_add",
+            "connections_remove",
+          ].includes(action))) ||
+      (parts.length > 2 &&
+        !(parts.length === 3 && parts[1] === "connections" && ["add", "remove"].includes(parts[2] ?? "")))
     )
       throw new OrchestratorRuntimeError("invalid_request");
     let args: Record<string, unknown> = {};
@@ -228,6 +282,11 @@ export async function orchestratorHttp(
 }
 
 export function orchestratorFailureCode(error: unknown) {
+  if (error instanceof VaultError) {
+    if (error.code === "not_found" || error.code === "forbidden") return "not_found" as const;
+    if (error.code === "conflict") return "conflict" as const;
+    if (error.code === "invalid") return "invalid_request" as const;
+  }
   if (error instanceof OrchestratorRuntimeError) {
     if (error.admission === "unknown") return "outcome_unknown" as const;
     return error.code === "unavailable" ? ("dependency_unavailable" as const) : error.code;

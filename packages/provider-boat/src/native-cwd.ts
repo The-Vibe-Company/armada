@@ -1,4 +1,5 @@
 import type { ExecRequest } from "@armada/core";
+import { claudeMcpBridge } from "./native-claude-mcp.ts";
 
 export const NATIVE_HARNESS_PATHS = {
   codex: "/usr/local/bin/codex",
@@ -36,8 +37,8 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
       `selected=${quote(cwd ?? "")}`,
       `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
       'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
-      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${original} "$@"; fi`,
-      `exec ${original} "$@"`,
+      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" python3 -c ${quote(claudeMcpBridge)} ${original} "$@"; fi`,
+      `exec python3 -c ${quote(claudeMcpBridge)} ${original} "$@"`,
     ].join("; ");
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
   const script = [

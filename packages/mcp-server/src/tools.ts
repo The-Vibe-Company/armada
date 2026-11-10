@@ -309,6 +309,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     "resume",
     "recover",
     "reconcile",
+    "connections_list",
+    "connections_add",
+    "connections_remove",
   ]) {
     server.registerTool(
       `orchestrator_${action}`,

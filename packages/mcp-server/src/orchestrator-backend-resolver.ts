@@ -190,6 +190,27 @@ export function createOrchestratorBackendResolver(input: {
             ]);
         }
       },
+      assertIdle: async (current) => {
+        if (!current.providerSandboxId) throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        const physical = await provider.get(current.providerSandboxId);
+        if (!["ready", "running"].includes(physical.state) || !physical.physicalGeneration)
+          throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        if (provider.id === "boat") {
+          const conversations = Reflect.get(provider, "conversations");
+          if (typeof conversations !== "function") throw new OrchestratorRuntimeError("unavailable");
+          const rows = (await Reflect.apply(conversations, provider, [current.providerSandboxId])) as Array<{
+            running: boolean;
+          }>;
+          if (rows.some((row) => row.running)) throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        } else {
+          if (!provider.observeOrchestrator) throw new OrchestratorRuntimeError("unavailable");
+          const observed = await provider.observeOrchestrator({
+            sandboxId: current.providerSandboxId,
+            physicalGeneration: physical.physicalGeneration,
+          });
+          if (observed.state !== "quiescent") throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        }
+      },
       prepareMcp: async (current) => {
         if (
           !input.connections?.prepare ||

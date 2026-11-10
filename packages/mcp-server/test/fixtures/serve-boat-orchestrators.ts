@@ -6,20 +6,24 @@ import * as core from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
+import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
-const sql: core.Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-};
+const sql = fixtureSql(db);
 const sqlModule = await import("../../src/sql.ts");
 mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
 const boots = new Map<string, string>();
 const sshCalls: string[] = [];
+const mcpServers = new Map<string, string[]>();
+let lastPromptServers: string[] = [];
+let running = false;
 mock.module("@armada/core/server", () => ({
   ...core,
-  sshStdinCheckout: async () => {},
+  sshStdinCheckout: async (_provider: unknown, input: { sandboxId: string; token: string }) => {
+    const payload = JSON.parse(input.token);
+    if (payload.servers) mcpServers.set(input.sandboxId, Object.keys(payload.servers).sort());
+  },
   sshOrchestratorReceipt: async (_provider: unknown, input: { sandboxId: string; token: string }) => {
     const payload = JSON.parse(input.token);
     sshCalls.push(payload.op ?? "bridge");
@@ -135,12 +139,16 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       type: "command.finished",
       success: true,
       exitCode: 0,
-      stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${"a".repeat(40)}/.agents/skills\n`,
+      stdout:
+        body.command === "cat /proc/sys/kernel/random/boot_id"
+          ? boots.get(machine.id)
+          : `Source: https://github.com/The-Vibe-Company/armada/tree/${"a".repeat(40)}/.agents/skills\n`,
       stderr: "",
       timedOut: false,
     });
   if (suffix === "/prompt") {
     prompts++;
+    lastPromptServers = mcpServers.get(machine.id) ?? [];
     machine.model = body.model;
     machine.harness = body.provider === "codex" ? "codex" : "claude";
     const conversationId = machine.conversation ?? `conv_${prompts}`;
@@ -207,7 +215,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   if (suffix === "/conversations")
     return json({
       conversations: machine.conversation
-        ? [{ id: machine.conversation, running: false, lastHarness: machine.harness, lastModel: machine.model }]
+        ? [{ id: machine.conversation, running, lastHarness: machine.harness, lastModel: machine.model }]
         : [],
     });
   if (suffix === "/interrupt") return json({});
@@ -285,6 +293,7 @@ async function cli(args: string[], expected = 0) {
   return JSON.parse(out || err);
 }
 try {
+  const selected = await connectionFixture(sql, key, ownerId, orgId);
   for (const harness of ["codex", "claude"] as const) {
     const model = core.resolveModelChoice(harness, {}).model;
     const create = await cli([
@@ -304,6 +313,8 @@ try {
       models.get(harness)!,
       "--idempotency-key",
       `create-${harness}`,
+      "--connections",
+      selected.first.id,
     ]);
     const id = create.orchestratorId;
     let detail: core.OrchestratorDetail = await cli(["detail", id, "--org", orgId]);
@@ -313,7 +324,27 @@ try {
     }
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
-    let revision = detail.orchestrator.revision;
+    let revision = await exerciseConnections({
+      detail,
+      selected,
+      request: async (path, body, key) => {
+        const response = await realFetch(`${origin}${path}`, {
+          ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
+          headers: {
+            authorization: `Bearer ${token.token}`,
+            "content-type": "application/json",
+            ...(key ? { "idempotency-key": key } : {}),
+          },
+        });
+        return { status: response.status, value: await response.json() };
+      },
+      running: (value) => {
+        running = value;
+      },
+      expectServers: () => {},
+      sawPrompt: (ids) =>
+        assert.deepEqual(lastPromptServers, ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
+    });
     const act = async (action: string, text?: string, expected = 0) => {
       const result = await cli(
         [
@@ -369,7 +400,7 @@ try {
     ).rows[0]?.runtime_result;
     assert.equal(receipt?.kind, "prompt_receipt");
     assert.equal(receipt.promptId, `prompt-${prompts}`);
-    assert.equal(prompts, harness === "codex" ? 1 : 3, "Owner send must dispatch to Boat");
+    assert.equal(prompts, harness === "codex" ? 4 : 9, "Owner send must dispatch to Boat");
     const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
     const agentEvents = page.events
       .filter((item: core.OrchestratorEvent) => item.kind === "agent")

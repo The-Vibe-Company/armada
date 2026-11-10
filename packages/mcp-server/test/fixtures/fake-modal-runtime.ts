@@ -7,6 +7,8 @@ import type { Machine } from "@armada/provider-modal";
 type Grant = { token: string; generation: string; sandboxId: string };
 type Vm = {
   expectedMcp: number;
+  servers?: string[];
+  conversation?: string;
   id: string;
   name: string;
   tags: Record<string, string>;
@@ -39,6 +41,8 @@ export function fakeModalRuntime(input: {
   const privateTokens = new Set<string>();
   let expectedMcp = 0;
   let preservationFailure = "missing_python3";
+  let running = false;
+  let lastPromptServers: string[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -81,7 +85,8 @@ export function fakeModalRuntime(input: {
           truncated: !!capturing && preservationFailure === "output_truncated",
         };
       else if (packet.op === "configureMcp") {
-        assert(!vm.epoch, "Generic MCP must prepare before private epoch installation.");
+        // Runner owns preservation of the private epoch during quiescent refresh.
+        assert(!running, "Cannot configure a running native turn.");
         assert(packet.configuration);
         assert.equal(
           Object.keys(packet.configuration.servers).length,
@@ -94,6 +99,7 @@ export function fakeModalRuntime(input: {
           const capability = server.headers?.Authorization?.slice(7);
           if (capability) privateTokens.add(capability);
         }
+        vm.servers = Object.keys(packet.configuration.servers).sort();
         vm.mcp = true;
         effects.mcpConfigurations++;
         result = { revision: packet.configuration.revision };
@@ -110,16 +116,19 @@ export function fakeModalRuntime(input: {
       } else if (packet.op === "observeOrchestrator")
         result = {
           physicalGeneration: vm.grant.generation,
-          state: "quiescent",
-          evidence: "native-fixture-observation",
+          state: running ? "active" : "quiescent",
+          evidence: createHash("sha256").update(`${vm.grant.generation}:${running}`).digest("hex"),
           eventWatermark: 0,
           acknowledgedSequence: 0,
           nativeSessionId: null,
         };
       else if (packet.op === "interrupt") result = {};
-      else if (packet.op === "prompt")
-        result = { promptId: crypto.randomUUID(), conversationId: crypto.randomUUID(), status: "finished" };
-      else if (packet.op === "checkpoint")
+      else if (packet.op === "prompt") {
+        assert(!running);
+        lastPromptServers = vm.servers ?? [];
+        vm.conversation ??= crypto.randomUUID();
+        result = { promptId: crypto.randomUUID(), conversationId: vm.conversation, status: "finished" };
+      } else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };
       else {
         effects.modelCalls++;
@@ -255,9 +264,17 @@ export function fakeModalRuntime(input: {
     tunnelOrigin,
     privateTokens,
     release,
-    expectConnections: (count: number) => {
-      expectedMcp = count;
+    expectConnections: (count: number, sandboxId?: string) => {
+      if (sandboxId) {
+        const vm = [...byId.values()].find((vm) => vm.tags.armada_sandbox === sandboxId);
+        assert(vm);
+        vm.expectedMcp = count;
+      } else expectedMcp = count;
     },
+    running: (value: boolean) => {
+      running = value;
+    },
+    lastPromptServers: () => lastPromptServers,
     providerReads: () => providerReads,
     close: () => kernel.stop(true),
   };

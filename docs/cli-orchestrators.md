@@ -42,6 +42,65 @@ policy or infer capacity from a size label. Idle period is optional, in seconds;
 server defaults apply when omitted. No default child limit, daily-start quota or
 provider pacing is sent.
 
+## MCP connections
+
+Creation accepts `--connections ID1,ID2` or `--no-connections` (mutually exclusive).
+Omitting both uses ordinary launch defaults at creation. Each connection must be
+connected and usable by the owner in this organization; private parent visibility
+does not authorize another member's personal connections.
+
+```sh
+armada orchestrator create reviews --org ORG --golden GOLDEN --provider boat \
+  --agent codex --model MODEL --model-account ACCOUNT \
+  --connections CONNECTION1 --idempotency-key CREATE_KEY --json
+armada orchestrator connections list ID --org ORG --json
+armada orchestrator connections add ID CONNECTION2 --org ORG \
+  --expected-revision REVISION --idempotency-key ADD_KEY --json
+# Read detail for the new revision, then send the next instruction.
+armada orchestrator connections remove ID CONNECTION2 --org ORG \
+  --expected-revision NEW_REVISION --idempotency-key REMOVE_KEY --json
+```
+
+`add` and `remove` accept comma-separated connection IDs. Identical retries return
+the original operation; a changed payload under the same key or a stale revision
+conflicts. A pending/uncertain operation, a non-ready parent, an active turn, or
+unproven native quiescence prevents changes. Running turns are **not queued**:
+the response is a closed `409 conflict`, without selection/revision changes.
+Wait until idle, read detail and submit a new request.
+
+A successful mutation commits the desired set and fences old gateway leases.
+Native preparation happens before the next admitted message. No VM or
+conversation is recreated:
+- **Boat × Codex:** the existing stdio bridge reloads native MCP configuration
+  using acknowledged `config/mcpServer/reload` before the next turn.
+- **Boat × Claude:** the stream-json bridge sends acknowledged `mcp_set_servers`
+  controls and explicitly disables removed servers with `mcp_toggle` before
+  forwarding the next user message. Unsupported controls or connection errors
+  fail closed; no user message is forwarded. Fresh non-stream processes read the
+  updated user configuration at startup.
+- **Modal × Codex:** the runtime takes the new configuration snapshot for the
+  next fresh app-server and resumes the existing native thread. The private epoch
+  accepts external refresh only when quiescent and preserves its internal server.
+  Modal × Claude remains disabled.
+
+Preparation failure does not start a turn or silently clear connections: inspect
+the operation/detail and repair the connection rather than assuming tools loaded.
+Detail's `connections` and `connections` events contain only `{id, name}` entries.
+`armada_orchestrator` and scoped internal authority are not registry connections,
+are never listed here, and cannot be removed by these commands.
+
+**Children do not inherit the parent's set.** A child uses ordinary owner-authorized
+launch defaults unless its delegated launch explicitly selects connections
+(including an explicit empty list). Parent selection grants no access to children;
+owner/grant checks still apply to every child.
+
+HTTP: `GET /api/v1/orchestrators/ID/connections` (query `orgId`) and
+`POST /api/v1/orchestrators/ID/connections/add|remove` (JSON `orgId`,
+`expectedRevision`, `connections`, plus `Idempotency-Key`). MCP tools:
+`orchestrator_connections_list`, `orchestrator_connections_add` and
+`orchestrator_connections_remove`, using the same fields in `args` and the
+existing `idempotencyKey` envelope.
+
 ## Receipts, errors and reconnect
 
 Every write requires a caller-chosen key. Keep the exact key and arguments for
