@@ -14,7 +14,13 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { API_FAILURE_STATUS, goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
+import {
+  API_FAILURE_STATUS,
+  goldenForSettings,
+  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
+  parseMachineSize,
+  parseMachineSizePolicy,
+} from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -647,6 +653,7 @@ async function dispatch(
       "sandbox/send": "send",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
+      "sandbox/extend": "extend",
       "sandbox/delete": "delete",
       "sandbox/wait": "wait",
       "sandbox/exec": "exec",
@@ -655,6 +662,22 @@ async function dispatch(
     } as Record<string, string>
   )[route];
   if (toolName) {
+    if (
+      route === "sandbox/extend" &&
+      Number.isSafeInteger(body.ttl_seconds) &&
+      Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS
+    )
+      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
+    if (
+      route === "sandbox/extend" &&
+      (!Number.isSafeInteger(body.ttl_seconds) ||
+        Number(body.ttl_seconds) < 1 ||
+        Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
+    )
+      throw new VaultError(
+        "invalid",
+        "ttl_seconds must be a positive whole number of seconds within the server maximum.",
+      );
     if (
       route === "golden/capabilities" &&
       optional(body, "provider") !== undefined &&
@@ -673,6 +696,7 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         provider: (target) =>
           options.providers

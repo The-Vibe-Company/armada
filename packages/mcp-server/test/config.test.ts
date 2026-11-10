@@ -19,6 +19,19 @@ describe("config", () => {
     expect(configFromEnv({ ...ENV, ARMADA_GITHUB_RUNTIME_ENABLED: "true" }).githubRuntimeEnabled).toBe(true);
   });
 
+  test("server Modal extension headroom is bounded, configurable and defaults to one hour", () => {
+    expect(configFromEnv(ENV).sandboxExtensionHeadroomSeconds).toBe(3600);
+    for (const seconds of [0, 1800, 86100])
+      expect(
+        configFromEnv({ ...ENV, ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS: String(seconds) })
+          .sandboxExtensionHeadroomSeconds,
+      ).toBe(seconds);
+    for (const invalid of ["-1", "1.5", "Infinity", "86101", "invalid-policy"])
+      expect(() => configFromEnv({ ...ENV, ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS: invalid })).toThrow(
+        "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be",
+      );
+  });
+
   test("reads the environment, with PORT defaulting to 8080", () => {
     expect(configFromEnv(ENV)).toMatchObject({ port: 8080, supabaseUrl: "https://project.supabase.co" });
     expect(configFromEnv({ ...ENV, PORT: "3000" }).port).toBe(3000);

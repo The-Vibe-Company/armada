@@ -10,8 +10,8 @@ export async function loadRunnerArtifact(dist: string): Promise<{ bundle: Uint8A
   if (
     manifest.protocol !== 1 ||
     manifest.bun !== "1.4.2" ||
-    manifest.claudeSdk !== "0.3.319" ||
-    manifest.claude !== "2.1.319" ||
+    manifest.claudeSdk !== "0.3.322" ||
+    manifest.claude !== "2.1.322" ||
     manifest.codex !== "0.167.0" ||
     !["x64", "arm64"].includes(manifest.architecture)
   )

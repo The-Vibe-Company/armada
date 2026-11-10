@@ -626,6 +626,10 @@ export function createMcpHttpIntegration(options: {
     },
     connections: {
       ...lifecycle.connections,
+      renewLifetime: async (provider: Provider, sandboxId: string) => {
+        await lifecycle.connections.renewLifetime?.(provider, sandboxId);
+        await refreshActiveExpiries(sandboxId);
+      },
       prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
         await lifecycle.connections.prepare?.(...args);
         await refreshActiveExpiries(args[1].id);

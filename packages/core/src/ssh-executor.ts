@@ -208,6 +208,21 @@ ARMADA_PRIVATE_AUTH
   }
 }
 
+/** Private Skillpack transport: key and script use SSH stdin, never provider exec or argv. */
+export async function sshPrivateSkillCommand(
+  provider: Provider,
+  input: { sandboxId: string; key: string; script: string },
+  deps: SshExecDeps = {},
+): Promise<string> {
+  return sshExchange(
+    provider,
+    { sandboxId: input.sandboxId, token: input.key, script: input.script },
+    deps,
+    true,
+    600_000,
+  );
+}
+
 async function sshExchange(
   provider: Pick<Provider, "sshKey">,
   input: { sandboxId: string; token: string; script: string },

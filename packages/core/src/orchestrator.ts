@@ -17,7 +17,7 @@ export const ORCHESTRATOR_DEFAULTS = {
 
 export type OrchestratorState = "creating" | "ready" | "stopping" | "stopped" | "resuming" | "blocked";
 export type OrchestratorContinuity = "not_started" | "native" | "unverified" | "lost";
-export type OrchestratorScope = "worker:launch" | "worker:read" | "worker:message" | "worker:stop";
+export type OrchestratorScope = "worker:launch" | "worker:read" | "worker:message" | "worker:stop" | "worker:extend";
 
 /** All dates are UTC ISO-8601 strings, all IDs are opaque Armada IDs, never provider secrets. */
 export interface OrchestratorCreate {
@@ -28,7 +28,7 @@ export interface OrchestratorCreate {
   provider: SandboxProviderId;
   harness: Harness;
   repo?: string;
-  /** Public Skillpack catalog reference, pinned as org/slug@version. */
+  /** Exact Skillpack pin: org/slug@version for catalog, slug@version for the authenticated workspace. */
   skill?: string;
   /** Optional override; absent still uses the selected repository/golden policy. */
   size?: MachineSize;
@@ -140,6 +140,8 @@ export interface OrchestratorDetail {
 }
 
 export interface OrchestratorSkillReceipt {
+  /** Authenticated registry workspace; absent for anonymous public catalog receipts. */
+  workspaceId?: string;
   reference: string;
   version: string;
   skillId: string;
@@ -147,6 +149,6 @@ export interface OrchestratorSkillReceipt {
   origin: string;
 }
 
-/** Only anonymous catalog references are supported in the first slice. */
+/** Qualified references select anonymous catalog; bare slugs select the authenticated workspace. */
 export const ORCHESTRATOR_SKILL_PATTERN =
-  /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
+  /^(?:[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;

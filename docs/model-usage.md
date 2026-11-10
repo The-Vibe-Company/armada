@@ -113,7 +113,7 @@ are private; only allowlisted normalized metadata reaches this API.
 
 ## Native sources and privacy
 
-- Claude SDK 0.3.319 usage_report retains provider rows, ISO resets and optional
+- Claude SDK 0.3.322 usage_report retains provider rows, ISO resets and optional
   extra_usage in minor currency units. Null rows clear prior allowance rather
   than preserving a fake fresh value. A model-only setup token reports unavailable.
 - Native rate_limit_event remains private diagnostic data. Header utilization is
@@ -139,7 +139,7 @@ by tests.
 ## Pinned research
 
 - [Claude SDKUsageReport](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusagereport),
-  checked against installed SDK 0.3.319 declarations.
+  checked against installed SDK 0.3.322 declarations.
 - [Codex app-server account limits](https://learn.chatgpt.com/docs/app-server),
   checked against the pinned 0.167.0 native schema.
 - MIT reference [yetone/magpie, 195d79939e215828c8b1cca73650b1d5c5cb8318](https://github.com/yetone/magpie/tree/195d79939e215828c8b1cca73650b1d5c5cb8318),

@@ -184,6 +184,18 @@ export async function operation(
       if (!id) throw new GoldenError("invalid_config", `armada ${command} needs a sandbox id.`);
       body.id = id;
     }
+    if (command === "extend") {
+      uuid(id, "sandbox id");
+      const org = single(args, "--org");
+      if (org !== undefined) uuid(org, "--org");
+      const ttl = single(args, "--ttl");
+      if (ttl === undefined || [...args.options.keys()].some((key) => !["--ttl", "--org", "--json"].includes(key)))
+        throw new GoldenError(
+          "invalid_config",
+          "Run armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json].",
+        );
+      body.ttl_seconds = parseTtl(ttl);
+    }
     if (command === "bind-credential") {
       const credentialId = single(args, "--credential-id");
       uuid(credentialId, "credential id");
@@ -356,4 +368,14 @@ function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, 
     }
   }
   return body;
+}
+
+/** `90`, `90s`, `30m`, `4h` or `2d`. A bare number is seconds. */
+export function parseTtl(value: string): number {
+  const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
+  const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];
+  if (!match?.[1] || unit === undefined) {
+    throw new GoldenError("invalid_config", `--ttl '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
+  }
+  return Number(match[1]) * unit;
 }
