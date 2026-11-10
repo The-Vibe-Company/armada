@@ -145,3 +145,27 @@ by tests.
 - MIT reference [yetone/magpie, 195d79939e215828c8b1cca73650b1d5c5cb8318](https://github.com/yetone/magpie/tree/195d79939e215828c8b1cca73650b1d5c5cb8318),
   internal/provider/subscription_usage.go and login_usage.go: consulted for
   allowance presentation/cache boundaries; no source code copied.
+
+## Per-sandbox token counters (not subscription allowance)
+
+Per-turn `TurnTokenUsage` preserves harness-native definitions. Codex
+`inputTokens` includes `cachedTokens` and `cacheWriteTokens`; the cache fields
+are subsets, not additional input. Claude `inputTokens` excludes the separately
+reported cache-read and cache-creation tokens. Reasoning tokens, when reported,
+are a subset of output. Do not add all columns to calculate unique tokens or
+apply one cross-harness pricing formula. Missing fields/totals stay null.
+
+Orchestrator own usage is authoritative from the durably ingested journal,
+updated atomically with its cursor. Status polling cannot overwrite a managed
+parent's usage snapshot. The first accounting page bootstraps old snapshots
+from retained accounting events once; later pages merge only newly accepted
+prompt/usage events into compact per-turn state. The JSON snapshot still costs
+O(reported turns) to rewrite, but does not reread all retained message/tool events
+on every page. Child sums use each child's latest persisted usage observation.
+
+Compute seconds are Armada-observed elapsed running intervals, not provider
+billed seconds or CPU time. Boat copies `stoppedAt` only when its API supplies
+it; Modal's managed stop records a stop timestamp locally. If either provider
+omits it, a confirmed stop uses Armada's observation time as the endpoint rather
+than erasing known compute history. This can include polling/stop-confirmation
+latency. Legacy unknown starts and missed stop/resume gaps remain unknown.

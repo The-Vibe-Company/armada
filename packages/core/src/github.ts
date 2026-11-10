@@ -3,8 +3,8 @@ import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
 
 /**
  * GitHub user-to-server access for a launch. The person authorizes the Armada GitHub App once (the
- * dashboard's "Connect GitHub"); Armada keeps the expiring refresh token as ciphertext. At launch the
- * refresh token is exchanged for a fresh user access token (8 hours), which goes into the sandbox as
+ * dashboard's "Connect GitHub"); Armada keeps the expiring refresh token as ciphertext. Launches share a validated, cached
+ * user access token (up to 8 hours), which goes into the sandbox as
  * `GH_TOKEN` and `GITHUB_TOKEN`, so `git` and `gh` there act as that person. No personal access tokens.
  */
 
@@ -302,7 +302,7 @@ export type GitHubStatus = "connected" | "not_connected" | "revoked" | "unavaila
 
 /** The answer of {@link resolveGitHubAccess}: a token for the sandbox, or why there is none. Launch never fails for lack of GitHub. */
 export type GitHubAccess =
-  | { status: "connected"; token: string; identity: GitIdentity }
+  | { status: "connected"; token: string; identity: GitIdentity; expiresAt?: Date }
   | { status: Exclude<GitHubStatus, "connected">; message: string };
 
 export const GITHUB_NOT_CONNECTED =
@@ -311,6 +311,8 @@ export const GITHUB_REVOKED =
   "Your GitHub connection was revoked or has expired, so git push and gh in this sandbox are not signed in as you. Reconnect GitHub in the dashboard under Settings.";
 
 export interface GitHubResolveDeps {
+  /** Trusted caller policy: launches require one hour; on-demand brokers need only the refresh margin. */
+  minimumLifetimeMs?: number;
   store: GitHubConnectionStore;
   encryptionKey: string | undefined;
   /** Null when the server has no GitHub App configured. */
@@ -320,7 +322,7 @@ export interface GitHubResolveDeps {
 }
 
 /**
- * Turns the person's stored refresh token into a fresh user access token for one launch.
+ * Resolves a shared, validated user access token; refreshes only when missing, rejected or near expiry.
  *
  * The user's connection is the only source: no connection is `not_connected`, a refused refresh token
  * marks the connection revoked, and a GitHub outage is `unavailable`. Rotation is safe: the new refresh
@@ -329,6 +331,7 @@ export interface GitHubResolveDeps {
  * Throws only for a missing or malformed encryption key and for a database failure.
  */
 export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: string): Promise<GitHubAccess> {
+  const minimumLifetimeMs = Math.max(0, deps.minimumLifetimeMs ?? ACCESS_TOKEN_EXPIRY_MARGIN_MS);
   const request = { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.now ? { now: deps.now } : {}) };
   return deps.store.withGitHubConnectionRefresh(userId, async (store, connection) => {
     // A waiter may acquire the lock after the token it observed at request time has expired.
@@ -343,7 +346,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
     if (
       connection.accessTokenEnc &&
       connection.accessExpiresAt &&
-      connection.accessExpiresAt.getTime() > now.getTime() + ACCESS_TOKEN_EXPIRY_MARGIN_MS
+      connection.accessExpiresAt.getTime() > now.getTime() + minimumLifetimeMs
     ) {
       try {
         return await connectedFromToken(
@@ -353,6 +356,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
           store,
           userId,
           true,
+          connection.accessExpiresAt,
         );
       } catch (error) {
         if (error instanceof EncryptionKeyError) throw error;
@@ -401,7 +405,14 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
     };
     if (!(await store.rotateGitHubToken(userId, connection.refreshTokenEnc, next)))
       throw new Error("GitHub connection changed while its refresh lock was held.");
-    return connectedFromToken(connection, tokens.accessToken, request, store, userId);
+    // Persist rotation even when GitHub issues a surprisingly short lifetime: never replay it.
+    if (tokens.accessExpiresAt.getTime() <= (deps.now ?? (() => new Date()))().getTime() + minimumLifetimeMs)
+      return {
+        status: "unavailable",
+        message:
+          "GitHub issued a token without the required remaining lifetime; GitHub was not set up in this sandbox.",
+      };
+    return connectedFromToken(connection, tokens.accessToken, request, store, userId, false, tokens.accessExpiresAt);
   });
 }
 
@@ -412,6 +423,7 @@ async function connectedFromToken(
   store: GitHubConnectionStore,
   userId: string,
   rejectCachedAccess = false,
+  expiresAt?: Date,
 ): Promise<GitHubAccess> {
   let user: GitHubUser;
   try {
@@ -429,7 +441,7 @@ async function connectedFromToken(
     };
   if (user.login !== connection.login || user.name !== connection.name)
     await store.updateGitHubProfile(userId, user).catch(() => {});
-  return { status: "connected", token: accessToken, identity: gitIdentity(user) };
+  return { status: "connected", token: accessToken, identity: gitIdentity(user), ...(expiresAt ? { expiresAt } : {}) };
 }
 
 /** The environment variables `gh` and most tools read. */

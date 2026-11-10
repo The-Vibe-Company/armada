@@ -608,7 +608,7 @@ async function dispatch(
     return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
-  if (route.startsWith("github/")) {
+  if (route.startsWith("github/") && route !== "github/refresh") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);
   }
@@ -644,6 +644,7 @@ async function dispatch(
     {
       "golden/capabilities": "golden_capabilities",
       "golden/adopt": "golden_adopt",
+      "github/refresh": "github_refresh",
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
@@ -710,7 +711,12 @@ async function dispatch(
               providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
             }
           : {}),
-        launchCredentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
+        launchCredentials: launchCredentials(
+          options.store,
+          options.encryptionKey,
+          options.github ? { ...options.github, store: options.store } : undefined,
+          options.modelAuth,
+        ),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
         now: options.now ?? (() => new Date()),
@@ -1214,6 +1220,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
@@ -1279,6 +1286,7 @@ function launchJson(result: LaunchResult) {
     github: {
       status: result.github.status,
       login: result.github.login ?? null,
+      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
       message: result.github.message ?? null,
     },
   };

@@ -78,7 +78,7 @@ export class CodexDriver implements Driver {
       steering = false;
     const baseline: Record<string, number> | null = c.sessionId
       ? (this.tokenTotals.get(c.sessionId) ?? null)
-      : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+      : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0 };
     const earlyTerminals = new Map<string, TurnCompletedNotification>();
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
@@ -141,7 +141,12 @@ export class CodexDriver implements Driver {
             )
           ) {
             const delta = (key: string) =>
-              baseline && total[key] >= baseline[key]! ? total[key] - baseline[key]! : null;
+              baseline &&
+              Number.isSafeInteger(total[key]) &&
+              Number.isSafeInteger(baseline[key]) &&
+              total[key] >= baseline[key]!
+                ? total[key] - baseline[key]!
+                : null;
             c.emit({
               kind: "other",
               type: "armada/turnUsage",
@@ -150,6 +155,12 @@ export class CodexDriver implements Driver {
                 inputTokens: delta("inputTokens"),
                 outputTokens: delta("outputTokens"),
                 cachedTokens: delta("cachedInputTokens"),
+                ...(Number.isSafeInteger(total.cacheWriteInputTokens)
+                  ? { cacheWriteTokens: delta("cacheWriteInputTokens") }
+                  : {}),
+                ...(Number.isSafeInteger(total.reasoningOutputTokens)
+                  ? { reasoningTokens: delta("reasoningOutputTokens") }
+                  : {}),
               },
             });
             this.tokenTotals.set(threadId, { ...total });

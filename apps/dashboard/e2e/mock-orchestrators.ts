@@ -176,6 +176,32 @@ function detail(row: Orchestrator): Row {
       childPolicy: "owned_children",
     },
     childSandboxIds: child.map((event) => event.sandboxId),
+    usage: {
+      own: {
+        computeSeconds: 12,
+        turnCount: 1,
+        turns: [
+          {
+            promptId: "usage-prompt",
+            model: "claude-opus-5-5",
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedTokens: 4,
+            cacheWriteTokens: 2,
+            reasoningTokens: null,
+          },
+        ],
+      },
+      children: {
+        computeSeconds: 24,
+        turnCount: 2,
+        inputTokens: 20,
+        outputTokens: 8,
+        cachedTokens: 7,
+        cacheWriteTokens: null,
+        reasoningTokens: null,
+      },
+    },
   };
 }
 

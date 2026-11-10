@@ -195,6 +195,7 @@ export async function launchOrchestratorChild(input: {
         harness: selection.harness,
         model: selection.model,
         ...(selection.size === undefined ? {} : { size: selection.size }),
+        ...(selection.skills === undefined ? {} : { skills: selection.skills }),
         ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
         ...(selection.repo ? { repo: selection.repo } : {}),
         ...(selection.prompt ? { prompt: selection.prompt } : {}),

@@ -48,6 +48,7 @@ export interface StatusReport {
   machineSize: MachineSizeEvidence | null;
   /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
   model: string | null;
+  skills?: SandboxView["skills"];
   reasoningEffort: string | null;
   /** Armada's status, after this read. */
   status: SandboxStatus;
@@ -132,10 +133,8 @@ export async function readStatus(
     };
     if (next === "failed" && info.physicalExitConfirmed) {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     await store.update(sandbox.id, patch);
   }
@@ -187,6 +186,7 @@ function report(
     repositoryDir: sandbox.repositoryDir ?? null,
     machineSize: sandbox.machineSize ?? null,
     model: sandbox.model,
+    skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,

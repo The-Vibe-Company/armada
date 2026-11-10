@@ -1,0 +1,34 @@
+[
+  {
+    "at": 1794311654087,
+    "id": "4cf5a488-36dc-4340-9c41-f3bf207d00bc",
+    "kind": "prompt",
+    "text": "Reply with exactly: OK",
+    "status": "queued",
+    "promptId": "15e8bf9d-0075-464f-bd50-b781ce25b406",
+    "conversationId": "dc6705ea-31aa-4cb1-8591-86f560516ed3"
+  },
+  {
+    "at": 1794311658248,
+    "id": "5838edc7-0651-4e7f-8bda-506c06513a14",
+    "data": {
+      "model": "gpt-6.1-sol",
+      "inputTokens": 13136,
+      "cachedTokens": 0,
+      "outputTokens": 5
+    },
+    "kind": "other",
+    "type": "armada/turnUsage",
+    "promptId": "15e8bf9d-0075-464f-bd50-b781ce25b406",
+    "conversationId": "dc6705ea-31aa-4cb1-8591-86f560516ed3"
+  },
+  {
+    "at": 1794311658277,
+    "id": "3d5bf8b5-096e-4dd2-b374-58855c1917b6",
+    "kind": "prompt",
+    "text": "Reply with exactly: OK",
+    "status": "finished",
+    "promptId": "15e8bf9d-0075-464f-bd50-b781ce25b406",
+    "conversationId": "dc6705ea-31aa-4cb1-8591-86f560516ed3"
+  }
+]

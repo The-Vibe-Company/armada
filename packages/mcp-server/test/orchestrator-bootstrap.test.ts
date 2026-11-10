@@ -79,6 +79,9 @@ test.each([
                 : reference,
         }),
     harness: "codex",
+    skillpackKey: async () => {
+      throw new Error("Public catalog install must never resolve private credentials");
+    },
     recordReceipt: async () => {
       calls.push("receipt");
     },

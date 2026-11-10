@@ -1,23 +1,15 @@
 import { CircleAlertIcon, CircleCheckIcon, PlugIcon, StarIcon, UserIcon, UsersIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  AddConnectionForm,
-  ConnectServiceDialog,
-  ServiceCatalog,
-  ServiceMark,
-  ToolPanel,
-  ToolRowAction,
-} from "@/components/connections";
+import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
-import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
+import { RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   authLabel,
   hostOf,
-  type McpCatalogService,
   type McpConnection,
   type OAuthReturn,
   oauthReturn,
@@ -28,7 +20,7 @@ import { ControlError } from "@/lib/control";
 import { listSelectedCatalog, listSelectedConnections, viewerControl } from "@/lib/data/connections";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
-import { serviceState, type ToolState, toolBlockers, toolFact, toolState, unaddedServices } from "@/lib/tools";
+import { type ToolState, toolBlockers, toolFact, toolState } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Tools" };
@@ -94,7 +86,6 @@ export default async function ToolsPage({ searchParams }: Props) {
     listSelectedCatalog(selected.org.id),
   ]);
   const services = catalog.state === "ready" ? catalog.services : [];
-  const taken = list.connections.map((connection) => connection.name);
   const org = { orgId: selected.org.id, orgName: selected.org.name, isAdmin };
 
   const connectionRows = list.connections.map((connection) => {
@@ -103,10 +94,7 @@ export default async function ToolsPage({ searchParams }: Props) {
     const state = toolState(connection, canManage);
     return { ...connectionRow(connection, state, canManage, serviceLabel), status: state, connection };
   });
-  const serviceRows = unaddedServices(services, list.connections).map((service) =>
-    serviceRow(service, { ...org, taken }),
-  );
-  const rows = sortResources<ResourceRow & { bucket: Bucket }>([...connectionRows, ...serviceRows]);
+  const rows = sortResources<ResourceRow & { bucket: Bucket }>(connectionRows);
   const blockers = toolBlockers(connectionRows.map((row) => ({ ...row, state: row.status })));
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
   // Back from a sign-in, the connection it was for is the one to look at.
@@ -122,43 +110,44 @@ export default async function ToolsPage({ searchParams }: Props) {
       blockers={blockers}
       notices={notice}
       initial={initial}
-      create={{
-        label: "New",
-        title: "Add a tool",
-        subtitle: "A service to sign in to, or any MCP server.",
-        content: (
-          <div className="space-y-6">
-            <PanelSection title="Services" aria-label="Services">
-              {catalog.state === "ready" ? (
-                services.length > 0 ? (
-                  <ServiceCatalog services={services} connections={list.connections} {...org} />
-                ) : (
-                  <p className="text-sm text-muted-foreground">No services offered. Add a custom server instead.</p>
-                )
-              ) : (
-                <p className="text-sm text-muted-foreground" data-catalog-unavailable>
-                  Services are not available: {catalog.message} You can still add a custom server.
-                </p>
-              )}
-            </PanelSection>
-            <PanelSection title="Custom server">
-              <p className="text-sm text-muted-foreground">
-                Any MCP server by URL, or a command that runs in the sandbox.
-              </p>
-              <AddConnectionForm {...org} />
-            </PanelSection>
-          </div>
-        ),
-      }}
+      actions={<AddServerDialog {...org} />}
       footer={
-        <p className="text-xs text-muted-foreground">
-          Personal tools reach only the sandboxes you launch. Org tools reach every member's;{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."}
-        </p>
+        <>
+          <p className="text-xs text-muted-foreground">
+            Personal tools reach only the sandboxes you launch. Org tools reach every member's;{" "}
+            {isAdmin ? "you manage them." : "only an admin changes them."}
+          </p>
+          <section aria-labelledby="services-title" className="space-y-3 pt-5">
+            <div className="space-y-0.5">
+              <h2 id="services-title" className="text-base font-semibold tracking-tight">
+                Services
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Sign in once with the account Armada should use. For anything else, use Add server.
+              </p>
+            </div>
+            {catalog.state === "ready" ? (
+              services.length > 0 ? (
+                <ServiceCatalog services={services} connections={list.connections} {...org} />
+              ) : (
+                <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                  This Armada server offers no services. Add any MCP server with Add server.
+                </p>
+              )
+            ) : (
+              <p
+                className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
+                data-catalog-unavailable
+              >
+                Services are not available: {catalog.message} You can still add a custom server.
+              </p>
+            )}
+          </section>
+        </>
       }
       empty={
         <Empty title="No tools yet" icon={<PlugIcon />}>
-          Use New to sign in to a service or add an MCP server; agents pick it when they launch.
+          Connect a service below or add any MCP server; agents pick it when they launch.
         </Empty>
       }
     />
@@ -222,48 +211,6 @@ function connectionRow(
     action: canManage ? <ToolRowAction connection={connection} /> : null,
     detail: <ToolPanel connection={connection} canManage={canManage} serviceLabel={serviceLabel} />,
     attrs: { "data-connection": connection.name },
-  };
-}
-
-/** A catalog service nobody connected yet, at the end of the list: Connect, or the setup the server still needs. */
-function serviceRow(
-  service: McpCatalogService,
-  org: { orgId: string; orgName: string; isAdmin: boolean; taken: string[] },
-): ResourceRow & { bucket: Bucket } {
-  const state = serviceState(service);
-  const ready = service.availability === "available";
-  const meta = ready ? hostOf(service.url) : (service.setupMessage ?? "Needs setup on this Armada server.");
-  const action = ready ? (
-    <ConnectServiceDialog service={service} another={false} {...org} />
-  ) : service.docsUrl ? (
-    <Button variant="outline" size="sm" asChild>
-      <a href={service.docsUrl} target="_blank" rel="noreferrer noopener">
-        Setup guide
-      </a>
-    </Button>
-  ) : null;
-  return {
-    key: `service:${service.id}`,
-    name: service.label,
-    bucket: state.bucket,
-    search: `${service.label} ${service.url}`,
-    mark: <ServiceMark label={service.label} />,
-    meta,
-    subtitle: ready ? "Available to connect" : "Not available yet",
-    state: <StateCell tone={state.tone} label={state.label} {...(ready ? {} : { "data-service-setup": "" })} />,
-    action,
-    detail: (
-      <div className="space-y-3 text-sm">
-        <p className="text-muted-foreground">
-          {ready
-            ? `Sign in once at ${service.label}; your agents can then use it in every sandbox you launch.`
-            : (service.setupMessage ?? "This Armada server needs setup before anyone can connect it.")}
-        </p>
-        {ready && <p className="font-mono text-xs break-all">{service.url}</p>}
-        {action}
-      </div>
-    ),
-    attrs: { "data-service-row": service.id },
   };
 }
 

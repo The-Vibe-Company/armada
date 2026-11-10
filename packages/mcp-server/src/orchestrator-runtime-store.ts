@@ -8,7 +8,7 @@ import type {
   OrchestratorState,
   PromptStatus,
 } from "@armada/core";
-import { boundEventEntries, coalesceEventMessages, truncateEvent } from "@armada/core";
+import { boundEventEntries, coalesceEventMessages, reportedTurnUsage, truncateEvent } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
@@ -487,12 +487,13 @@ export class OrchestratorRuntimeStore {
         [identity.id],
       );
       if (cursor.rows[0]?.provider_cursor !== expectedCursor) return false;
+      const accepted: AgentEvent[] = [];
       for (const event of page.events) {
         if (!identity.conversationId || event.conversationId !== identity.conversationId)
           throw new OrchestratorRuntimeError("conflict");
-        await tx.query(
+        const inserted = await tx.query(
           `insert into public.orchestrator_runtime_events(orchestrator_id,revision,generation,conversation_id,upstream_id,event)
-          select $1,$2,$3,$4,$5,$6::jsonb where not exists (select 1 from public.orchestrator_runtime_events where orchestrator_id=$1 and conversation_id=$4 and upstream_id=$5) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing`,
+          select $1,$2,$3,$4,$5,$6::jsonb where not exists (select 1 from public.orchestrator_runtime_events where orchestrator_id=$1 and conversation_id=$4 and upstream_id=$5) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing returning upstream_id`,
           [
             identity.id,
             identity.revision,
@@ -502,6 +503,7 @@ export class OrchestratorRuntimeStore {
             JSON.stringify({ kind: "agent", event }),
           ],
         );
+        if (inserted.rows.length) accepted.push(event);
       }
       if (this.lifecycle && identity.sandboxId && identity.providerSandboxId && identity.generation !== null) {
         const scoped: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(tx) };
@@ -516,6 +518,50 @@ export class OrchestratorRuntimeStore {
             },
             event,
           );
+      }
+      if (identity.sandboxId && page.events.some(usageEvent)) {
+        type Snapshot = ReturnType<typeof reportedTurnUsage> & { promptIds?: string[] };
+        const previous = (
+          await tx.query<{ usage: Snapshot | null }>(
+            `select usage_turns as usage from public.sandboxes
+           where id=$1 and owner_id=$2 and org_id=$3 for update`,
+            [identity.sandboxId, identity.ownerId, identity.orgId],
+          )
+        ).rows[0]?.usage;
+        if (!previous?.promptIds || accepted.some(usageEvent)) {
+          // Bootstrap old snapshots once; subsequent pages touch only new events
+          // and the compact per-turn snapshot, never replay the growing journal.
+          const initial = !previous?.promptIds;
+          const events = initial
+            ? (
+                await tx.query<{ event: AgentEvent }>(
+                  `select event->'event' as event from public.orchestrator_runtime_events
+             where orchestrator_id=$1 and event->>'kind'='agent'
+             and (event#>>'{event,kind}'='prompt' or
+               (event#>>'{event,kind}'='other' and event#>>'{event,type}' in ('result','armada/turnUsage')))
+             order by sequence`,
+                  [identity.id],
+                )
+              ).rows.map((row) => row.event)
+            : accepted.filter(usageEvent);
+          const prompts = new Set(initial ? [] : previous.promptIds);
+          for (const event of events) if (event.kind === "prompt" && event.promptId) prompts.add(event.promptId);
+          const rows = new Map(
+            (initial ? [] : previous.turns).map((row) => [JSON.stringify([row.promptId, row.model]), row]),
+          );
+          for (const row of reportedTurnUsage(events).turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
+          // JSON snapshot cost grows with reported turns, not with text/tool event
+          // volume. recordUsage deliberately cannot overwrite managed parents.
+          await tx.query(
+            `update public.sandboxes set usage_turns=$4::jsonb where id=$1 and owner_id=$2 and org_id=$3`,
+            [
+              identity.sandboxId,
+              identity.ownerId,
+              identity.orgId,
+              JSON.stringify({ turnCount: prompts.size, turns: [...rows.values()], promptIds: [...prompts] }),
+            ],
+          );
+        }
       }
       // Cursor moves only in the transaction which durably mirrored every event.
       await tx.query(`update public.orchestrator_runtime set provider_cursor=$2 where orchestrator_id=$1`, [
@@ -1144,4 +1190,9 @@ export class OrchestratorRuntimeStore {
       return true;
     });
   }
+}
+
+/** Accounting observations only: never retain message text/tools in the accumulator. */
+function usageEvent(event: AgentEvent): boolean {
+  return event.kind === "prompt" || (event.kind === "other" && ["result", "armada/turnUsage"].includes(event.type));
 }
