@@ -101,9 +101,9 @@ server receive time, freshness and an explicit unavailable/unsupported state.
 
 | Rank | Report | Boundary / caveat |
 | --- | --- | --- |
-| 3 | Turn started/finished/failed/interrupted, harness reason code, turn/model identity | Link to admitted prompt/conversation; preserve native reason as a closed code, not arbitrary stderr. Guest terminal claims do not prove machine stop. |
-| 1 | Per-turn input/output/cache tokens, observed model and usage provenance | Separate requested from observed model. Preserve unknown/reset/partial counters; deduplicate deltas. Cost is a server-derived estimate with price/version, never an invoice or subscription charge. |
+| 1 | Per-turn input/output/cache tokens, observed model and usage provenance | Separate requested from observed model. Preserve unknown/reset/partial counters; deduplicate deltas. Cost uses #875’s pure price/version projection, never an invoice or subscription charge. |
 | 2 | Subscription windows, reset times and limit status | Account-private, pinned credential identity/revision; not an org-visible sandbox message. No account identifiers or raw native payloads in the common report. Never manufacture a Claude limit by scraping rendered text. |
+| 3 | Turn started/finished/failed/interrupted, harness reason code, turn/model identity | Link to admitted prompt/conversation; preserve native reason as a closed code, not arbitrary stderr. Guest terminal claims do not prove machine stop. |
 | 4 | Git branch, ahead/behind counts, dirty boolean | Addresses unpushed-work risk (#747). Registered repo IDs only, bounded local reads, no network fetch or auto-push. Behind may be stale against local tracking refs. Branch names are untrusted strings: sanitize, cap and owner-scope them. No diffs or filenames. |
 | 5 | Harness, CLI, runtime and report-schema versions; time to ready | Emit once per incarnation. Server launch timestamps plus guest ready observation; distinguish restored from cold launch. No executable paths, environment dump or host fingerprint. |
 | 6 | Heartbeat and expiry context | Sparse while active; silence means unknown, not dead. Server/provider remains authority for TTL/time left (#851), using its own clock, not a guest assertion. |
