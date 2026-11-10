@@ -32,7 +32,7 @@ function identity(pid){
   if(!Number.isSafeInteger(uid)||!/^\d+$/.test(fields[19]??"")||!/^\d+$/.test(fields[1]??""))throw Error("process_identity_invalid");
   return {pid,start:fields[19],parent:Number(fields[1]),state:fields[0],uid};
 }
-function all(){return readdirSync("/proc").filter(x=>/^\d+$/.test(x)).map(x=>{try{return identity(Number(x));}catch(e){try{readFileSync("/proc/"+x+"/stat");}catch{return;}throw e;}}).filter(Boolean);}
+function all(){return readdirSync("/proc").filter(x=>/^\d+$/.test(x)).map(x=>{try{return identity(Number(x));}catch(e){try{readFileSync("/proc/"+x+"/stat");}catch(check){if(check.code==="ENOENT"||check.code==="ESRCH")return;throw e;}throw e;}}).filter(Boolean);}
 const ns=namespace();
 if(input.op==="capture"){
   const rows=all().filter(x=>x.uid===0).map(x=>({pid:x.pid,start:x.start}));
