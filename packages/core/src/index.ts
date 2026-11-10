@@ -168,6 +168,14 @@ export {
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
 export {
+  MODEL_PRICE_SOURCES,
+  MODEL_PRICES,
+  MODEL_PRICES_AS_OF,
+  type ModelPrice,
+  modelPrice,
+  type PriceVendor,
+} from "./model-prices.ts";
+export {
   type HarnessModels,
   MODEL_CATALOG,
   type ModelChoice,
@@ -244,6 +252,15 @@ export {
   statusReasonOf,
 } from "./sandbox.ts";
 export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
+export {
+  COST_BASIS_LABELS,
+  type CostBasis,
+  costBasis,
+  type SandboxCost,
+  sandboxCost,
+  type TurnCost,
+  turnCost,
+} from "./sandbox-cost.ts";
 export {
   assertProviderOf,
   createProviderRegistry,
