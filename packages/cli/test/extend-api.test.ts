@@ -46,3 +46,34 @@ test("extend posts the parsed lifetime and preserves JSON output, rejecting inva
   expect(JSON.parse(err).error.message).toContain("not a duration");
   expect(calls).toHaveLength(1);
 });
+
+// Closed categories are safe to display; arbitrary upstream diagnostics remain redacted.
+test("extend preserves closed refusal codes without exposing upstream text", async () => {
+  for (const [code, status] of [
+    ["extension_not_found", 404],
+    ["extension_not_allowed", 403],
+    ["extension_state", 409],
+    ["extension_maximum", 400],
+  ] as const) {
+    let err = "";
+    const io = {
+      out: () => {},
+      err: (text: string) => {
+        err += text;
+      },
+    };
+    const auth = {
+      ...io,
+      env: { ARMADA_TOKEN: "fixture", ARMADA_URL: "https://armada.test" },
+      session: memorySessionStore(),
+      now: () => new Date(),
+      open: () => {},
+      fetch: async () => Response.json({ error: { code, message: "guest-secret" } }, { status }),
+    };
+    expect(
+      await run(["extend", "11111111-1111-4111-8111-111111111111", "--ttl", "5m", "--json"], io, { auth }),
+    ).not.toBe(0);
+    expect(JSON.parse(err).error.code).toBe(code);
+    expect(err).not.toContain("guest-secret");
+  }
+});

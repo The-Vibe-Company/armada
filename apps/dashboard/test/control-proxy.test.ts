@@ -87,6 +87,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["github", "status"],
     ["creds", "list"],
     ["sandbox", "advice"],
+    ["sandbox", "extend"],
     ["sandbox", "list"],
     ["sandbox", "wait"],
     ["sandbox", "exec"],
