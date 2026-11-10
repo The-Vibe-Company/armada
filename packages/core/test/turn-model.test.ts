@@ -96,3 +96,13 @@ test.each([
     modelSelectionReason: reason,
   });
 });
+
+test("tool results do not invalidate a verified assistant response", () => {
+  expect(
+    turnModelEvidence([message("chosen"), message(undefined, { id: "tool", responseKind: "tool_result" })], {
+      promptId: "turn",
+      requestedModel: "chosen",
+      complete: true,
+    }),
+  ).toMatchObject({ observedModel: "chosen", modelSelectionReason: null });
+});

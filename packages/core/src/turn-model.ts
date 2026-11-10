@@ -25,6 +25,7 @@ export function turnModelEvidence(
       event.promptId === request.promptId &&
       event.kind === "message" &&
       !event.partial &&
+      event.responseKind !== "tool_result" &&
       !event.parentToolUseId &&
       !event.retracted,
   );
