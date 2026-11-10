@@ -23,8 +23,8 @@ through the normal secret channel. Never request a token in a PR or log.
 One reviewer sandbox at a time; at most **two rounds** per candidate delivery.
 Each round uses a fresh sandbox, including after fixes, and covers the full
 base-to-head diff. No nested reviewers. Default TTL is 30m and the author waits
-at most 15m per round; use the CLI's actual wait behavior, not an invented
-`--timeout` flag. Timeout, launch uncertainty or exhausted rounds blocks readiness.
+at most 15m per round. Each `wait --timeout` accepts 0–600 seconds;
+repeat bounded waits only within that total deadline and inspect final status. Timeout, launch uncertainty or exhausted rounds blocks readiness.
 TTL is a backstop, not proof of cleanup.
 
 Choose a different harness/model from the author when both are available to the
@@ -77,8 +77,8 @@ interpolate ticket text as shell code.
 armada launch "$GOLDEN" --provider "$PROVIDER" --repo "$REPO"   --agent "$REVIEW_HARNESS" --model "$REVIEW_MODEL"   --ttl 30m --no-connections --json "$(cat "$PROMPT_FILE")"
 # Save returned sandbox id before any other operation.
 armada status "$REVIEWER_ID" --json
-armada wait "$REVIEWER_ID" --json
-armada logs "$REVIEWER_ID" --json
+armada wait "$REVIEWER_ID" --timeout 600 --json
+armada logs "$REVIEWER_ID" --all --json
 armada stop "$REVIEWER_ID" --json
 armada status "$REVIEWER_ID" --json
 ```
