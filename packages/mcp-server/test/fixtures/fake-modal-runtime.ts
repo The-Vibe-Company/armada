@@ -138,7 +138,8 @@ export function fakeModalRuntime(input: {
           status: "finished" as const,
           done: true as const,
         };
-        (vm.prompts ??= new Map()).set(accepted.promptId, accepted);
+        vm.prompts ??= new Map();
+        vm.prompts.set(accepted.promptId, accepted);
         result = accepted;
       } else if (packet.op === "getPrompt") {
         result = vm.prompts?.get(packet.promptId ?? "");
