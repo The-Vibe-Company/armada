@@ -39,6 +39,9 @@ final class AppModel {
     /// The signed-in person's id, once ArmadaKit publishes the account identity (`account/status`).
     /// Until then ownership is shown from server hints only, never inferred.
     private(set) var currentUserID: String?
+    /// The conversations read recently, so returning to one shows it at once. In memory only;
+    /// emptied when the session ends or another organization is selected.
+    @ObservationIgnored let conversations = ConversationMemory(capacity: 8)
 
     @ObservationIgnored private let client: ArmadaClient?
 
@@ -170,6 +173,7 @@ final class AppModel {
         } catch {
             return Self.message(for: error)
         }
+        if organization?.id != choice.id { conversations.removeAll() }
         organization = choice
         phase = .ready
         return nil
@@ -194,6 +198,7 @@ final class AppModel {
         organizations = loaded.map { OrganizationChoice(id: $0.id, name: $0.name, role: $0.role) }
         let selectedID = await client.selectedOrgID
         if let selectedID, let match = organizations.first(where: { $0.id == selectedID }) {
+            if organization?.id != match.id { conversations.removeAll() }
             organization = match
             phase = .ready
         } else if organizations.count == 1, let only = organizations.first {
@@ -201,12 +206,14 @@ final class AppModel {
                 phase = .unreachable(error)
             }
         } else {
+            conversations.removeAll()
             organization = nil
             phase = .choosingOrganization
         }
     }
 
     private func resetSessionState() {
+        conversations.removeAll()
         organizations = []
         organization = nil
         currentUserID = nil

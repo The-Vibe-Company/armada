@@ -8,7 +8,8 @@ import Foundation
 protocol OrchestratorService: Sendable {
     func list(orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorPage
     func detail(id: String) async throws(ServiceFailure) -> OrchestratorDetail
-    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage
+    /// One page of events after `cursor`; `catchUp` asks for the largest page the server allows.
+    func events(id: String, cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage
     func createOptions(orgID: String) async throws(ServiceFailure) -> CreateOptions
     /// Records a create command durably before anything is sent and returns its handle
     /// (ArmadaKit `prepareOrchestratorCreate`): its bytes and idempotency key are fixed here.
@@ -46,8 +47,9 @@ protocol SandboxService: Sendable {
     /// `POST /api/v1/sandbox/detail`: interior state for the owner or a current admin. The server
     /// reauthorizes every call and may refuse (`.noAccess`).
     func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState
-    /// `POST /api/v1/logs/read`: one page of the conversation after an opaque cursor.
-    func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage
+    /// `POST /api/v1/logs/read`: one page of the conversation after an opaque cursor; `catchUp`
+    /// asks the server for as many pages as one response allows (`all`).
+    func sandboxEvents(id: String, orgID: String, cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage
     /// `POST /api/v1/sandbox/send`: sent exactly once. `.uncertain` means it may have been
     /// delivered; it is never resent automatically because the route has no idempotency key.
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance
@@ -110,7 +112,7 @@ struct UnavailableServices: OrchestratorService, SandboxService {
         throw .unavailable(reason)
     }
 
-    func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func events(id: String, cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         throw .unavailable(reason)
     }
 
@@ -148,7 +150,7 @@ struct UnavailableServices: OrchestratorService, SandboxService {
         throw .unavailable(reason)
     }
 
-    func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func sandboxEvents(id: String, orgID: String, cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
         throw .unavailable(reason)
     }
 

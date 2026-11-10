@@ -30,7 +30,7 @@ final class OrchestratorConversationModel {
     private(set) var isDiscardingCommand = false
     private(set) var notice: (text: String, isError: Bool)?
     var draft = ""
-    let feed = ConversationFeed()
+    let feed: ConversationFeed
 
     /// Saved command handle per local bubble id.
     @ObservationIgnored private var handles: [String: String] = [:]
@@ -43,10 +43,16 @@ final class OrchestratorConversationModel {
     @ObservationIgnored let orchestratorID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
 
-    init(service: any OrchestratorService, orchestratorID: String, onSignedOut: @escaping @MainActor () -> Void) {
+    init(
+        service: any OrchestratorService,
+        orchestratorID: String,
+        memory: ConversationMemory? = nil,
+        onSignedOut: @escaping @MainActor () -> Void
+    ) {
         self.service = service
         self.orchestratorID = orchestratorID
         self.onSignedOut = onSignedOut
+        feed = ConversationFeed(key: "orchestrator:\(orchestratorID.lowercased())", memory: memory)
     }
 
     var summary: OrchestratorSummary? { detail?.summary }
@@ -138,15 +144,18 @@ final class OrchestratorConversationModel {
         lifecycle = open.receipt == nil || open.receipt?.state == .uncertain ? .unconfirmed(open.kind) : .inProgress(open.kind)
     }
 
-    /// Follows the event stream until the screen disappears.
+    /// Shows what is known of the conversation, catches up, then follows the event stream until
+    /// the screen disappears. Runs beside `load`: the history never waits for detail.
     func follow() async {
-        let fetch: ConversationFeed.Fetch = { [service, orchestratorID] (cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage in
-            try await service.events(id: orchestratorID, cursor: cursor)
+        let fetch: ConversationFeed.Fetch = { [service, orchestratorID] (cursor: String?, catchUp: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
+            try await service.events(id: orchestratorID, cursor: cursor, catchUp: catchUp)
         }
         await feed.follow(fetch, onSignedOut: onSignedOut)
         if case .stopped(let failure) = feed.connection {
             switch failure {
-            case .noAccess: phase = .noAccess
+            case .noAccess:
+                feed.forget()
+                phase = .noAccess
             case .unavailable(let reason): phase = .unavailable(reason)
             case .rejected(let reason): notice = ("The conversation stopped updating: \(reason)", true)
             case .signedOut, .staleRevision, .uncertain, .offline: break
@@ -413,9 +422,10 @@ final class OrchestratorConversationModel {
         case .unavailable(let reason):
             phase = .unavailable(reason)
         case .noAccess:
+            feed.forget()
             phase = .noAccess
         default:
-            if detail == nil {
+            if detail == nil && !feed.hasLoaded {
                 phase = .failed(error.message)
             } else {
                 notice = (error.message, true)

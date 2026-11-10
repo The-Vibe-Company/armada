@@ -5,6 +5,8 @@ import SwiftUI
 /// resume; a lost conversation is never offered as resumable.
 struct OrchestratorConversationView: View {
     let orchestratorID: String
+    /// The list row, shown in the header until detail is read. Display only: never authorizes.
+    var listed: OrchestratorSummary?
 
     @Environment(AppModel.self) private var app
     @State private var model: OrchestratorConversationModel?
@@ -33,7 +35,7 @@ struct OrchestratorConversationView: View {
         .task(id: orchestratorID) {
             // Keep pending messages, stop/resume keys and the draft when the screen reappears.
             if model?.orchestratorID != orchestratorID {
-                model = OrchestratorConversationModel(service: app.orchestrators, orchestratorID: orchestratorID) {
+                model = OrchestratorConversationModel(service: app.orchestrators, orchestratorID: orchestratorID, memory: app.conversations) {
                     app.sessionEnded()
                 }
             }
@@ -44,8 +46,9 @@ struct OrchestratorConversationView: View {
     @ViewBuilder
     private func screen(_ model: OrchestratorConversationModel) -> some View {
         switch model.phase {
-        case .loading:
-            SurfaceStateView(state: .loading("Loading conversation…"))
+        case .loading, .loaded:
+            // Shown at once: the conversation is read beside detail, never after it.
+            conversation(model)
         case .unavailable(let reason):
             SurfaceStateView(state: .unavailable(reason))
         case .noAccess:
@@ -56,8 +59,6 @@ struct OrchestratorConversationView: View {
             ))
         case .failed(let message):
             SurfaceStateView(state: .failure(message, retry: { Task { await model.load() } }))
-        case .loaded:
-            conversation(model)
         }
     }
 
@@ -97,7 +98,7 @@ struct OrchestratorConversationView: View {
                 Button {
                     showingDetails = true
                 } label: {
-                    HeaderPill(summary: model.summary)
+                    HeaderPill(summary: model.summary ?? listed)
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Shows the orchestrator's details")

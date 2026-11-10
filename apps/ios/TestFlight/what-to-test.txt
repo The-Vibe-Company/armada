@@ -20,6 +20,11 @@ workers it launched with a link to each worker's sandbox.
 Actions menu: Stop, Resume and Recover each ask for confirmation. Turn on Airplane
 Mode during an action: it shows as not confirmed with Retry, which repeats the same
 request; Recover is offered when the orchestrator needs attention.
+Opening a conversation (sandbox or orchestrator): the screen, its name and status and the
+composer appear at once; the first messages follow within about a second, and a long history
+then fills in up to the latest message without a second wait per page. Typing is never blocked
+while the history loads. Go back and open the same conversation again: it shows immediately
+and only what is new is read. Switching organization or signing out forgets it.
 Check iPhone and iPad, light and dark appearance.
 Check loading, empty, permission-denied, offline and retry states.
 Check readability, keyboard/composer behavior and accessibility on iPhone and iPad.

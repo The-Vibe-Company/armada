@@ -134,6 +134,21 @@ refusal and every other failure unconfirmed; the app then shows the prompt as
 not confirmed and lets the transcript show whether it arrived. Stop is safe to
 repeat. Unknown `other` events without `data` keep their page and cursor.
 
+## Opening a conversation fast (#813)
+
+`ConversationLoader` is the loading order both conversation screens use, over
+any event type and fetch: a `ConversationCache` snapshot from earlier in the
+session is shown before any request; otherwise one ordinary page is read and
+shown (the first paint never waits for more); while the server reports more,
+the rest is read with `ConversationRead.catchUp` reads back to back, never
+behind the poll delay; then the stream is polled. A catch-up read is
+`logs/read` with `all` (`sandboxEvents(id:cursor:all:)`, the server reads up to
+100 provider pages in one response) or the orchestrator events route's largest
+page (500). After a failure the next read is an ordinary page, so a catch-up
+that is too slow never loops. The clock is injected; tests use a recording one.
+Reading a conversation from its end is #812; until it ships, the history is
+still read from the oldest event, but in one round trip instead of one per page.
+
 ## Launching a sandbox (#750)
 
 `launchCatalog()` reads `launch/options` (the server's harness, model, effort,
