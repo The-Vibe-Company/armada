@@ -153,6 +153,21 @@ const golden = z.object({
   }),
 });
 
+const taskOutcome = z.discriminatedUnion("state", [
+  z
+    .object({
+      state: z.literal("ready"),
+      prNumber: z.number().int().positive().optional(),
+      prUrl: z.url().max(2048).optional(),
+      headSha: z
+        .string()
+        .regex(/^[a-f0-9]{40}$/i)
+        .optional(),
+    })
+    .strict(),
+  z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
+]);
+
 const sandboxListMetadata = z.object({
   providerSandboxId: z.string().nullable(),
   boatId: z.string().nullable(),
@@ -170,6 +185,7 @@ const sandboxListMetadata = z.object({
   effectiveTtlSeconds: z.number().nullable(),
   machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
   displayLabel: z.string(),
+  taskOutcome: taskOutcome.nullable().optional(),
   canOpen: z.boolean(),
   canManage: z.boolean(),
 });
@@ -194,6 +210,7 @@ const status = {
   machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
+  taskOutcome: taskOutcome.nullable().optional(),
   providerState: z.string().nullable(),
   conversationIds: z.array(z.string()),
   expiresAt: z.string().nullable(),
@@ -899,6 +916,25 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "report",
+    {
+      title: "Report a task outcome",
+      description:
+        "Explicit result for the latest finished turn. Call after wait; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
+      input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
+      output: { id: z.string(), taskOutcome },
+    },
+    async (args) => {
+      const report = await statusOf(args.id, undefined);
+      if (!report.prompt || report.prompt.promptId !== args.prompt_id || report.prompt.state !== "finished")
+        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+      if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
+      await data.sandboxes.reportTaskOutcome(args.id, args.prompt_id, args.outcome);
+      return { id: args.id, taskOutcome: args.outcome };
+    },
+  );
+
+  tool(
     "send",
     {
       title: "Send a prompt",
@@ -943,6 +979,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         data.sandboxes,
         found,
         {
+          clearTaskOutcome: true,
           renewLifecycle: machine.state === "stopped",
           stopRequested: false,
           ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
@@ -962,6 +999,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           return {
             patch: {
               status: "running",
+              taskPromptId: receipt.promptId,
               statusReason: null,
               conversationIds,
               stoppedAt: null,

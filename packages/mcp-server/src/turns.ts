@@ -8,6 +8,7 @@ import {
   type SandboxInfo,
   type SandboxPatch,
   type SandboxStatus,
+  type TaskOutcome,
 } from "@armada/core";
 import type { SandboxView, ServerSandboxStore } from "./data.ts";
 
@@ -25,6 +26,7 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  taskOutcome?: TaskOutcome | null;
   credentialId?: string | null;
   credentialVersion?: number | null;
   id: string;
@@ -132,6 +134,7 @@ function report(
 ): StatusReport {
   const machineDown = status === "stopped" || status === "deleted" || status === "failed";
   return {
+    taskOutcome: sandbox.taskOutcome ?? null,
     id: sandbox.id,
     golden: sandbox.golden,
     visibility: sandbox.visibility,
