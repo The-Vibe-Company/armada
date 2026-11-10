@@ -83,6 +83,7 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+import { launchOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
@@ -566,6 +567,7 @@ async function dispatch(
   options: ControlOptions,
 ): Promise<unknown> {
   if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
+  if (route === "launch/options") return launchOptions;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),

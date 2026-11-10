@@ -50,6 +50,7 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/retirement/reconcile",
   "golden/snapshot",
   "golden/connect",
+  "launch/options",
   "sandbox/launch",
   "sandbox/launch-sized-v1",
   "sandbox/bind-credential",

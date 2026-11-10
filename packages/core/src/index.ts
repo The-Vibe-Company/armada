@@ -9,6 +9,7 @@ export {
   type CredentialReader,
   type CredentialSource,
   credentialName,
+  HARNESS_KINDS,
   type HarnessCredentials,
   harnessCredentials,
   type LaunchCredentialKind,
