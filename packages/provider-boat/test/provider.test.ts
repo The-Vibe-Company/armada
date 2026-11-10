@@ -888,6 +888,7 @@ test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat 
   const boat = fakeBoat(...replies);
   await expect(boat.provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true })).rejects.toMatchObject({
     code: outcome === "ambiguous" ? "unavailable" : "sandbox_not_ready",
+    status: outcome === "stopped" ? undefined : outcome === "exhausted" ? 409 : 502,
   });
   expect(boat.requests.filter((r) => r.path.endsWith("/commands"))).toHaveLength(outcome === "exhausted" ? 5 : 1);
   expect(boat.sleeps).toHaveLength(outcome === "exhausted" ? 4 : outcome === "stopped" ? 1 : 0);

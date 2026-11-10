@@ -145,6 +145,7 @@ export interface BoatProviderOptions {
 const RESTORING = "sandbox_restoring";
 const RESTORE_RETRIES = 5;
 const RESTORE_WAIT_MS = 2000;
+const NOT_READY_WAIT_MS = 1000;
 
 function ttl(requested: number | undefined, fallback: number): number {
   const seconds = requested ?? fallback;
@@ -557,6 +558,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         if (request.onlyIfRunning) {
           // Capture precedes stop and must never resume retained compute. A transient
           // startup may settle, but stopping/terminal compute cannot accept capture.
+          // The extra GET for every chunk is deliberate: refuse compute that
+          // stopped mid-download rather than implicitly resuming it.
           const current = await provider.get(
             request.sandboxId,
             request.signal ? { signal: request.signal } : undefined,
@@ -564,13 +567,13 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           request.signal?.throwIfAborted();
           if (current.physicalExitConfirmed || !["ready", "running"].includes(current.state)) {
             if (current.state === "starting" && attempt < RESTORE_RETRIES) {
-              await sleep(1000);
+              await sleep(NOT_READY_WAIT_MS);
               continue;
             }
             throw new ProviderError({
               provider: PROVIDER_ID,
               code: "sandbox_not_ready",
-              status: 409,
+              // Local admission refusal, not an HTTP response from Boat.
               message: "Capture requires running compute.",
               retryable: false,
             });
@@ -602,7 +605,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
             error.status === 409;
           if ((!restoring && !notReady) || attempt >= RESTORE_RETRIES) throw error;
           // A 409 refusal did not execute the command. Never replay ambiguous errors.
-          await sleep(notReady ? 1000 : RESTORE_WAIT_MS);
+          await sleep(notReady ? NOT_READY_WAIT_MS : RESTORE_WAIT_MS);
         }
       }
     },
