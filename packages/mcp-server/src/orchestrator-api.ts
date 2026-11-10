@@ -113,7 +113,10 @@ export async function callOrchestrator(
   if (action === "events") {
     if (
       (args.cursor !== undefined && typeof args.cursor !== "string") ||
-      (args.limit !== undefined && typeof args.limit !== "number")
+      (args.limit !== undefined && typeof args.limit !== "number") ||
+      (args.direction !== undefined && args.direction !== "forward" && args.direction !== "backward") ||
+      (args.maxBytes !== undefined && typeof args.maxBytes !== "number") ||
+      (args.coalesce !== undefined && typeof args.coalesce !== "boolean")
     )
       throw new OrchestratorRuntimeError("invalid_request");
     return service.events(
@@ -122,6 +125,11 @@ export async function callOrchestrator(
       args.id,
       args.cursor as string | undefined,
       args.limit as number | undefined,
+      {
+        ...(args.direction ? { direction: args.direction as "forward" | "backward" } : {}),
+        ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}),
+        ...(typeof args.coalesce === "boolean" ? { coalesce: args.coalesce } : {}),
+      },
     );
   }
   if (

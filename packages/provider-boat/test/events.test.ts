@@ -185,3 +185,45 @@ test("Boat preserves supplied message semantics and leaves historical responses 
     [undefined, undefined],
   ]);
 });
+
+test("backward pages anchor older history separately from forward follow", async () => {
+  const event = (n: number) => ({
+    id: `e${n}`,
+    timestamp: n,
+    type: "response",
+    conversationId: "c",
+    taskId: "p",
+    data: { content: String(n), message_id: "m", text_mode: "delta", is_streaming: true },
+  });
+  const response = (events: ReturnType<typeof event>[], hasMore = false) => ({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events,
+      pageInfo: { hasMore, limit: 2 },
+    },
+  });
+  const boat = fakeBoat(
+    response([event(4), event(3)], true),
+    response([event(2), event(1)]),
+    response([event(5)]),
+    response([]),
+  );
+  const tail = await boat.provider.events({ sandboxId: ID, direction: "backward", limit: 2, coalesce: true });
+  expect(tail.events).toMatchObject([{ text: "34", textMode: "snapshot" }]);
+  expect(tail.hasMore).toBe(true);
+  const older = await boat.provider.events({
+    sandboxId: ID,
+    direction: "backward",
+    cursor: tail.olderCursor!,
+    limit: 2,
+  });
+  const follow = await boat.provider.events({ sandboxId: ID, cursor: tail.cursor! });
+  expect(older.events.map((e) => e.id)).toEqual(["e1", "e2"]);
+  expect(follow.events.map((e) => e.id)).toEqual(["e5"]);
+  expect(boat.requests.map((r) => r.query.get("sort"))).toEqual(["desc", "desc", "asc"]);
+  expect(boat.requests[1]?.query.get("cursor")).toBe(Buffer.from("3:e3").toString("base64url"));
+  expect(boat.requests[2]?.query.get("cursor")).toBe(Buffer.from("4:e4").toString("base64url"));
+  expect(await boat.provider.events({ sandboxId: ID, direction: "backward" })).toEqual({ events: [], hasMore: false });
+});
