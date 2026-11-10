@@ -36,7 +36,12 @@ export function turnModelEvidence(
     (event) =>
       event.kind === "other" &&
       (event.type === "event_truncated" || event.type === "context_truncated") &&
-      (!event.promptId || event.promptId === request.promptId),
+      (!event.promptId ||
+        event.promptId === request.promptId ||
+        (typeof event.data === "object" &&
+          event.data !== null &&
+          "contextTruncated" in event.data &&
+          event.data.contextTruncated === true)),
   );
   const verified =
     request.complete &&
