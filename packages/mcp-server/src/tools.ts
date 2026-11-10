@@ -1,5 +1,6 @@
 import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
+  type ApplicationVault,
   assertGoldenMutation,
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -59,6 +60,7 @@ import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitS
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   caller: Caller;
@@ -326,6 +328,44 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       }) as never,
     );
   };
+
+  // Secret plaintext ingress is API-only. MCP commits actor-bound one-use upload references.
+  for (const [kind, operations] of [
+    ["variable", ["list", "read", "set", "update", "delete"]],
+    ["secret", ["list", "commit", "revoke", "delete"]],
+  ] as const) {
+    for (const operation of operations) {
+      server.registerTool(
+        `${kind}_${operation}`,
+        {
+          description:
+            kind === "secret"
+              ? "Write-only application secret metadata. Commit accepts an authenticated API upload reference, never plaintext."
+              : "Readable application configuration. Values are intentionally readable; do not store secrets here.",
+          inputSchema: z.object({ org: z.string() }).passthrough(),
+          outputSchema: z.object({}).passthrough(),
+        },
+        async (args) => {
+          try {
+            if (!context.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
+            const result = await context.applicationVault.command(caller, kind, operation, args, "mcp");
+            return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          } catch (error) {
+            // Never log SDK/database causes or submitted vault arguments.
+            const code = error instanceof VaultError ? error.code : "unavailable";
+            const message = error instanceof VaultError ? error.message : "Application vault unavailable.";
+            return {
+              isError: true,
+              content: [
+                { type: "text" as const, text: message },
+                { type: "text" as const, text: `error code: ${code}` },
+              ],
+            };
+          }
+        },
+      );
+    }
+  }
 
   for (const action of [
     "capabilities",

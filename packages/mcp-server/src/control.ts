@@ -22,9 +22,11 @@ import {
   parseMachineSizePolicy,
 } from "@armada/core";
 import {
+  type ApplicationVault,
   addMember,
   assertGoldenMutation,
   connectGolden,
+  createApplicationVault,
   createGoldenAdoption,
   createOrg,
   createSqlMcpLaunchPort,
@@ -116,6 +118,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
@@ -227,9 +230,13 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
+    if ((route.startsWith("variables/") || route.startsWith("secrets/")) && url.search)
+      throw new VaultError("invalid", "Application vault parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : await readBody(request);
+      : route.startsWith("variables/") || route.startsWith("secrets/")
+        ? await readVaultBody(request)
+        : await readBody(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
@@ -596,6 +603,16 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("variables/") || route.startsWith("secrets/")) {
+    if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
+    const [resource, operation] = route.split("/");
+    return options.applicationVault.command(
+      caller,
+      resource === "variables" ? "variable" : "secret",
+      operation as Parameters<ApplicationVault["command"]>[2],
+      body,
+    );
+  }
   if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
   if (route === "launch/options") return launchOptions;
   if (route === "creds/accounts/usage") {
@@ -1455,6 +1472,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
+    applicationVault: createApplicationVault(sql, encryptionKey),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
@@ -1585,4 +1603,33 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
   if (ref === undefined) return caller;
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
+}
+
+/** Bounded streaming UTF-8 decode: never buffer an unlimited secret body or replace malformed bytes. */
+async function readVaultBody(request: Request): Promise<Record<string, unknown>> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new VaultError("invalid", "Invalid application vault request.");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let text = "",
+    bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 64 * 1024) {
+        await reader.cancel();
+        throw new Error("limit");
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object");
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new VaultError("invalid", "Invalid application vault request.");
+  } finally {
+    reader.releaseLock();
+  }
 }

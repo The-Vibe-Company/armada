@@ -1,6 +1,7 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
+  createApplicationVault,
   createGoldenAdoption,
   createSqlVaultStore,
   GoldenBuildJobs,
@@ -181,6 +182,7 @@ export async function startServer(
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
+    applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -262,6 +264,7 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
+    ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,
     encryptionKey: config.encryptionKey,
