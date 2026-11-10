@@ -1,4 +1,14 @@
 # Automatic production migrations
+ 
+> **Staging gate opt-in:** With repository variable STAGING_GATED_DEPLOYS=true,
+> [Staging-gated production](releasing.md#staging-gated-production-owner-opt-in)
+> owns staging migrations/deployment/smoke and production migrations/deployment
+> from one SHA under a whole-pipeline lock. Independent automatic staging and
+> production migration applies and deployment-event smoke below are disabled.
+> Missing gate configuration blocks promotion, never counts as a green smoke.
+> Manual history/repair/preview remain operator tools. Cutover, deliberately red
+> smoke proof, emergency override and rollback are in that runbook.
+> With the variable absent/false, legacy behavior below is unchanged.
 
 > **Release-sync opt-in:** When repository variable `RELEASE_SYNCED_DEPLOYS=true`,
 > the push-to-main production job and manual standalone migration apply are disabled.

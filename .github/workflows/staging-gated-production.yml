@@ -62,6 +62,8 @@ jobs:
           for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do
             [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key; production blocked."; exit 1; }
           done
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          [[ "$latest" == "$RELEASE_SHA" ]] || { echo "::error::Superseded commit; run the latest main pipeline."; exit 1; }
           echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
@@ -78,7 +80,10 @@ jobs:
       - name: Smoke pinned staging
         env:
           ARMADA_SMOKE: create_real_compute
-        run: bun scripts/post-deploy-smoke.ts
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
+            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" \
+            bun scripts/post-deploy-smoke.ts
       - name: Report blocked production
         if: failure()
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
@@ -88,6 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
+    concurrency:
+      group: production-supabase-migrations
+      cancel-in-progress: false
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -111,6 +119,8 @@ jobs:
           for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL; do
             [[ -n "${!key:-}" ]] || { echo "::error::Missing production configuration: $key; production blocked."; exit 1; }
           done
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          [[ "$latest" == "$RELEASE_SHA" ]] || { echo "::error::Superseded commit; run the latest main pipeline."; exit 1; }
           echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
