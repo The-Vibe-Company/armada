@@ -371,6 +371,7 @@ export async function launchSandbox(
             },
           );
         });
+      await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
       return {
         patch: {
           status: "running" as const,

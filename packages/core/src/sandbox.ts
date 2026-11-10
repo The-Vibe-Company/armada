@@ -88,6 +88,9 @@ export interface SandboxPatch {
  * to its current organization owner/admin for interior. Lists use the separate SandboxListMetadata projection.
  */
 export interface SandboxStore {
+  recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
+  readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
+  recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
   insert(input: {
@@ -207,6 +210,26 @@ const COLUMNS = `preservation_note, task_outcome, task_prompt_id, credential_id,
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
+    async recordTurnModel(id, promptId, requestedModel) {
+      await sql.query(
+        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
+        values($1::uuid,$2,$3) on conflict do nothing`,
+        [id, promptId, requestedModel],
+      );
+    },
+    async readTurnModel(id, promptId) {
+      const result = await sql.query<{ requestedModel: string | null; evidence: unknown }>(
+        `select requested_model as "requestedModel", evidence from public.sandbox_turn_models where sandbox_id=$1::uuid and prompt_id=$2`,
+        [id, promptId],
+      );
+      return result.rows[0] ?? null;
+    },
+    async recordTurnModelEvidence(id, promptId, evidence) {
+      await sql.query(
+        `update public.sandbox_turn_models set evidence=$3::text::jsonb where sandbox_id=$1::uuid and prompt_id=$2`,
+        [id, promptId, JSON.stringify(evidence)],
+      );
+    },
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,

@@ -267,6 +267,7 @@ export {
 } from "./sandbox-provider.ts";
 export { reportedTurnUsage, type SandboxUsage, type TurnTokenUsage } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
+export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,
   addMember,

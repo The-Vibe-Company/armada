@@ -293,3 +293,26 @@ test("logs normalize recoverable Boat failures into closed interruption reasons"
     { kind: "prompt", status: "interrupted", reason: "interrupted_by_harness_exit" },
   ]);
 });
+
+test("response provenance and retraction survive SDK normalization", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [
+        {
+          ...partial,
+          data: { content: "child answer", model: "child-model", parent_tool_use_id: "parent-tool", is_reverted: true },
+        },
+      ],
+    },
+  });
+  const page = await boat.provider.events({ sandboxId: ID });
+  expect(page.events[0]).toMatchObject({
+    kind: "message",
+    model: "child-model",
+    parentToolUseId: "parent-tool",
+    retracted: true,
+  });
+});

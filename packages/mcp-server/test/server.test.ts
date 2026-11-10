@@ -705,6 +705,74 @@ describe("tools", () => {
     expect(outsider.text).toContain("not a member");
   });
 
+  test("turn model provenance survives send overrides and provider history retention", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "claude",
+      model: "claude-fable-5-2",
+      prompt: "probe",
+    });
+    expect(launched.isError).toBe(false);
+    const id = launched.data.id;
+    // Coordinator's 12:35Z capture: first main response was Sonnet, no fallback notice.
+    boat.sandbox("bx_1").events.push({
+      id: "observed",
+      at: 2,
+      kind: "message",
+      promptId: "prompt_1",
+      model: "claude-sonnet-5",
+      text: "claude-sonnet-5",
+      partial: false,
+      tools: [],
+    });
+    boat.finish("bx_1", "prompt_1", "finished");
+    const status = await call(mcp, "status", { id });
+    expect(status.data.prompt).toMatchObject({
+      state: "failed",
+      requestedModel: "claude-fable-5-2",
+      observedModel: "claude-sonnet-5",
+      reason: "model_selection_mismatch",
+    });
+    expect(status.data.prompt.modelSelectionMessage).toContain("Do not retry automatically");
+    const sent = await call(mcp, "send", { id, prompt: "override", model: "claude-sonnet-5" });
+    expect(sent.isError).toBe(false);
+    boat.sandbox("bx_1").events.push({
+      id: "override",
+      at: 4,
+      kind: "message",
+      promptId: "prompt_2",
+      model: "claude-sonnet-5",
+      text: "ok",
+      partial: false,
+      tools: [],
+    });
+    boat.finish("bx_1", "prompt_2", "finished");
+    const waited = await call(mcp, "wait", { id, timeout_seconds: 1 });
+    expect(waited.data).toMatchObject({
+      model: "claude-fable-5-2",
+      prompt: {
+        state: "finished",
+        requestedModel: "claude-sonnet-5",
+        observedModel: "claude-sonnet-5",
+        modelSelectionReason: null,
+      },
+    });
+    boat.sandbox("bx_1").events.length = 0;
+    const historical = await call(mcp, "status", { id, prompt_id: "prompt_1" });
+    expect(historical.data.prompt).toMatchObject({
+      state: "failed",
+      requestedModel: "claude-fable-5-2",
+      observedModel: "claude-sonnet-5",
+    });
+    const persisted = await db.query(
+      "select requested_model, evidence from sandbox_turn_models where sandbox_id=$1 order by prompt_id",
+      [id],
+    );
+    expect(persisted.rows).toHaveLength(2);
+  });
+
   test("wait returns once the turn ends, and timedOut when it does not", async () => {
     const { token, client, people, boat, clock } = await start();
     const mcp = await client(await token(people.member));
@@ -716,7 +784,12 @@ describe("tools", () => {
 
     boat.finish("bx_1", "prompt_1", "finished");
     const done = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
-    expect(done.data).toMatchObject({ timedOut: false, settled: true, status: "ready", prompt: { state: "finished" } });
+    expect(done.data).toMatchObject({
+      timedOut: false,
+      settled: true,
+      status: "ready",
+      prompt: { state: "failed", reason: "model_selection_unverified" },
+    });
   });
 
   test("logs pass the cursor through and keep one body per event id, the newest", async () => {

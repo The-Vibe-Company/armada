@@ -1,6 +1,6 @@
 # Model selection investigation (#890)
 
-Status: blocked on a redacted native recording; no runtime fix is delivered here.
+Status: per-turn requested/observed reporting is implemented. Boat’s model forwarding remains an upstream question.
 
 ## Evidence boundaries
 
@@ -34,7 +34,22 @@ No production operations were performed.
 - `packages/mcp-server/src/turns.ts` reports the sandbox selection, not a
   durable requested/observed model pair for the individual prompt.
 
-## Recording needed before closing the ticket
+## Coordinator capture (2026-11-10 12:35Z)
+
+The authorized production check accepted `claude-fable-5-2`; Armada reported
+finished while the main response reported `claude-sonnet-5`. Claude Code
+2.1.322’s native session had one `api-request` with `params.model` already
+`claude-sonnet-5` and one assistant response with that model. There were no
+refusal-fallback notices. Cost metadata additionally named Haiku for title
+generation; that is not main-turn model evidence. No settings file or model
+environment variable was found in the checked shell. The process had exited,
+so native argv was unavailable. These are coordinator-supplied summarized
+observations, not a raw SDK stream or independently rerun production probe.
+
+This supports selection loss or mapping before the first main API request,
+not a refusal-driven fallback. The exact Boat boundary remains unknown.
+
+## Capture checklist for Boat upstream
 
 The authorized coordinator check should capture one controlled request using
 the same account and selection as the production discrepancy:
@@ -48,10 +63,11 @@ the same account and selection as the production discrepancy:
 Exclude tokens, auth files, environment dumps and private prompt history.
 Do not manufacture a native stream from the SDK's type declarations.
 
-The implementation must persist the request per prompt (including send
-overrides), retain the next-send default, and expose an unknown observed
-model as unknown. A closed selection-failure reason must warn that work may
-already have occurred and must not cause an automatic retry. Root/subagent,
-partial, retracted and alias evidence needs a defined interpretation based on
-real recording fields, shared by every client. The issue's acceptance criteria
-remain open until implementation and recording-based regression checks pass.
+The implementation persists the request per prompt (including send
+overrides), retains the next-send default, and exposes an unknown observed
+model as unknown. A closed selection-failure reason warns that work may already have occurred;
+no automatic retry occurs. Completed root response metadata is used, never
+assistant prose or title-generation cost metadata. Partial, nested and
+retracted responses are excluded; aliases are not guessed. Missing or
+truncated evidence fails verification. Terminal evidence is retained per turn
+so historical requests are not compared with the sandbox default.

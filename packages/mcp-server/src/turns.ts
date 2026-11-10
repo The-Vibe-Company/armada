@@ -11,6 +11,8 @@ import {
   type SandboxStatus,
   type SandboxUsage,
   type TaskOutcome,
+  type TurnModelEvidence,
+  turnModelEvidence,
 } from "@armada/core";
 import type { SandboxView, ServerSandboxStore } from "./data.ts";
 
@@ -26,6 +28,10 @@ const EVENT_PAGES = 50;
 export const WAIT_POLL_MS = 1000;
 
 export interface PromptReport {
+  requestedModel?: string | null;
+  observedModel?: string | null;
+  modelSelectionReason?: TurnModelEvidence["modelSelectionReason"];
+  modelSelectionMessage?: string | null;
   promptId: string;
   conversationId: string | null;
   state: PromptOutcome["state"];
@@ -46,7 +52,7 @@ export interface StatusReport {
   /** Persisted native repository directory; not an access boundary. */
   repositoryDir: string | null;
   machineSize: MachineSizeEvidence | null;
-  /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
+  /** Requested next-send default; not evidence of execution. */
   model: string | null;
   reasoningEffort: string | null;
   /** Armada's status, after this read. */
@@ -109,11 +115,37 @@ export async function readStatus(
       promptId: target.promptId,
       ...(target.conversationId ? { conversationId: target.conversationId } : {}),
     });
+    const recorded = await store.readTurnModel?.(sandbox.id, target.promptId);
+    let evidence: TurnModelEvidence;
+    // Terminal observations survive provider history retention. Never substitute the sandbox default.
+    if (recorded?.evidence) evidence = recorded.evidence as TurnModelEvidence;
+    else {
+      let events: AgentEvent[] = [];
+      let complete = false;
+      try {
+        events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
+        complete = true;
+      } catch {
+        /* Missing history cannot prove exact-model execution. */
+      }
+      evidence = turnModelEvidence(events, {
+        promptId: target.promptId,
+        requestedModel: recorded?.requestedModel ?? null,
+        complete,
+      });
+      if (outcome.state !== "running") await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, evidence);
+    }
+    const selectionFailed = outcome.state === "finished" && evidence.modelSelectionReason !== null;
     prompt = {
+      ...evidence,
       promptId: target.promptId,
       conversationId: target.conversationId,
-      state: outcome.state,
-      reason: outcome.state === "failed" || outcome.state === "interrupted" ? (outcome.reason ?? null) : null,
+      state: selectionFailed ? "failed" : outcome.state,
+      reason: selectionFailed
+        ? evidence.modelSelectionReason
+        : outcome.state === "failed" || outcome.state === "interrupted"
+          ? (outcome.reason ?? null)
+          : null,
     };
   }
 
