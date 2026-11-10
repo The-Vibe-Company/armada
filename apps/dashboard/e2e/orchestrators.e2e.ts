@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { MOCK, reset, signIn } from "./helpers";
+import { MODEL_ACCOUNT_IDS } from "./mock-orchestrators";
 
 /*
  * The Orchestrators surface against e2e/mock-orchestrators.ts, a stand-in for #647's v1 routes. These tests prove the
@@ -32,15 +33,29 @@ async function seedAccounts(): Promise<void> {
     body: JSON.stringify({
       user: [
         {
-          id: "acct-claude",
+          id: MODEL_ACCOUNT_IDS.claude,
           name: "Alice Max",
           kind: "claude_oauth",
           status: "active",
           isDefault: true,
+          expiresAt: null,
+          updatedAt: "2026-11-08T10:00:00.000Z",
+          version: 1,
           createdAt: null,
         },
       ],
-      org: [{ id: "acct-codex", name: "Team Codex", kind: "openai", status: "active", createdAt: null }],
+      org: [
+        {
+          id: MODEL_ACCOUNT_IDS.codex,
+          name: "Team Codex",
+          kind: "openai",
+          status: "active",
+          expiresAt: null,
+          updatedAt: "2026-11-08T10:00:00.000Z",
+          version: 1,
+          createdAt: null,
+        },
+      ],
     }),
   });
   expect(response.ok).toBe(true);
@@ -93,10 +108,10 @@ test("create sends the v1 request with a named account and the server's defaults
   await signIn(page, "alice@example.com", "/orchestrators");
   await page.getByRole("button", { name: "New orchestrator" }).click();
   const dialog = page.getByRole("dialog", { name: "New orchestrator" });
-  await expect(dialog.getByLabel("Model account")).toHaveValue("acct-claude");
+  await expect(dialog.getByLabel("Model account")).toHaveValue(MODEL_ACCOUNT_IDS.claude);
   await expect(dialog.getByLabel("Stop after inactivity")).toBeHidden();
   await dialog.getByLabel("Agent").selectOption("codex");
-  await expect(dialog.getByLabel("Model account")).toHaveValue("acct-codex");
+  await expect(dialog.getByLabel("Model account")).toHaveValue(MODEL_ACCOUNT_IDS.codex);
   await dialog.getByLabel("Agent").selectOption("claude");
   await dialog.getByLabel("Name").fill("Docs sweep");
   await dialog.getByLabel("Golden").selectOption({ label: "shared-golden · Boat" });
@@ -116,7 +131,7 @@ test("create sends the v1 request with a named account and the server's defaults
     provider: "boat",
     harness: "claude",
     repo: "api",
-    modelAccountId: "acct-claude",
+    modelAccountId: MODEL_ACCOUNT_IDS.claude,
   });
   expect(create?.body).not.toHaveProperty("idleSeconds");
   expect(create?.body).not.toHaveProperty("maxChildStartsPerDay");

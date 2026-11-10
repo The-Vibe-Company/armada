@@ -141,6 +141,7 @@ Usage:
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+  armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
   armada golden remove <golden-id> [--org UUID] [--json]
@@ -276,6 +277,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "status",
     "advice",
     "send",
+    "report",
     "steer",
     "interrupt",
     "exec",
@@ -322,6 +324,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "status":
     case "advice":
     case "send":
+    case "report":
     case "steer":
     case "interrupt":
     case "exec":

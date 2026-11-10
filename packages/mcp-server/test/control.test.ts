@@ -3,6 +3,7 @@ import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } f
 import {
   createSqlVaultStore,
   encryptSecret,
+  ProviderError,
   resolveBoatKey,
   resolveCredentials,
   VaultError,
@@ -467,6 +468,47 @@ describe("armada org and armada creds against the control API", () => {
 });
 
 describe("control API", () => {
+  test("unknown provider failures return 502 with the closed error body", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("Provider failure", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const golden = await db.query<{ id: string }>(
+        "insert into goldens(org_id, owner_id, name, visibility, config) values($1,$2,'failure','org',$3::jsonb) returning id",
+        [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+      );
+      const sandbox = await db.query<{ id: string }>(
+        "insert into sandboxes(org_id, owner_id, golden_id, boat_id, harness, status) values($1,$2,$3,'bx_failure','claude','ready') returning id",
+        [org.id, STAN, golden.rows[0]!.id],
+      );
+      options.providers = {
+        resolve: async () => {
+          throw new ProviderError({
+            provider: "boat",
+            code: "unknown",
+            message: "The provider failed.",
+            details: { internal: "not-public" },
+            retryable: true,
+          });
+        },
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/status", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ id: sandbox.rows[0]!.id }),
+        }),
+        options,
+      );
+      expect(response?.status).toBe(502);
+      expect(response?.headers.get("cache-control")).toBe("no-store");
+      expect(await response?.json()).toEqual({
+        error: { code: "unknown", message: "The provider failed." },
+      });
+    });
+  });
+
   test("only POST to /api/v1/ with a valid Supabase session is served", async () => {
     await withServer(async ({ options }) => {
       const call = (path: string, init: RequestInit) =>

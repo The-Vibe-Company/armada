@@ -9,6 +9,7 @@ const row = (id: string, kind: string, fields: Record<string, unknown> = {}) => 
   name: `Account ${id}`,
   status: "active",
   isDefault: false,
+  updatedAt: "2026-11-08T10:00:00.000Z",
   version: 1,
   createdAt: null,
   ...fields,

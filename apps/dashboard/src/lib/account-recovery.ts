@@ -1,4 +1,5 @@
 import { CREDENTIAL_KINDS, type CredentialKind, type Harness, type SandboxStatus } from "@armada/core";
+import { accountsFromList, isUsable } from "./model-accounts.ts";
 
 /**
  * Recovery of a legacy Modal sandbox launched before model accounts were pinned (#603): its owner chooses, once,
@@ -51,32 +52,21 @@ export function bindableStatus(status: SandboxStatus): "ready" | "stop-first" | 
 }
 
 /**
- * The compatible accounts of a `creds/list` answer (`{user, orgs}`): personal ones, then the sandbox org's, each
- * active, unexpired and of a kind the harness runs on. Rows without an id predate named accounts and are left out.
+ * The compatible accounts of a `creds/list` answer (`{user, orgs}`), read by the one account parser
+ * (`accountsFromList`): personal ones, then the sandbox org's, each usable now and of a kind the harness runs on.
  */
 export function compatibleAccounts(list: unknown, harness: Harness, orgId: string, now: Date): AccountOption[] {
-  const kinds = HARNESS_ACCOUNT_KINDS[harness];
-  const record = isRecord(list) ? list : {};
-  const org = (Array.isArray(record.orgs) ? record.orgs : []).find((item) => isRecord(item) && item.id === orgId);
-  const pick = (rows: unknown, scope: "user" | "org"): AccountOption[] =>
-    (Array.isArray(rows) ? rows : []).flatMap((row): AccountOption[] => {
-      if (!isRecord(row) || typeof row.id !== "string" || typeof row.name !== "string") return [];
-      const kind = kinds.find((candidate) => candidate === row.kind);
-      if (!kind) return [];
-      if (row.status !== undefined && row.status !== "active") return [];
-      if (typeof row.expiresAt === "string" && Date.parse(row.expiresAt) <= now.getTime()) return [];
-      return [
-        {
-          id: row.id,
-          name: row.name,
-          kind,
-          kindLabel: CREDENTIAL_KINDS[kind].label,
-          scope,
-          isDefault: row.isDefault === true,
-        },
-      ];
-    });
-  return [...pick(record.user, "user"), ...pick(isRecord(org) ? org.credentials : [], "org")];
+  const kinds: readonly CredentialKind[] = HARNESS_ACCOUNT_KINDS[harness];
+  return accountsFromList(list, orgId)
+    .accounts.filter((account) => kinds.includes(account.kind) && isUsable(account, now.getTime()))
+    .map((account) => ({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      kindLabel: CREDENTIAL_KINDS[account.kind].label,
+      scope: account.scope,
+      isDefault: account.isDefault,
+    }));
 }
 
 /** A refused bind, in plain words, by the typed failure the server answers with. */
@@ -92,8 +82,4 @@ export function bindFailure(code: string | undefined, message: string): string {
     default:
       return message;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -52,7 +52,7 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
-import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import { latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -153,6 +153,21 @@ const golden = z.object({
   }),
 });
 
+const taskOutcome = z.discriminatedUnion("state", [
+  z
+    .object({
+      state: z.literal("ready"),
+      prNumber: z.number().int().positive().optional(),
+      prUrl: z.url().max(2048).optional(),
+      headSha: z
+        .string()
+        .regex(/^[a-f0-9]{40}$/i)
+        .optional(),
+    })
+    .strict(),
+  z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
+]);
+
 const sandboxListMetadata = z.object({
   preservationNote: z.string().nullable().optional(),
   providerSandboxId: z.string().nullable(),
@@ -171,6 +186,7 @@ const sandboxListMetadata = z.object({
   effectiveTtlSeconds: z.number().nullable(),
   machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
   displayLabel: z.string(),
+  taskOutcome: taskOutcome.nullable().optional(),
   canOpen: z.boolean(),
   canManage: z.boolean(),
 });
@@ -196,6 +212,7 @@ const status = {
   machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
+  taskOutcome: taskOutcome.nullable().optional(),
   providerState: z.string().nullable(),
   conversationIds: z.array(z.string()),
   expiresAt: z.string().nullable(),
@@ -901,6 +918,37 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "report",
+    {
+      title: "Report a task outcome",
+      description:
+        "Explicit result for the latest finished turn. Call after wait; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
+      input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
+      output: { id: z.string(), taskOutcome },
+    },
+    async (args) => {
+      const found = await visible(args.id);
+      const provider = found.status === "deleted" ? null : await context.provider(found);
+      // Empty is a successful-steer marker, not a provider run ID. Null remains
+      // unreportable after an ambiguous admission or for legacy rows.
+      const target =
+        found.taskPromptId === ""
+          ? provider
+            ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
+            : null
+          : found.taskPromptId;
+      if (!target || target !== args.prompt_id)
+        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+      const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
+      if (!report.prompt || report.prompt.state !== "finished")
+        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+      if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
+      await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
+      return { id: args.id, taskOutcome: args.outcome };
+    },
+  );
+
+  tool(
     "send",
     {
       title: "Send a prompt",
@@ -945,6 +993,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         data.sandboxes,
         found,
         {
+          clearTaskOutcome: true,
           renewLifecycle: machine.state === "stopped",
           stopRequested: false,
           ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
@@ -964,6 +1013,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           return {
             patch: {
               status: "running",
+              taskPromptId: receipt.promptId,
               statusReason: null,
               conversationIds,
               stoppedAt: null,
@@ -1016,18 +1066,55 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         orgId: found.orgId,
         role: member.role,
       });
-      const receipt = await provider.steer({
-        sandboxId: found.providerSandboxId,
-        text: args.text,
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-      });
-      return {
-        id: found.id,
-        promptId: receipt.promptId,
-        conversationId: receipt.conversationId,
-        delivery,
-        mode: receipt.mode ?? null,
-      };
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        { clearTaskOutcome: true },
+        async () => {
+          const receipt = await provider.steer({
+            sandboxId: found.providerSandboxId,
+            text: args.text,
+            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+          });
+          return {
+            patch: {
+              status: "running",
+              // Boat returns a steer-record ID; resolve the actual run from events.
+              taskPromptId: "",
+              conversationIds: found.conversationIds.includes(receipt.conversationId)
+                ? found.conversationIds
+                : [...found.conversationIds, receipt.conversationId],
+            },
+            result: {
+              id: found.id,
+              promptId: receipt.promptId,
+              conversationId: receipt.conversationId,
+              delivery,
+              mode: receipt.mode ?? null,
+            },
+          };
+        },
+        {
+          failurePatch(error) {
+            // A definite refusal admitted no work, so the next send need not wait
+            // for lease expiry. Unknown/transport errors retain the bounded lease.
+            if (
+              error instanceof ProviderError &&
+              [
+                "no_running_turn",
+                "invalid_request",
+                "unauthorized",
+                "forbidden",
+                "not_found",
+                "provider_not_configured",
+                "sandbox_not_ready",
+              ].includes(error.code)
+            )
+              return {};
+            throw error;
+          },
+        },
+      );
     },
   );
 

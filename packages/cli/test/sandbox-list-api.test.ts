@@ -14,6 +14,7 @@ const row = {
   model: null,
   reasoningEffort: null,
   status: "running",
+  taskOutcome: null,
   createdAt: "2026-11-09T12:00:00.000Z",
   stoppedAt: null,
   expiresAt: null,
@@ -31,6 +32,7 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     provider: "boat",
     providerSandboxId: "bx_display",
     boatId: "bx_display",
+    taskOutcome: { state: "ready", prNumber: 42 },
     canOpen: true,
     canManage: true,
   };
@@ -82,10 +84,10 @@ test("safe sandbox list renders metadata-only access without interior lookups an
         hasMore: false,
       });
     else {
-      expect(out).toContain("Modal  —  running  2h  —  teammate  metadata only");
+      expect(out).toContain("Modal  —  running  —  2h  —  teammate  metadata only");
       expect(out).toContain(row.id);
       expect(out).toContain("UNKNOWN (server reauthorizes)");
-      expect(out).toContain("Boat  bx_display  running  2h  —  teammate  open/manage");
+      expect(out).toContain("Boat  bx_display  running  ready  2h  —  teammate  open/manage");
     }
   }
 });

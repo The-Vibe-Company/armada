@@ -167,7 +167,12 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const ACTIONS = new Set(["create", "message", "steer", "stop", "resume", "recover"]);
 
 /** Closed metadata only: no exception message, SQL text, detail, hint or causal traversal. */
-function publicationFailure(error: unknown): { errorClass: string; sqlState?: string } {
+function publicationFailure(error: unknown): {
+  errorClass: string;
+  sqlState?: string;
+  table?: string;
+  constraint?: string;
+} {
   let errorClass = "unknown";
   let sqlState: string | undefined;
   if (error && typeof error === "object") {
@@ -191,14 +196,30 @@ function publicationFailure(error: unknown): { errorClass: string; sqlState?: st
     } catch {
       /* A hostile class getter must not hide an independently readable SQLSTATE. */
     }
-    try {
-      const code: unknown = Reflect.get(error, "code");
-      if (typeof code === "string" && Object.hasOwn(SQL_CODES, code)) sqlState = code;
-    } catch {
-      /* Never serialize an opaque exception. */
+    // Bun's PostgresError uses code=ERR_POSTGRES_SERVER_ERROR and errno=SQLSTATE.
+    // Other drivers use code directly. Read each independently; never serialize the exception.
+    for (const field of ["code", "errno"] as const) {
+      try {
+        const code: unknown = Reflect.get(error, field);
+        if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) {
+          sqlState = code;
+          break;
+        }
+      } catch {
+        /* A hostile getter cannot hide independently readable metadata. */
+      }
     }
   }
-  return { errorClass, ...(sqlState ? { sqlState } : {}) };
+  const identifiers: { table?: string; constraint?: string } = {};
+  for (const field of ["table", "constraint"] as const) {
+    try {
+      const value: unknown = error && typeof error === "object" ? Reflect.get(error, field) : undefined;
+      if (typeof value === "string" && /^[a-z_][a-z0-9_]{0,62}$/.test(value)) identifiers[field] = value;
+    } catch {
+      /* A diagnostic getter cannot change publication. */
+    }
+  }
+  return { errorClass, ...(sqlState ? { sqlState } : {}), ...identifiers };
 }
 
 /** No message, stack, details, request, provider ID, config, or causal payload is read.
@@ -297,6 +318,27 @@ function reason(error: unknown): string {
   return base;
 }
 
+/** The provider transports only closed process categories via exit status. */
+function processFailure(error: unknown): { processCategory?: string; processFailure?: string } {
+  try {
+    if (!(error instanceof ProviderError)) return {};
+    const category = error.details?.processCategory;
+    const failure = error.details?.processFailure;
+    return typeof category === "string" &&
+      ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
+      ? {
+          processCategory: category,
+          ...(typeof failure === "string" &&
+          ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
+            ? { processFailure: failure }
+            : {}),
+        }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 /** Per-operation state, not global mutable tracing. Keep only a safe classification
  * of the first failed substep, so a finally/cleanup step cannot hide its cause. */
 export class OrchestratorDiagnostics {
@@ -345,6 +387,7 @@ export class OrchestratorDiagnostics {
       stage: failure?.stage ?? this.current,
       reason: safeCode ?? failure?.reason ?? reason(error),
       ...(outcome === "publication_failed" ? publicationFailure(error) : {}),
+      ...processFailure(error),
       ...(outcome === "publication_failed" && this.failure
         ? { failureStage: this.failure.stage, failureReason: this.failure.reason }
         : {}),
