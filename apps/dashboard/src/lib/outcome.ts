@@ -10,7 +10,10 @@ const SHA = /^[a-f0-9]{40}$/i;
 const READY_KEYS = new Set(["state", "prNumber", "prUrl", "headSha"]);
 const BLOCKED_KEYS = new Set(["state", "reason"]);
 
-/** The outcome as the database constraint allows it, or null: a malformed value is never shown from a guess. */
+/**
+ * The outcome as the database constraint allows it (lengths in characters, as Postgres counts), or null: a malformed
+ * value is never shown from a guess.
+ */
 export function parseTaskOutcome(value: unknown): TaskOutcome | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
@@ -18,7 +21,7 @@ export function parseTaskOutcome(value: unknown): TaskOutcome | null {
   if (row.state === "blocked") {
     if (keys.some((key) => !BLOCKED_KEYS.has(key)) || typeof row.reason !== "string") return null;
     const reason = row.reason.trim();
-    return reason && reason.length <= 1000 ? { state: "blocked", reason } : null;
+    return reason && [...reason].length <= 1000 ? { state: "blocked", reason } : null;
   }
   if (row.state !== "ready" || keys.some((key) => !READY_KEYS.has(key))) return null;
   const outcome: TaskOutcome = { state: "ready" };
@@ -27,7 +30,7 @@ export function parseTaskOutcome(value: unknown): TaskOutcome | null {
     outcome.prNumber = row.prNumber;
   }
   if (row.prUrl !== undefined) {
-    if (typeof row.prUrl !== "string" || !row.prUrl || row.prUrl.length > 2048) return null;
+    if (typeof row.prUrl !== "string" || !row.prUrl || [...row.prUrl].length > 2048) return null;
     outcome.prUrl = row.prUrl;
   }
   if (row.headSha !== undefined) {

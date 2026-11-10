@@ -9,6 +9,8 @@ describe("parseTaskOutcome", () => {
     const ready = { state: "ready", prNumber: 768, prUrl: "https://github.com/acme/web/pull/768", headSha: SHA };
     expect(parseTaskOutcome(ready)).toEqual(ready);
     expect(parseTaskOutcome({ state: "ready" })).toEqual({ state: "ready" });
+    // Characters, not UTF-16 units: 600 emoji are within the 1000 the database allows.
+    expect(parseTaskOutcome({ state: "blocked", reason: "🚧".repeat(600) })).not.toBeNull();
     expect(parseTaskOutcome({ state: "blocked", reason: "  Needs a key  " })).toEqual({
       state: "blocked",
       reason: "Needs a key",
