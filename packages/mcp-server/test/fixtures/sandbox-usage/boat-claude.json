@@ -1,0 +1,22 @@
+[
+  {
+    "id": "ffa53f4b-0538-44f6-ac22-6395d9c60e1f",
+    "at": 1794311573213,
+    "conversationId": "2bdaa445-ab05-426e-874f-1b205b18310d",
+    "promptId": "677f2b68-b103-4044-81d7-4d01b4385932",
+    "kind": "prompt",
+    "text": "Reply with exactly: OK",
+    "status": "finished"
+  },
+  {
+    "id": "913e33ee-77dd-45b8-859c-d4a6cfe6e9fd",
+    "at": 1794311584865,
+    "conversationId": "2bdaa445-ab05-426e-874f-1b205b18310d",
+    "promptId": "677f2b68-b103-4044-81d7-4d01b4385932",
+    "kind": "message",
+    "text": "OK",
+    "partial": false,
+    "model": "claude-opus-5-5",
+    "tools": []
+  }
+]

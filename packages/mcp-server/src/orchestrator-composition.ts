@@ -23,7 +23,7 @@ export interface OrchestratorLifecyclePorts extends RuntimeLifecycleHooks {
     ownerId: string,
     orgId: string,
     id: string,
-  ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds">>;
+  ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds" | "usage">>;
   worker(sql: Sql, runtime: NonNullable<OrchestratorRuntime["lifecycleRuntime"]>): OrchestratorWorkerLane;
 }
 export function createOrchestratorServices(input: {

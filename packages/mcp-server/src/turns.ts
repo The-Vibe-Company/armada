@@ -132,10 +132,8 @@ export async function readStatus(
     };
     if (next === "failed" && info.physicalExitConfirmed) {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     await store.update(sandbox.id, patch);
   }

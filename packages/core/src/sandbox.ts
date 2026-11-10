@@ -4,7 +4,7 @@ import type { Sql } from "./golden-store.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
-import type { SandboxUsage } from "./sandbox-usage.ts";
+import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
@@ -295,7 +295,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
-    usage: row.usage ?? null,
+    usage: withUsageTotals(row.usage),
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
     taskPromptId: row.task_prompt_id ?? null,

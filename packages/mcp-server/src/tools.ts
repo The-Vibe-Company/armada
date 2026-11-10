@@ -177,6 +177,15 @@ const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
     turnCount: z.number().nullable(),
+    tokenTotals: z
+      .object({
+        inputTokens: z.number().nullable(),
+        outputTokens: z.number().nullable(),
+        cachedTokens: z.number().nullable(),
+        cacheWriteTokens: z.number().nullable(),
+        reasoningTokens: z.number().nullable(),
+      })
+      .optional(),
     turns: z.array(
       z.object({
         promptId: z.string(),
@@ -184,6 +193,8 @@ const sandboxUsage = z
         inputTokens: z.number().nullable(),
         outputTokens: z.number().nullable(),
         cachedTokens: z.number().nullable(),
+        cacheWriteTokens: z.number().nullable().optional(),
+        reasoningTokens: z.number().nullable().optional(),
       }),
     ),
   })
@@ -1034,7 +1045,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         await data.sandboxes.update(found.id, {
           status: "stopped",
           stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
-          ...(machine.stoppedAt ? {} : { usageRuntimeUnknown: true }),
           ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
         });
       }
@@ -1462,7 +1472,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
               ...(terminal
                 ? {
                     stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                    usageRuntimeUnknown: !stoppedAt && found.stoppedAt === null,
                   }
                 : {}),
             },
