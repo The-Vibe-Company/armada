@@ -17,7 +17,7 @@ export const ORCHESTRATOR_DEFAULTS = {
 
 export type OrchestratorState = "creating" | "ready" | "stopping" | "stopped" | "resuming" | "blocked";
 export type OrchestratorContinuity = "not_started" | "native" | "unverified" | "lost";
-export type OrchestratorScope = "worker:launch" | "worker:read" | "worker:message" | "worker:stop";
+export type OrchestratorScope = "worker:launch" | "worker:read" | "worker:message" | "worker:stop" | "worker:extend";
 
 /** All dates are UTC ISO-8601 strings, all IDs are opaque Armada IDs, never provider secrets. */
 export interface OrchestratorCreate {

@@ -39,7 +39,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
-import { operation } from "./operations.ts";
+import { operation, parseTtl } from "./operations.ts";
 import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
@@ -141,6 +141,7 @@ Usage:
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
+  armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
@@ -283,6 +284,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "interrupt",
     "exec",
     "stop",
+    "extend",
     "rm",
     "wait",
     "logs",
@@ -331,6 +333,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "interrupt":
     case "exec":
     case "stop":
+    case "extend":
     case "rm":
     case "wait":
     case "mcp":
@@ -917,16 +920,6 @@ function harnessOf(value: string | undefined): Harness {
   const harness = HARNESSES.find((candidate) => candidate === value);
   if (!harness) throw new GoldenError("invalid_config", `Pass --agent ${HARNESSES.join(" or ")}.`);
   return harness;
-}
-
-/** `90`, `90s`, `30m`, `4h` or `2d`. A bare number is seconds. */
-function parseTtl(value: string): number {
-  const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
-  const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];
-  if (!match?.[1] || unit === undefined) {
-    throw new GoldenError("invalid_config", `--ttl '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
-  }
-  return Number(match[1]) * unit;
 }
 
 function launchText(result: LaunchResult): string {
