@@ -120,9 +120,12 @@ armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high
 armada logs <sandbox-id> --follow
 armada steer <sandbox-id> "Keep the public API unchanged"   # Codex restarts the turn with it
 armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh   # this turn only
+armada extend <sandbox-id> --ttl 270m        # extend the 4h launch to 4h30m from now
 armada stop <sandbox-id>                     # the machine goes; the disk and conversation stay
 armada send <sandbox-id> "Push the branch"   # resumes the stopped sandbox
 ```
+
+Extend an accessible running or idle sandbox as its owner or an org admin. The new deadline must be later than the current one and within server/provider limits. Boat resets its hard timer; Modal extensions must fit before the existing physical deadline minus a five-minute stop margin, without replacing the machine. Modal launch headroom is server-configured; see [sandbox lifetime limits](docs/sandbox-expiry-investigation.md#initial-delivery-scope).
 
 `armada --help` lists every command. Without flags, Claude Code runs `claude-opus-5-5` and Codex `gpt-6.1-sol`, both at `medium` effort.
 
@@ -141,7 +144,7 @@ Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own orchestrator, and that agent can list and build goldens, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own orchestrator, and that agent can list and build goldens, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 

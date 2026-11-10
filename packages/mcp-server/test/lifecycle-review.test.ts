@@ -95,13 +95,20 @@ for (const fails of [false, true])
             stderr: fails ? "init failed" : "",
           });
         }
-        if (request.method === "POST") return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
+        if (request.method === "POST")
+          return Response.json({
+            ok: true,
+            sandbox: sandbox({ state: "idle", archiveAfter: new Date(Date.now() + 86400000).toISOString() }),
+          });
         if (capture) {
           capture = false;
           observed.resolve();
           await release.promise;
         }
-        return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
+        return Response.json({
+          ok: true,
+          sandbox: sandbox({ state: "idle", archiveAfter: new Date(Date.now() + 86400000).toISOString() }),
+        });
       }) as unknown as typeof fetch,
     });
     try {
@@ -267,7 +274,10 @@ test("initial launch preserves sequential 600-second setup command budgets", asy
           stderrTruncated: false,
         });
       }
-      return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
+      return Response.json({
+        ok: true,
+        sandbox: sandbox({ state: "idle", archiveAfter: new Date(Date.now() + 86400000).toISOString() }),
+      });
     }) as unknown as typeof fetch,
   });
   try {

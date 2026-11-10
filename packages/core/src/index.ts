@@ -262,6 +262,11 @@ export {
   turnCost,
 } from "./sandbox-cost.ts";
 export {
+  DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS,
+  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
+  SANDBOX_STOP_MARGIN_SECONDS,
+} from "./sandbox-lifetime.ts";
+export {
   assertProviderOf,
   createProviderRegistry,
   isSandboxProvider,
