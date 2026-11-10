@@ -553,8 +553,33 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         ...(request.detached ? { detached: true } : {}),
       };
       for (let attempt = 1; ; attempt++) {
+        request.signal?.throwIfAborted();
+        if (request.onlyIfRunning) {
+          // Capture precedes stop and must never resume retained compute. A transient
+          // startup may settle, but stopping/terminal compute cannot accept capture.
+          const current = await provider.get(request.sandboxId, { signal: request.signal });
+          request.signal?.throwIfAborted();
+          if (current.physicalExitConfirmed || !["ready", "running"].includes(current.state)) {
+            if (current.state === "starting" && attempt < RESTORE_RETRIES) {
+              await sleep(1000);
+              continue;
+            }
+            throw new ProviderError({
+              provider: PROVIDER_ID,
+              code: "sandbox_not_ready",
+              status: 409,
+              message: "Capture requires running compute.",
+              retryable: false,
+            });
+          }
+        }
         try {
-          const response = await call(() => api.command({ sandboxId: request.sandboxId, commandRequest }));
+          const response = await call(() =>
+            api.command(
+              { sandboxId: request.sandboxId, commandRequest },
+              request.signal ? { signal: request.signal } : undefined,
+            ),
+          );
           if ("processId" in response) return { detached: true, processId: response.processId };
           if (!("exitCode" in response)) throw unexpectedAnswer("command result");
           return {
@@ -567,8 +592,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           };
         } catch (error) {
           const restoring = error instanceof Error && "details" in error && isRestoring(error.details);
-          if (!restoring || attempt >= RESTORE_RETRIES) throw error;
-          await sleep(RESTORE_WAIT_MS);
+          const notReady =
+            request.onlyIfRunning &&
+            error instanceof ProviderError &&
+            error.code === "sandbox_not_ready" &&
+            error.status === 409;
+          if ((!restoring && !notReady) || attempt >= RESTORE_RETRIES) throw error;
+          // A 409 refusal did not execute the command. Never replay ambiguous errors.
+          await sleep(notReady ? 1000 : RESTORE_WAIT_MS);
         }
       }
     },

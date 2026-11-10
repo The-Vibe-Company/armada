@@ -117,6 +117,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   const token = crypto.randomUUID().replaceAll("-", "");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
+  const controller = new AbortController();
   let stage: CaptureFailure = "exec_failed";
   let execStage: CaptureDiagnostic["stage"] = "collect_exec";
   const timeout = (): WorkPreservation => ({
@@ -127,7 +128,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   async function execute(request: Parameters<Provider["exec"]>[0], stage: CaptureDiagnostic["stage"] = "collect_exec") {
     execStage = stage;
     try {
-      return await provider.exec(request);
+      return await provider.exec({ ...request, signal: controller.signal });
     } catch (error) {
       throw new CaptureError("exec_failed", { stage, ...workPreservationError(error) });
     }
@@ -226,6 +227,7 @@ finally { fs.closeSync(fd); }`,
     };
   } finally {
     expired = true;
+    controller.abort();
     clearTimeout(timer);
     // Only the sandbox-local janitor performs cleanup: a later provider exec could
     // otherwise auto-resume the machine after its caller has stopped it.
