@@ -234,6 +234,7 @@ receipt and server diagnostics use the same codes):
 | `skillpack_credential_missing` | Store a personal or org Skillpack credential. |
 | `skillpack_credential_refused` | Replace an expired/revoked key; check workspace membership. |
 | `skillpack_scope_refused` | Replace the key with one scoped **only** to `skills:read`. |
+| `skillpack_download_unavailable` | The last golden build could not download Skillpack. Allow GitHub release HTTPS egress, then rebuild; repeating offline builds will not help. |
 | `skillpack_cli_unavailable` | Rebuild the golden with the trusted native CLI executable on PATH; check its permissions/version. |
 | `skillpack_auth_unavailable` | Check registry connectivity and CLI/API compatibility during auth status. |
 | `skillpack_protocol_invalid` | Update the trusted native CLI/API; auth status did not return the supported workspace contract. |
@@ -259,29 +260,39 @@ A new create needs a new idempotency key; replay returns the failed receipt.
 
 ## Automatic provisioning and rebuilding smoke-modal
 
-Golden create **and update** install Skillpack **0.3.5** before user init and the
-secret scan. Armada downloads the versioned official installer over HTTPS,
-checks its repository-pinned SHA-256
-`8910925ff024eaac513d1419bcea6be7a1080f787fad368b3848c7ac94c9c02e`, and
-only then executes it. That installer embeds the platform archive checksums,
-verifies them before extraction, and self-tests both native binaries. Linux
-x64 and arm64 are supported. A checksum mismatch in the downloaded bootstrap aborts the build before
-execution (`skillpack` phase), retaining the previous golden. Every build
-attempts HTTPS egress to github.com and its release-asset hosts for provisioning.
-If those hosts are unavailable, the build continues without adding Skillpack,
-logging the closed warning `golden_skillpack_warning/download_unavailable`;
-if the pinned installer cannot complete, it logs `install_unavailable`. Other
-launcher functions remain usable. Before using skills, allow that egress and
-rebuild; a missing executable is still refused as `skillpack_cli_unavailable`. No login or Skillpack key is
-used during building. The managed executable is made available through
-`/usr/local/bin/skillpack` when writable (directly for root) or passwordless
-sudo is available. Otherwise the build keeps the user-local executable and logs
-`user_local_only`; orchestrator skill installation includes `/home/user/.local/bin`
-on its command-local PATH, so passwordless sudo is not required for Skillpack.
-Ownership normalization covers the home-directory installation. This belongs in golden baseline provisioning rather than every
-skill install: it keeps runtime installation offline except for the registry,
-avoids repeating executable downloads with a live credential present, and
-requires no new API or migration.
+Golden create **and update** provision native Skillpack **0.3.5** before user init
+and the secret scan. Armada downloads the official versioned Linux x64/arm64
+archive over HTTPS, verifies the platform SHA-256 pinned in
+`packages/core/src/golden-skillpack.ts`, then extracts it and self-tests both
+native binaries. No downloaded installer shell is executed. A checksum mismatch,
+invalid archive or failed version/help self-test **fails** the build with
+`failureReason: skillpack_integrity_failed`; the old golden remains unchanged.
+
+An unreachable release download is the only provisioning failure that is soft.
+The build can succeed for non-skill use, but its result has
+`warnings: ["skillpack_download_unavailable"]`. The same snapshot-bound metadata
+is persisted as `goldens.build_warnings`, visible in golden API/list output,
+CLI create/update warnings, build-status JSON and the dashboard golden row and
+expanded panel. This is not only a server log. Allow HTTPS egress to github.com
+and release-asset hosts **before** rebuilding; repeating an offline build is not
+a remedy. A later missing-CLI error from that golden reports
+`skillpack_download_unavailable` and the last build's network problem rather
+than blindly asking for another rebuild. A successful clean rebuild clears the
+warning. Old goldens with no warning history still report `skillpack_cli_unavailable`.
+
+The managed executable is linked through `/usr/local/bin/skillpack` when writable
+or passwordless sudo is available. Otherwise the build retains its user-local
+executable and reports informational `skillpack_user_local_only`; both public and
+private skill installs discover `/home/user/.local/bin`. Root builds normalize
+ownership before the worker runs. No login or Skillpack key is used in building.
+
+### Deployment prerequisite
+
+Apply **20261110210000_golden_build_warnings.sql** before deploying this server or
+dashboard revision. It adds only closed server-written metadata to existing
+rows/jobs (empty defaults), no secret or user-write grant. Deploying the old code
+again leaves the additive metadata harmless; do not drop columns while new code
+is running. No migration or deployment was performed by this PR workflow.
 
 After the coordinator makes this server revision available on **staging** (not
 production), use the staging Armada origin/session and an org admin account.
@@ -307,7 +318,7 @@ non-secret custom setup with `--setup <local-script>` during update.
 Then rerun the original `orchestrator create` with a fresh name/idempotency key,
 the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key must
 be scoped **only** to `skills:read`; broad keys now return
-`skillpack_scope_refused`. Confirm a non-null skill receipt and a ready parent.
+`skillpack_scope_refused`. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
 
 The public sandbox-launch path now reports the same closed missing-CLI reason

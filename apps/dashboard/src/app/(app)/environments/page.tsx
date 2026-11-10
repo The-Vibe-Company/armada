@@ -484,6 +484,28 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
   const meta = [label, owner === "You" ? "yours" : `by ${owner}`, age].filter(Boolean).join(" · ");
   const twinLabel = `${golden.name} on ${label}`;
 
+  const buildWarnings = (golden.build_warnings ?? []).flatMap((warning) => {
+    if (warning === "skillpack_download_unavailable")
+      return [
+        {
+          reason: warning,
+          label: "Skillpack unavailable",
+          message:
+            "The last build could not download Skillpack. Allow HTTPS access to GitHub releases, then rebuild before using skills.",
+        },
+      ];
+    if (warning === "skillpack_user_local_only")
+      return [
+        {
+          reason: warning,
+          label: "User-local Skillpack",
+          message:
+            "The last build installed Skillpack for the sandbox user only. Skill installation uses the user-local executable; no system launcher was available.",
+        },
+      ];
+    return [];
+  });
+
   const action =
     state.action === "launch" ? (
       <LaunchDialog
@@ -515,6 +537,16 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         <p className="text-sm text-muted-foreground">{state.detail}</p>
         {state.action !== null && state.action !== "snapshot" && <div className="pt-2">{action}</div>}
       </div>
+      {buildWarnings.map((warning) => (
+        <Alert key={warning.reason} className="border-warning/40" data-golden-build-warning={warning.reason}>
+          <TriangleAlertIcon aria-hidden className="text-warning" />
+          <AlertTitle>{warning.label}</AlertTitle>
+          <AlertDescription>
+            <p>{warning.message}</p>
+            <code className="text-xs">{warning.reason}</code>
+          </AlertDescription>
+        </Alert>
+      ))}
       <PanelSection title="Repositories">
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repository recorded in this golden.</p>
@@ -652,6 +684,11 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
           {golden.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
           {golden.visibility === "private" ? "Private" : "Org"}
         </RowTag>
+        {buildWarnings.map((warning) => (
+          <RowTag key={warning.reason} className="border-warning/40 text-warning" title={warning.message}>
+            <TriangleAlertIcon aria-hidden /> {warning.label}
+          </RowTag>
+        ))}
         {row.duplicateName && (
           <RowTag className="border-warning/40 text-warning">
             <TriangleAlertIcon aria-hidden /> Name shared by another golden

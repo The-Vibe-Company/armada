@@ -928,6 +928,7 @@ export interface GoldenJson {
   boatSnapshotId: string | null;
   boatSandboxId: string | null;
   repos: number;
+  buildWarnings: string[];
   config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
 }
 
@@ -946,6 +947,7 @@ function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson
     boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
+    buildWarnings: row.buildWarnings ?? [],
   };
 }
 

@@ -26,6 +26,7 @@ export async function bootstrapOrchestrator(
   request: {
     sandboxId: string;
     projectDir: string;
+    buildWarnings?: readonly string[];
     /** Legacy metadata; no longer selects an installer or method. */
     skillRevision: string;
     skill?: string | undefined;
@@ -63,6 +64,7 @@ export async function bootstrapOrchestrator(
         reference: skill,
         harness: request.harness ?? "codex",
         key: (await request.skillpackKey?.()) ?? null,
+        ...(request.buildWarnings ? { buildWarnings: request.buildWarnings } : {}),
       });
     const publicSkill = skill && !privateSkill;
     const result = await provider.exec({
@@ -73,6 +75,12 @@ export async function bootstrapOrchestrator(
         ? `${skillInstallCommand(skill, projectDir, request.harness ?? "codex")} >/dev/null && ${referenceCommand} && cat ${quote(`${projectDir}/.companion/skills.lock.json`)}`
         : referenceCommand,
     });
+    if (
+      !result.detached &&
+      result.exitCode === 127 &&
+      request.buildWarnings?.includes("skillpack_download_unavailable")
+    )
+      throw new PrivateSkillError("skillpack_download_unavailable", "install");
     if (result.detached || result.timedOut || result.truncated || result.exitCode !== 0) {
       request.diagnostics?.captureReason(
         result.detached

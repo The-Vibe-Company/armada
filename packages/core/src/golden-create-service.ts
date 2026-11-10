@@ -1,6 +1,7 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
 import { assertGoldenMutation, waitSnapshot } from "./golden.ts";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import {
   assignDirs,
   type GitHubGoldenConfig,
@@ -11,6 +12,7 @@ import {
   parseGoldenName,
 } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
+import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
 
@@ -48,7 +50,10 @@ export interface GoldenCreateDeps {
    * means checkout falls back to the caller's own token from `authorize`, which is never revoked.
    */
   mint?(installationId: number, repoIds: number[]): Promise<{ token: string; revoke(): Promise<void> }>;
-  ssh(provider: Provider, input: { sandboxId: string; token: string; script: string }): Promise<void>;
+  ssh(
+    provider: Provider,
+    input: { sandboxId: string; token: string; script: string; onWarning?: (warning: GoldenBuildWarning) => void },
+  ): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
   scan(provider: Provider, sandboxId: string, context?: { buildId: string }): Promise<void>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
@@ -80,6 +85,7 @@ export interface GoldenCreateDeps {
     snapshot: string;
     builderId: string;
     reservationId?: string;
+    warnings: GoldenBuildWarning[];
   }): Promise<string | void>;
 }
 
@@ -100,7 +106,7 @@ export class GoldenCreateService {
       modal?: ModalBinding;
     },
     limits: GoldenLimits = {},
-  ): Promise<{ snapshot: string }> {
+  ): Promise<{ snapshot: string; warnings: GoldenBuildWarning[] }> {
     if (!isSandboxProvider(provider.id)) throw new GoldenError("invalid_config", "Unknown golden provider.");
     const providerId = provider.id;
     const modal = input.existingGolden?.modal ?? input.modal ?? null;
@@ -131,6 +137,7 @@ export class GoldenCreateService {
     const installations = new Set(repos.map((r) => r.installationId));
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
+    const warnings: GoldenBuildWarning[] = [];
     let persisted = false;
     let uncertainSnapshot = false;
     let persistAttempted = false;
@@ -173,6 +180,9 @@ export class GoldenCreateService {
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,
+        onWarning: (warning) => {
+          if (!warnings.includes(warning)) warnings.push(warning);
+        },
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
       await enter("secret_scan");
@@ -246,6 +256,7 @@ export class GoldenCreateService {
       persistAttempted = true;
       {
         const goldenId = await this.deps.persist({
+          warnings,
           actor,
           provider: providerId,
           modal,
@@ -261,7 +272,7 @@ export class GoldenCreateService {
         persisted = true;
         if (reservation && goldenId && this.deps.finalize) await this.deps.finalize(reservation, goldenId);
       }
-      return { snapshot };
+      return { snapshot, warnings };
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -455,29 +466,7 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     'if [ "$(/usr/local/bin/claude --version 2>/dev/null || true)" != "2.1.322 (Claude Code)" ]; then sudo -n npm install --global --prefix /usr/local @anthropic-ai/claude-code@2.1.322; fi',
     '[ "$(/usr/local/bin/claude --version)" = "2.1.322 (Claude Code)" ] || { printf "%s\\n" "Claude Code at /usr/local/bin/claude does not match the managed pin." >&2; exit 96; }',
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
-    // The release installer embeds the Linux x64/arm64 archive hashes. Pin the
-    // installer itself too: never execute mutable bootstrap code or trust a
-    // checksum fetched alongside an otherwise untrusted download.
-    "armada_phase=skillpack",
-    "(",
-    "  skillpack_tmp=$(mktemp -d)",
-    "  trap 'rm -rf -- \"$skillpack_tmp\"' EXIT",
-    "  if ! curl --fail --silent --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 https://github.com/The-Vibe-Company/skillpack/releases/download/runtime-v0.3.5/install.sh -o \"$skillpack_tmp/install.sh\"; then",
-    '    printf "ARMADA_BUILD_WARNING skillpack download_unavailable\\n" >&2; exit 0',
-    "  fi",
-    "  printf '%s  %s\\n' 8910925ff024eaac513d1419bcea6be7a1080f787fad368b3848c7ac94c9c02e \"$skillpack_tmp/install.sh\" | sha256sum --check --status",
-    '  if ! SKILLPACK_INSTALL_SOURCE_ONLY=0 SKILLPACK_VERSION=0.3.5 SKILLPACK_RELEASE_BASE_URL=https://github.com/The-Vibe-Company/skillpack/releases/download/runtime-v0.3.5 SKILLPACK_HOME=/home/user/.config/skillpack sh "$skillpack_tmp/install.sh" >/dev/null 2>&1; then',
-    '    printf "ARMADA_BUILD_WARNING skillpack install_unavailable\\n" >&2; exit 0',
-    "  fi",
-    '  [ "$(/home/user/.local/bin/skillpack --version)" = "skillpack 0.3.5" ]',
-    '  if [ "$(id -u)" -eq 0 ] || [ -w /usr/local/bin ]; then',
-    "    ln -sf /home/user/.local/bin/skillpack /usr/local/bin/skillpack",
-    "  elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then",
-    "    sudo -n ln -sf /home/user/.local/bin/skillpack /usr/local/bin/skillpack",
-    "  else",
-    '    printf "ARMADA_BUILD_WARNING skillpack user_local_only\\n" >&2',
-    "  fi",
-    ")",
+    GOLDEN_SKILLPACK_SETUP,
   ].join("\n");
 }
 

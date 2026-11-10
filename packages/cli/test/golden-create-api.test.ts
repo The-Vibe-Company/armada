@@ -6,6 +6,7 @@ const token = "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12";
 test("golden create maps positional config to API with token-only auth", async () => {
   const calls: Request[] = [];
   let out = "";
+  let warnings = "";
   const code = await run(
     [
       "golden",
@@ -21,7 +22,7 @@ test("golden create maps positional config to API with token-only auth", async (
       "--org",
       "team",
     ],
-    { out: (t) => (out += t), err: () => undefined },
+    { out: (t) => (out += t), err: (t) => (warnings += t) },
     {
       auth: {
         out: () => undefined,
@@ -35,7 +36,12 @@ test("golden create maps positional config to API with token-only auth", async (
             state: "succeeded",
             phase: "complete",
             errorCode: null,
-            result: { name: "web", visibility: "private", snapshot: "golden-bx" },
+            result: {
+              name: "web",
+              visibility: "private",
+              snapshot: "golden-bx",
+              warnings: ["skillpack_download_unavailable"],
+            },
           });
         },
         now: () => new Date(),
@@ -46,6 +52,8 @@ test("golden create maps positional config to API with token-only auth", async (
   );
   expect(code).toBe(0);
   expect(out).toContain("Saved snapshot: golden-bx");
+  expect(warnings).toContain("Warning: skillpack_download_unavailable");
+  expect(warnings).toContain("allow GitHub release egress");
   expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/golden/create");
   expect(await calls[0]?.json()).toMatchObject({
     name: "web",

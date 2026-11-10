@@ -51,6 +51,7 @@ export interface OrchestratorRuntimeBackend {
   /** Persisted launch choice, never a new default selected on a later turn. */
   selection?: ModelChoice;
   projectDir: string;
+  buildWarnings?: readonly string[];
   /** Trusted server broker URL, never accepted from owner request or prompt text. */
   mcpUrl: string;
   /** Actual owner-approved #673 consent, resolved with #603 accounts independently
@@ -575,6 +576,7 @@ export class OrchestratorRuntime {
       diagnostics,
       sandboxId: identity.providerSandboxId,
       projectDir: backend.projectDir,
+      ...(backend.buildWarnings ? { buildWarnings: backend.buildWarnings } : {}),
       skillRevision: identity.skillRevision,
       skill: identity.configuration.skill,
       skillpackKey: () => this.options.skillpackKey?.(identity.ownerId, identity.orgId) ?? Promise.resolve(null),

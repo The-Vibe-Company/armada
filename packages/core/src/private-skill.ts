@@ -13,6 +13,7 @@ export const PRIVATE_SKILL_FAILURES = [
   "skillpack_scope_refused",
   "skillpack_registry_unavailable",
   "skillpack_cli_unavailable",
+  "skillpack_download_unavailable",
   "skillpack_timeout",
   "skillpack_auth_unavailable",
   "skillpack_protocol_invalid",
@@ -48,6 +49,7 @@ export async function installPrivateSkill(
     reference: string;
     harness: Harness;
     key: string | null;
+    buildWarnings?: readonly string[];
   },
 ): Promise<OrchestratorSkillReceipt & { workspaceId: string }> {
   if (!input.key) throw new PrivateSkillError("skillpack_credential_missing");
@@ -124,7 +126,14 @@ ARMADA_SKILL_INSTALL`;
       workspaceId: value.workspaceId,
     };
   } catch (error) {
-    if (error instanceof PrivateSkillError) throw error;
+    if (error instanceof PrivateSkillError) {
+      if (
+        error.reason === "skillpack_cli_unavailable" &&
+        input.buildWarnings?.includes("skillpack_download_unavailable")
+      )
+        throw new PrivateSkillError("skillpack_download_unavailable", error.stage);
+      throw error;
+    }
     throw new PrivateSkillError("skillpack_transport_failed", "transport");
   }
 }

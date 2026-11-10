@@ -2,9 +2,11 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
 export interface SshExecDeps {
+  onWarning?: (warning: GoldenBuildWarning) => void;
   mkdtemp?: typeof mkdtemp;
   rm?: typeof rm;
   writeFile?: typeof writeFile;
@@ -289,6 +291,7 @@ async function sshExchange(
       `${input.token}\n${pub.trim()}\n${input.script}`,
       capture,
       timeoutMs,
+      deps.onWarning,
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -314,6 +317,7 @@ function command(
   stdin: string,
   capture = false,
   timeoutMs = capture ? 30_000 : 600_000,
+  onWarning?: (warning: GoldenBuildWarning) => void,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -354,8 +358,11 @@ function command(
           phase = match[1]!;
           exitCode = match[2];
         }
-        const warning =
-          /^ARMADA_BUILD_WARNING skillpack (download_unavailable|install_unavailable|user_local_only)$/.exec(line);
+        const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
+        if (warning)
+          onWarning?.(
+            warning[1] === "download_unavailable" ? "skillpack_download_unavailable" : "skillpack_user_local_only",
+          );
         if (warning)
           console.warn(
             JSON.stringify({
@@ -385,7 +392,14 @@ function command(
         reject(
           new GoldenError(
             "build_failed",
-            `Golden build failed during ${phase} (${reason}). Check builder connectivity, permissions and package availability; retry after correction. The previous golden is retained.`,
+            phase === "skillpack" && exitCode === "98"
+              ? "skillpack_integrity_failed: native archive checksum or self-test failed; do not use this build."
+              : `Golden build failed during ${phase} (${reason}). Check builder connectivity, permissions and package availability; retry after correction. The previous golden is retained.`,
+            {
+              ...(phase === "skillpack" && exitCode === "98"
+                ? { safeReason: "skillpack_integrity_failed" as const }
+                : {}),
+            },
           ),
         );
       }

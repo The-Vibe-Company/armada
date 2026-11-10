@@ -59,6 +59,7 @@ export async function installSkill(
   projectDir: string,
   harness: string,
   skill: string,
+  buildWarnings: readonly string[] = [],
 ): Promise<OrchestratorSkillReceipt> {
   validateSkillPins([skill]);
   let reason = "skillpack_transport_failed";
@@ -89,10 +90,14 @@ export async function installSkill(
   } catch {
     // Only the closed classification survives; guest output and provider errors do not.
   }
+  if (reason === "skillpack_cli_unavailable" && buildWarnings.includes("skillpack_download_unavailable"))
+    reason = "skillpack_download_unavailable";
   const action =
-    reason === "skillpack_cli_unavailable"
-      ? "Rebuild the golden with armada golden update to provision the native CLI."
-      : "Check the requested public pin, registry access and compatible CLI; see docs/private-skillpack.md.";
+    reason === "skillpack_download_unavailable"
+      ? "The last golden build reported skillpack_download_unavailable: allow GitHub release egress, then rebuild; repeating an offline build will not help."
+      : reason === "skillpack_cli_unavailable"
+        ? "Rebuild the golden with armada golden update to provision the native CLI."
+        : "Check the requested public pin, registry access and compatible CLI; see docs/private-skillpack.md.";
   throw new Error(`Skillpack installation failed: ${reason}. ${action}`);
 }
 function quote(value: string): string {
