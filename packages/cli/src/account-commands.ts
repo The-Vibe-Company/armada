@@ -25,14 +25,19 @@ export async function accountCommand(command: "github" | "account", argv: readon
   }
   if (
     !action ||
-    !["status", "connect", "reconnect", "disconnect", "install", "manage"].includes(action) ||
+    !["status", "connect", "reconnect", "disconnect", "install", "manage", "refresh"].includes(action) ||
     extra.length ||
-    (id && action !== "manage")
+    (id && action !== "manage" && action !== "refresh")
   )
     throw new AuthError(
-      "Run armada github status|connect|reconnect|disconnect|install|manage [installation-id].",
+      "Run armada github status|connect|reconnect|disconnect|install|manage [installation-id], or armada github refresh <sandbox>.",
       "usage",
     );
+  if (action === "refresh") {
+    if (!id) throw new AuthError("Run armada github refresh <sandbox>.", "usage");
+    auth.out(`${JSON.stringify(await control(auth, "github/refresh", { id }), null, 2)}\n`);
+    return 0;
+  }
   if (action === "status" || action === "disconnect") {
     auth.out(`${JSON.stringify(await control(auth, `github/${action}`, {}), null, 2)}\n`);
     return 0;

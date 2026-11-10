@@ -418,6 +418,34 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
 
   tool(
+    "github_refresh",
+    {
+      title: "Repair sandbox GitHub access",
+      description:
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+      input: { id },
+      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+    },
+    async (args) => {
+      const { sandbox: found, provider } = await live(args.id);
+      if (found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      const machine = await provider.get(found.providerSandboxId);
+      if (!["ready", "running"].includes(machine.state))
+        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
+      if (!context.launchCredentials.refreshGitHub)
+        throw new ToolError("unavailable", "GitHub repair is not configured.");
+      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
+      const result = await context.launchCredentials.refreshGitHub(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        provider,
+        found.providerSandboxId,
+      );
+      return { id: found.id, status: "connected" as const, login: result.login };
+    },
+  );
+
+  tool(
     "golden_list",
     {
       title: "List goldens",
@@ -751,6 +779,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .object({
               status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
               login: z.string().nullable(),
+              tokenExpiresAt: z.string().nullable(),
               message: z.string().nullable(),
             })
             .describe(
@@ -812,6 +841,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           github: {
             status: result.github.status,
             login: result.github.login ?? null,
+            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
             message: result.github.message ?? null,
           },
         };
