@@ -177,11 +177,12 @@ Only after both hosts succeed can npm publish. The server health version,
 dashboard landing's version badge and `armada --version` all use the same core
 package version; compare them after the release finishes.
 
-The opted-in release workflow is globally serialized, with cancellation off,
-including npm publication. The production job also shares the legacy migration
-lock. GitHub can replace a pending concurrency run; this is not an ordered job
-queue. Check the latest release run completed; dispatch the newest tag if a run
-was superseded. Do not run manual provider deployments during a release.
+The opted-in release workflow is globally serialized through npm publication,
+with cancellation off and queue: max retaining existing pending runs in FIFO
+order (up to 100 pending). New arrivals at capacity are rejected; drain the queue
+and retry a rejected run. The production job also shares the legacy migration
+lock; do not run manual migrations/history/repair/preview or provider deployments
+during a release. Check the intended release run completed before declaring success.
 
 A failure fails Actions loudly and stops later stages. **These independent
 services cannot provide an atomic transaction or guarantee rollback of already

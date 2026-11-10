@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only in the protected release job, with cwd set to the validated release checkout.
+# Run only in a protected staging/release job, with cwd on the pinned source checkout.
 set -euo pipefail
 
 fail() { echo "::error::$*" >&2; exit 1; }
