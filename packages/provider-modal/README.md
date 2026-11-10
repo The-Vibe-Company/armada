@@ -216,7 +216,7 @@ checkpoint must scrub post-boot configured credentials before returning its ACK.
 ## Actual artifact / immutable deployment lock
 
 Build unchanged `packages/agent-runtime/build.ts` on target Linux with Bun1.4.2,
-Claude SDK0.3.319, native Claude2.1.319 and Codex0.167.0 installed.
+Claude SDK0.3.322, native Claude2.1.322 and Codex0.167.0 installed.
 `loadRunnerArtifact(dist)` validates manifest/native resource presence and hashes
 actual bundled main.js. Image construction gzip-compresses those bytes, appends
 base64 in <=32 KiB Dockerfile RUN chunks, then decodes, verifies the original

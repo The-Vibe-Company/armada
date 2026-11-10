@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
 import { type Harness, type LaunchRequest, parseMachineSize, type Sql, validateSkillPins } from "@armada/core/server";
 import { ChildLaunchNotAllocated } from "./orchestrator-child-launch.ts";
 import type { ChildAuthority } from "./orchestrator-lifecycle-contract.ts";
@@ -23,7 +24,7 @@ export interface ChildOperation {
   orgId: string;
   parentGeneration: string;
   parentEpoch: string;
-  action: "launch" | "message" | "stop";
+  action: "launch" | "message" | "stop" | "extend";
   sandboxId: string;
 }
 /** Runtime caller must use this exact reserved sandbox ID and provider idempotency key.
@@ -33,6 +34,7 @@ export interface OrchestratorChildExecutor {
   launch(operation: ChildOperation, selection: ChildLaunchSelection): Promise<{ providerSandboxId: string }>;
   message(operation: ChildOperation, text: string): Promise<void>;
   stop(operation: ChildOperation): Promise<void>;
+  extend?(operation: ChildOperation, ttlSeconds: number): Promise<void>;
   /** Exact original receipt discovery only; absence/timeout must return unknown. */
   reconcile(
     operation: ChildOperation,
@@ -57,8 +59,16 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
     input:
       | { action: "launch"; selection: ChildLaunchSelection }
       | { action: "message"; sandboxId: string; text: string }
-      | { action: "stop"; sandboxId: string },
+      | { action: "stop"; sandboxId: string }
+      | { action: "extend"; sandboxId: string; ttlSeconds: number },
   ) {
+    if (
+      input.action === "extend" &&
+      (!Number.isSafeInteger(input.ttlSeconds) ||
+        input.ttlSeconds < 1 ||
+        input.ttlSeconds > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
+    )
+      throw new Error("Invalid extension duration.");
     if (!/^[ -~]{1,128}$/.test(key) || (input.action === "message" && !input.text.trim()))
       throw new Error("Invalid child operation.");
     if (input.action === "launch") {
@@ -105,7 +115,10 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
             input.selection.size ?? null,
             ...(input.selection.skills?.length ? [input.selection.skills] : []),
           ]
-        : [input.sandboxId, input.action === "message" ? input.text : null];
+        : [
+            input.sandboxId,
+            input.action === "message" ? input.text : input.action === "extend" ? input.ttlSeconds : null,
+          ];
     const digest = createHash("sha256")
       .update(JSON.stringify([input.action, body]))
       .digest("hex");
@@ -272,7 +285,10 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
           );
         });
       } else if (input.action === "message") await executor.message(operation, input.text);
-      else await executor.stop(operation);
+      else if (input.action === "extend") {
+        if (!executor.extend) throw new Error("Child extension unavailable.");
+        await executor.extend(operation, input.ttlSeconds);
+      } else await executor.stop(operation);
       const completed = await sql.query(
         `update public.orchestrator_child_operations c set state='succeeded',error_code=null
         from public.orchestrators o,public.sandboxes s where c.id=$1 and o.id=c.orchestrator_id
@@ -417,6 +433,8 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
     message: (token: string, key: string, sandboxId: string, text: string) =>
       mutate(token, key, { action: "message", sandboxId, text }),
     stop: (token: string, key: string, sandboxId: string) => mutate(token, key, { action: "stop", sandboxId }),
+    extend: (token: string, key: string, sandboxId: string, ttlSeconds: number) =>
+      mutate(token, key, { action: "extend", sandboxId, ttlSeconds }),
     async read(token: string, sandboxId: string): Promise<unknown> {
       const identity = await authority.admit(token, { method: "read", childId: sandboxId }, async (_tx, p) => p);
       return executor.read(sandboxId, identity.ownerId, identity.orgId);

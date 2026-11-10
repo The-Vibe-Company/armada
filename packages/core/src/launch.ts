@@ -26,6 +26,7 @@ import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
+import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { installSkill, validateSkillPins } from "./skillpack.ts";
 
@@ -95,6 +96,8 @@ export interface LaunchStores {
   sandboxes: SandboxStore;
   credentials: LaunchCredentialResolver;
   connections?: {
+    /** Renew already-authorized gateway leases after a physical deadline change. */
+    renewLifetime?(provider: Provider, sandboxId: string): Promise<void>;
     defaults?(actor: GoldenActor, visibility: "private" | "org"): Promise<string[]>;
     validate(actor: GoldenActor, ids: string[], visibility: "private" | "org"): Promise<void>;
     bind(sandboxId: string, ids: string[]): Promise<void>;
@@ -125,6 +128,8 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted server policy: extra physical Modal seconds reserved for extension. */
+  extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
   onInitialization?: (stage: LaunchInitializationStage) => void;
   /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
@@ -171,7 +176,17 @@ export async function launchSandbox(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   // The provider comes from the golden. The one the caller passed must be that backend, never another.
   assertProviderOf(provider, golden.provider);
-  const ttlSeconds = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
+  const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
+  const ttlSeconds = options.privateParent
+    ? checkedTtl
+    : Math.min(checkedTtl, PROVIDER_LIMITS[golden.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
+  const extensionHeadroom = options.extensionHeadroomSeconds ?? DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
+  if (
+    !Number.isSafeInteger(extensionHeadroom) ||
+    extensionHeadroom < 0 ||
+    extensionHeadroom > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
+  )
+    throw new LaunchError("invalid_request", "Invalid server sandbox extension headroom policy.");
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
@@ -217,7 +232,15 @@ export async function launchSandbox(
         ...(machineSize.effective ? { size: machineSize.effective } : {}),
         noEnv: true,
         env,
-        ttlSeconds,
+        // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
+        ttlSeconds: options.privateParent
+          ? ttlSeconds
+          : golden.provider === "modal"
+            ? Math.min(
+                PROVIDER_LIMITS.modal.maxTtlSeconds,
+                ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS + extensionHeadroom,
+              )
+            : Math.min(PROVIDER_LIMITS.boat.maxTtlSeconds, ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS),
         labels: {
           armada: "sandbox",
           sandbox: id,
@@ -273,6 +296,16 @@ export async function launchSandbox(
           : {}),
         ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
         effectiveTtlSeconds: ttlSeconds,
+        ...(!options.privateParent && forked.expiresAt
+          ? {
+              expiresAt: new Date(
+                Math.min(
+                  Date.now() + ttlSeconds * 1000,
+                  forked.expiresAt.getTime() - SANDBOX_STOP_MARGIN_SECONDS * 1000,
+                ),
+              ).toISOString(),
+            }
+          : {}),
         model: choice.model,
         reasoningEffort: choice.reasoningEffort,
         visibility,
@@ -353,6 +386,8 @@ export async function launchSandbox(
         record.skills = receipts;
       }
       progress("initialization_mcp");
+      if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
+        throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       await stores.connections?.prepare?.(provider, record, actor);
       progress("initialization_publish");
       if (prompt === undefined) {
@@ -364,7 +399,7 @@ export async function launchSandbox(
             golden,
             launchGithub,
             ttlSeconds,
-            ready.expiresAt ?? forked.expiresAt,
+            record.expiresAt ? new Date(record.expiresAt) : (ready.expiresAt ?? forked.expiresAt),
             "ready",
             [],
             undefined,
@@ -393,7 +428,7 @@ export async function launchSandbox(
           golden,
           launchGithub,
           ttlSeconds,
-          ready.expiresAt ?? forked.expiresAt,
+          record.expiresAt ? new Date(record.expiresAt) : (ready.expiresAt ?? forked.expiresAt),
           "running",
           [receipt.conversationId],
           {

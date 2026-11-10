@@ -993,7 +993,13 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       return client;
     };
     const client = await clientFor(token);
-    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["launch", "message", "read", "stop"]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([
+      "extend",
+      "launch",
+      "message",
+      "read",
+      "stop",
+    ]);
     const launched = await client.callTool({
       name: "launch",
       arguments: { idempotencyKey: "mcp-child", selection: { ...selection, size: "small" } },
