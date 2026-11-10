@@ -577,9 +577,14 @@ try {
     const sandboxId = launched.sandbox.id;
     assert(sandboxId, JSON.stringify(launched));
     // A live observation lease must be a closed retryable conflict, never a 503.
-    await sql.query("update sandboxes set reconcile_lease_until=now()+interval '1 minute' where id=$1", [sandboxId]);
+    // Own both fields: an in-flight observer must not clear this fixture's
+    // deadline when it finishes under its previous lease token.
+    await sql.query(
+      "update sandboxes set reconcile_lease=$2,reconcile_lease_until=now()+interval '1 minute' where id=$1",
+      [sandboxId, crypto.randomUUID()],
+    );
     await ordinary("send", { id: sandboxId, prompt: "hello" }, 409);
-    await sql.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
+    await sql.query("update sandboxes set reconcile_lease=null,reconcile_lease_until=null where id=$1", [sandboxId]);
     const sent = await ordinary("send", { id: sandboxId, prompt: "hello" });
     if (reason === failures[0]) {
       const refused = await ordinary(
