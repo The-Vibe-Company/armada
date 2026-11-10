@@ -1,5 +1,6 @@
 import { HARNESSES, MACHINE_SIZES, type MachineSize, SANDBOX_PROVIDERS, type SandboxListMetadata } from "@armada/core";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
+import { parseTaskOutcome } from "./outcome.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
 
 /**
@@ -33,6 +34,7 @@ function parseRow(value: unknown): SandboxListMetadata | null {
   const expiresAt = timestamp(row.expiresAt);
   const effectiveTtlSeconds = nullable(row.effectiveTtlSeconds, seconds);
   const machineSize = nullable(row.machineSize, size);
+  const preservationNote = nullable(row.preservationNote, text);
   if (
     providerSandboxId === undefined ||
     boatId === undefined ||
@@ -41,7 +43,8 @@ function parseRow(value: unknown): SandboxListMetadata | null {
     stoppedAt === undefined ||
     expiresAt === undefined ||
     effectiveTtlSeconds === undefined ||
-    machineSize === undefined
+    machineSize === undefined ||
+    (row.preservationNote !== undefined && preservationNote === undefined)
   )
     return null;
   return {
@@ -60,6 +63,9 @@ function parseRow(value: unknown): SandboxListMetadata | null {
     expiresAt,
     effectiveTtlSeconds,
     machineSize,
+    // Null for a viewer who may not open the sandbox; a value the contract does not allow is shown as no outcome.
+    taskOutcome: parseTaskOutcome(row.taskOutcome),
+    preservationNote: preservationNote ?? null,
     displayLabel,
     canOpen,
     canManage,

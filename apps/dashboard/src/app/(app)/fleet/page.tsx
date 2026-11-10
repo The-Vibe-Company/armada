@@ -1,13 +1,21 @@
-import { ClockAlertIcon, RocketIcon } from "lucide-react";
+import { ClockAlertIcon, GitPullRequestIcon, OctagonPauseIcon, RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BoardRefresh, FleetRowActions, FleetRowMessage } from "@/components/fleet-board";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
+import { OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { readBoard } from "@/lib/data/fleet";
 import { requireViewer } from "@/lib/data/viewer";
-import { type BoardStateKind, type FleetRow, sortBoard } from "@/lib/fleet";
+import {
+  type BoardStateKind,
+  type BoardView,
+  type FleetRow,
+  needsOperator,
+  parseBoardView,
+  sortBoard,
+} from "@/lib/fleet";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { createClient } from "@/lib/supabase/server";
 import { cn } from "@/lib/utils";
@@ -20,30 +28,44 @@ export const dynamic = "force-dynamic";
  * first. The Sandboxes list stays the inventory of every sandbox of the organization, filtered and paged; this page
  * reads each row's events, so it keeps to the recent ones the viewer can act on.
  */
-export default async function FleetPage() {
+type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function FleetPage({ searchParams }: Props) {
+  const view = parseBoardView((await searchParams).view);
   const viewer = await requireViewer();
   const now = new Date();
   const board = await readBoard(await createClient(), viewer, now);
-  const rows = sortBoard(board.rows);
-  const waiting = rows.filter((row) => row.state.kind !== "working" && row.state.kind !== "stopped").length;
+  const all = sortBoard(board.rows);
+  const needed = all.filter(needsOperator).length;
+  const rows = view === "needs-me" ? all.filter(needsOperator) : all;
 
   return (
     <>
       <PageHeader
         title="Fleet"
-        description="Every agent you can open, what it is doing, and what needs you first: failures, finished turns, then sandboxes about to expire."
+        description="Every agent you can open, what it is doing, and what needs you first: failures, blocked agents, work ready to merge, finished turns, then sandboxes about to expire."
       >
         <BoardRefresh />
       </PageHeader>
 
-      {!board.configured && rows.length > 0 && (
+      {all.length > 0 && <BoardSegments view={view} needed={needed} total={all.length} />}
+
+      {!board.configured && all.length > 0 && (
         <p className="text-sm text-muted-foreground" role="status">
           The Armada server is not configured for this dashboard: states come from the sandbox status alone, and prompts
           cannot be sent from here.
         </p>
       )}
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && all.length > 0 ? (
+        <Empty title="Nothing needs you">
+          No agent is failed, blocked, ready to merge or about to expire.{" "}
+          <Link href="/fleet" className="underline">
+            Show every agent
+          </Link>
+          .
+        </Empty>
+      ) : rows.length === 0 ? (
         <Empty
           title="No agents on the board"
           action={
@@ -67,9 +89,7 @@ export default async function FleetPage() {
       ) : (
         <section aria-label="Agents" className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            {waiting === 0
-              ? "Nothing waits for you."
-              : `${waiting} ${waiting === 1 ? "agent needs" : "agents need"} you.`}{" "}
+            {needed === 0 ? "Nothing needs you." : `${needed} ${needed === 1 ? "agent needs" : "agents need"} you.`}{" "}
             {board.capped && (
               <>
                 Only the most recent are shown; the rest are on the{" "}
@@ -106,6 +126,8 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
       className={cn(
         "space-y-3 rounded-lg border bg-card p-4 text-card-foreground shadow-xs",
         row.state.kind === "failed" && "border-destructive/40",
+        row.state.kind === "blocked" && "border-warning/40",
+        row.state.kind === "ready" && "border-success/40",
       )}
     >
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -143,6 +165,10 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
         </div>
       </div>
 
+      {row.state.outcome && <OutcomeDetail outcome={row.state.outcome} />}
+
+      {row.preservation && <PreservationNotice preservation={row.preservation} />}
+
       {row.state.failure && (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" data-failure>
           <p className="font-medium text-destructive">{row.state.failure.title}</p>
@@ -171,8 +197,36 @@ function BoardRow({ row, configured }: { row: FleetRow; configured: boolean }) {
   );
 }
 
+/** All agents, or only those that need the operator; a link each, so the choice lives in the URL. */
+function BoardSegments({ view, needed, total }: { view: BoardView; needed: number; total: number }) {
+  const segments: { view: BoardView; href: string; label: string; count: number }[] = [
+    { view: "all", href: "/fleet", label: "All", count: total },
+    { view: "needs-me", href: "/fleet?view=needs-me", label: "Needs me", count: needed },
+  ];
+  return (
+    <nav aria-label="Board view" className="inline-flex w-fit rounded-lg border bg-muted/40 p-0.5 text-sm">
+      {segments.map((segment) => (
+        <Link
+          key={segment.view}
+          href={segment.href}
+          aria-current={segment.view === view ? "page" : undefined}
+          className={cn(
+            "inline-flex min-h-8 items-center gap-1.5 rounded-md px-3 font-medium text-muted-foreground transition-colors hover:text-foreground",
+            segment.view === view && "bg-background text-foreground shadow-xs",
+          )}
+        >
+          {segment.label}
+          <span className="text-xs tabular-nums text-muted-foreground">{segment.count}</span>
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
 const STATE_TONES: Record<BoardStateKind, string> = {
   failed: "border-destructive/40 bg-destructive/10 text-destructive",
+  blocked: "border-warning/40 bg-warning/10 text-warning",
+  ready: "border-success/40 bg-success/15 text-success",
   finished: "border-success/40 bg-success/10 text-success",
   interrupted: "border-warning/40 bg-warning/10 text-warning",
   idle: "border-warning/40 bg-warning/10 text-warning",
@@ -195,6 +249,8 @@ function StateBadge({ kind, label }: { kind: BoardStateKind; label: string }) {
           className="size-1.5 animate-pulse rounded-full bg-success motion-reduce:animate-none"
         />
       )}
+      {kind === "ready" && <GitPullRequestIcon aria-hidden="true" className="size-3" />}
+      {kind === "blocked" && <OctagonPauseIcon aria-hidden="true" className="size-3" />}
       {label}
     </span>
   );

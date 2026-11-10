@@ -23,6 +23,8 @@ function row(overrides: Partial<SandboxListMetadata> = {}): SandboxListMetadata 
     expiresAt: null,
     effectiveTtlSeconds: null,
     machineSize: "large",
+    taskOutcome: null,
+    preservationNote: null,
     displayLabel: `Sandbox ${id}`,
     canOpen: false,
     canManage: false,
@@ -56,7 +58,19 @@ test("a row that does not match the contract fails the read instead of being gue
     { ...row(), createdAt: "yesterday" },
     (({ stoppedAt: _, ...rest }) => rest)(row()),
     (({ boatId: _, ...rest }) => rest)(row()),
+    { ...row(), preservationNote: 7 },
   ])
     expect(() => parseSandboxListMetadata([broken])).toThrow("did not match its contract");
   expect(() => parseSandboxListMetadata({ rows: [] })).toThrow("did not match its contract");
+});
+
+test("the outcome and the preservation receipt are read, and an outcome off the contract is no outcome", () => {
+  const ready = { state: "ready", prNumber: 12, prUrl: "https://github.com/acme/web/pull/12" } as const;
+  const note = "unpushed work could not be preserved (timeout)";
+  expect(parseSandboxListMetadata([{ ...row(), taskOutcome: ready, preservationNote: note }])[0]).toMatchObject({
+    taskOutcome: ready,
+    preservationNote: note,
+  });
+  const [odd] = parseSandboxListMetadata([{ ...row(), taskOutcome: { state: "done" }, preservationNote: undefined }]);
+  expect(odd).toMatchObject({ taskOutcome: null, preservationNote: null });
 });

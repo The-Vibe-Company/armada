@@ -8,6 +8,7 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderName } from "@/components/provider-mark";
 import { StatusBadge } from "@/components/status-badge";
+import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -17,6 +18,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
+import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
@@ -174,6 +176,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                   <TableCell>
                     <StatusBadge status={sandbox.status} />
                     <LifecycleHint view={lifecycleView(sandbox.status, readLifecycle(sandbox), now)} />
+                    <OutcomeHint sandbox={sandbox} />
                   </TableCell>
                   <TableCell className="hidden sm:table-cell">
                     <ProviderName provider={sandbox.provider} />
@@ -271,6 +274,30 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
       </p>
     );
   return null;
+}
+
+/**
+ * Under the status: what the agent reported for its latest finished turn (owner and admins only; the metadata hides it
+ * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
+ */
+function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
+  const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome);
+  const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
+  if (!outcome && !preservation) return null;
+  return (
+    <div className="mt-1 max-w-56 space-y-1 whitespace-normal" data-list-outcome={outcome?.kind}>
+      {outcome && <OutcomeBadge outcome={outcome} />}
+      {outcome && <OutcomeDetail outcome={outcome} className="line-clamp-2 text-xs" />}
+      {preservation && (
+        <p
+          data-preservation={preservation.kind}
+          className={preservation.kind === "failed" ? "text-xs text-warning" : "text-xs text-muted-foreground"}
+        >
+          {preservation.text}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /** "3 sandboxes", or with filters "1 sandbox matches" / "3 sandboxes match". */

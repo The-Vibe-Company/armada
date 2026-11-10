@@ -4,13 +4,16 @@ import {
   boardState,
   expiryView,
   fleetRow,
+  needsOperator,
   onBoard,
+  parseBoardView,
   preview,
   repositoryLabel,
   sortBoard,
   summarizeEvents,
   type TurnSummary,
 } from "../src/lib/fleet.ts";
+import { outcomeView } from "../src/lib/outcome.ts";
 
 const NOW = new Date("2026-11-10T12:00:00.000Z");
 const turn = (status: TurnSummary["status"], reason: string | null = null): TurnSummary => ({
@@ -90,6 +93,22 @@ describe("boardState", () => {
     expect(boardState("starting", turn("finished"))).toMatchObject({ kind: "working", label: "Starting" });
   });
 
+  test("a reported outcome refines a settled turn, live or stopped, but never a turn in flight or a failure", () => {
+    const ready = outcomeView({ state: "ready", prNumber: 7 });
+    const blocked = outcomeView({ state: "blocked", reason: "Needs a staging key" });
+    expect(boardState("ready", turn("finished"), undefined, ready)).toMatchObject({
+      kind: "ready",
+      label: "Ready to merge",
+      outcome: { pr: { label: "PR #7" } },
+    });
+    expect(boardState("running", null, undefined, blocked)).toMatchObject({ kind: "blocked", label: "Blocked" });
+    expect(boardState("stopped", null, undefined, ready).kind).toBe("ready");
+    expect(boardState("running", turn("running"), undefined, ready).kind).toBe("working");
+    expect(boardState("ready", turn("failed", "usage_limit"), undefined, ready).kind).toBe("failed");
+    expect(boardState("failed", null, undefined, ready).kind).toBe("failed");
+    expect(boardState("stopping", null, undefined, ready).kind).toBe("stopped");
+  });
+
   test("without events a live machine is shown from its status, and a stopped one is stopped", () => {
     expect(boardState("running", null).kind).toBe("working");
     expect(boardState("ready", null)).toMatchObject({ kind: "idle", label: "Ready" });
@@ -121,7 +140,7 @@ describe("expiryView", () => {
 });
 
 describe("sortBoard", () => {
-  test("puts failures, then finished, then expiring, then working, then stopped", () => {
+  test("puts failures, then blocked, then ready, then finished, then expiring, then working, then stopped", () => {
     const row = (id: string, status: Parameters<typeof boardState>[0], t: TurnSummary | null, expires?: string) => ({
       id,
       createdAt: `2026-11-10T0${id.length}:00:00.000Z`,
@@ -135,15 +154,49 @@ describe("sortBoard", () => {
       row("finished-late", "ready", turn("finished"), "2026-11-10T18:00:00.000Z"),
       row("finished-soon", "ready", turn("finished"), "2026-11-10T13:00:00.000Z"),
       row("failed", "failed", null),
+      {
+        ...row("ready-stopped", "stopped", null),
+        state: boardState("stopped", null, undefined, outcomeView({ state: "ready" })),
+      },
+      {
+        ...row("blocked", "ready", turn("finished")),
+        state: boardState("ready", turn("finished"), undefined, outcomeView({ state: "blocked", reason: "why" })),
+      },
     ];
     expect(sortBoard(rows).map((item) => item.id)).toEqual([
       "failed",
+      "blocked",
+      "ready-stopped",
       "finished-soon",
       "finished-late",
       "expiring",
       "working",
       "stopped",
     ]);
+  });
+});
+
+describe("needsOperator", () => {
+  test("keeps failed, blocked, ready and expiring rows, and reads the segment off the URL", () => {
+    const at = (state: ReturnType<typeof boardState>, expires: string | null = null) => ({
+      id: "s",
+      createdAt: NOW.toISOString(),
+      state,
+      expiry: expiryView("running", expires, NOW),
+    });
+    expect(needsOperator(at(boardState("failed", null)))).toBe(true);
+    expect(needsOperator(at(boardState("ready", null, undefined, outcomeView({ state: "ready" }))))).toBe(true);
+    expect(
+      needsOperator(at(boardState("ready", null, undefined, outcomeView({ state: "blocked", reason: "x" })))),
+    ).toBe(true);
+    expect(needsOperator(at(boardState("running", turn("running")), "2026-11-10T12:10:00.000Z"))).toBe(true);
+    expect(needsOperator(at(boardState("running", turn("running")), "2026-11-10T16:00:00.000Z"))).toBe(false);
+    expect(needsOperator(at(boardState("ready", turn("finished"))))).toBe(false);
+    expect(needsOperator(at(boardState("stopped", null)))).toBe(false);
+    expect(parseBoardView("needs-me")).toBe("needs-me");
+    expect(parseBoardView(["needs-me", "all"])).toBe("needs-me");
+    expect(parseBoardView("everything")).toBe("all");
+    expect(parseBoardView(undefined)).toBe("all");
   });
 });
 
@@ -218,6 +271,34 @@ describe("fleetRow", () => {
       expiry: { text: "20 min left", urgent: true },
       message: "All green.",
       eventsRead: true,
+      preservation: null,
+    });
+  });
+
+  test("reads the reported outcome and a stopped sandbox's preservation receipt off the row", () => {
+    const row = fleetRow(
+      {
+        id: "s2",
+        status: "stopped",
+        harness: "codex",
+        model: null,
+        created_at: "2026-11-10T10:00:00.000Z",
+        owner_id: "u1",
+        provider_sandbox_id: "bx_two",
+        task_outcome: { state: "blocked", reason: "Waiting for the API key" },
+        preservation_note:
+          "unpushed work preserved at work_recovery:00000000-0000-4000-8000-000000000032/00000000-0000-4000-8000-000000000099",
+      } as Parameters<typeof fleetRow>[0],
+      null,
+      null,
+      "u1",
+      NOW,
+    );
+    expect(row.state).toMatchObject({ kind: "blocked", outcome: { reason: "Waiting for the API key" } });
+    expect(row.preservation).toEqual({
+      kind: "preserved",
+      text: "Unpushed work preserved",
+      command: "armada recovery s2 > armada-recovery.json",
     });
   });
 });

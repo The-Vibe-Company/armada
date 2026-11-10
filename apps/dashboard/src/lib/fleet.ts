@@ -11,6 +11,7 @@ import type { ChatEvent } from "./events.ts";
 import { isActiveStatus } from "./events.ts";
 import { describeFailure } from "./failure.ts";
 import { formatDuration, readLifecycle } from "./lifecycle.ts";
+import { type OutcomeView, outcomeView, type PreservationView, parseTaskOutcome, preservationView } from "./outcome.ts";
 import { sandboxRepositoryDir } from "./repository-context.ts";
 
 /**
@@ -59,17 +60,26 @@ export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
 }
 
 /**
- * The state column. `kind` orders and colours the row; `label` is what it reads. A structured outcome of a finished
- * turn (ready or blocked, being added to the API separately) refines `finished` into its own kinds later, without
- * changing how the other states are derived.
+ * The state column. `kind` orders and colours the row; `label` is what it reads. The structured outcome the agent
+ * reported for its latest finished turn (#742) refines that turn into `ready` (to merge) or `blocked`.
  */
-export type BoardStateKind = "failed" | "finished" | "interrupted" | "idle" | "working" | "stopped";
+export type BoardStateKind =
+  | "failed"
+  | "blocked"
+  | "ready"
+  | "finished"
+  | "interrupted"
+  | "idle"
+  | "working"
+  | "stopped";
 
 export type BoardState = {
   kind: BoardStateKind;
   label: string;
   /** For a failure: the known explanation's title and hint, or the reason as reported. */
   failure: { title: string; hint: string | null; fix: { href: string; label: string } | null } | null;
+  /** For `ready` and `blocked`: the reported outcome (its pull request and commit, or its reason). */
+  outcome?: OutcomeView | null;
 };
 
 /**
@@ -77,6 +87,9 @@ export type BoardState = {
  * machine or turn is failed; a live machine whose turn ended waits for the operator; a stopped one is out of the way.
  * Without the events (the server unreachable) a live machine is shown from its status alone. A failed sandbox is
  * explained by its failed turn, else the reason the server recorded on the sandbox, else its last lifecycle error.
+ *
+ * A reported outcome (ready to merge, or blocked) stands for the latest finished turn, on a live or a stopped machine:
+ * the server clears it when a new turn starts, so a turn in flight or a failed one still wins over it.
  */
 export function boardState(
   status: SandboxStatus,
@@ -85,15 +98,19 @@ export function boardState(
     statusReason: null,
     lifecycleError: null,
   },
+  outcome: OutcomeView | null = null,
 ): BoardState {
   if (status === "failed")
     return failed(
       (turn?.status === "failed" ? turn.reason : null) ?? recorded.statusReason ?? recorded.lifecycleError,
       "Sandbox failed",
     );
-  if (status === "stopped" || status === "deleted") return { kind: "stopped", label: "Stopped", failure: null };
   if (status === "stopping") return { kind: "stopped", label: "Stopping", failure: null };
   if (status === "starting") return { kind: "working", label: "Starting", failure: null };
+  const settled = turn?.status !== "queued" && turn?.status !== "running" && turn?.status !== "failed";
+  if (outcome && settled && status !== "deleted")
+    return { kind: outcome.kind, label: outcome.label, failure: null, outcome };
+  if (status === "stopped" || status === "deleted") return { kind: "stopped", label: "Stopped", failure: null };
   switch (turn?.status ?? null) {
     case "queued":
       return { kind: "working", label: "Queued", failure: null };
@@ -140,23 +157,44 @@ export function expiryView(status: SandboxStatus, expiresAt: string | null, now:
 export type Rankable = { id: string; createdAt: string; state: BoardState; expiry: ExpiryView | null };
 
 /**
- * What needs the operator first: failures, then agents that finished and wait (finished, interrupted, idle), then
- * sandboxes about to expire, then those still working, and stopped ones last. Within a group the nearest deadline
- * comes first, then the newest sandbox.
+ * What needs the operator first: failures, then blocked agents, then work ready to merge, then agents that finished
+ * and wait (finished, interrupted, idle), then sandboxes about to expire, then those still working, and stopped ones
+ * last. Within a group the nearest deadline comes first, then the newest sandbox.
  */
 export function attentionRank(row: Rankable): number {
   switch (row.state.kind) {
     case "failed":
       return 0;
+    case "blocked":
+      return 1;
+    case "ready":
+      return 2;
     case "finished":
     case "interrupted":
     case "idle":
-      return 1;
+      return 3;
     case "working":
-      return row.expiry?.urgent ? 2 : 3;
+      return row.expiry?.urgent ? 4 : 5;
     case "stopped":
-      return 4;
+      return 6;
   }
+}
+
+/** The board's "Needs me" segment: failed, blocked, ready to merge, or about to expire. */
+export function needsOperator(row: Rankable): boolean {
+  return (
+    row.state.kind === "failed" ||
+    row.state.kind === "blocked" ||
+    row.state.kind === "ready" ||
+    row.expiry?.urgent === true
+  );
+}
+
+export type BoardView = "all" | "needs-me";
+
+/** The segment named by the URL; anything else is the whole board. */
+export function parseBoardView(value: string | string[] | undefined): BoardView {
+  return (Array.isArray(value) ? value[0] : value) === "needs-me" ? "needs-me" : "all";
 }
 
 export function sortBoard<T extends Rankable>(rows: readonly T[]): T[] {
@@ -228,15 +266,20 @@ export type FleetRow = Rankable & {
   message: string | null;
   /** The events were read: the state and message come from them, not from the status alone. */
   eventsRead: boolean;
+  /** A stopped sandbox's work-preservation receipt (#747). */
+  preservation: PreservationView | null;
 };
 
 type SandboxRow = Pick<
   Sandbox,
   "id" | "status" | "harness" | "model" | "created_at" | "owner_id" | "provider_sandbox_id"
 > &
-  Partial<Pick<Sandbox, "status_reason">>;
+  Partial<Pick<Sandbox, "status_reason" | "task_outcome" | "preservation_note">>;
 
-/** A row from the sandbox, its golden (if still readable) and what its events say (null when they were not read). */
+/**
+ * A row from the sandbox, its golden (if still readable) and what its events say (null when they were not read). The
+ * board reads only sandboxes the viewer may open, so the recovery command is always theirs to run.
+ */
 export function fleetRow(
   sandbox: SandboxRow,
   golden: { name: string; config: unknown } | null,
@@ -255,12 +298,15 @@ export function fleetRow(
     golden: golden?.name ?? null,
     repository: golden ? repositoryLabel(golden.config, sandboxRepositoryDir(sandbox)) : null,
     mine: sandbox.owner_id === viewerId,
-    state: boardState(sandbox.status, turn, {
-      statusReason: sandbox.status_reason ?? null,
-      lifecycleError: lifecycle.lifecycleError,
-    }),
+    state: boardState(
+      sandbox.status,
+      turn,
+      { statusReason: sandbox.status_reason ?? null, lifecycleError: lifecycle.lifecycleError },
+      outcomeView(parseTaskOutcome(sandbox.task_outcome)),
+    ),
     expiry: expiryView(sandbox.status, lifecycle.expiresAt, now),
     message: turn?.message ?? null,
     eventsRead: turn !== null,
+    preservation: preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true),
   };
 }

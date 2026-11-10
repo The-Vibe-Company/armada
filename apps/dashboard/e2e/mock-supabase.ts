@@ -495,6 +495,9 @@ function sandboxListMetadata(userId: string): Row[] {
         expiresAt: at(row.expires_at),
         effectiveTtlSeconds: row.effective_ttl_seconds ?? null,
         machineSize: size,
+        // As in the #745/#747 migrations: the outcome is interior (owner and admins), the receipt is metadata.
+        taskOutcome: open ? (row.task_outcome ?? null) : null,
+        preservationNote: row.preservation_note ?? null,
         displayLabel: `Sandbox ${row.id}`,
         canOpen: open,
         canManage: open,

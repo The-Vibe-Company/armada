@@ -11,6 +11,7 @@ import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { StatusBadge } from "@/components/status-badge";
+import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +29,7 @@ import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
+import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { createClient } from "@/lib/supabase/server";
@@ -79,6 +81,9 @@ export default async function SandboxPage({ params }: Props) {
       ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
       : undefined;
   const machineSize = describeEvidence(sandbox.provider, sandbox);
+  // The interior row is returned only to a viewer who may open the sandbox, so the recovery command is theirs to run.
+  const outcome = settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome));
+  const preservation = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
 
   const facts: [string, string][] = [
     ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
@@ -125,9 +130,12 @@ export default async function SandboxPage({ params }: Props) {
             </h1>
             <StatusBadge status={sandbox.status} />
             <CopyButton value={sandbox.provider_sandbox_id} label="Copy sandbox ID" className="-ml-1.5" />
+            {outcome && <OutcomeBadge outcome={outcome} />}
           </div>
           {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
         </div>
+        {outcome && <OutcomeDetail outcome={outcome} />}
+        {preservation && <PreservationNotice preservation={preservation} className="max-w-2xl" />}
       </div>
 
       {life.notice && (
