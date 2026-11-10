@@ -1001,6 +1001,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         found.id,
         machine.state === "stopped",
       );
+      let acknowledged = false;
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1021,6 +1022,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
               ...(choice ?? {}),
             })
             .catch(unknownMutationOutcome);
+          acknowledged = true;
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];
@@ -1041,7 +1043,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             },
           };
         },
-      );
+      ).catch((error) => publicationFailure(error, acknowledged));
     },
   );
 
@@ -1080,6 +1082,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         orgId: found.orgId,
         role: member.role,
       });
+      let acknowledged = false;
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1092,6 +1095,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
               ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
             })
             .catch(unknownMutationOutcome);
+          acknowledged = true;
           return {
             patch: {
               status: "running",
@@ -1130,7 +1134,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             throw error;
           },
         },
-      );
+      ).catch((error) => publicationFailure(error, acknowledged));
     },
   );
 
@@ -1185,6 +1189,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
       );
+      let acknowledged = false;
       const execute = async () => {
         const membership = caller.orgs.find((member) => member.orgId === found.orgId);
         if (!membership) throw new ToolError("forbidden", "No current organization membership.");
@@ -1210,32 +1215,41 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             timeoutSeconds: args.timeout_seconds ?? 120,
           })
           .catch(unknownMutationOutcome);
+        acknowledged = true;
         if (result.detached)
           throw new ToolError(
             "outcome_unknown",
             "The command started in the background. Check sandbox status before retrying.",
           );
-        const nativeAfter =
-          (await context.launchCredentials.nativeSecrets?.(
-            nativeActor,
-            found.id,
-            provider,
-            found.providerSandboxId,
-            "after",
-          )) ?? [];
-        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-        const clip = (text: string) => {
-          const safe = redact(text, secrets);
-          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
-        };
-        return {
-          id: found.id,
-          exitCode: result.exitCode,
-          stdout: clip(result.stdout),
-          stderr: clip(result.stderr),
-          timedOut: result.timedOut,
-          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-        };
+        try {
+          const nativeAfter =
+            (await context.launchCredentials.nativeSecrets?.(
+              nativeActor,
+              found.id,
+              provider,
+              found.providerSandboxId,
+              "after",
+            )) ?? [];
+          const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+          const clip = (text: string) => {
+            const safe = redact(text, secrets);
+            return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+          };
+          return {
+            id: found.id,
+            exitCode: result.exitCode,
+            stdout: clip(result.stdout),
+            stderr: clip(result.stderr),
+            timedOut: result.timedOut,
+            truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+          };
+        } catch (error) {
+          throw new LaunchError(
+            "outcome_unknown",
+            "The command ran but its result could not be safely published. Check sandbox status before retrying.",
+            { cause: error },
+          );
+        }
       };
       if (!managedNative) return execute();
       // Stop and native-file mutation must not interleave: a stop receipt sampled
@@ -1251,7 +1265,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           return { result, patch: {} };
         },
         { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
-      );
+      ).catch((error) => publicationFailure(error, acknowledged));
     },
   );
 
@@ -1495,6 +1509,16 @@ function unknownMutationOutcome(error: unknown): never {
     throw new LaunchError(
       "outcome_unknown",
       "The operation outcome is unknown. Check sandbox status before retrying.",
+      { cause: error },
+    );
+  throw error;
+}
+
+function publicationFailure(error: unknown, acknowledged: boolean): never {
+  if (acknowledged)
+    throw new LaunchError(
+      "outcome_unknown",
+      "The operation was accepted but its result could not be published. Check sandbox status before retrying.",
       { cause: error },
     );
   throw error;

@@ -114,3 +114,72 @@ test("send completion fences an old stopped SDK observation captured after admis
     await server.close();
   }
 });
+
+test("accepted send with failed completion publication reports outcome unknown, not a retryable dependency outage", async () => {
+  const server = await harness();
+  try {
+    const data = createSqlData(bunLikeSql(server.db));
+    const caller = {
+      via: "service" as const,
+      userId: server.people.owner,
+      orgs: [{ orgId: server.people.org, role: "member" as const }],
+    };
+    const scoped = data(caller);
+    const golden = (await server.db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const record = await scoped.sandboxes.insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "bx_publication",
+      goldenId: golden.id,
+      orgId: server.people.org,
+      ownerId: server.people.owner,
+      harness: "claude",
+      status: "ready",
+      model: "claude-sonnet-5",
+      reasoningEffort: "high",
+    });
+    let dispatched = 0;
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        if (new URL(request.url).pathname.endsWith("/prompt")) {
+          dispatched++;
+          return Response.json({ ok: true, promptId: "accepted", conversationId: "conversation", status: "queued" });
+        }
+        return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
+      }) as typeof fetch,
+    });
+    const token = await server.token(server.people.owner);
+    const response = await handleControlRequest(
+      new Request(PUBLIC_URL + "/api/v1/sandbox/send", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ id: record.id, prompt: "continue" }),
+      }),
+      {
+        authStore: server.auth,
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
+        store: createSqlVaultStore(bunLikeSql(server.db)),
+        encryptionKey: ENCRYPTION_KEY,
+        data: (actor) => {
+          const scoped = data(actor);
+          const update = scoped.sandboxes.update.bind(scoped.sandboxes);
+          scoped.sandboxes.update = async (id, patch) => {
+            if (patch.finishActivity && dispatched > 0) throw new Error("private-publication-diagnostic");
+            return update(id, patch);
+          };
+          return scoped;
+        },
+        providers: { resolve: async () => provider },
+      },
+    );
+    expect(dispatched).toBe(1);
+    expect(response?.status).toBe(503);
+    const payload = await response!.text();
+    expect(JSON.parse(payload)).toMatchObject({ error: { code: "outcome_unknown" } });
+    expect(payload).not.toContain("private-publication-diagnostic");
+  } finally {
+    await server.close();
+  }
+});
