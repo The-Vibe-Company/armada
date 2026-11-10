@@ -65,6 +65,10 @@ export async function readStatus(
   sandbox: SandboxView,
   options: { promptId?: string; now: Date },
 ): Promise<StatusReport> {
+  // Registration is not readiness. Only the launch owner (or lifecycle recovery
+  // after its lease expires) may publish completion; status must remain readable.
+  if (sandbox.status === "starting") return report(sandbox, "starting", null, null, null);
+
   if (sandbox.status === "deleted" || provider === null) {
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
