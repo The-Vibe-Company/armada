@@ -135,7 +135,11 @@ test("an unresponsive provider is bounded and late output cannot become success"
   try {
     const result = preserveWork({ exec: () => new Promise(() => {}) }, "sandbox");
     expire?.();
-    expect(await result).toEqual({ status: "failed", reason: "timeout" });
+    expect(await result).toEqual({
+      status: "failed",
+      reason: "timeout",
+      diagnostic: { stage: "collect_exec", errorClass: "timeout", providerStatus: null },
+    });
   } finally {
     globalThis.setTimeout = original;
   }
@@ -313,6 +317,7 @@ test("collector failures are closed and provider output never becomes a reason",
     [{ exitCode: 127 }, "collector_exit"],
     [{ exitCode: 137 }, "collector_signal"],
     [{ truncated: true }, "output_truncated"],
+    [{ timedOut: true }, "timeout"],
     [{ stdout: "private invalid output" }, "output_invalid"],
     [{ stdout: '{"status":"failed","reason":"private data"}' }, "output_invalid"],
     ...(["missing_git", "missing_bun", "missing_openssl", "size_limit", "timeout"] as const).map(
@@ -338,6 +343,12 @@ test("collector failures are closed and provider output never becomes a reason",
         },
         "sandbox",
       ),
-    ).toEqual({ status: "failed", reason: expected });
+    ).toEqual({
+      status: "failed",
+      reason: expected,
+      ...("timedOut" in output && output.timedOut
+        ? { diagnostic: { stage: "collect_exec", errorClass: "timeout", providerStatus: null } }
+        : {}),
+    });
   }
 });

@@ -18,25 +18,26 @@ function failureNote(reason: string): string {
 export async function preserveBeforeStop(sql: Sql, provider: Provider, id: string, providerId: string): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
+  const progress = { stage: "observe" };
   try {
     await Promise.race([
-      captureAndStore(sql, provider, id, providerId, () => expired),
+      captureAndStore(sql, provider, id, providerId, () => expired, progress),
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
+          const diagnostic = { errorClass: "timeout", providerStatus: null };
+          const reason = closedFailure(progress.stage, "timeout", diagnostic);
           console.warn(
             JSON.stringify({
               event: "work_preservation_failed",
               sandboxId: id,
-              stage: "deadline",
-              reason: "deadline_timeout",
+              stage: progress.stage,
+              reason,
+              ...diagnostic,
             }),
           );
           void sql
-            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
-              id,
-              failureNote("deadline_timeout"),
-            ])
+            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, failureNote(reason)])
             .catch(() => {});
           resolve();
         }, 20_000);
@@ -53,6 +54,7 @@ async function captureAndStore(
   id: string,
   providerId: string,
   expired: () => boolean,
+  progress: { stage: string },
 ): Promise<void> {
   let reason = "failed";
   let stage = "observe";
@@ -65,16 +67,16 @@ async function captureAndStore(
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
     // Native runtimes acknowledge interrupt only after active turns settle.
     // The stop activity lease prevents new Armada turns during capture.
-    stage = "quiesce";
+    stage = progress.stage = "quiesce";
     reason = "failed";
     await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
     if (expired()) return;
-    stage = "capture";
+    stage = progress.stage = "capture";
     reason = "failed";
     const result = await preserveWork(provider, providerId);
     if (expired()) return;
     if (result.status === "preserved") {
-      stage = "storage";
+      stage = progress.stage = "storage";
       reason = "failed";
       const encrypted = await encryptSecret(result.archive);
       if (expired()) return;
@@ -85,7 +87,7 @@ async function captureAndStore(
       );
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
     } else if (result.status === "clean") {
-      stage = "storage";
+      stage = progress.stage = "storage";
       reason = "failed";
       // Clear stale warnings, but retain the latest recovery receipt if one exists.
       await sql.query(

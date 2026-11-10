@@ -259,7 +259,7 @@ test("the stop deadline publishes timeout and fences a late active provider obse
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
     expect(row?.preservation_note).toBe(
-      "unpushed work could not be preserved (deadline_timeout). Resume the sandbox and push or copy any local work before stopping again.",
+      "unpushed work could not be preserved (observe_timeout_timeout_no_status). Resume the sandbox and push or copy any local work before stopping again.",
     );
     expect(interrupts).toBe(0);
     expect(execs).toBe(0);

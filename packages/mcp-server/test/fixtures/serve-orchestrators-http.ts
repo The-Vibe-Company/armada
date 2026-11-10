@@ -616,7 +616,7 @@ try {
     assert.equal(row.status, "stopped");
     assert.equal(
       row.preservation_note,
-      `unpushed work could not be preserved (${reason === "unavailable" ? "collect_exec_exec_failed_provider_unavailable_no_status" : `capture_${reason}`}). Resume the sandbox and push or copy any local work before stopping again.`,
+      `unpushed work could not be preserved (${reason === "unavailable" ? "collect_exec_exec_failed_provider_unavailable_no_status" : reason === "timeout" ? "collect_exec_timeout_timeout_no_status" : `capture_${reason}`}). Resume the sandbox and push or copy any local work before stopping again.`,
     );
   }
   const epochsBeforeFailure = effects.epochInstalls;

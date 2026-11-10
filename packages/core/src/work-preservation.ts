@@ -118,7 +118,14 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   let stage: CaptureFailure = "exec_failed";
+  let execStage: CaptureDiagnostic["stage"] = "collect_exec";
+  const timeout = (): WorkPreservation => ({
+    status: "failed",
+    reason: "timeout",
+    diagnostic: { stage: execStage, errorClass: "timeout", providerStatus: null },
+  });
   async function execute(request: Parameters<Provider["exec"]>[0], stage: CaptureDiagnostic["stage"] = "collect_exec") {
+    execStage = stage;
     try {
       return await provider.exec(request);
     } catch (error) {
@@ -135,7 +142,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       timeoutSeconds: 12,
       onlyIfRunning: true,
     });
-    if (!result.detached && result.timedOut) return { status: "failed", reason: "timeout" };
+    if (!result.detached && result.timedOut) return timeout();
     stage = "output_invalid";
     const value: unknown = JSON.parse(checkedOutput(result));
     if (typeof value !== "object" || value === null || !("status" in value)) throw new Error();
@@ -156,7 +163,7 @@ export async function preserveWork(provider: Pick<Provider, "exec">, sandboxId: 
       const chunks: Buffer[] = [];
       const count = Math.ceil(size / CHUNK_BYTES);
       for (let start = 0; start < count; start += 8) {
-        if (expired) return { status: "failed", reason: "timeout" };
+        if (expired) return timeout();
         const batch = await Promise.all(
           Array.from({ length: Math.min(8, count - start) }, async (_, offset) => {
             const index = start + offset;
@@ -203,7 +210,7 @@ finally { fs.closeSync(fd); }`,
       new Promise<WorkPreservation>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
-          resolve({ status: "failed", reason: "timeout" });
+          resolve(timeout());
         }, 15_000);
       }),
     ]);
@@ -211,7 +218,11 @@ finally { fs.closeSync(fd); }`,
     return {
       status: "failed",
       reason: error instanceof CaptureError ? error.reason : stage,
-      ...(error instanceof CaptureError && error.diagnostic ? { diagnostic: error.diagnostic } : {}),
+      ...(error instanceof CaptureError && error.diagnostic
+        ? { diagnostic: error.diagnostic }
+        : error instanceof CaptureError && error.reason === "timeout"
+          ? { diagnostic: { stage: execStage, errorClass: "timeout", providerStatus: null } }
+          : {}),
     };
   } finally {
     expired = true;
