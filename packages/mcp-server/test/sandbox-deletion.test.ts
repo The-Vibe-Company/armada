@@ -217,7 +217,7 @@ test("admin extension and deletion resolve private-source resources through thei
   const adminKey = "boat-admin-test-account-distinct";
   const providerFor = (key: string): Provider =>
     ({
-      id: "boat",
+      id: "boat" as const,
       async extendLifetime() {
         accounts.push(key === SECRETS.personalBoat ? "owner" : "wrong-account");
         if (key !== SECRETS.personalBoat)
@@ -229,9 +229,9 @@ test("admin extension and deletion resolve private-source resources through thei
         if (key !== SECRETS.personalBoat)
           throw new ProviderError({ provider: "boat", code: "not_found", message: "Wrong account", retryable: false });
         retained.delete(sandboxId);
-        return { status: "deleted" };
+        return { status: "deleted" as const };
       },
-    }) as Provider;
+    }) as unknown as Provider;
   const server = await harness({ providerFor });
   try {
     const { people: p, db } = server;
