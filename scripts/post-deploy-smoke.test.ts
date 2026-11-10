@@ -163,6 +163,7 @@ test("failure paths retain cleanup handles and never emit remote bodies, arbitra
       path: "sandbox/wait",
       response: () => json({ prompt: { promptId: "prompt-id", state: "failed", reason: "secret" } }),
       code: "turn_failed",
+      retainedFailure: true,
     },
     {
       path: "sandbox/exec",
@@ -178,7 +179,11 @@ test("failure paths retain cleanup handles and never emit remote bodies, arbitra
     },
   ];
   for (const failure of failures) {
-    const fake = fixture((call) => (call.path === failure.path ? failure.response() : undefined));
+    const fake = fixture((call) => {
+      if ("retainedFailure" in failure && call.path === "sandbox/status")
+        return json({ status: "failed", providerState: "archived" });
+      return call.path === failure.path ? failure.response() : undefined;
+    });
     expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
     expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
     expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
@@ -202,10 +207,14 @@ test("pending turns terminate after bounded polling and cleanup errors remain vi
 });
 
 test("reserves cleanup time after the overall deadline and rejects a stopped DB row without provider confirmation", async () => {
-  for (const deadline of [true, false]) {
+  for (const [deadline, status] of [
+    [true, "stopped"],
+    [false, "stopped"],
+    [false, "failed"],
+  ] as const) {
     const fake = fixture((call) => {
       if (deadline && call.path === "sandbox/send") fake.advance(35 * 60_000);
-      if (!deadline && call.path === "sandbox/status") return json({ status: "stopped", providerState: "active" });
+      if (!deadline && call.path === "sandbox/status") return json({ status, providerState: "active" });
     });
     expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
     expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
@@ -229,7 +238,19 @@ function orchestratorFixture(failure?: "resume" | "create_response" | "turn" | "
         pairs: [{ provider: "modal", harness: "codex", enabled: true }],
       });
     if (call.path.startsWith("orchestrators?") && call.init.method === "GET") {
-      return json({ version: 1, items: [{ id: "orchestrator-id", configuration: { name: createdName } }] });
+      const cursor = new URL(`https://smoke.invalid/${call.path}`).searchParams.get("cursor");
+      if (!cursor)
+        return json({
+          version: 1,
+          items: [{ id: "old-stopped-id", configuration: { name: "old-smoke" } }],
+          cursor: "opaque-next-page",
+        });
+      expect(cursor).toBe("opaque-next-page");
+      return json({
+        version: 1,
+        items: [{ id: "orchestrator-id", configuration: { name: createdName } }],
+        cursor: null,
+      });
     }
     if (call.path.startsWith("orchestrators/orchestrator-id/events?"))
       return json({
@@ -313,6 +334,8 @@ test("orchestrator failures clean up after uncertain resume, lost create respons
     const fake = orchestratorFixture(failure);
     expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "orchestrators")).toHaveLength(1);
+    if (failure === "create_response")
+      expect(fake.calls.filter((call) => call.path.startsWith("orchestrators?"))).toHaveLength(2);
     expect(fake.calls.filter((call) => call.path.endsWith("/resume"))).toHaveLength(
       failure === "resume" || failure === "continuity" ? 1 : 0,
     );

@@ -181,7 +181,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       await poll(
         () => sandbox<{ status: string; providerState: string }>("status", { id: sandboxId }),
         (status) => {
-          if (status.status !== "stopped") return false;
+          if (status.status !== "stopped" && status.status !== "failed") return false;
           if (status.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
             fail("provider_not_stopped");
           return true;
@@ -383,13 +383,33 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         cleaning = true;
         try {
           await step("reconcile_orchestrator", async () => {
-            const list = await request<{ version: number; items: { id: string; configuration: { name: string } }[] }>(
-              `${root}?${new URLSearchParams({ orgId: item.org, limit: "100" })}`,
-            );
-            if (list?.version !== 1 || !Array.isArray(list.items)) fail("invalid_response");
-            const found = list.items.find((entry) => entry.configuration.name === `post-deploy-smoke-${runId}`);
-            if (!found?.id) fail("invalid_response");
-            orchestratorId = found.id;
+            let cursor: string | null = null;
+            const seen = new Set<string>();
+            for (let page = 0; page < POLLS; page++) {
+              const list: {
+                version: number;
+                items: { id: string; configuration: { name: string } }[];
+                cursor: string | null;
+              } = await request(
+                `${root}?${new URLSearchParams({ orgId: item.org, limit: "100", ...(cursor ? { cursor } : {}) })}`,
+              );
+              if (
+                list?.version !== 1 ||
+                !Array.isArray(list.items) ||
+                (list.cursor !== null && typeof list.cursor !== "string")
+              )
+                fail("invalid_response");
+              const found = list.items.find((entry) => entry.configuration.name === `post-deploy-smoke-${runId}`);
+              if (found?.id) {
+                orchestratorId = found.id;
+                return;
+              }
+              if (list.cursor === null) fail("not_found");
+              if (!list.cursor || seen.has(list.cursor)) fail("invalid_response");
+              seen.add(list.cursor);
+              cursor = list.cursor;
+            }
+            fail("poll_limit_exceeded");
           });
         } catch {
           passed = false;
