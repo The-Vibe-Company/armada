@@ -8,6 +8,7 @@ const PRIVATE_POST_PATHS = new Set([
   "account/status",
   "account/logout",
   "github/status",
+  "github/refresh",
   "github/connect",
   "github/reconnect",
   "github/disconnect",

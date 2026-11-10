@@ -117,6 +117,11 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
+      if (path === "/api/v1/github/refresh" && response.status === 404)
+        throw new AuthError(
+          "GitHub repair was not found. Check the sandbox ID and access. If they are correct, update the dashboard and Armada server so both support github/refresh.",
+          "unavailable",
+        );
       const failureCode =
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
