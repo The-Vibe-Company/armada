@@ -360,8 +360,8 @@ export function AccountRow({
 
   return (
     <li className="px-4 py-3" data-account={account.name} aria-labelledby={headingId}>
-      <div className="grid gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center">
-        <div className="min-w-0 space-y-0.5">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_7rem_11rem]">
+        <div className="col-span-2 min-w-0 space-y-0.5 sm:col-span-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 id={headingId} className="font-medium break-all">
               {account.name}
@@ -383,6 +383,12 @@ export function AccountRow({
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
+          {/* A revoked or removed account has no usage to read: its state already says what to do. */}
+          {info.billing === "subscription" && account.status === "active" && (
+            <div className="pt-1.5">
+              <UsagePanel usage={usage} account={account} now={now} />
+            </div>
+          )}
         </div>
 
         <p
@@ -395,7 +401,7 @@ export function AccountRow({
         </p>
 
         {canManage ? (
-          <div className="flex items-center gap-1 sm:justify-end">
+          <div className="flex items-center justify-end gap-1">
             {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
             {state.needsAction ? (
               <Button size="sm" onClick={() => setDialog("replace")} aria-label={`Reconnect, ${account.name}`}>
@@ -441,15 +447,9 @@ export function AccountRow({
             </DropdownMenu>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground sm:text-right">Managed by the org&apos;s admins.</p>
+          <p className="text-right text-xs text-muted-foreground">Managed by the org&apos;s admins.</p>
         )}
       </div>
-      {/* A revoked or removed account has no usage to read: its status already says what to do. */}
-      {info.billing === "subscription" && account.status === "active" && (
-        <div className="mt-2 max-w-2xl">
-          <UsagePanel usage={usage} account={account} now={now} />
-        </div>
-      )}
       <ResultLine result={result} />
 
       {canManage && (
