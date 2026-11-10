@@ -502,14 +502,26 @@ try {
   // Ordinary stop survives collector failure notes and transport/receipt failures.
   // Archive decryption itself is covered by the core preservation tests, not this fake runner.
   const ordinary = async (action: string, body: object, status = 200) => {
-    const response = await socketFetch(`${origin}/api/v1/sandbox/${action}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = (await response.json()) as any;
-    assert.equal(response.status, status, JSON.stringify(result));
-    return result;
+    // The real background reconciler may own a short observation lease. Exercise
+    // the closed retry contract without wall-clock sleeps or bypassing ownership.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const response = await socketFetch(`${origin}/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const result = (await response.json()) as any;
+      if (
+        status === 200 &&
+        action !== "launch" &&
+        response.status === 409 &&
+        result.error?.code === "sandbox_not_ready"
+      )
+        continue;
+      assert.equal(response.status, status, `${action}: ${JSON.stringify(result)}`);
+      return result;
+    }
+    throw Error(`${action}: lifecycle admission never became available`);
   };
   const failures = [
     "missing_python3",
