@@ -24,7 +24,7 @@ const present = await Bun.file(join(dist, "manifest.json")).exists();
     const root = await mkdtemp(join(tmpdir(), "armada-artifact-"));
     await Bun.write(join(root, "main.js"), artifact.bundle);
     for (const [name, version] of [
-      ["claude", "2.1.319"],
+      ["claude", "2.1.322"],
       ["codex", "0.167.0"],
     ]) {
       const native = Bun.spawn([join(dist, name ?? ""), "--version"], {
