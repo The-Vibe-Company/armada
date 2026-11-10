@@ -3,3 +3,6 @@ ARMADA_API_URL = https:/$()/armada.thevibecompany.co
 SWIFT_COMPILATION_MODE = wholemodule
 SWIFT_OPTIMIZATION_LEVEL = -O
 VALIDATE_PRODUCT = YES
+
+// CI-only manual signing for the app target (scripts/testflight/testflight.sh writes it; ignored by git).
+#include? "Signing.xcconfig"
