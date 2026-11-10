@@ -2011,8 +2011,8 @@ export type Database = {
           idle_deadline: string | null;
           blocked_reason: string | null;
           created_at: string;
-          mcp_wrapper_revision: string | null;
           skill_receipt: Json | null;
+          mcp_wrapper_revision: string | null;
         };
         Insert: {
           orchestrator_id: string;
@@ -2027,8 +2027,8 @@ export type Database = {
           idle_deadline?: string | null;
           blocked_reason?: string | null;
           created_at?: string;
-          mcp_wrapper_revision?: string | null;
           skill_receipt?: Json | null;
+          mcp_wrapper_revision?: string | null;
         };
         Update: {
           orchestrator_id?: string;
@@ -2043,8 +2043,8 @@ export type Database = {
           idle_deadline?: string | null;
           blocked_reason?: string | null;
           created_at?: string;
-          mcp_wrapper_revision?: string | null;
           skill_receipt?: Json | null;
+          mcp_wrapper_revision?: string | null;
         };
         Relationships: [
           {
