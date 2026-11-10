@@ -27,8 +27,9 @@ import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
 export class BestEffortConversationUnavailable extends Error {}
 class NativeContinuityLost extends Error {}
-// Only explicit admission refusals are safe. In particular, conflict can mean
-// request_outcome_unknown on Modal; retryability is not delivery evidence.
+// Only steer's explicit no_running_turn proves nothing was delivered on both
+// providers. Do not generalize other errors or prompt: preparation may already
+// have side effects, and Modal conflict can mean request_outcome_unknown.
 class PromptRefused extends Error {
   constructor(readonly refusal: ProviderError) {
     super(refusal.code);
@@ -515,20 +516,7 @@ export class OrchestratorRuntime {
         } catch (error) {
           if (!dispatched) {
             diagnostics.observe("prompt_dispatch", "not_confirmed");
-            if (
-              error instanceof ProviderError &&
-              [
-                "no_running_turn",
-                "invalid_request",
-                "unauthorized",
-                "forbidden",
-                "not_found",
-                "provider_not_configured",
-                "sandbox_not_ready",
-                "payment_required",
-                "rate_limited",
-              ].includes(error.code)
-            )
+            if (input.action === "steer" && error instanceof ProviderError && error.code === "no_running_turn")
               throw new PromptRefused(error);
           }
           throw error;
