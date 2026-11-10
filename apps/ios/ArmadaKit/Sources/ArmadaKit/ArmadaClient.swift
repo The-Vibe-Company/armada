@@ -185,8 +185,8 @@ public actor ArmadaClient {
         let retained = Set(operations.filter { $0.state == .succeeded || $0.state == .failed }.suffix(32).map(\.id))
         return operations.filter { $0.state == .pending || $0.state == .uncertain || retained.contains($0.id) }
     }
-    /// Sandbox route codes that refuse before anything reaches the agent. The server answers 400 for
-    /// any other code too, including `unknown` after a provider already accepted a prompt, so a bare
+    /// Sandbox route codes that refuse before anything reaches the agent. Older servers answer 400 for
+    /// other codes too, including `unknown` after a provider already accepted a prompt, so a bare
     /// 400 never proves that a prompt was not delivered.
     static let sandboxRefusalCodes: Set<String> = [
         "invalid", "invalid_request", "sandbox_not_ready", "unsupported", "payment_required", "rate_limited",
