@@ -1,3 +1,4 @@
+export { API_FAILURE_HELP, API_FAILURE_STATUS, type ApiFailureCode } from "./api-failure.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
@@ -9,6 +10,7 @@ export {
   type CredentialReader,
   type CredentialSource,
   credentialName,
+  HARNESS_KINDS,
   type HarnessCredentials,
   harnessCredentials,
   type LaunchCredentialKind,
@@ -251,6 +253,7 @@ export {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
+export { reportedTurnUsage, type SandboxUsage, type TurnTokenUsage } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
   type AccountMutation,

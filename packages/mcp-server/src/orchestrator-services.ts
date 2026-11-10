@@ -1,6 +1,7 @@
 import type { Sql } from "@armada/core/server";
 import type { Route } from "./http.ts";
 import { createOrchestratorChildren, type OrchestratorChildExecutor } from "./orchestrator-children.ts";
+import { createOrchestratorEventWorker } from "./orchestrator-event-worker.ts";
 import { createOrchestratorLifecycle } from "./orchestrator-lifecycle.ts";
 import type { ChildAuthority, OrchestratorLifecycleRuntime } from "./orchestrator-lifecycle-contract.ts";
 import { createLifecycleAwareOrchestratorRuntime } from "./orchestrator-lifecycle-integration.ts";
@@ -22,6 +23,7 @@ export interface OrchestratorServiceBundle {
   ownerLifecycleRoute: (auth: OwnerLifecycleAuthentication) => Route;
   lifecycleWorker: ServerLifecycleLane;
   childWorker: ServerLifecycleLane;
+  eventWorker: ServerLifecycleLane;
 }
 export function createOrchestratorServices(
   sql: Sql,
@@ -62,6 +64,7 @@ export function createOrchestratorServices(
       input.runtime.diagnosticLog,
     ),
     childWorker: children,
+    eventWorker: createOrchestratorEventWorker(sql, runtime),
   };
 }
 

@@ -79,6 +79,44 @@ export async function lifecycleStep<T>(
     return await work();
   } catch (error) {
     const safe = modalError(error);
+    const category = safe.details?.processCategory;
+    const failure = safe.details?.processFailure;
+    const modalFailure = safe.details?.modalFailure;
+    console.warn(
+      JSON.stringify({
+        event: "modal_lifecycle_step_failed",
+        stage: code,
+        reason:
+          typeof modalFailure === "string" &&
+          [
+            "process_quiescence_failed",
+            "process_baseline_missing",
+            "ssh_cleanup_failed",
+            "managed_state_busy",
+            "AuthError",
+            "NotFoundError",
+            "AlreadyExistsError",
+            "InvalidError",
+            "PermissionDeniedError",
+            "ResourceExhaustedError",
+            "TimeoutError",
+            "SandboxTimeoutError",
+            "unknown",
+            "grpc",
+          ].includes(modalFailure)
+            ? modalFailure
+            : "armada_refusal",
+        providerStatusClass: safe.status === undefined ? "unknown" : safe.status <= 16 ? "grpc" : "http",
+        ...(typeof category === "string" &&
+        ["unknown", "codex", "runtime_or_mcp", "privileged_writer", "user_writer"].includes(category)
+          ? { processCategory: category }
+          : {}),
+        ...(typeof failure === "string" &&
+        ["pidfd_open", "pidfd_signal", "identity_changed", "unproven"].includes(failure)
+          ? { processFailure: failure }
+          : {}),
+      }),
+    );
     throw new ProviderError({
       provider: "modal",
       code: safe.code,

@@ -14,7 +14,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
+import { API_FAILURE_STATUS, goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -76,6 +76,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
+import { apiFailureCode } from "./api-failure.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
@@ -83,6 +84,7 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+import { launchOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
@@ -168,6 +170,7 @@ const STATUS: Record<VaultErrorCode, number> = {
   missing_credential: 404,
   conflict: 409,
   unavailable: 503,
+  credential_refused: 422,
 };
 
 const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
@@ -194,7 +197,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (request.method !== "GET" && request.method !== "POST") return fail(405, "invalid", "Use POST or GET.");
     return options.githubAccount
       ? options.githubAccount.callback(request)
-      : fail(503, "unavailable", "GitHub account authorization is not configured.");
+      : fail(503, "dependency_unavailable", "GitHub account authorization is not configured.");
   }
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
@@ -210,14 +213,18 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return orchestratorHttp(request, caller, options.orchestrators, options.orchestratorPairs);
     } catch (error) {
       return error instanceof AuthUnavailable
-        ? fail(503, "unavailable", "Authentication unavailable.")
+        ? fail(503, "dependency_unavailable", "Authentication unavailable.")
         : fail(401, "unauthorized", "Run armada login.");
     }
   }
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
+  if (deletion ? request.method !== "DELETE" : request.method !== "POST")
+    return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
-    const body = await readBody(request);
+    const body = deletion
+      ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
+      : await readBody(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
@@ -243,7 +250,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           : invitationAction === "accept"
             ? await options.invitations.accept(caller, body.token)
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
-    } else result = await dispatch(route, caller, body, options);
+    } else result = await dispatch(deletion ? "sandbox/delete" : route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
     return Response.json(result, {
       status:
@@ -256,6 +263,20 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store" },
     });
   } catch (error) {
+    const failureCode = apiFailureCode(error);
+    if (failureCode)
+      return Response.json(
+        {
+          error: {
+            code: failureCode,
+            message: error instanceof Error ? error.message : failureCode,
+            ...(error instanceof ProviderError && error.details?.keepSource === true
+              ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
+              : {}),
+          },
+        },
+        { status: API_FAILURE_STATUS[failureCode], headers: { "cache-control": "no-store" } },
+      );
     if (error instanceof GatewayError) {
       const status =
         error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
@@ -263,7 +284,8 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     }
     if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
-    if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
+    if (error instanceof AuthUnavailable)
+      return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     if (error instanceof ProviderError) {
       const status =
         error.code === "conflict"
@@ -308,9 +330,13 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
-      return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
+      return fail(
+        503,
+        "dependency_unavailable",
+        `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`,
+      );
     }
-    return fail(500, "unavailable", "The server could not complete the request.");
+    return fail(500, "internal", "The server could not complete the request.");
   }
 }
 
@@ -566,6 +592,7 @@ async function dispatch(
   options: ControlOptions,
 ): Promise<unknown> {
   if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
+  if (route === "launch/options") return launchOptions;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),
@@ -620,6 +647,7 @@ async function dispatch(
       "sandbox/send": "send",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
+      "sandbox/delete": "delete",
       "sandbox/wait": "wait",
       "sandbox/exec": "exec",
       "sandbox/steer": "steer",
@@ -649,6 +677,10 @@ async function dispatch(
         provider: (target) =>
           options.providers
             ? options.providers.resolve(target, scopedCaller)
+            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+        deletionProvider: (sandbox) =>
+          options.providers
+            ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
             : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
         ...(options.providerMetadata
           ? {

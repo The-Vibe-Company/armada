@@ -364,3 +364,41 @@ test("publication preserves native Bun SQLSTATE and database identifiers, never 
   expect(JSON.parse(lines[1]!)).not.toHaveProperty("constraint");
   expect(lines.join("")).not.toContain("private");
 });
+
+test("runtime observations reject untrusted labels and values without leaking payloads", () => {
+  const lines: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "events");
+  diagnostics.observe("events_poll", "published");
+  diagnostics.observe("prompt_status", "running");
+  diagnostics.observe("prompt_dispatch", "not_confirmed");
+  diagnostics.observe("prompt_status", "private-provider-error-or-prompt");
+  diagnostics.observe("private-token" as "events_poll", "published");
+  expect(lines.map((line) => JSON.parse(line).value)).toEqual(["published", "running", "not_confirmed"]);
+  expect(lines.join(" ")).not.toContain("private-");
+});
+
+test("Boat invalid requests expose only closed HTTP/code/parameter metadata", () => {
+  const lines: string[] = [];
+  for (const [providerCode, field] of [
+    ["invalid_request", "limit"],
+    ["private-token", "private-value"],
+  ] as const) {
+    new OrchestratorDiagnostics((line) => lines.push(line), "events").report(
+      "error",
+      new ProviderError({
+        provider: "boat",
+        code: "invalid_request",
+        status: 400,
+        providerCode,
+        message: "private-message",
+        retryable: false,
+        details: { field, value: "private-value", message: "private-message" },
+      }),
+    );
+  }
+  expect(lines.map((line) => JSON.parse(line).reason)).toEqual([
+    "provider_invalid_request_http_400_boat_invalid_request_parameter_limit",
+    "provider_invalid_request_http_400",
+  ]);
+  expect(lines.join("")).not.toContain("private-");
+});

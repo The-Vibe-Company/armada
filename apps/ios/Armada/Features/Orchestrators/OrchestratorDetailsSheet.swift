@@ -1,3 +1,4 @@
+import ArmadaKit
 import SwiftUI
 
 /// Collapsed operational detail: configuration fixed at creation, continuity, open operations,
@@ -5,6 +6,9 @@ import SwiftUI
 /// ever part of this payload.
 struct OrchestratorDetailsSheet: View {
     let detail: OrchestratorDetail
+    /// Recovery is offered when the orchestrator can be recovered; the caller confirms first.
+    var canRecover = false
+    var onRecover: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
 
@@ -20,12 +24,16 @@ struct OrchestratorDetailsSheet: View {
                         if !detail.openOperations.isEmpty { operations }
                         if !detail.waits.isEmpty { waits(now: context.date) }
                         workers
+                        if canRecover { recover }
                         if let delegation = detail.delegation { authority(delegation, now: context.date) }
                     }
                     .padding(20)
                 }
             }
             .background(ArmadaTheme.canvas)
+            .navigationDestination(for: ChildSandboxRoute.self) { route in
+                ChildSandboxView(sandboxID: route.id)
+            }
             .navigationTitle(summary.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -42,9 +50,14 @@ struct OrchestratorDetailsSheet: View {
         SheetSection("Status", footer: summary.continuity.explanation) {
             SheetCard {
                 SheetValueRow(title: "State", value: summary.state.label)
-                if let reason = summary.blockedReason, summary.state == .blocked {
+                if let reason = summary.blockedExplanation, summary.state == .blocked {
                     SheetSeparator()
-                    SheetValueRow(title: "Reason", value: reason)
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(ArmadaTheme.dangerText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
                 }
                 SheetSeparator()
                 SheetValueRow(title: "Conversation", value: summary.continuity.label)
@@ -99,6 +112,14 @@ struct OrchestratorDetailsSheet: View {
                         title: operation.kind.label,
                         value: operation.state == .uncertain ? "Not confirmed yet" : "Pending"
                     )
+                    if let code = operation.errorCode {
+                        Text(ArmadaKit.OrchestratorExplanation.text(for: code))
+                            .font(.footnote)
+                            .foregroundStyle(ArmadaTheme.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 10)
+                    }
                 }
             }
         }
@@ -134,10 +155,27 @@ struct OrchestratorDetailsSheet: View {
                 } else {
                     ForEach(Array(detail.childSandboxIDs.enumerated()), id: \.element) { index, sandboxID in
                         if index > 0 { SheetSeparator() }
-                        SheetValueRow(title: "Sandbox", value: sandboxID, monospacedValue: true)
+                        NavigationLink(value: ChildSandboxRoute(id: sandboxID)) {
+                            SheetValueRow(title: "Sandbox", value: sandboxID, monospacedValue: true, showsChevron: true)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens this worker's sandbox")
+                        .accessibilityIdentifier("details.worker.\(sandboxID)")
                     }
                 }
             }
+        }
+    }
+
+    private var recover: some View {
+        SheetSection(footer: "Recovery settles what Armada could not confirm and stops this orchestrator without starting anything new.") {
+            Button(action: onRecover) {
+                Label("Recover…", systemImage: "wrench.and.screwdriver")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .accessibilityIdentifier("details.recover")
         }
     }
 

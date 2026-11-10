@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   createSqlVaultStore,
+  DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
+  HARNESS_KINDS,
+  HARNESSES,
+  MACHINE_SIZES,
+  MODEL_CATALOG,
+  PROVIDER_LIMITS,
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
@@ -26,6 +32,79 @@ const STAN = "11111111-1111-4111-8111-111111111111";
 const ADA = "22222222-2222-4222-8222-222222222222";
 const TOKEN_SECRET = "sk-ant-oat01-do-not-leak";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
+
+// The HTTP contract owns classification: real SQL resolution and launch, not a mocked classifier.
+for (const failure of [
+  "credential_refused",
+  "provider_unavailable",
+  "dependency_unavailable",
+  "outcome_unknown",
+] as const) {
+  test(`launch HTTP separates ${failure} without parsing diagnostic text`, async () => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("Failures", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+        await encryptSecret("provider-key", KEY),
+        org.id,
+      ]);
+      await db.query(
+        "insert into credentials(scope,owner_id,kind,value_enc,status) values('user',$1,'claude_oauth',$2,$3)",
+        [STAN, await encryptSecret("model-key", KEY), failure === "credential_refused" ? "revoked" : "active"],
+      );
+      await db.query(
+        "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'web','org',$2,$3,$4::jsonb)",
+        [
+          org.id,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const boat = fakeBoat();
+      boat.provider.fork = async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "unavailable",
+          message: "credential_refused expired revoked (not a classification input)",
+          retryable: true,
+          ...(failure === "provider_unavailable" ? { status: 503 } : {}),
+        });
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}` },
+          body: JSON.stringify({ golden: "web", harness: "claude" }),
+        }),
+        {
+          ...options,
+          ...(failure === "dependency_unavailable"
+            ? {}
+            : {
+                providerFor: () => {
+                  if (failure === "provider_unavailable")
+                    throw new ProviderError({
+                      provider: "boat",
+                      code: "unavailable",
+                      message: "Provider discovery failed.",
+                      retryable: true,
+                      status: 503,
+                    });
+                  return boat.provider;
+                },
+              }),
+        },
+      );
+      expect(response?.status).toBe(
+        failure === "credential_refused" ? 422 : failure === "provider_unavailable" ? 502 : 503,
+      );
+      expect(await response?.json()).toMatchObject({ error: { code: failure } });
+      expect((await db.query("select id from sandboxes")).rows).toEqual([]);
+    });
+  });
+}
 
 describe("armada org and armada creds against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
@@ -468,43 +547,104 @@ describe("armada org and armada creds against the control API", () => {
 });
 
 describe("control API", () => {
-  test("unknown provider failures return 502 with the closed error body", async () => {
+  test("uncertain retained provider outcomes preserve only recovery metadata", async () => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Provider failure", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
       const golden = await db.query<{ id: string }>(
         "insert into goldens(org_id, owner_id, name, visibility, config) values($1,$2,'failure','org',$3::jsonb) returning id",
-        [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+        [
+          org.id,
+          STAN,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
       );
       const sandbox = await db.query<{ id: string }>(
         "insert into sandboxes(org_id, owner_id, golden_id, boat_id, harness, status) values($1,$2,$3,'bx_failure','claude','ready') returning id",
         [org.id, STAN, golden.rows[0]!.id],
       );
+      options.providerFor = () => fakeBoat().provider;
       options.providers = {
         resolve: async () => {
           throw new ProviderError({
             provider: "boat",
             code: "unknown",
             message: "The provider failed.",
-            details: { internal: "not-public" },
+            details: { keepSource: true, sourceSandboxId: "retained-source", internal: "not-public" },
             retryable: true,
           });
         },
       };
       const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/status", {
+        new Request("https://armada.test/api/v1/golden/connect", {
           method: "POST",
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           },
-          body: JSON.stringify({ id: sandbox.rows[0]!.id }),
+          body: JSON.stringify({ name: "failure", org: org.id }),
         }),
         options,
       );
-      expect(response?.status).toBe(502);
+      expect(response?.status).toBe(503);
       expect(response?.headers.get("cache-control")).toBe("no-store");
       expect(await response?.json()).toEqual({
-        error: { code: "unknown", message: "The provider failed." },
+        error: {
+          code: "outcome_unknown",
+          message: "The provider failed.",
+          details: { keepSource: true, sourceSandboxId: "retained-source" },
+        },
+      });
+      // Retained resource evidence and lost mutation receipts both require reconciliation.
+      const boat = fakeBoat();
+      let dispatched = 0;
+      boat.provider.get = async (id) => ({ id, name: "failure", state: "ready", providerState: "ready", labels: {} });
+      boat.provider.prompt = async () => {
+        dispatched++;
+        throw new ProviderError({ provider: "boat", code: "unavailable", message: "Lost receipt", retryable: true });
+      };
+      options.providers = { resolve: async () => boat.provider };
+      const send = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/send", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ id: sandbox.rows[0]!.id, prompt: "continue" }),
+        }),
+        options,
+      );
+      expect(dispatched).toBe(1);
+      expect(send?.status).toBe(503);
+      expect(await send?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
+    });
+  });
+
+  test("launch/options publishes the server's harness, model, size and TTL catalogs to a signed-in caller", async () => {
+    await withServer(async ({ options }) => {
+      const call = (init: RequestInit) =>
+        handleControlRequest(new Request("https://armada.test/api/v1/launch/options", init), options);
+      expect((await call({ method: "POST" }))?.status).toBe(401);
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
+      const response = await call({ method: "POST", headers, body: "{}" });
+      expect(response?.status).toBe(200);
+      const body = (await response?.json()) as {
+        harnesses: { id: string; defaultModel: string; models: unknown; credentialKinds: unknown }[];
+        machineSizes: unknown;
+        ttl: unknown;
+      };
+      expect(body.harnesses.map((harness: { id: string }) => harness.id)).toEqual([...HARNESSES]);
+      for (const harness of body.harnesses) {
+        const catalog = MODEL_CATALOG[harness.id as keyof typeof MODEL_CATALOG];
+        expect(harness.defaultModel).toBe(catalog.defaultModel);
+        expect(harness.models).toEqual(catalog.models);
+        expect(harness.credentialKinds).toEqual(HARNESS_KINDS[harness.id as keyof typeof HARNESS_KINDS]);
+      }
+      expect(body.machineSizes).toEqual([...MACHINE_SIZES]);
+      expect(body.ttl).toEqual({
+        defaultSeconds: DEFAULT_LAUNCH_TTL_SECONDS,
+        maxSeconds: { boat: PROVIDER_LIMITS.boat.maxTtlSeconds, modal: PROVIDER_LIMITS.modal.maxTtlSeconds },
       });
     });
   });
@@ -1329,9 +1469,9 @@ test.each(["claude", "codex"] as const)(
       expect((await post(STAN, chosen)).status).toBe(404); // Org admins cannot adopt another owner's workspace.
       const incompatible = await post(ADA, wrong);
       expect(await incompatible.json()).toMatchObject({
-        error: { code: "unavailable", message: expect.stringContaining("incompatible") },
+        error: { code: "credential_refused", message: expect.stringContaining("incompatible") },
       });
-      expect(incompatible.status).toBe(503);
+      expect(incompatible.status).toBe(422);
       await options.store.removeMember(org.id, ADA);
       expect((await post(ADA, chosen)).status).toBe(404); // The named org is resolved against fresh memberships.
       // Without --org, the bearer's org list may be stale: the transaction checks membership again.

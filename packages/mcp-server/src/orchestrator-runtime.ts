@@ -140,22 +140,7 @@ export class OrchestratorRuntime {
     const identity = await this.options.store.read(this.owner(caller, orgId), orgId, id);
     // Validate owner-scoped reconnect cursor before any upstream read.
     await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
-    let upstreamHasMore = false;
-    // Stopped history never contacts a provider or activates compute.
-    if (identity.state === "ready" && identity.conversationId && identity.providerSandboxId) {
-      const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
-      await backend.assertNativeProof();
-      const upstream = await this.options.store.providerCursor(identity);
-      const page = await backend.provider.events({
-        sandboxId: identity.providerSandboxId,
-        conversationId: identity.conversationId,
-        limit: 500,
-        ...(upstream ? { cursor: upstream } : {}),
-      });
-      upstreamHasMore = page.hasMore;
-      if (!(await this.options.store.appendEvents(identity, page, upstream)))
-        throw new OrchestratorRuntimeError("conflict");
-    }
+    const upstreamHasMore = await this.pullEvents(identity);
     const retained = await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
     return { ...retained, hasMore: retained.hasMore || upstreamHasMore };
   }
@@ -196,6 +181,61 @@ export class OrchestratorRuntime {
       if (operation) this.recorded(operation, diagnostics);
       return { version: 1, admission: operation ? "recorded" : "unknown", operation };
     } catch (error) {
+      diagnostics.reportUnhandled(error);
+      throw error;
+    }
+  }
+
+  /** Server pull consumer; owner membership and binding are re-read each tick. */
+  async collectEvents(ownerId: string, orgId: string, id: string, signal?: AbortSignal): Promise<void> {
+    const identity = await this.options.store.read(ownerId, orgId, id);
+    await this.pullEvents(identity, signal);
+  }
+  private async pullEvents(identity: RuntimeIdentity, signal?: AbortSignal): Promise<boolean> {
+    if (identity.state !== "ready" || !identity.conversationId || !identity.providerSandboxId) return false;
+    const diagnostics = new OrchestratorDiagnostics(this.options.diagnosticLog, "events");
+    diagnostics.bind({ orchestratorId: identity.id, sandboxId: identity.sandboxId });
+    try {
+      signal?.throwIfAborted();
+      const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
+      await backend.assertNativeProof();
+      const upstream = await this.options.store.providerCursor(identity);
+      const page = await backend.provider.events({
+        sandboxId: identity.providerSandboxId,
+        conversationId: identity.conversationId,
+        // Match the ordinary Boat poll page size; larger requests can be refused.
+        limit: 200,
+        ...(upstream ? { cursor: upstream } : {}),
+        ...(signal ? { signal } : {}),
+      });
+      signal?.throwIfAborted();
+      if (!(await this.options.store.appendEvents(identity, page, upstream))) {
+        diagnostics.observe("events_poll", "fenced");
+        return false;
+      }
+      diagnostics.observe("events_poll", page.events.length ? "published" : "empty");
+      if (identity.configuration.provider === "boat") {
+        const pending = await this.options.store.pendingPrompt(identity);
+        if (pending) {
+          diagnostics.bind({ operationId: pending.operationId });
+          try {
+            signal?.throwIfAborted();
+            const status = await backend.provider.getPrompt({
+              sandboxId: identity.providerSandboxId,
+              promptId: pending.promptId,
+              ...(signal ? { signal } : {}),
+            });
+            signal?.throwIfAborted();
+            diagnostics.observe("prompt_status", status.status);
+            if (status.done) await this.options.store.finishPromptObservation(pending.operationId);
+          } catch {
+            diagnostics.observe("prompt_status", "unavailable");
+          }
+        }
+      }
+      return page.hasMore;
+    } catch (error) {
+      diagnostics.observe("events_poll", "failed");
       diagnostics.reportUnhandled(error);
       throw error;
     }
@@ -401,29 +441,50 @@ export class OrchestratorRuntime {
         if (machine.state !== "ready" && machine.state !== "running") throw new OrchestratorRuntimeError("conflict");
         const configuration = { ...current.configuration, ...backend.selection };
         diagnostics.stage(input.action === "steer" ? "steer" : "message");
-        const receipt =
-          input.action === "steer"
-            ? await backend.provider.steer({
-                sandboxId: current.providerSandboxId,
-                text: input.text ?? "",
-                ...(current.conversationId ? { conversationId: current.conversationId } : {}),
-              })
-            : await backend.provider.prompt({
-                sandboxId: current.providerSandboxId,
-                harness: configuration.harness,
-                text: input.text ?? "",
-                model: configuration.model,
-                ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
-                ...(current.conversationId ? { conversationId: current.conversationId } : {}),
-              });
-        if (
-          backend.continuity === "best_effort" &&
-          current.configuration.provider === "boat" &&
-          current.conversationId &&
-          receipt.conversationId !== current.conversationId
-        )
-          throw new BestEffortConversationUnavailable();
-        return { conversationId: receipt.conversationId };
+        let dispatched = false;
+        try {
+          const receipt =
+            input.action === "steer"
+              ? await backend.provider.steer({
+                  sandboxId: current.providerSandboxId,
+                  text: input.text ?? "",
+                  ...(current.conversationId ? { conversationId: current.conversationId } : {}),
+                })
+              : await backend.provider.prompt({
+                  sandboxId: current.providerSandboxId,
+                  harness: configuration.harness,
+                  text: input.text ?? "",
+                  model: configuration.model,
+                  ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
+                  ...(current.conversationId ? { conversationId: current.conversationId } : {}),
+                });
+          dispatched = true;
+          diagnostics.observe("prompt_dispatch", "accepted");
+          if (input.action === "message" && "status" in receipt)
+            diagnostics.observe("prompt_status", String(receipt.status));
+          if (
+            backend.continuity === "best_effort" &&
+            current.configuration.provider === "boat" &&
+            current.conversationId &&
+            receipt.conversationId !== current.conversationId
+          )
+            throw new BestEffortConversationUnavailable();
+          return {
+            conversationId: receipt.conversationId,
+            ...(input.action === "message" && "promptId" in receipt && "status" in receipt
+              ? {
+                  promptReceipt: {
+                    promptId: receipt.promptId,
+                    conversationId: receipt.conversationId,
+                    status: receipt.status,
+                  },
+                }
+              : {}),
+          };
+        } catch (error) {
+          if (!dispatched) diagnostics.observe("prompt_dispatch", "not_confirmed");
+          throw error;
+        }
       });
     } catch (error) {
       diagnostics.reportUnhandled(error);
@@ -515,6 +576,7 @@ export class OrchestratorRuntime {
     effect: () => Promise<{
       parentState?: "ready" | "stopped";
       conversationId?: string;
+      promptReceipt?: { promptId: string; conversationId: string; status: string };
       continuity?: "native" | "unverified";
     }>,
   ): Promise<OrchestratorOperation> {

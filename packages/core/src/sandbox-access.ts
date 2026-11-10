@@ -2,10 +2,12 @@ import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
+import type { SandboxUsage } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
 
 /** Version 1 organization list contract. Never extend from the interior SandboxRecord. */
 export interface SandboxListMetadata {
+  usage?: SandboxUsage | null;
   preservationNote?: string | null;
   /** Interior-only: null for organization metadata-only viewers. */
   taskOutcome?: TaskOutcome | null;

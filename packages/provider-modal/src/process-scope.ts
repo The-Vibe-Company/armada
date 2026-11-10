@@ -43,6 +43,8 @@ function identity(pid){
   let raw;try{raw=readFileSync("/proc/"+pid+"/stat","utf8");}catch(e){if(e.code==="ENOENT"||e.code==="ESRCH")return;denied("proc_stat",["EACCES","EPERM"].includes(e.code)?e.code:"other");throw Error("process_identity_unreadable");}
   const fields=raw.slice(raw.lastIndexOf(")")+2).split(" ");
   let uid,uidKnown=true;try{const status=readFileSync("/proc/"+pid+"/status","utf8");uid=Number(/^Uid:\s+(\d+)\s+(\d+)/m.exec(status)?.[2]);}catch(e){
+    // A process may exit between stat and status; later enumeration checks replacements.
+    if(e.code==="ENOENT"||e.code==="ESRCH")return;
     denied("proc_status",["EACCES","EPERM"].includes(e.code)?e.code:"other");uid=statSync("/proc/"+pid).uid;uidKnown=false;
   }
   if(!Number.isSafeInteger(uid)||!/^\d+$/.test(fields[19]??"")||!/^\d+$/.test(fields[1]??""))throw Error("process_identity_invalid");

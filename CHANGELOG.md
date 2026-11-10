@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.16.0](https://github.com/The-Vibe-Company/armada/compare/v2.15.0...v2.16.0) (2026-11-10)
+
+
+### Features
+
+* **api:** expose structured sandbox task outcomes ([#745](https://github.com/The-Vibe-Company/armada/issues/745)) ([7b26312](https://github.com/The-Vibe-Company/armada/commit/7b26312aa2479503eab99b49689a31019130fa69))
+* **ci:** smoke deployed staging through the Armada API ([#744](https://github.com/The-Vibe-Company/armada/issues/744)) ([ddffbd5](https://github.com/The-Vibe-Company/armada/commit/ddffbd506ee534afce4ddb305f915cc025d64141))
+* **dashboard:** a fleet board showing every running agent and what it needs ([#748](https://github.com/The-Vibe-Company/armada/issues/748)) ([d9c7258](https://github.com/The-Vibe-Company/armada/commit/d9c72583bbda60bf25dc39df4663dff81aab3baf))
+* **ios:** launch a sandbox from the phone ([#753](https://github.com/The-Vibe-Company/armada/issues/753)) ([7d6c70e](https://github.com/The-Vibe-Company/armada/commit/7d6c70e7a4669ef7365d9c663a4e9f2c5e8ad63e))
+* **orchestrator:** enable best-effort Boat pairs ([#754](https://github.com/The-Vibe-Company/armada/issues/754)) ([73fcf77](https://github.com/The-Vibe-Company/armada/commit/73fcf77072b5101b5979cfca2d1de9dea089fd16))
+* **sandbox:** preserve unpushed work before managed stops ([#747](https://github.com/The-Vibe-Company/armada/issues/747)) ([56fc41b](https://github.com/The-Vibe-Company/armada/commit/56fc41ba05a8db5a2d15559513d555c431b8b235))
+
+
+### Bug Fixes
+
+* **api:** map unknown provider failures to 502 ([#740](https://github.com/The-Vibe-Company/armada/issues/740)) ([76f46dd](https://github.com/The-Vibe-Company/armada/commit/76f46ddfa88065880a0e545fcb6ebfd58bcd2574))
+* **dashboard:** show the credential hint when a turn stops on an expired credential ([#738](https://github.com/The-Vibe-Company/armada/issues/738)) ([85ac509](https://github.com/The-Vibe-Company/armada/commit/85ac5091a9daff6eb29e146d5d1eeae3bdf682c4))
+* **orchestrators:** classify checkpoint survivors and native SQL errors ([#733](https://github.com/The-Vibe-Company/armada/issues/733)) ([59cb872](https://github.com/The-Vibe-Company/armada/commit/59cb87299a4a823f4952cb679a6befe4f3ff2cca))
+* **orchestrators:** quiesce Modal parents without privileged namespace inspection ([#755](https://github.com/The-Vibe-Company/armada/issues/755)) ([f21d3f1](https://github.com/The-Vibe-Company/armada/commit/f21d3f1f9b7630cead0982a9cf54e5f294cd1892))
+* **sandbox:** preserve unpushed work on real Boat sandboxes ([#761](https://github.com/The-Vibe-Company/armada/issues/761)) ([74fea55](https://github.com/The-Vibe-Company/armada/commit/74fea550e0c1f9bfc257e1ad70d053fa41cf81b0))
+* **sandbox:** reconcile interrupted launches ([#762](https://github.com/The-Vibe-Company/armada/issues/762)) ([04fd780](https://github.com/The-Vibe-Company/armada/commit/04fd7804439f6cceb48e5d527de0f7f2e8ac34d5))
+
 ## [2.15.0](https://github.com/The-Vibe-Company/armada/compare/v2.14.0...v2.15.0) (2026-11-10)
 
 

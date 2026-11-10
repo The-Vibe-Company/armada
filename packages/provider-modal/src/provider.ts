@@ -453,6 +453,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
       row.generation++;
       row.quiesced = false;
+      delete row.ordinaryStopAttempted;
+      delete row.info.stopNote;
       row.eventBase = row.checkpointWatermark ?? 0;
       row.imageId = row.recoveryImageId;
       row.physicalName = `armada-${createHash("sha256").update(row.info.id).digest("hex").slice(0, 32)}-${row.generation}`;
@@ -1366,6 +1368,22 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       try {
         await store.lease(sandboxId, async (row, save) => {
           observed = row;
+          // Native parent checkpointing and golden builders retain their fail-closed contract.
+          // Dispatch is durable before any RPC, so a crash cannot reset the retry budget.
+          if (!row.golden && !row.orchestratorCheckpoint && row.phase !== "stopped") {
+            if (row.ordinaryStopAttempted && row.phase !== "terminate") {
+              row.info.stopNote = "checkpoint_failed_disk_not_retained";
+              // Never allow resume to silently restore a stale recovery image.
+              if (row.recoveryImageId)
+                row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+              delete row.recoveryImageId;
+              row.phase = "terminate";
+              await save(row);
+            } else {
+              row.ordinaryStopAttempted = true;
+              await save(row);
+            }
+          }
           await stopLeased(row, save);
         });
       } catch (error) {

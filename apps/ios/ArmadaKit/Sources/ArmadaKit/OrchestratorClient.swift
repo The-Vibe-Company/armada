@@ -106,7 +106,7 @@ extension ArmadaClient {
         try update(current.updating(state: .uncertain, receipt: current.receipt, attempts: attempt)) // persist BEFORE external effects
         do {
             let receipt: OrchestratorOperation = try await authenticatedRequest(pending.route, method: "POST", body: pending.body, key: pending.key)
-            guard receipt.version == 1, receipt.kind == pending.action,
+            guard receipt.version == 1, pending.action.receiptKinds.contains(receipt.kind),
                   current.receipt == nil || current.receipt?.id == receipt.id,
                   pending.orchestratorId == nil || receipt.orchestratorId == pending.orchestratorId else { throw ArmadaError.invalidResponse }
             try update(pending.updating(state: receipt.state, receipt: receipt))
@@ -138,7 +138,7 @@ extension ArmadaClient {
         guard detail.orchestrator.id == prior.orchestratorId,
               detail.orchestrator.configuration.orgId == pending.orgId,
               let receipt = detail.operations.first(where: { $0.id == prior.id }),
-              receipt.version == 1, receipt.kind == pending.action,
+              receipt.version == 1, pending.action.receiptKinds.contains(receipt.kind),
               receipt.orchestratorId == prior.orchestratorId,
               receipt.revision == prior.revision else { return nil }
         try update(pending.updating(state: receipt.state, receipt: receipt))

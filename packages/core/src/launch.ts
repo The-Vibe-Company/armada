@@ -224,6 +224,12 @@ export async function launchSandbox(
       })
       .catch((error) => {
         noAllocation = isNonMutatingProviderRefusal(error);
+        if (!noAllocation)
+          throw new LaunchError(
+            "outcome_unknown",
+            "The provider fork outcome is unknown. Check sandbox status before retrying.",
+            { cause: error },
+          );
         throw error;
       });
 

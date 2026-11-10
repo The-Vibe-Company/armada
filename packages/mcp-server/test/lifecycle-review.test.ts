@@ -102,7 +102,7 @@ for (const fails of [false, true])
           await release.promise;
         }
         return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     try {
       const launch = launchSandbox(
@@ -175,7 +175,7 @@ test("actual Boat resume rearms deadline even when the earlier send sample was r
       if (path.endsWith("/prompt"))
         return Response.json({ ok: true, promptId: "p", conversationId: "c", status: "queued" });
       return Response.json({ ok: true, sandbox: sandbox({ state: ++gets === 1 || ready ? "idle" : "archived" }) });
-    }) as typeof fetch,
+    }) as unknown as typeof fetch,
   });
   try {
     await f.insert();
@@ -215,12 +215,12 @@ for (const outcome of ["error", "unconfirmed"] as const)
         }
         if (request.method === "POST") return Response.json({ ok: true });
         return Response.json({ ok: true, sandbox: sandbox({ state: terminal ? "archived" : "archiving" }) });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     try {
       await f.insert();
       await f.scoped.sandboxes.update(f.id, { status: "failed", statusReason: "Original initialization failure" });
-      expect((await f.control("stop", provider))?.status).toBe(outcome === "error" ? 503 : 200);
+      expect((await f.control("stop", provider))?.status).toBe(outcome === "error" ? 502 : 200);
       const pending = await f.scoped.sandboxes.get(f.id);
       expect(pending?.status).toBe("failed");
       expect(pending?.statusReason).toBe("Original initialization failure");
@@ -268,7 +268,7 @@ test("initial launch preserves sequential 600-second setup command budgets", asy
         });
       }
       return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
-    }) as typeof fetch,
+    }) as unknown as typeof fetch,
   });
   try {
     jest.useFakeTimers();
@@ -288,6 +288,28 @@ test("initial launch preserves sequential 600-second setup command budgets", asy
     expect((await f.scoped.sandboxes.get(f.id))?.status).toBe("ready");
   } finally {
     jest.useRealTimers();
+    await f.server.close();
+  }
+});
+
+test("manual stop retires an interrupted registration whose exact provider identity is absent", async () => {
+  const f = await fixture();
+  const provider = createBoatProvider({
+    apiKey: "test-key",
+    fetch: (async () =>
+      Response.json(
+        { error: { code: "sandbox_not_found", message: "Absent" } },
+        { status: 404 },
+      )) as unknown as typeof fetch,
+  });
+  try {
+    await f.insert();
+    await f.scoped.sandboxes.update(f.id, { status: "starting" });
+    expect((await f.control("stop", provider))?.status).toBe(200);
+    const stopped = await f.scoped.sandboxes.get(f.id);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.stoppedAt).not.toBeNull();
+  } finally {
     await f.server.close();
   }
 });

@@ -295,7 +295,7 @@ export async function startServer(
           orchestrators.runtime.createWorker,
           ...("lifecycle" in orchestrators
             ? [orchestrators.lifecycle]
-            : [orchestrators.lifecycleWorker, orchestrators.childWorker]),
+            : [orchestrators.lifecycleWorker, orchestrators.childWorker, orchestrators.eventWorker]),
         ]
       : [],
   );

@@ -169,8 +169,11 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   modal: { name: "modal", label: "Modal token pair (id and secret)" },
 };
 
-/** Within one scope, the first kind a harness finds wins. The two Claude kinds never reach the sandbox together. */
-const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
+/**
+ * The credential kinds each harness runs on. Within one scope, the first kind a harness finds wins. The two Claude
+ * kinds never reach the sandbox together. Published by `launch/options` so a client never keeps its own copy.
+ */
+export const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
   claude: ["claude_oauth", "anthropic"],
   codex: ["openai", "codex_auth"],
 };
@@ -366,7 +369,7 @@ export async function resolveCredentials(
       (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
     ) {
       throw new VaultError(
-        "unavailable",
+        "credential_refused",
         "The selected credential is incompatible, expired, revoked or changed. No fallback was used.",
       );
     }

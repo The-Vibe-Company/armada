@@ -26,3 +26,8 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
     return NextResponse.json({ error: "Armada API is unavailable." }, { status: 502 });
   }
 }
+
+export async function DELETE(request: Request, context: { params: Promise<{ path: string[] }> }) {
+  const { path } = await context.params;
+  return forwardControl(request, path);
+}
