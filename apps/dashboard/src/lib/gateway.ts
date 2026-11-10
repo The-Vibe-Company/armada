@@ -159,8 +159,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function sandboxGateway(gateway: Gateway) {
   const conversation = (id?: string) => (id ? { conversation_id: id } : {});
   return {
-    logs: (sandboxId: string, since?: string | null) =>
-      gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}) }),
+    logs: (sandboxId: string, since?: string | null, read: { all?: true; limit?: number } = {}) =>
+      gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}), ...read }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string) =>
       gateway.call("send", { id: sandboxId, prompt, ...conversation(conversationId), ...override }),

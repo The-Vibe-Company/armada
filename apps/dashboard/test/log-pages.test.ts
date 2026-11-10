@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readLogPages } from "../src/app/api/sandboxes/[id]/events/route.ts";
+import { readLogPages } from "../src/lib/events.ts";
 
 describe("dashboard log catch-up", () => {
   test("follows cursors through bounded MCP pages", async () => {

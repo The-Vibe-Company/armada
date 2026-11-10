@@ -549,8 +549,26 @@ function matches(row: Row, params: URLSearchParams): boolean {
     if (op === "in" && !operand.slice(1, -1).split(",").includes(actual)) return false;
     if (op === "is" && operand === "null" && row[key] !== null && row[key] !== undefined) return false;
     if (op === "not" && operand === "is.null" && (row[key] === null || row[key] === undefined)) return false;
+    if (op === "gte" && !atLeast(row[key], operand)) return false;
+    if (key === "or" && !orGte(row, expression)) return false;
   }
   return true;
+}
+
+/** PostgREST's `gte` on a timestamp column: a null never matches. */
+function atLeast(value: unknown, operand: string): boolean {
+  return typeof value === "string" && Date.parse(value) >= Date.parse(operand);
+}
+
+/** `or=(a.gte.x,b.gte.y)`: the only `or` the dashboard sends, any timestamp at or after its bound. */
+function orGte(row: Row, expression: string): boolean {
+  return expression
+    .slice(1, -1)
+    .split(",")
+    .some((term) => {
+      const [column = "", op, ...rest] = term.split(".");
+      return op === "gte" && atLeast(row[column], rest.join("."));
+    });
 }
 
 function project(table: string, row: Row, select: string | null): Row | Fail {
