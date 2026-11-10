@@ -581,7 +581,7 @@ describe("launch", () => {
   test.each([
     { harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" },
     ...["low", "medium", "high", "xhigh", "max"].map((reasoningEffort) => ({
-      harness: "claude",
+      harness: "claude" as const,
       model: "claude-fable-5-2",
       reasoningEffort,
     })),
