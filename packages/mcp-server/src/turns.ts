@@ -125,9 +125,13 @@ export async function readStatus(
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
     };
-    if (next === "failed" && info.physicalExitConfirmed) patch.stoppedAt = options.now.toISOString();
-    else if (next === "stopped") patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-    else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+    if (next === "failed" && info.physicalExitConfirmed) {
+      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+      patch.usageRuntimeUnknown = !info.stoppedAt;
+    } else if (next === "stopped") {
+      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+      patch.usageRuntimeUnknown = !info.stoppedAt;
+    } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     await store.update(sandbox.id, patch);
   }
   const refreshed = store.recordUsage ? await store.get(sandbox.id) : null;

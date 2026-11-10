@@ -9,24 +9,36 @@ language plpgsql set search_path = '' as $$
 begin
   if TG_OP = 'INSERT' then
     new.usage_runtime_seconds := 0;
-    if new.stopped_at is null and new.deleted_at is null then
+    if new.status in ('ready','running') and new.stopped_at is null and new.deleted_at is null then
       new.usage_running_since := clock_timestamp();
     end if;
+  elsif new.usage_runtime_seconds is null then
+    new.usage_running_since := null;
   elsif old.usage_runtime_seconds is not null then
+    -- A resume with no recorded stop has an unbounded offline gap.
+    if new.status = 'starting' and old.status <> 'starting' and old.usage_running_since is not null then
+      new.usage_runtime_seconds := null;
+      new.usage_running_since := null;
+      return new;
+    end if;
     if old.usage_running_since is not null and
        (new.stopped_at is not null or new.deleted_at is not null) then
       new.usage_runtime_seconds := old.usage_runtime_seconds + greatest(0,
         extract(epoch from (least(coalesce(new.stopped_at, new.deleted_at), clock_timestamp()) - old.usage_running_since)));
       new.usage_running_since := null;
     elsif old.usage_running_since is null and new.stopped_at is null and new.deleted_at is null
-      and old.stopped_at is not null then
+      and new.status in ('ready','running') and old.status = 'starting' then
       new.usage_running_since := clock_timestamp();
+    elsif old.stopped_at is not null and new.stopped_at is null and new.status in ('ready','running') then
+      -- A provider-side resume without a recorded starting transition is incomplete history.
+      new.usage_runtime_seconds := null;
+      new.usage_running_since := null;
     end if;
   end if;
   return new;
 end $$;
 revoke all on function public.track_sandbox_runtime() from public, anon, authenticated;
-create trigger sandbox_runtime before insert or update of stopped_at, deleted_at
+create trigger sandbox_runtime before insert or update of status, stopped_at, deleted_at
 on public.sandboxes for each row execute function public.track_sandbox_runtime();
 
 -- SQL helper is privileged: the calling query must enforce its existing visibility rule.

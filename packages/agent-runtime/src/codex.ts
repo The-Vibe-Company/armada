@@ -76,7 +76,7 @@ export class CodexDriver implements Driver {
       closed = false,
       stopping = false,
       steering = false;
-    let baseline: Record<string, number> | null = c.sessionId
+    const baseline: Record<string, number> | null = c.sessionId
       ? (this.tokenTotals.get(c.sessionId) ?? null)
       : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
     const earlyTerminals = new Map<string, TurnCompletedNotification>();
@@ -228,7 +228,6 @@ export class CodexDriver implements Driver {
     });
     const begin = async (text: string) => {
       turnId = "";
-      if (threadId && this.tokenTotals.has(threadId)) baseline = this.tokenTotals.get(threadId) ?? null;
       const terminal = new Promise<TurnCompletedNotification>((resolve, reject) => {
         terminalResolve = resolve;
         terminalReject = reject;

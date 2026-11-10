@@ -70,6 +70,7 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
           lifecycle_error: string | null;
           effective_ttl_seconds: number;
           requested_ttl_seconds: number;
+          usage_runtime_seconds: number | null;
         }>("select * from sandboxes where id=$1", [id])
       ).rows[0]!;
       expect(row.status).toBe(
@@ -77,6 +78,8 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
       );
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
+      // This wire fixture supplies no physical stop timestamp: observation time is not runtime.
+      if (["external-stop", "expired", "manual-stop"].includes(outcome)) expect(row.usage_runtime_seconds).toBeNull();
       if (outcome === "unconfirmed" || outcome === "stop-error") expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
       expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(

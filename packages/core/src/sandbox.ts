@@ -57,6 +57,8 @@ export interface SandboxRecord {
 }
 
 export interface SandboxPatch {
+  /** Physical interval endpoint is unknown; never fabricate a duration. */
+  usageRuntimeUnknown?: boolean;
   clearTaskOutcome?: boolean;
   taskPromptId?: string;
   renewLifecycle?: boolean;
@@ -145,7 +147,11 @@ export async function cleanupSandboxes(
       }
     }
     try {
-      await store.update(sandbox.id, { status: "deleted", deletedAt: now.toISOString() });
+      await store.update(sandbox.id, {
+        status: "deleted",
+        deletedAt: now.toISOString(),
+        ...(sandbox.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
+      });
       result.deleted.push(sandbox.id);
     } catch (error) {
       result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
@@ -236,6 +242,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
         params.push(value);
         sets.push(`${column} = $${params.length}${cast}`);
       };
+      if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
       if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
       if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
       if (patch.status !== undefined) set("status", patch.status, "::public.sandbox_status");
