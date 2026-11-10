@@ -15,6 +15,7 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
   /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
   taskPromptId?: string | null;
@@ -152,6 +153,7 @@ export async function cleanupSandboxes(
 }
 
 export interface SandboxRow {
+  preservation_note?: string | null;
   task_outcome?: TaskOutcome | null;
   task_prompt_id?: string | null;
   machine_size?: MachineSizeEvidence | null;
@@ -186,7 +188,7 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
@@ -275,6 +277,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
+    preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
     taskPromptId: row.task_prompt_id ?? null,
     id: row.id,

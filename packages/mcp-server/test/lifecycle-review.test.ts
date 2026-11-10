@@ -206,13 +206,14 @@ for (const outcome of ["error", "unconfirmed"] as const)
         const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
         if (new URL(request.url).pathname.endsWith("/events"))
           return Response.json({ ok: true, events: [], pageInfo: { hasMore: false } });
-        if (request.method === "POST") {
+        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
           attempts++;
           if (attempts === 1 && outcome === "error")
             return Response.json({ error: { code: "unavailable", message: "test" } }, { status: 503 });
           terminal = attempts > 1;
           return Response.json({ ok: true });
         }
+        if (request.method === "POST") return Response.json({ ok: true });
         return Response.json({ ok: true, sandbox: sandbox({ state: terminal ? "archived" : "archiving" }) });
       }) as typeof fetch,
     });

@@ -761,6 +761,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.stop({ sandboxId: row.id });
     expect(f.log.slice(-4)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
     const stopped = await f.store.get(row.id);
+    const creates = f.creates;
+    await expect(
+      f.provider.exec({ sandboxId: row.id, command: "recovery", onlyIfRunning: true }),
+    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(f.creates).toBe(creates);
+    expect((await f.store.get(row.id)).generation).toBe(stopped.generation);
     expect(stopped.phase).toBe("stopped");
     expect(stopped.recoveryImageId).toBeDefined();
     await f.provider.exec({ sandboxId: row.id, command: "pwd" });

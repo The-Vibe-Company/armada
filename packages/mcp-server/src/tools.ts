@@ -169,6 +169,7 @@ const taskOutcome = z.discriminatedUnion("state", [
 ]);
 
 const sandboxListMetadata = z.object({
+  preservationNote: z.string().nullable().optional(),
   providerSandboxId: z.string().nullable(),
   boatId: z.string().nullable(),
   id: z.string(),
@@ -198,6 +199,7 @@ const prompt = z.object({
 });
 
 const status = {
+  preservationNote: z.string().nullable().optional(),
   id: z.string(),
   golden: z.string(),
   visibility: z.enum(["org", "private"]),
@@ -1230,6 +1232,22 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "work_recovery",
+    {
+      title: "Retrieve preserved work",
+      description: "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
+      input: { id, recovery_id: z.string().uuid().optional() },
+      output: { archive: z.string().nullable() },
+      readOnly: true,
+    },
+    async (args) => {
+      const found = await data.sandboxes.get(args.id);
+      if (!found) throw new ToolError("not_found", "No such sandbox.");
+      return { archive: (await data.sandboxes.readWorkRecovery?.(found.id, args.recovery_id)) ?? null };
+    },
+  );
+
+  tool(
     "stop",
     {
       title: "Stop a sandbox",
@@ -1248,6 +1266,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         { status: found.status === "failed" ? "failed" : "stopping", stoppedAt: null, stopRequested: true },
         async (signal) => {
           signal.throwIfAborted();
+          await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
           await provider.stop({ sandboxId: found.providerSandboxId });
           signal.throwIfAborted();
           const observed = await provider.get(found.providerSandboxId);

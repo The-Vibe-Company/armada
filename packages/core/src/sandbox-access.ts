@@ -6,6 +6,7 @@ import type { TaskOutcome } from "./task-outcome.ts";
 
 /** Version 1 organization list contract. Never extend from the interior SandboxRecord. */
 export interface SandboxListMetadata {
+  preservationNote?: string | null;
   /** Interior-only: null for organization metadata-only viewers. */
   taskOutcome?: TaskOutcome | null;
   id: string;
