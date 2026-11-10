@@ -9,8 +9,25 @@ const OUTCOME_PAGES = 50;
 export type PromptOutcome =
   | { state: "running" }
   | { state: "finished" }
-  | { state: "interrupted" }
+  | { state: "interrupted"; reason?: "interrupted_by_provider_move" | "interrupted_by_harness_exit" }
   | { state: "failed"; reason: string };
+
+/** Closed, resendable turn interruptions. Boat's raw failed events and normalized events share this mapping. */
+export function turnInterruptionReason(
+  message: string | undefined,
+): "interrupted_by_provider_move" | "interrupted_by_harness_exit" | undefined {
+  if (
+    message === "interrupted_by_provider_move" ||
+    message === "The box moved to a new machine while this prompt was running. Send it again."
+  )
+    return "interrupted_by_provider_move";
+  if (
+    message === "interrupted_by_harness_exit" ||
+    (message && /^Codex app-server exited with signal .+; the next prompt starts a fresh process[.]?$/.test(message))
+  )
+    return "interrupted_by_harness_exit";
+  return undefined;
+}
 
 /**
  * Events that were read again carry the same id and a newer body: a streaming answer is rewritten
@@ -32,9 +49,12 @@ export async function promptOutcome(
   request: { sandboxId: string; promptId: string; conversationId?: string },
 ): Promise<PromptOutcome> {
   const state = await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId });
-  if (state.status === "interrupted") return { state: "interrupted" };
-  if (state.status === "failed") {
+  if (state.status === "interrupted" || state.status === "failed") {
     const reason = (await promptEvents(provider, request)).find((event) => event.kind === "prompt" && event.reason);
+    const message = reason?.kind === "prompt" ? reason.reason : undefined;
+    const interruption = turnInterruptionReason(message);
+    if (interruption) return { state: "interrupted", reason: interruption };
+    if (state.status === "interrupted") return { state: "interrupted" };
     return {
       state: "failed",
       reason: reason?.kind === "prompt" && reason.reason ? reason.reason : "The agent failed.",

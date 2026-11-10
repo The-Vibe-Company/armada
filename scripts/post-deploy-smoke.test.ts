@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 
 const selected = {
@@ -490,5 +491,21 @@ test("exhausted unknown stops reserve cleanup for observation rather than redisp
     step: "cleanup_sandbox",
     pass: false,
     code: "poll_limit_exceeded",
+  });
+});
+
+// This is the GitHub Actions scheduling contract, not a simulation of its queue.
+test("only eligible smoke jobs compete for staging compute", () => {
+  const workflow = Bun.YAML.parse(
+    readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
+  ) as {
+    concurrency?: unknown;
+    jobs: { smoke: { if: string; concurrency: { group: string; "cancel-in-progress": boolean } } };
+  };
+  expect(workflow.concurrency).toBeUndefined();
+  expect(workflow.jobs.smoke.if).toContain("github.event.deployment_status.state == 'success'");
+  expect(workflow.jobs.smoke.concurrency).toEqual({
+    group: "post-deploy-smoke-staging",
+    "cancel-in-progress": false,
   });
 });

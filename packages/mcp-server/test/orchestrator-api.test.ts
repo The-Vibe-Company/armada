@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { MODEL_CATALOG } from "@armada/core";
+import { MODEL_CATALOG, ProviderError } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
 import { orchestratorHttp } from "../src/orchestrator-api.ts";
 
@@ -165,4 +165,48 @@ test("requested production pairs stay unavailable and explain their independent 
     config.orchestratorPairs,
   );
   expect(mutation.status).toBe(503);
+});
+
+test("HTTP history options reach the shared dispatcher as typed values", async () => {
+  const { OrchestratorRuntime } = await import("../src/orchestrator-runtime.ts");
+  const calls: unknown[][] = [];
+  const service = new OrchestratorRuntime({} as ConstructorParameters<typeof OrchestratorRuntime>[0]);
+  service.events = async (...args) => {
+    calls.push(args);
+    return { version: 1, events: [], cursor: "live", olderCursor: "older", hasMore: true };
+  };
+  const caller: Caller = { userId: "owner", orgs: [], via: "supabase" };
+  const response = await orchestratorHttp(
+    new Request(
+      "https://armada.invalid/api/v1/orchestrators/parent/events?orgId=org&direction=backward&limit=10&maxBytes=2048&coalesce=false",
+    ),
+    caller,
+    service,
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ olderCursor: "older", cursor: "live" });
+  expect(calls).toEqual([
+    [caller, "org", "parent", undefined, 10, { direction: "backward", maxBytes: 2048, coalesce: false }],
+  ]);
+  const malformed = await orchestratorHttp(
+    new Request("https://armada.invalid/api/v1/orchestrators/parent/events?orgId=org&coalesce=yes"),
+    caller,
+    service,
+  );
+  expect(malformed.status).toBe(400);
+  expect(calls).toHaveLength(1);
+  service.events = async () => {
+    throw new ProviderError({
+      provider: "orchestrator",
+      code: "invalid_request",
+      message: "Invalid event pagination.",
+      retryable: false,
+    });
+  };
+  const invalidBudget = await orchestratorHttp(
+    new Request("https://armada.invalid/api/v1/orchestrators/parent/events?orgId=org&maxBytes=0"),
+    caller,
+    service,
+  );
+  expect(invalidBudget.status).toBe(400);
 });

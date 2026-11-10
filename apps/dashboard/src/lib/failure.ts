@@ -18,6 +18,14 @@ const AUTH: FailureHelp = {
 };
 
 const HELP: Record<string, FailureHelp> = {
+  interrupted_by_provider_move: {
+    title: "Turn interrupted",
+    hint: "The sandbox moved to a new machine. Send the prompt again.",
+  },
+  interrupted_by_harness_exit: {
+    title: "Agent process exited",
+    hint: "Send the prompt again to start a fresh agent process.",
+  },
   usage_limit: USAGE,
   payment_required: USAGE,
   rate_limited: {

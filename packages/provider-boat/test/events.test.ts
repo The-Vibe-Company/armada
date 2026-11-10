@@ -185,3 +185,93 @@ test("Boat preserves supplied message semantics and leaves historical responses 
     [undefined, undefined],
   ]);
 });
+
+test("backward pages anchor older history separately from forward follow", async () => {
+  const event = (n: number) => ({
+    id: `e${n}`,
+    timestamp: n,
+    type: "response",
+    conversationId: "c",
+    taskId: "p",
+    data: { content: String(n), message_id: "m", text_mode: "delta", is_streaming: true },
+  });
+  const response = (events: ReturnType<typeof event>[], hasMore = false) => ({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events,
+      pageInfo: { hasMore, limit: 2 },
+    },
+  });
+  const boat = fakeBoat(
+    response([event(4), event(3)], true),
+    response([event(2), event(1)]),
+    response([event(5)]),
+    response([]),
+  );
+  const tail = await boat.provider.events({ sandboxId: ID, direction: "backward", limit: 2, coalesce: true });
+  expect(tail.events).toMatchObject([{ text: "34", textMode: "snapshot" }]);
+  expect(tail.hasMore).toBe(true);
+  const older = await boat.provider.events({
+    sandboxId: ID,
+    direction: "backward",
+    cursor: tail.olderCursor!,
+    limit: 2,
+  });
+  const follow = await boat.provider.events({ sandboxId: ID, cursor: tail.cursor! });
+  expect(older.events.map((e) => e.id)).toEqual(["e1", "e2"]);
+  expect(follow.events.map((e) => e.id)).toEqual(["e5"]);
+  expect(boat.requests.map((r) => r.query.get("sort"))).toEqual(["desc", "desc", "asc"]);
+  expect(boat.requests[1]?.query.get("cursor")).toBe(Buffer.from("3:e3").toString("base64url"));
+  expect(boat.requests[2]?.query.get("cursor")).toBe(Buffer.from("4:e4").toString("base64url"));
+  expect(await boat.provider.events({ sandboxId: ID, direction: "backward" })).toEqual({ events: [], hasMore: false });
+});
+
+test("history refuses missing raw anchors rather than skipping events at a byte boundary", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [{ type: "response", data: { content: "hello" } }],
+      pageInfo: { nextCursor: "page-end", hasMore: false, limit: 100 },
+    },
+  });
+  await expect(boat.provider.events({ sandboxId: ID, direction: "backward" })).rejects.toThrow(
+    "stable pagination boundary",
+  );
+});
+
+test("logs normalize recoverable Boat failures into closed interruption reasons", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [
+        {
+          ...failed,
+          data: {
+            status: "failed",
+            error: "The box moved to a new machine while this prompt was running. Send it again.",
+          },
+        },
+        {
+          ...failed,
+          id: "exit",
+          data: {
+            status: "failed",
+            error: "Codex app-server exited with signal SIGTERM; the next prompt starts a fresh process",
+          },
+        },
+      ],
+      pageInfo: { nextCursor: null, hasMore: false, limit: 100 },
+    },
+  });
+  const page = await boat.provider.events({ sandboxId: ID });
+  expect(page.events).toMatchObject([
+    { kind: "prompt", status: "interrupted", reason: "interrupted_by_provider_move" },
+    { kind: "prompt", status: "interrupted", reason: "interrupted_by_harness_exit" },
+  ]);
+});

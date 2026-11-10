@@ -509,14 +509,14 @@ function ChatEntry({ item }: { item: ChatItem }) {
 }
 
 function Outcome({ status, reason }: { status: "failed" | "interrupted"; reason: string | undefined }) {
+  const help = describeFailure(reason);
   if (status === "interrupted") {
     return (
       <p className="flex items-center gap-2 text-xs text-muted-foreground">
-        <CircleSlashIcon className="size-3.5" aria-hidden="true" /> Interrupted
+        <CircleSlashIcon className="size-3.5" aria-hidden="true" /> {help?.hint ?? "Interrupted"}
       </p>
     );
   }
-  const help = describeFailure(reason);
   return (
     <div
       role="note"

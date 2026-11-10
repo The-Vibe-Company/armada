@@ -142,13 +142,19 @@ export class OrchestratorRuntime {
     id: string,
     cursor?: string,
     limit?: number,
+    options: { direction?: "forward" | "backward"; maxBytes?: number; coalesce?: boolean } = {},
   ): Promise<OrchestratorEventPage> {
     const identity = await this.options.store.read(this.owner(caller, orgId), orgId, id);
     // Validate owner-scoped reconnect cursor before any upstream read.
-    await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
-    const upstreamHasMore = await this.pullEvents(identity);
-    const retained = await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
-    return { ...retained, hasMore: retained.hasMore || upstreamHasMore };
+    await this.options.store.events(identity.ownerId, orgId, id, cursor, limit, options);
+    let upstreamHasMore = await this.pullEvents(identity);
+    // Never label a partially ingested conversation head as its tail.
+    if (options.direction === "backward") {
+      for (let page = 1; upstreamHasMore && page < 100; page++) upstreamHasMore = await this.pullEvents(identity);
+      if (upstreamHasMore) throw new OrchestratorRuntimeError("unavailable");
+    }
+    const retained = await this.options.store.events(identity.ownerId, orgId, id, cursor, limit, options);
+    return { ...retained, hasMore: retained.hasMore || (options.direction !== "backward" && upstreamHasMore) };
   }
 
   async reconcile(

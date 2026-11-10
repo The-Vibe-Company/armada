@@ -132,7 +132,19 @@ test("stopping a sandbox asks first, then stops it", async ({ page }) => {
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page.getByText("Stop this sandbox?")).toBeVisible();
   await page.getByRole("button", { name: "Stop sandbox" }).click();
+  // The dialog closed on confirm: the result is a toast, announced politely (Radix's announcer lives about a second).
+  await expect(page.getByRole("status").filter({ hasText: "Stop requested." })).toHaveCount(1);
   await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
+  // It does not take focus, and is dismissed from the keyboard.
+  const toast = page.locator('[data-slot="toast"][data-tone="success"]');
+  await expect(toast).toContainText("Stop requested. The machine is removed and the disk is kept.");
+  expect(await page.evaluate(() => document.activeElement?.closest('[data-slot="toast"]') ?? null)).toBeNull();
+  await page.screenshot({ path: "test-results/toast-stop-desktop.png", animations: "disabled" });
+  await page.keyboard.press("F8");
+  await expect(page.locator('[data-slot="toast-viewport"]')).toBeFocused();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Escape");
+  await expect(toast).toHaveCount(0);
   // The conversation shows the same state in the same paint, read at once rather than after its next poll (#627).
   const conversation = page.getByRole("heading", { name: "Conversation" }).locator("xpath=ancestor::div[2]");
   expect(await conversation.locator("[data-status]").getAttribute("data-status")).toBe("stopped");
