@@ -40,7 +40,8 @@ export function CopyButton({ value, label, className }: { value: string; label: 
       className={cn("text-muted-foreground hover:text-foreground", state === "copied" && "text-success", className)}
     >
       {state === "copied" ? <CheckIcon className="animate-in zoom-in-50 duration-150" /> : <CopyIcon />}
-      <span role="status" className="sr-only">
+      {/* A polite live region without the status role, so it never stands in for a form's own result. */}
+      <span aria-live="polite" className="sr-only">
         {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : ""}
       </span>
     </Button>

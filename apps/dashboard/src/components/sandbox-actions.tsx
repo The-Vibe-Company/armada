@@ -29,8 +29,10 @@ export function StopButton({ sandboxId }: { sandboxId: string }) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="destructive-outline" disabled={pending}>
-          {pending ? <Loader2Icon className="animate-spin" /> : <SquareIcon />} Stop
+        <Button variant="destructive-outline" disabled={pending} className="max-sm:px-2.5">
+          {pending ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+          {/* A phone keeps the header to one row: the icon shows, the word stays the button's name. */}
+          <span className="max-sm:sr-only">Stop</span>
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>

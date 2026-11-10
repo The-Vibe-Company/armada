@@ -117,8 +117,9 @@ export default async function SandboxPage({ params }: Props) {
             Sandboxes
           </Link>
         </Button>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
             <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
               {sandbox.provider_sandbox_id}
             </h1>
