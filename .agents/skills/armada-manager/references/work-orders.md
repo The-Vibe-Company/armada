@@ -22,7 +22,7 @@ Keep compute warm through review, CI and integration. Report completion so the
 coordinator can verify the role is terminal before stopping it.
 ```
 
-For a resume, read the ledger and actual branch/PR/runtime state before sending instructions. Preserve uncommitted work and the original reviewer identity. An apparent missing result may be an in-flight command, stale ledger entry, queued continuation or transport failure; inspect that boundary before replacing the worker.
+For a resume, read the ledger and actual branch/PR/runtime state before sending instructions. Preserve uncommitted work and reviewer receipts; changed source requires a fresh reviewer sandbox within the delivery round budget. An apparent missing result may be an in-flight command, stale ledger entry, queued continuation or transport failure; inspect that boundary before replacing the worker.
 
 The ledger need not be a new system. A small local file containing current facts and artifact pointers is enough. Update on phase, source, ownership, deadline or outcome changes. Separate candidate evidence from final shipping evidence. Never infer ownership from a familiar resource name.
 

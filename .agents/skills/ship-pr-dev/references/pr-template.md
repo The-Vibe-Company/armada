@@ -42,6 +42,13 @@ Examples:
 - Findings: <critical/high/medium/low counts and disposition>
 - Artifacts: `<path or PR-safe summary>`
 
+## Real-provider verification
+Mandatory for sandbox/orchestrator lifecycle, provider-adapter or agent-runtime changes.
+- <real-provider commands, enabled provider/harness pairs and observed results; OR
+  exact deployed check the coordinator must run, with missing evidence explicit>
+- Mock/unit tests are not real-provider verification. Never deploy to fill this
+  section without authorization.
+
 ## Risk
 - <deployment, migration, compatibility, UI, data, or security risk>
 - <"None known" only when true after review>
