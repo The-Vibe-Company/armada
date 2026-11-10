@@ -110,6 +110,22 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect((await owner.get(id))?.preservationNote).toBe("unpushed work could not be preserved (collector_failed)");
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
+    // Reconciliation of this same stop must not re-enter an unavailable capture.
+    await db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [id]);
+    await preserveBeforeStop(
+      sql,
+      {
+        ...provider,
+        async get() {
+          throw Error("capture must not run");
+        },
+      },
+      id,
+      "bx_recovery",
+    );
+    expect((await owner.get(id))?.preservationNote).toBe("unpushed work could not be preserved (collector_failed)");
+    // A newly resumed incarnation is allowed to preserve work again.
+    await db.query("update sandboxes set status='running',stop_requested_at=null where id=$1", [id]);
     await db.query("update sandbox_work_recovery set created_at='2020-01-01' where id=$1", [first.id]);
     const newerArchive = Buffer.from("recovery fixture two").toString("base64");
     boat.setExecOutput({ stdout: captured(newerArchive) });
