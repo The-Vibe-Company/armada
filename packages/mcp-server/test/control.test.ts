@@ -369,8 +369,10 @@ describe("armada org and armada creds against the control API", () => {
   });
 
   test("logs follow settles for no prompt and each final prompt status", async () => {
-    for (const status of [null, "finished", "failed", "interrupted"] as const) {
-      await withServer(async ({ options }) => {
+    // All variants are read-only; migrate one database rather than repeating the
+    // same setup four times inside one bounded behavioral test.
+    await withServer(async ({ options }) => {
+      for (const status of [null, "finished", "failed", "interrupted"] as const) {
         const armadaId = "44444444-4444-4444-8444-444444444444";
         const prompt = status
           ? [{ id: `prompt-${status}`, at: 1, kind: "prompt" as const, promptId: "pr_1", text: "go" }]
@@ -408,8 +410,8 @@ describe("armada org and armada creds against the control API", () => {
         expect(response?.status).toBe(200);
         if (!response) throw new Error("expected response");
         expect(((await response.json()) as { settled: boolean }).settled).toBe(true);
-      });
-    }
+      }
+    });
   });
 
   test("logs follow settles when an empty page has no prompt and preserves its cursor", async () => {
