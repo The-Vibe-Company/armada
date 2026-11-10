@@ -4,7 +4,13 @@ import assert from "node:assert/strict";
 import { createServiceToken, createSqlAuthStore } from "@armada/auth";
 import * as core from "@armada/core/server";
 import { createSqlModalStore, type Machine, type Scope } from "@armada/provider-modal";
-import { forwardControl } from "../../../../apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts";
+
+// Load the Next.js boundary only in this isolated runtime. Statically importing it
+// into the server TS project also loads browser ambient types into native harnesses.
+const proxyPath = new URL("../../../../apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts", import.meta.url)
+  .pathname;
+const { forwardControl } = await import(proxyPath);
+
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 
