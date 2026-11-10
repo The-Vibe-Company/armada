@@ -214,7 +214,15 @@ test("the list and the conversation header show the outcome and the preservation
   await signIn(page, "alice@example.com", "/sandboxes");
   const listed = (id: string) => page.getByRole("row").filter({ has: page.locator(`a[href="/sandboxes/${id}"]`) });
   await expect(listed(IDS.bobSecret).locator('[data-outcome="ready"]')).toHaveText("Ready to merge");
-  await expect(listed(IDS.bobSecret).getByRole("link", { name: "PR #768" })).toBeVisible();
+  // The row's own link covers the row: the pull request link stays above it and opens the pull request.
+  await page.context().route("https://github.com/**", (route) => route.fulfill({ body: "pull request" }));
+  const [opened] = await Promise.all([
+    page.waitForEvent("popup"),
+    listed(IDS.bobSecret).getByRole("link", { name: "PR #768" }).click(),
+  ]);
+  expect(opened.url()).toBe("https://github.com/acme/web/pull/768");
+  await opened.close();
+  await expect(page).toHaveURL(/\/sandboxes$/);
   await expect(listed(IDS.running).locator('[data-outcome="blocked"]')).toHaveText("Blocked");
   await expect(listed(IDS.running).locator('[data-preservation="preserved"]')).toHaveText("Unpushed work preserved");
   await page.screenshot({ path: "test-results/sandboxes-outcome.png", fullPage: true, animations: "disabled" });

@@ -43,7 +43,7 @@ export function OutcomeDetail({ outcome, className }: { outcome: OutcomeView; cl
             href={outcome.pr.href}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 font-medium underline underline-offset-4"
+            className="relative z-10 inline-flex items-center gap-1 font-medium underline underline-offset-4"
           >
             <GitPullRequestIcon aria-hidden="true" className="size-3.5" />
             {outcome.pr.label}
