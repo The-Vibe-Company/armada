@@ -138,6 +138,15 @@ const MODAL_BOOT_CODES = new Set([
   "modal_boot_active_publication",
 ]);
 const SQL_CODES: Readonly<Record<string, string>> = {
+  "22P02": "sql_invalid_text",
+  "22003": "sql_numeric_range",
+  "22023": "sql_invalid_parameter",
+  "42601": "sql_syntax",
+  "42804": "sql_type_mismatch",
+  "42883": "sql_operator_missing",
+  "42P08": "sql_ambiguous_parameter",
+  "42P18": "sql_indeterminate_type",
+  P0001: "sql_raise_exception",
   "23502": "sql_not_null",
   "23503": "sql_foreign_key",
   "23505": "sql_unique",
@@ -156,6 +165,41 @@ const SQL_CODES: Readonly<Record<string, string>> = {
 };
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const ACTIONS = new Set(["create", "message", "steer", "stop", "resume", "recover"]);
+
+/** Closed metadata only: no exception message, SQL text, detail, hint or causal traversal. */
+function publicationFailure(error: unknown): { errorClass: string; sqlState?: string } {
+  let errorClass = "unknown";
+  let sqlState: string | undefined;
+  if (error && typeof error === "object") {
+    try {
+      const name: unknown = Reflect.get(error, "name");
+      if (
+        typeof name === "string" &&
+        [
+          "Error",
+          "TypeError",
+          "RangeError",
+          "SyntaxError",
+          "ReferenceError",
+          "PostgresError",
+          "DatabaseError",
+          "ProviderError",
+          "OrchestratorRuntimeError",
+        ].includes(name)
+      )
+        errorClass = name;
+    } catch {
+      /* A hostile class getter must not hide an independently readable SQLSTATE. */
+    }
+    try {
+      const code: unknown = Reflect.get(error, "code");
+      if (typeof code === "string" && Object.hasOwn(SQL_CODES, code)) sqlState = code;
+    } catch {
+      /* Never serialize an opaque exception. */
+    }
+  }
+  return { errorClass, ...(sqlState ? { sqlState } : {}) };
+}
 
 /** No message, stack, details, request, provider ID, config, or causal payload is read.
  * Untrusted error codes are projected through closed allowlists, not sanitized strings. */
@@ -300,6 +344,7 @@ export class OrchestratorDiagnostics {
       outcome,
       stage: failure?.stage ?? this.current,
       reason: safeCode ?? failure?.reason ?? reason(error),
+      ...(outcome === "publication_failed" ? publicationFailure(error) : {}),
       ...(outcome === "publication_failed" && this.failure
         ? { failureStage: this.failure.stage, failureReason: this.failure.reason }
         : {}),

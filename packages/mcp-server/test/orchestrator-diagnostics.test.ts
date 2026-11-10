@@ -58,6 +58,8 @@ test("diagnostics project only safe codes/UUIDs and retain failure identity acro
       outcome: "publication_failed",
       stage: "failure_publication",
       reason: "sql_check",
+      errorClass: "unknown",
+      sqlState: "23514",
       failureStage: "fork",
       failureReason: "provider_unavailable",
       operationId: "11111111-1111-4111-8111-111111111111",
@@ -201,4 +203,34 @@ test.each([
   expect(JSON.parse(lines[0]!).reason).toBe(expected);
   expect(lines.join("")).not.toContain("synthetic-private-upstream-payload");
   expect(lines.join("")).not.toContain("private-upstream-class");
+});
+
+// Publication errors previously collapsed TypeError and unmapped SQLSTATEs to unexpected_error.
+test.each([
+  [new TypeError("private-message"), "TypeError", undefined],
+  [
+    Object.assign(new Error("private-message"), { name: "PostgresError", code: "42804", detail: "private-detail" }),
+    "PostgresError",
+    "42804",
+  ],
+  [{ name: "private-class", code: "private-code", message: "private-message" }, "unknown", undefined],
+  [
+    {
+      get name() {
+        throw Error("private-message");
+      },
+      code: "22P02",
+    },
+    "unknown",
+    "22P02",
+  ],
+] as const)("publication safely classifies error %#", (error, errorClass, sqlState) => {
+  const lines: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "recover");
+  diagnostics.stage("recovery_publication");
+  diagnostics.report("publication_failed", error);
+  const record = JSON.parse(lines[0]!);
+  expect(record).toMatchObject({ stage: "recovery_publication", errorClass });
+  expect(record.sqlState).toBe(sqlState);
+  expect(lines.join("")).not.toContain("private-");
 });
