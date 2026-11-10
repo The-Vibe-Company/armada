@@ -22,7 +22,7 @@ import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand }
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
-import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
+import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -224,6 +224,12 @@ export async function launchSandbox(
       })
       .catch((error) => {
         noAllocation = isNonMutatingProviderRefusal(error);
+        if (!noAllocation && (!(error instanceof ProviderError) || error.status === undefined))
+          throw new LaunchError(
+            "outcome_unknown",
+            "The provider fork outcome is unknown. Check sandbox status before retrying.",
+            { cause: error },
+          );
         throw error;
       });
 

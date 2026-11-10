@@ -33,6 +33,62 @@ const ADA = "22222222-2222-4222-8222-222222222222";
 const TOKEN_SECRET = "sk-ant-oat01-do-not-leak";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
 
+// The HTTP contract owns classification: real SQL resolution and launch, not a mocked classifier.
+for (const failure of [
+  "credential_refused",
+  "provider_unavailable",
+  "dependency_unavailable",
+  "outcome_unknown",
+] as const) {
+  test(`launch HTTP separates ${failure} without parsing diagnostic text`, async () => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("Failures", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+        await encryptSecret("provider-key", KEY),
+        org.id,
+      ]);
+      await db.query(
+        "insert into credentials(scope,owner_id,kind,value_enc,status) values('user',$1,'claude_oauth',$2,$3)",
+        [STAN, await encryptSecret("model-key", KEY), failure === "credential_refused" ? "revoked" : "active"],
+      );
+      await db.query(
+        "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'web','org',$2,$3,$4::jsonb)",
+        [
+          org.id,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const boat = fakeBoat();
+      boat.provider.fork = async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "unavailable",
+          message: "credential_refused expired revoked (not a classification input)",
+          retryable: true,
+          ...(failure === "provider_unavailable" ? { status: 503 } : {}),
+        });
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}` },
+          body: JSON.stringify({ golden: "web", harness: "claude" }),
+        }),
+        { ...options, ...(failure === "dependency_unavailable" ? {} : { providerFor: () => boat.provider }) },
+      );
+      expect(response?.status).toBe(
+        failure === "credential_refused" ? 422 : failure === "provider_unavailable" ? 502 : 503,
+      );
+      expect(await response?.json()).toMatchObject({ error: { code: failure } });
+      expect((await db.query("select id from sandboxes")).rows).toEqual([]);
+    });
+  });
+}
+
 describe("armada org and armada creds against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
     await withServer(async ({ db, options, cli }) => {
@@ -510,7 +566,7 @@ describe("control API", () => {
       expect(response?.status).toBe(502);
       expect(response?.headers.get("cache-control")).toBe("no-store");
       expect(await response?.json()).toEqual({
-        error: { code: "unknown", message: "The provider failed." },
+        error: { code: "provider_unavailable", message: "The provider failed." },
       });
     });
   });
@@ -1365,9 +1421,9 @@ test.each(["claude", "codex"] as const)(
       expect((await post(STAN, chosen)).status).toBe(404); // Org admins cannot adopt another owner's workspace.
       const incompatible = await post(ADA, wrong);
       expect(await incompatible.json()).toMatchObject({
-        error: { code: "unavailable", message: expect.stringContaining("incompatible") },
+        error: { code: "credential_refused", message: expect.stringContaining("incompatible") },
       });
-      expect(incompatible.status).toBe(503);
+      expect(incompatible.status).toBe(422);
       await options.store.removeMember(org.id, ADA);
       expect((await post(ADA, chosen)).status).toBe(404); // The named org is resolved against fresh memberships.
       // Without --org, the bearer's org list may be stale: the transaction checks membership again.

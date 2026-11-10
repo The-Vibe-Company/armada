@@ -39,6 +39,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
+import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
@@ -46,7 +47,7 @@ import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import { callOrchestrator } from "./orchestrator-api.ts";
+import { callOrchestrator, orchestratorFailureCode } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
@@ -310,7 +311,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
           };
         } catch (error) {
-          const code = error instanceof OrchestratorRuntimeError ? error.code : "unavailable";
+          const code = orchestratorFailureCode(error);
           return {
             isError: true,
             content: [
@@ -824,7 +825,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const found = await visible(args.id);
       const store = data.resourceObservations;
-      if (!store) throw new ToolError("unavailable", "Resource observation persistence is unavailable.");
+      if (!store) throw new ToolError("dependency_unavailable", "Resource observation persistence is unavailable.");
       const admission =
         found.resourceProject && found.machineSize?.capacity && ["ready", "running"].includes(found.status)
           ? await store.claim(found.id, context.now())
@@ -1434,7 +1435,7 @@ async function readLogs(
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
   const { code, message } = describe(error);
-  if (code === "internal" || code === "unavailable") {
+  if (["internal", "unavailable", "provider_unavailable", "dependency_unavailable", "outcome_unknown"].includes(code)) {
     logError(redactForLog(`armada serve: tool ${tool} failed (${code}): ${describeFailure(error)}`));
   }
   return {
@@ -1447,6 +1448,8 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
 }
 
 function describe(error: unknown): { code: string; message: string } {
+  const failure = apiFailureCode(error);
+  if (failure) return { code: failure, message: error instanceof Error ? error.message : failure };
   if (error instanceof ToolError) return { code: error.code, message: error.message };
   if (error instanceof LaunchError) {
     const tail = error.sandboxId ? ` Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.` : "";
@@ -1462,10 +1465,14 @@ function describe(error: unknown): { code: string; message: string } {
   }
   if (error instanceof VaultError)
     return {
-      code: error.code.startsWith("credential_binding_") ? error.code : "missing_credential",
+      code: error.code.startsWith("credential_binding_")
+        ? error.code
+        : error.code === "unavailable"
+          ? "dependency_unavailable"
+          : "missing_credential",
       message: error.message,
     };
-  if (error instanceof EncryptionKeyError) return { code: "unavailable", message: error.message };
-  if (error instanceof DataError) return { code: "unavailable", message: error.message };
+  if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
+  if (error instanceof DataError) return { code: "dependency_unavailable", message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };
 }

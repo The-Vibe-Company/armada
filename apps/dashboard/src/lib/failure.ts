@@ -24,6 +24,19 @@ const HELP: Record<string, FailureHelp> = {
     title: "Rate limited",
     hint: "The provider is throttling this account. Wait a moment and try again.",
   },
+  credential_refused: AUTH,
+  provider_unavailable: {
+    title: "Provider unavailable",
+    hint: "The sandbox provider is temporarily unavailable. Try again later.",
+  },
+  dependency_unavailable: {
+    title: "Server dependency unavailable",
+    hint: "An Armada dependency is temporarily unavailable. Try again later.",
+  },
+  outcome_unknown: {
+    title: "Outcome unknown",
+    hint: "Check the operation status before retrying; it may already have started.",
+  },
   auth_expiry: AUTH,
   unauthorized: AUTH,
   provider_not_configured: {
@@ -36,11 +49,5 @@ const HELP: Record<string, FailureHelp> = {
 /** A clear message for the reasons an agent or a call fails with. Unknown reasons have none: show them as they are. */
 export function describeFailure(reason: string | null | undefined): FailureHelp | null {
   if (!reason) return null;
-  const known = HELP[reason.trim().toLowerCase()];
-  if (known) return known;
-  const lowered = reason.toLowerCase();
-  for (const code of Object.keys(HELP)) {
-    if (lowered.includes(code)) return HELP[code] ?? null;
-  }
-  return null;
+  return HELP[reason] ?? null;
 }

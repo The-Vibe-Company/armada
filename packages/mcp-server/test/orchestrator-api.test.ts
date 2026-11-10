@@ -18,7 +18,7 @@ test("unconfigured orchestrators report off and refuse mutations without touchin
   );
   expect(create.status).toBe(503);
   expect(create.headers.get("cache-control")).toBe("no-store");
-  expect(await create.json()).toEqual({ error: { code: "unavailable", message: "unavailable" } });
+  expect(await create.json()).toEqual({ error: { code: "dependency_unavailable", message: "dependency_unavailable" } });
 });
 
 test("shared boundary rejects malformed optional configuration and unknown mutation fields before backend admission", async () => {
