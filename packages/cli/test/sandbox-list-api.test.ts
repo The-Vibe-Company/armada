@@ -82,10 +82,10 @@ test("safe sandbox list renders metadata-only access without interior lookups an
         hasMore: false,
       });
     else {
-      expect(out).toContain("Modal  —  running  2h  teammate  metadata only");
+      expect(out).toContain("Modal  —  running  2h  —  teammate  metadata only");
       expect(out).toContain(row.id);
       expect(out).toContain("UNKNOWN (server reauthorizes)");
-      expect(out).toContain("Boat  bx_display  running  2h  teammate  open/manage");
+      expect(out).toContain("Boat  bx_display  running  2h  —  teammate  open/manage");
     }
   }
 });
