@@ -203,3 +203,30 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
     throw error;
   }
 }
+
+// Outcome metadata is public to readers but cannot be fabricated by a user JWT.
+test("golden build warnings are server-owned on insert and update", async () => {
+  const db = await openDatabase();
+  try {
+    await applyMigrations(db);
+    const people = await fixture(db);
+    const insert = (warning: boolean) =>
+      db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,config${warning ? ",build_warnings" : ""}) values($1,$2,'warning-check','private','{}'${warning ? ",array['skillpack_download_unavailable']" : ""}) returning id`,
+        [people.org, people.owner],
+      );
+    await expect(asUser(db, people.owner, () => insert(true))).rejects.toMatchObject({ code: "42501" });
+    const created = await asUser(db, people.owner, () => insert(false));
+    const id = created.rows[0]!.id;
+    await db.query("update goldens set build_warnings=array['skillpack_download_unavailable'] where id=$1", [id]);
+    const visible = await asUser(db, people.owner, () =>
+      db.query<{ build_warnings: string[] }>("select build_warnings from goldens where id=$1", [id]),
+    );
+    expect(visible.rows[0]?.build_warnings).toEqual(["skillpack_download_unavailable"]);
+    await expect(
+      asUser(db, people.owner, () => db.query("update goldens set build_warnings='{}' where id=$1", [id])),
+    ).rejects.toMatchObject({ code: "42501" });
+  } finally {
+    await db.close();
+  }
+});
