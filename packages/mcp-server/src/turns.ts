@@ -150,8 +150,8 @@ function failureReason(info: SandboxInfo): string | null {
 }
 
 function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptReport | null): SandboxStatus {
-  if (info.state === "stopped") return current === "failed" ? "failed" : "stopped";
-  if (info.state === "stopping") return current === "failed" ? "failed" : "stopping";
+  if (info.state === "stopped") return "stopped";
+  if (info.state === "stopping") return "stopping";
   if (info.state === "failed") return "failed";
   if (info.state === "starting") return current === "running" ? "running" : "starting";
   if (!prompt) return current === "starting" ? "ready" : current === "running" ? "running" : current;
