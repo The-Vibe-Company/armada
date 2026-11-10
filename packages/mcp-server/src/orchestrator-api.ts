@@ -2,6 +2,7 @@ import {
   API_FAILURE_STATUS,
   MACHINE_SIZES,
   ORCHESTRATOR_DEFAULTS,
+  ORCHESTRATOR_SKILL_PATTERN,
   type OrchestratorCreate,
   ProviderError,
 } from "@armada/core";
@@ -75,6 +76,7 @@ export async function callOrchestrator(
       "provider",
       "harness",
       "repo",
+      "skill",
       "size",
       "model",
       "reasoningEffort",
@@ -85,6 +87,11 @@ export async function callOrchestrator(
     if (
       Object.keys(args).some((key) => !allowed.includes(key)) ||
       args.version !== 1 ||
+      (args.skill !== undefined &&
+        (typeof args.skill !== "string" ||
+          args.skill.length > 256 ||
+          !ORCHESTRATOR_SKILL_PATTERN.test(args.skill) ||
+          args.skill.split("/")[1]?.startsWith("armada-tools@"))) ||
       (args.size !== undefined && !(MACHINE_SIZES as readonly unknown[]).includes(args.size)) ||
       !["name", "goldenId", "model", "modelAccountId"].every(
         (key) => typeof args[key] === "string" && (args[key] as string).length > 0,

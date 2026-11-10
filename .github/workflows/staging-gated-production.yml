@@ -1,0 +1,116 @@
+name: Pinned staging smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Validated release commit from Release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Lock staging deployment and smoke together. A newer merge cannot
+# replace staging under an active smoke or evict an already queued release.
+concurrency:
+  group: staging-gated-production
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report opt-in state
+        env:
+          ENABLED: ${{ vars.STAGING_GATED_DEPLOYS }}
+          RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
+          RELEASE_CALL_SHA: ${{ inputs.source_sha }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          if [[ -n "$RELEASE_CALL_SHA" && "$ENABLED" != true ]]; then
+            echo "::error::Release staging smoke cannot be a disabled/no-op run."
+            exit 1
+          fi
+          if [[ "$ENABLED" == true && "$SOURCE_REF" != refs/heads/main && "$SOURCE_REF" != refs/tags/v* ]]; then
+            echo "::error::Pinned staging smoke requires main or a version tag."
+            exit 1
+          fi
+          if [[ "$ENABLED" != true ]]; then
+            echo "::notice::Staging-gated deployments disabled; existing deployment behavior unchanged. See docs/releasing.md."
+          elif [[ "$RELEASE_SYNCED" != true ]]; then
+            echo "::error::STAGING_GATED_DEPLOYS requires RELEASE_SYNCED_DEPLOYS=true; production is release-only."
+            exit 1
+          fi
+
+  staging:
+    needs: configuration
+    if: vars.STAGING_GATED_DEPLOYS == 'true' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    environment: staging
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
+      RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
+      ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
+      ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - name: Validate configuration before any mutation
+        run: |
+          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do
+            [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key; production blocked."; exit 1; }
+          done
+          [[ "${ARMADA_URL%/}" == "${ARMADA_SERVER_URL%/}" ]] || {
+            echo "::error::Smoke origin must match the deployed staging server; production blocked."
+            exit 1
+          }
+          echo "RELEASE_VERSION=$(jq -r .version packages/core/package.json)" >> "$GITHUB_ENV"
+      # Match production: deploy tooling comes from the executing workflow,
+      # while git archive and all application sources stay on RELEASE_SHA.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.75.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install pinned deployment clients
+        run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+      - name: Migrate then deploy pinned server and dashboard
+        run: bash .release-tools/scripts/release/deploy-production.sh
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Smoke pinned staging
+        env:
+          ARMADA_SMOKE: create_real_compute
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
+            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" \
+            bun scripts/post-deploy-smoke.ts
+      - name: Report blocked production
+        if: failure()
+        run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."

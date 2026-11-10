@@ -252,7 +252,9 @@ function orchestratorFixture(failure?: "resume" | "create_response" | "turn" | "
       return json({
         version: 1,
         enabled: failure !== "disabled",
-        pairs: [{ provider: "modal", harness: "codex", enabled: true }],
+        ...(failure === "disabled"
+          ? { reason: "native_conformance_required" }
+          : { pairs: [{ provider: "modal", harness: "codex", enabled: true }] }),
       });
     if (call.path.startsWith("orchestrators?") && call.init.method === "GET") {
       const cursor = new URL(`https://smoke.invalid/${call.path}`).searchParams.get("cursor");
@@ -364,16 +366,74 @@ test("orchestrator failures clean up after uncertain resume, lost create respons
   }
 });
 
-test("disabled orchestrator pair fails without allocating an orchestrator", async () => {
+test("disabled orchestrator service reports a distinct cause before allocating compute", async () => {
   const fake = orchestratorFixture("disabled");
   expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
-  expect(fake.calls.some((call) => call.path === "orchestrators")).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
   expect(fake.receipts().at(-1)).toEqual({
     case: 0,
     step: "orchestrator_capabilities",
     pass: false,
-    code: "pair_disabled",
+    code: "orchestrator_disabled",
   });
+});
+
+test.each([
+  {
+    name: "later pair absent",
+    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: true }] },
+    code: "pair_disabled",
+    index: 1,
+  },
+  {
+    name: "pair enabled flag is not boolean true",
+    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: "true" }] },
+    code: "pair_disabled",
+    index: 0,
+  },
+  {
+    name: "unsupported version",
+    capabilities: { version: 2, enabled: true, pairs: [] },
+    code: "invalid_response",
+    index: 0,
+  },
+  {
+    name: "pairs is not an array",
+    capabilities: { version: 1, enabled: true, pairs: null },
+    code: "invalid_response",
+    index: 0,
+  },
+])("preflights $name before allocating any compute", async ({ capabilities, code, index }) => {
+  const fake = fixture((call) => (call.path === "orchestrators/capabilities" ? json(capabilities) : undefined));
+  expect(
+    await postDeploySmoke(
+      {
+        ...env,
+        ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
+      },
+      ["--orchestrator"],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
+  expect(fake.receipts().at(-1)).toEqual({
+    case: index,
+    pass: false,
+    step: "orchestrator_capabilities",
+    code,
+  });
+});
+
+test("capability API failures fail closed without exposing remote bodies", async () => {
+  const fake = fixture((call) =>
+    call.path === "orchestrators/capabilities"
+      ? json({ error: { code: "forbidden", message: "secret" } }, 403)
+      : undefined,
+  );
+  expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(1);
+  expect(fake.receipts()).toEqual([{ case: 0, step: "orchestrator_capabilities", pass: false, code: "forbidden" }]);
+  expect(fake.lines.join("")).not.toContain("secret");
 });
 
 test("waits for readiness and retries only rejected sends with bounded injected backoff", async () => {
@@ -508,4 +568,194 @@ test("only eligible smoke jobs compete for staging compute", () => {
     group: "post-deploy-smoke-staging",
     "cancel-in-progress": false,
   });
+});
+
+test("GitHub runtime slice requires staging assertions and disposable repository before compute", async () => {
+  const valid = {
+    ...env,
+    ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+    ARMADA_SMOKE_GITHUB_GATE: "true",
+    ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
+    ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
+    ARMADA_SMOKE_CASES: JSON.stringify(
+      ["boat", "modal"].flatMap((provider) =>
+        ["claude", "codex"].map((harness) => ({
+          ...selected,
+          provider,
+          harness,
+          disposableRepository: "https://github.com/smoke/disposable.git",
+        })),
+      ),
+    ),
+  };
+  for (const overrides of [
+    { ARMADA_URL: "https://production.invalid" },
+    { ARMADA_SMOKE_GITHUB_GATE: "false" },
+    { ARMADA_SMOKE_SERVER_REVISION: "invalid" },
+    { ARMADA_SMOKE_RUNTIME_REVISION: "invalid" },
+    {
+      ARMADA_SMOKE_CASES: JSON.stringify([
+        { ...selected, disposableRepository: "https://github.com/smoke/disposable.git" },
+      ]),
+    },
+    {
+      ARMADA_SMOKE_CASES: JSON.stringify(
+        Array(4).fill({ ...selected, disposableRepository: "https://github.com/smoke/disposable.git" }),
+      ),
+    },
+    { ARMADA_SMOKE_CASES: valid.ARMADA_SMOKE_CASES.replaceAll("https://github.com/", "https://secret@github.com/") },
+  ]) {
+    const fake = fixture();
+    const io = {
+      ...fake.io,
+      fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(valid.ARMADA_URL, env.ARMADA_URL), init),
+    };
+    expect(await postDeploySmoke({ ...valid, ...overrides }, ["--github-runtime"], io)).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+  }
+});
+
+test("GitHub slice validates native receipts twice and cleans scratch before sandbox even on failure", async () => {
+  for (const failReceipt of [false, true]) {
+    let provider = "boat";
+    let stopping = false;
+    const fake = fixture((call) => {
+      if (call.path === "sandbox/launch") {
+        provider = String(call.body.provider);
+        stopping = false;
+      }
+      if (call.path === "sandbox/stop") stopping = true;
+      if (call.path === "sandbox/status")
+        return json({
+          status: stopping ? "stopped" : "ready",
+          providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+        });
+      if (call.path === "sandbox/exec" && String(call.body.command).startsWith("head -c 64 --"))
+        return json({ exitCode: 0, timedOut: false, stdout: failReceipt ? "0 128 0" : "0 0 0" });
+      return undefined;
+    });
+    const staging = {
+      ...env,
+      ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+      ARMADA_SMOKE_GITHUB_GATE: "true",
+      ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
+      ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
+      ARMADA_SMOKE_CASES: JSON.stringify(
+        ["boat", "modal"].flatMap((provider) =>
+          ["claude", "codex"].map((harness) => ({
+            ...selected,
+            provider,
+            harness,
+            repo: "/home/user/it's a repo",
+            disposableRepository: "https://github.com/smoke/disposable.git",
+          })),
+        ),
+      ),
+    };
+    const io = {
+      ...fake.io,
+      fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(staging.ARMADA_URL, env.ARMADA_URL), init),
+    };
+    expect(await postDeploySmoke(staging, ["--github-runtime"], io)).toBe(!failReceipt);
+    const sends = fake.calls.filter((call) => call.path === "sandbox/send");
+    expect(sends).toHaveLength(failReceipt ? 4 : 8);
+    expect(String(sends[0]?.body.prompt)).toContain("push origin HEAD:refs/heads/armada-runtime-smoke-");
+    expect(fake.calls.filter((call) => String(call.body.command).startsWith("head -c 64 --"))).toHaveLength(
+      failReceipt ? 4 : 8,
+    );
+    if (!failReceipt)
+      for (const turn of [1, 3, 5, 7]) {
+        expect(String(sends[turn]?.body.prompt)).not.toContain("push origin");
+        expect(String(sends[turn]?.body.prompt)).toContain("ls-remote origin HEAD");
+        expect(String(sends[turn]?.body.prompt)).toContain("git -C '/home/user/it'\\''s a repo'");
+      }
+    const cleanup = fake.calls.findIndex((call) =>
+      String(call.body.command).includes("push origin --delete armada-runtime-smoke-"),
+    );
+    expect(cleanup).toBeGreaterThan(0);
+    expect(fake.calls.findIndex((call) => call.path === "sandbox/stop")).toBeGreaterThan(cleanup);
+    expect(fake.lines.join("")).not.toContain("secret");
+    expect(fake.receipts()).toContainEqual(
+      expect.objectContaining({ step: "native_git_exit_statuses", status: 0, remote: failReceipt ? 128 : 0, push: 0 }),
+    );
+    expect(fake.receipts()).toContainEqual(
+      expect.objectContaining({ step: "scratch_branch_cleanup", outcome: "deleted" }),
+    );
+    if (!failReceipt)
+      expect(fake.receipts()).toContainEqual(
+        expect.objectContaining({ step: "enablement", complete: false, renewal: "manual_required" }),
+      );
+  }
+});
+
+test("GitHub failures retain numeric evidence, reject arbitrary receipts, and clean absent scratch after rejected send", async () => {
+  for (const scenario of ["send_rejected", "invalid_receipt", "exec_failed"] as const) {
+    let provider = "boat";
+    let stopping = false;
+    const fake = fixture((call) => {
+      if (call.path === "sandbox/launch") {
+        provider = String(call.body.provider);
+        stopping = false;
+      }
+      if (call.path === "sandbox/stop") stopping = true;
+      if (call.path === "sandbox/status")
+        return json({
+          status: stopping ? "stopped" : "ready",
+          providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+        });
+      if (scenario === "send_rejected" && call.path === "sandbox/send")
+        return json({ error: { code: "forbidden" } }, 403);
+      if (call.path === "sandbox/exec") {
+        const command = String(call.body.command);
+        if (command.includes("ls-remote --exit-code origin refs/heads/")) return json({ exitCode: 2, timedOut: false });
+        if (command.startsWith("head -c 64 --"))
+          return json({
+            exitCode: 0,
+            timedOut: false,
+            stdout: scenario === "invalid_receipt" ? "secret-response" : "0 0 0",
+          });
+        if (scenario === "exec_failed" && command === "git ls-remote origin HEAD")
+          return json({ exitCode: 128, timedOut: false, stdout: "secret-response" });
+      }
+    });
+    const staging = {
+      ...env,
+      ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+      ARMADA_SMOKE_GITHUB_GATE: "true",
+      ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
+      ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
+      ARMADA_SMOKE_CASES: JSON.stringify(
+        ["boat", "modal"].flatMap((provider) =>
+          ["claude", "codex"].map((harness) => ({
+            ...selected,
+            provider,
+            harness,
+            disposableRepository: "https://github.com/smoke/disposable.git",
+          })),
+        ),
+      ),
+    };
+    const io = {
+      ...fake.io,
+      fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(staging.ARMADA_URL, env.ARMADA_URL), init),
+    };
+    expect(await postDeploySmoke(staging, ["--github-runtime"], io)).toBe(false);
+    expect(fake.calls.some((call) => String(call.body.command).includes("push origin --delete"))).toBe(false);
+    expect(fake.receipts().filter((entry) => entry.step === "scratch_branch_cleanup")).toEqual(
+      Array.from({ length: 4 }, (_, index) => ({ case: index, step: "scratch_branch_cleanup", outcome: "absent" })),
+    );
+    expect(fake.receipts().filter((entry) => entry.step === "cleanup_sandbox" && entry.pass)).toHaveLength(4);
+    if (scenario === "invalid_receipt")
+      expect(fake.receipts()).toContainEqual(expect.objectContaining({ code: "invalid_receipt", pass: false }));
+    if (scenario === "exec_failed")
+      expect(fake.receipts()).toContainEqual(
+        expect.objectContaining({
+          step: "exec_git_exit_status",
+          operation: "git_remote",
+          exitCode: 128,
+          timedOut: false,
+        }),
+      );
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
 });

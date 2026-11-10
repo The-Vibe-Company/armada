@@ -1,11 +1,11 @@
 # Delivery ownership
 
-The worker owns implementation, author self-check, required tests, PR creation and CI repair. The integrator owns final readiness, serialized merges, deployment and release follow-through within the user's authorized scope.
+The worker owns implementation, ship-pr-dev independent review gate, required tests, PR creation and CI repair. The integrator owns final readiness, serialized merges, deployment and release follow-through within the user's authorized scope.
 
-## A worker ready-for-review receipt
+## A worker readiness receipt
 
-The worker owns implementation, author self-check, verification, PR and CI.
-Require READY FOR REVIEW: PR #<n> head <full SHA>, with exact base, changes,
+The worker owns implementation, ship-pr-dev independent review gate, verification, PR and CI.
+Require READY TO MERGE: branch <branch> head <full SHA>, with exact base, changes,
 commands/results and deployment prerequisites. This is not merge approval.
 No Armada identity or factory capability is granted to workers.
 

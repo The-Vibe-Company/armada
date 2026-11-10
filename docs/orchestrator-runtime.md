@@ -19,7 +19,7 @@ Enable only the desired pairs (default remains off):
 
 ```sh
 ARMADA_ORCHESTRATOR_PAIRS=boat:claude,boat:codex,modal:codex
-ARMADA_ORCHESTRATOR_SKILL_REVISION=0976883b70ee3ddedef5f965064bd75a248c5b6e
+# Optional legacy metadata only; no longer selects an orchestration skill.
 ```
 
 Use the existing Boat golden **two-repos-prod-test**, its ID from
@@ -59,28 +59,29 @@ Configure the server running this PR with:
 
 ```sh
 ARMADA_ORCHESTRATOR_PAIRS=modal:codex
-ARMADA_ORCHESTRATOR_SKILL_REVISION=0976883b70ee3ddedef5f965064bd75a248c5b6e
+# Optional legacy metadata only; no longer selects an orchestration skill.
 ```
 
-The skill revision is an immutable, public, reviewed commit containing the four
-installer packages; the shown merged commit is suitable. Keep the existing server
-configuration: `ARMADA_DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+Skill selection is caller-owned via `--skill org/slug@version`, not a server
+revision. Keep the existing server configuration: `ARMADA_DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
 `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (externally reachable HTTPS), and
 `ARMADA_ENCRYPTION_KEY` (the existing 32-byte base64 key, **do not rotate it**).
 Use the built server with its pinned Linux-native Runner artifact; no new provider
 secret belongs in server arguments or this setting. Existing account202,
 model-auth203, foundation208, runtime215, native-binding216 and lifecycle217
-schema must already be deployed in order. This PR adds no migration.
+schema must already be deployed in order. Apply the new receipt migration
+`20261110180000_orchestrator_skill_receipt.sql` before rolling out this code.
 
 In the caller's organization, use an existing **Modal** golden with a saved
 snapshot and its immutable workspace/environment/App binding registered by
 Armada. The bound Modal org/user credential must still be present in the vault;
 use the normal provider setup and golden creation path, not a hand-written App ID
-or the historical stopped conformance App. The golden must contain `git` and Node/npm. Existing `armada` CLI installations
-are used for skill bootstrap; otherwise an explicitly pinned public CLI installer
-is fetched with registry scripts disabled. Public Git/npm egress is required.
-Do not preinstall the four managed skill packages into the selected project:
-the first-create installer refuses conflicts rather than overwriting user files.
+or the historical stopped conformance App. The golden must contain `git`. When selecting a method, it must also contain
+the released native `skillpack` CLI on PATH and have public Skillpack catalog
+egress. No npm fallback or remote installer is fetched. Leave the reserved
+`armada-tools` discovery directory absent; conflicting files fail closed rather
+than being overwritten. Other Skillpack package conflicts follow the native
+installer policy.
 The optional repo must exist in that golden. Select a current named **Codex**
 model account owned/authorized for the caller, a supported model and optional
 effort. Rotating native Codex accounts retain ordinary exclusive ownership: a
@@ -355,3 +356,9 @@ Existing account/foundation, runtime215, native-binding216 and lifecycle217
 schema must already be deployed in migration order; this PR adds no migration.
 Modal × Codex is opt-in under the approved operator postflight procedure above;
 Boat pairs are separately opt-in best-effort; Modal × Claude remains disabled. Rollback retains identity/history/native state.
+
+## Skill selection
+
+Managed parents now receive only a minimal Armada tool reference by default.
+Select a public Skillpack method with create `--skill org/slug@version`; see
+[CLI orchestrators](cli-orchestrators.md#optional-skillpack-method).

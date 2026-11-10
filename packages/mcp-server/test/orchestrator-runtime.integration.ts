@@ -444,3 +444,80 @@ test("live history advertises provider backlog when a full owner page exactly fi
     await db.close();
   }
 });
+
+test("oversized agent and operation history retain envelopes and advance past closed gaps", async () => {
+  const { db, people: p } = await database();
+  const store = new OrchestratorRuntimeStore(
+    {
+      query: (q, v) => db.query(q, v),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    },
+    reserveOrchestratorOperation,
+  );
+  try {
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const created = await store.create({
+      ownerId: p.owner,
+      configuration: {
+        version: 1,
+        orgId: p.org,
+        name: "oversized-history",
+        goldenId: golden.id,
+        provider: "boat",
+        harness: "claude",
+        model: "native-model",
+        modelAccountId: crypto.randomUUID(),
+      },
+      key: "oversized-history",
+      skillRevision: revision,
+    });
+    const at = "2026-11-10T10:00:00.000Z";
+    const huge = "x".repeat(1048576);
+    for (const event of [
+      {
+        kind: "agent",
+        event: {
+          id: "native",
+          at: Date.parse(at),
+          kind: "message",
+          text: huge,
+          conversationId: "conversation",
+          promptId: "prompt",
+          tools: [],
+          partial: false,
+        },
+      },
+      { kind: "operation", operation: { ...created.operation, errorCode: huge } },
+    ]) {
+      const inserted = await db.query<{ sequence: string }>(
+        "insert into orchestrator_runtime_events(orchestrator_id,revision,event,created_at) values($1,7,$2::jsonb,$3) returning sequence::text",
+        [created.identity.id, JSON.stringify(event), at],
+      );
+      const page = await store.events(p.owner, p.org, created.identity.id, undefined, 1, { direction: "backward" });
+      expect(page.events).toHaveLength(1);
+      expect(page.events[0]).toMatchObject({
+        id: inserted.rows[0]!.sequence,
+        revision: 7,
+        at,
+        orchestratorId: created.identity.id,
+        kind: "agent",
+        event: {
+          at: Date.parse(at),
+          kind: "other",
+          type: "event_truncated",
+          data: { reason: "event_exceeds_hard_limit", originalKind: event.kind === "agent" ? "message" : "operation" },
+        },
+      });
+      expect(JSON.stringify(page.events).length).toBeLessThan(1048576);
+      expect(page.events[0]).not.toHaveProperty("operation");
+      if (event.kind === "agent")
+        expect(page.events[0]).toMatchObject({
+          event: { conversationId: "conversation", promptId: "prompt" },
+        });
+      expect(page.cursor).toBeTruthy();
+      expect((await store.events(p.owner, p.org, created.identity.id, page.cursor!)).events).toEqual([]);
+    }
+  } finally {
+    await db.close();
+  }
+});

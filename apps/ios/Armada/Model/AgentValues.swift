@@ -120,6 +120,20 @@ enum SandboxStatus: Hashable, Sendable {
         case .stopped, .deleted, .other: .inactive
         }
     }
+
+    /// The wire value, for ArmadaKit's pure rules (`ListStatusGroup.sandbox`).
+    var rawValue: String {
+        switch self {
+        case .starting: "starting"
+        case .ready: "ready"
+        case .running: "running"
+        case .stopping: "stopping"
+        case .stopped: "stopped"
+        case .failed: "failed"
+        case .deleted: "deleted"
+        case .other(let value): value
+        }
+    }
 }
 
 /// One visual vocabulary for every status dot, so orchestrators and sandboxes read the same.

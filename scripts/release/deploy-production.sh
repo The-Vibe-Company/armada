@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Run only in the protected release job, with cwd set to the validated release checkout.
+# Run only in a protected staging/release job, with cwd on the pinned source checkout.
 set -euo pipefail
 
 fail() { echo "::error::$*" >&2; exit 1; }
 for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID \
   RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID \
   VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL RELEASE_SHA RELEASE_VERSION; do
-  [[ -n "${!key:-}" ]] || fail "Missing production environment secret/configuration: $key. See docs/releasing.md."
+  [[ -n "${!key:-}" ]] || fail "Missing deployment environment secret/configuration: $key. See docs/releasing.md."
 done
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail 'Checkout does not match validated release SHA.'
 [[ "$ARMADA_SERVER_URL" == https://* ]] || fail 'ARMADA_SERVER_URL must use HTTPS.'

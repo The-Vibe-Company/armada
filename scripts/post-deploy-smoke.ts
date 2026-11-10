@@ -31,8 +31,10 @@ type Code =
   | "poll_limit_exceeded"
   | "turn_failed"
   | "exec_failed"
+  | "invalid_receipt"
   | "provider_not_stopped"
   | "pair_disabled"
+  | "orchestrator_disabled"
   | "operation_failed"
   | "continuity_failed";
 const API_CODES = new Set<Code>([
@@ -63,6 +65,7 @@ interface SmokeCase {
   repo: string;
   goldenId?: string;
   reasoningEffort?: string;
+  disposableRepository?: string;
 }
 interface SmokeIo {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -92,9 +95,16 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   let origin: string;
   let cases: SmokeCase[];
   const orchestrator = args.includes("--orchestrator");
+  const github = args.includes("--github-runtime");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
-    if (args.some((arg) => arg !== "--orchestrator") || !env.ARMADA_URL || !env.ARMADA_TOKEN || !env.ARMADA_SMOKE_CASES)
+    if (
+      (github && orchestrator) ||
+      args.some((arg) => arg !== "--orchestrator" && arg !== "--github-runtime") ||
+      !env.ARMADA_URL ||
+      !env.ARMADA_TOKEN ||
+      !env.ARMADA_SMOKE_CASES
+    )
       fail("invalid_configuration");
     const url = new URL(env.ARMADA_URL);
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
@@ -117,6 +127,24 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         (orchestrator && (typeof item.goldenId !== "string" || !item.goldenId.trim()))
       )
         fail("invalid_configuration");
+    }
+    if (github) {
+      if (
+        env.ARMADA_URL !== "https://armada-mcp-staging.up.railway.app" ||
+        env.ARMADA_SMOKE_GITHUB_GATE !== "true" ||
+        !/^[a-f0-9]{40}$/.test(env.ARMADA_SMOKE_SERVER_REVISION ?? "") ||
+        !/^[a-f0-9]{40}$/.test(env.ARMADA_SMOKE_RUNTIME_REVISION ?? "")
+      )
+        fail("invalid_configuration");
+      const pairs = new Set(parsed.map((item) => `${item.provider}/${item.harness}`));
+      if (parsed.length !== 4 || pairs.size !== 4) fail("invalid_configuration");
+      for (const item of parsed) {
+        if (
+          typeof item.disposableRepository !== "string" ||
+          !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/.test(item.disposableRepository)
+        )
+          fail("invalid_configuration");
+      }
     }
     cases = parsed;
   } catch (error) {
@@ -166,6 +194,34 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     fail("poll_limit_exceeded");
   }
+  // Validate the entire selected matrix before any billable mutation. A later
+  // disabled case must not be discovered after earlier cases have allocated.
+  if (orchestrator) {
+    let index = 0;
+    try {
+      const capabilities = await request<{
+        version: number;
+        enabled: boolean;
+        pairs?: { provider: string; harness: string; enabled: boolean }[];
+      }>("orchestrators/capabilities");
+      if (capabilities?.version !== 1) fail("invalid_response");
+      if (capabilities.enabled !== true) fail("orchestrator_disabled");
+      if (!Array.isArray(capabilities.pairs)) fail("invalid_response");
+      for (const [caseIndex, item] of cases.entries()) {
+        index = caseIndex;
+        if (
+          !capabilities.pairs.some(
+            (pair) => pair?.provider === item.provider && pair.harness === item.harness && pair.enabled === true,
+          )
+        )
+          fail("pair_disabled");
+        report(index, "orchestrator_capabilities");
+      }
+    } catch (error) {
+      report(index, "orchestrator_capabilities", error);
+      return false;
+    }
+  }
   let passed = true;
   for (const [index, item] of cases.entries()) {
     async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
@@ -180,6 +236,35 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const scratch = `armada-runtime-smoke-${crypto.randomUUID()}`;
+    const receipt = `/tmp/${scratch}`;
+    let pushAttempted = false;
+    const git = `git -C ${quote(item.repo)}`;
+    const remoteGuard = `test "$(${git} remote get-url origin)" = ${quote(item.disposableRepository ?? "")}`;
+    async function checkedExec(command: string) {
+      const result = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
+        id: sandboxId,
+        command,
+        cwd: item.repo,
+        timeout_seconds: 60,
+      });
+      if (result?.exitCode !== 0 || result.timedOut !== false) fail("exec_failed");
+    }
+    if (github)
+      io.out(
+        JSON.stringify({
+          case: index,
+          step: "github_runtime_metadata",
+          provider: item.provider,
+          harness: item.harness,
+          gate: true,
+          serverRevision: env.ARMADA_SMOKE_SERVER_REVISION,
+          runtimeRevision: env.ARMADA_SMOKE_RUNTIME_REVISION,
+          revisionSource: "operator_asserted",
+          scratchBranch: scratch,
+        }),
+      );
     let sandboxId: string | undefined;
     let stopped = false;
     let stopRequested = false;
@@ -245,38 +330,81 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         ),
       );
-      const turn = await step("send", async () => {
-        const result = await poll(
-          async () => {
-            try {
-              return await sandbox<{ promptId: string }>("send", { id: sandboxId, prompt: PROMPT });
-            } catch (error) {
-              // Only this closed rejection guarantees the prompt was not admitted.
-              if (!(error instanceof SmokeFailure) || error.code !== "sandbox_not_ready") throw error;
-              return null;
-            }
-          },
-          (result) => result !== null,
+      async function nativeTurn(second: boolean) {
+        const commands = `${git} status -sb >/dev/null 2>&1; a=$?; ${git} ls-remote origin HEAD >/dev/null 2>&1; b=$?; ${second ? "c=0" : `${git} push origin HEAD:refs/heads/${scratch} >/dev/null 2>&1; c=$?`}; printf '%s %s %s' "$a" "$b" "$c" > ${quote(receipt)}`;
+        if (github) {
+          await step("repository_guard", () => checkedExec(remoteGuard));
+          await checkedExec(`rm -f ${quote(receipt)}`);
+          if (!second) pushAttempted = true;
+        }
+        const turn = await step(second ? "send_second" : "send", async () => {
+          const result = await poll(
+            async () => {
+              try {
+                return await sandbox<{ promptId: string }>("send", {
+                  id: sandboxId,
+                  prompt: github
+                    ? `Run exactly this shell command using your terminal tool, without reading credentials or making other changes: ${commands}`
+                    : PROMPT,
+                });
+              } catch (error) {
+                // Only this closed rejection guarantees the prompt was not admitted.
+                if (!(error instanceof SmokeFailure) || error.code !== "sandbox_not_ready") throw error;
+                return null;
+              }
+            },
+            (result) => result !== null,
+          );
+          if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
+          return result;
+        });
+        await step("wait", () =>
+          poll(
+            () =>
+              sandbox<{ prompt: { promptId: string; state: string } | null }>("wait", {
+                id: sandboxId,
+                prompt_id: turn.promptId,
+                timeout_seconds: 0,
+              }),
+            (result) => {
+              if (!result?.prompt || result.prompt.promptId !== turn.promptId) fail("invalid_response");
+              if (result.prompt.state === "failed" || result.prompt.state === "interrupted") fail("turn_failed");
+              if (result.prompt.state !== "running" && result.prompt.state !== "finished") fail("invalid_response");
+              return result.prompt.state === "finished";
+            },
+          ),
         );
-        if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
-        return result;
-      });
-      await step("wait", () =>
-        poll(
-          () =>
-            sandbox<{ prompt: { promptId: string; state: string } | null }>("wait", {
+        if (github)
+          await step(second ? "native_git_second" : "native_git_first", async () => {
+            const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
               id: sandboxId,
-              prompt_id: turn.promptId,
-              timeout_seconds: 0,
-            }),
-          (result) => {
-            if (!result?.prompt || result.prompt.promptId !== turn.promptId) fail("invalid_response");
-            if (result.prompt.state === "failed" || result.prompt.state === "interrupted") fail("turn_failed");
-            if (result.prompt.state !== "running" && result.prompt.state !== "finished") fail("invalid_response");
-            return result.prompt.state === "finished";
-          },
-        ),
-      );
+              command: `head -c 64 -- ${quote(receipt)}`,
+              cwd: item.repo,
+              timeout_seconds: 60,
+            });
+            if (
+              result?.exitCode !== 0 ||
+              result.timedOut !== false ||
+              typeof result.stdout !== "string" ||
+              !/^\d{1,3} \d{1,3} \d{1,3}$/.test(result.stdout)
+            )
+              fail("invalid_receipt");
+            const [status, remote, push] = result.stdout.split(" ").map(Number);
+            if ([status, remote, push].some((value) => value === undefined || value > 255)) fail("invalid_receipt");
+            io.out(
+              JSON.stringify({
+                case: index,
+                step: "native_git_exit_statuses",
+                turn: second ? 2 : 1,
+                status,
+                remote,
+                ...(second ? {} : { push }),
+              }),
+            );
+            if (status !== 0 || remote !== 0 || push !== 0) fail("exec_failed");
+          });
+      }
+      await nativeTurn(false);
       for (const [name, command] of [
         ["git_status", "git status -sb"],
         ["git_remote", "git ls-remote origin HEAD"],
@@ -288,13 +416,69 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             cwd: item.repo,
             timeout_seconds: 60,
           });
+          if (github) {
+            const exitCode = result?.exitCode;
+            if (exitCode !== null && (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255))
+              fail("invalid_response");
+            io.out(
+              JSON.stringify({
+                case: index,
+                step: "exec_git_exit_status",
+                operation: name,
+                exitCode,
+                timedOut: result.timedOut === true,
+              }),
+            );
+          }
           if (result?.exitCode !== 0 || result.timedOut !== false) fail("exec_failed");
         });
       }
-      await step("stop", stopSandbox);
+      if (github) {
+        await nativeTurn(true);
+        io.out(
+          JSON.stringify({
+            case: index,
+            step: "enablement",
+            complete: false,
+            renewal: "manual_required",
+            brokerFaults: "manual_required",
+            nativeSessionIdentity: "not_verified",
+            secondTurnFinished: true,
+          }),
+        );
+      }
+      if (!github) await step("stop", stopSandbox);
     } catch {
       passed = false;
     } finally {
+      if (github && sandboxId && pushAttempted) {
+        cleaning = true;
+        try {
+          await step("cleanup_scratch_branch", async () => {
+            await checkedExec(remoteGuard);
+            const presence = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
+              id: sandboxId,
+              command: `${git} ls-remote --exit-code origin refs/heads/${scratch}`,
+              cwd: item.repo,
+              timeout_seconds: 60,
+            });
+            if (presence?.timedOut !== false || (presence.exitCode !== 0 && presence.exitCode !== 2))
+              fail("exec_failed");
+            if (presence.exitCode === 0) await checkedExec(`${remoteGuard} && ${git} push origin --delete ${scratch}`);
+            io.out(
+              JSON.stringify({
+                case: index,
+                step: "scratch_branch_cleanup",
+                outcome: presence.exitCode === 2 ? "absent" : "deleted",
+              }),
+            );
+          });
+        } catch {
+          passed = false;
+        } finally {
+          cleaning = false;
+        }
+      }
       if (sandboxId && !stopped) {
         cleaning = true;
         try {
@@ -348,21 +532,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       orchestratorStopped = true;
     }
     try {
-      await step("orchestrator_capabilities", async () => {
-        const capabilities = await request<{
-          version: number;
-          enabled: boolean;
-          pairs?: { provider: string; harness: string; enabled: boolean }[];
-        }>(`${root}/capabilities`);
-        if (
-          capabilities?.version !== 1 ||
-          !capabilities.enabled ||
-          !capabilities.pairs?.some(
-            (pair) => pair.provider === item.provider && pair.harness === item.harness && pair.enabled,
-          )
-        )
-          fail("pair_disabled");
-      });
       await step("orchestrator_create", async () => {
         createAttempted = true;
         const operation = await request<OrchestratorOperation>(

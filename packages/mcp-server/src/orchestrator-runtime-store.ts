@@ -8,7 +8,7 @@ import type {
   OrchestratorState,
   PromptStatus,
 } from "@armada/core";
-import { boundEventEntries, coalesceEventMessages } from "@armada/core";
+import { boundEventEntries, coalesceEventMessages, truncateEvent } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
@@ -33,6 +33,7 @@ export interface RuntimeIdentity {
   conversationId: string | null;
   configuration: OrchestratorCreate;
   skillRevision: string;
+  skillReceipt?: import("@armada/core").OrchestratorSkillReceipt | null;
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string;
@@ -119,6 +120,7 @@ export class OrchestratorRuntimeStore {
       lifecycle_generation: string | number | null;
       configuration: OrchestratorCreate;
       skill_revision: string;
+      skill_receipt: import("@armada/core").OrchestratorSkillReceipt | null;
       conversation_id: string | null;
       created_at: Date | string;
       updated_at: Date | string;
@@ -128,7 +130,7 @@ export class OrchestratorRuntimeStore {
       blocked_reason: string | null;
     }>(
       `select o.id,o.owner_id,o.org_id,o.state,o.revision,o.sandbox_id,s.provider_sandbox_id,s.lifecycle_generation,
-      r.configuration,r.skill_revision,r.conversation_id,o.created_at,r.updated_at,r.last_activity_at,r.idle_deadline,r.continuity,r.blocked_reason from public.orchestrators o
+      r.configuration,r.skill_revision,r.skill_receipt,r.conversation_id,o.created_at,r.updated_at,r.last_activity_at,r.idle_deadline,r.continuity,r.blocked_reason from public.orchestrators o
       join public.orchestrator_runtime r on r.orchestrator_id=o.id
       join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
       left join public.sandboxes s on s.id=o.sandbox_id
@@ -188,6 +190,7 @@ export class OrchestratorRuntimeStore {
       generation: row.lifecycle_generation === null ? null : Number(row.lifecycle_generation),
       configuration: row.configuration,
       skillRevision: row.skill_revision,
+      skillReceipt: row.skill_receipt,
       conversationId: row.conversation_id,
       createdAt: new Date(row.created_at).toISOString(),
       updatedAt: new Date(row.updated_at).toISOString(),
@@ -196,6 +199,17 @@ export class OrchestratorRuntimeStore {
       continuity: row.continuity,
       blockedReason: row.blocked_reason,
     };
+  }
+
+  async recordSkillReceipt(
+    identity: RuntimeIdentity,
+    receipt: import("@armada/core").OrchestratorSkillReceipt | null,
+  ): Promise<void> {
+    const result = await this.sql.query(
+      `update public.orchestrator_runtime set skill_receipt=$1::jsonb where orchestrator_id=$2 and exists(select 1 from public.orchestrators o where o.id=$2 and o.revision=$3) returning orchestrator_id`,
+      [JSON.stringify(receipt), identity.id, identity.revision],
+    );
+    if (!result.rows.length) throw new OrchestratorRuntimeError("unavailable");
   }
 
   async create(input: {
@@ -399,6 +413,21 @@ export class OrchestratorRuntimeStore {
         }
         return merged;
       },
+      (event, originalBytes) =>
+        event.kind === "agent"
+          ? { ...event, event: truncateEvent(event.event, originalBytes) }
+          : {
+              id: event.id,
+              orchestratorId: event.orchestratorId,
+              at: event.at,
+              revision: event.revision,
+              kind: "agent",
+              event: truncateEvent(
+                { id: event.id, at: Date.parse(event.at), kind: "other", type: "oversized", data: null },
+                originalBytes,
+                event.kind,
+              ),
+            },
     );
     return { version: 1, ...page, cursor: page.cursor ?? (backward ? null : encode(after)) };
   }

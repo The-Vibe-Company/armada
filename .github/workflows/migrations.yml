@@ -69,7 +69,7 @@ jobs:
     name: Staging migrations
     # Independent of production: missing staging configuration must not block it.
     # History/repair remain production-only; staging supports forward migrations.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'migrate')
+    if: vars.STAGING_GATED_DEPLOYS != 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'migrate')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
@@ -121,7 +121,7 @@ jobs:
 
   production:
     name: Production migrations
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (vars.RELEASE_SYNCED_DEPLOYS != 'true' || inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && ((vars.STAGING_GATED_DEPLOYS != 'true' && vars.RELEASE_SYNCED_DEPLOYS != 'true') || inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production

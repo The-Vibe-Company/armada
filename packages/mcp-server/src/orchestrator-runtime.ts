@@ -9,6 +9,7 @@ import type {
   Provider,
   SandboxRecord,
 } from "@armada/core";
+import { ProviderError } from "@armada/core";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
@@ -26,6 +27,14 @@ import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
 export class BestEffortConversationUnavailable extends Error {}
 class NativeContinuityLost extends Error {}
+// Only steer's explicit no_running_turn proves nothing was delivered on both
+// providers. Do not generalize other errors or prompt: preparation may already
+// have side effects, and Modal conflict can mean request_outcome_unknown.
+class PromptRefused extends Error {
+  constructor(readonly refusal: ProviderError) {
+    super(refusal.code);
+  }
+}
 
 export interface OrchestratorCreateHooks {
   registered(saved: SandboxRecord & { lifecycleGeneration: number }): Promise<void>;
@@ -505,7 +514,11 @@ export class OrchestratorRuntime {
               : {}),
           };
         } catch (error) {
-          if (!dispatched) diagnostics.observe("prompt_dispatch", "not_confirmed");
+          if (!dispatched) {
+            diagnostics.observe("prompt_dispatch", "not_confirmed");
+            if (input.action === "steer" && error instanceof ProviderError && error.code === "no_running_turn")
+              throw new PromptRefused(error);
+          }
           throw error;
         }
       });
@@ -557,6 +570,12 @@ export class OrchestratorRuntime {
       sandboxId: identity.providerSandboxId,
       projectDir: backend.projectDir,
       skillRevision: identity.skillRevision,
+      skill: identity.configuration.skill,
+      harness: identity.configuration.harness,
+      recordReceipt: async (receipt) => {
+        await validate?.();
+        await this.options.store.recordSkillReceipt(identity, receipt);
+      },
       configureAuthority: async () => {
         await validate?.();
         await this.configureAuthority(backend, identity, diagnostics);
@@ -629,13 +648,16 @@ export class OrchestratorRuntime {
       const unavailable = error instanceof BestEffortConversationUnavailable;
       if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");
       const lost = error instanceof NativeContinuityLost || unavailable;
-      const state = lost ? ("failed" as const) : ("uncertain" as const);
-      const errorCode = unavailable
-        ? "boat_conversation_unavailable"
-        : lost
-          ? "native_continuity_lost"
-          : "runtime_uncertain";
-      diagnostics.report(state, error);
+      const refused = error instanceof PromptRefused;
+      const state = lost || refused ? ("failed" as const) : ("uncertain" as const);
+      const errorCode = refused
+        ? error.refusal.code
+        : unavailable
+          ? "boat_conversation_unavailable"
+          : lost
+            ? "native_continuity_lost"
+            : "runtime_uncertain";
+      diagnostics.report(state, refused ? error.refusal : error);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.
@@ -643,7 +665,7 @@ export class OrchestratorRuntime {
       try {
         published = await this.options.store.complete(reservation, {
           state,
-          parentState: "blocked",
+          parentState: refused ? "ready" : "blocked",
           errorCode,
           ...(lost
             ? { continuity: "lost" as const }
@@ -680,6 +702,7 @@ function wireOrchestrator(identity: RuntimeIdentity): Orchestrator {
     lastActivityAt: identity.lastActivityAt,
     idleDeadline: identity.idleDeadline,
     skillRevision: identity.skillRevision,
+    skillReceipt: identity.skillReceipt ?? null,
     blockedReason: identity.blockedReason,
   };
 }

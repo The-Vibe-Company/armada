@@ -1,3 +1,4 @@
+import ArmadaKit
 import SwiftUI
 
 struct OrchestratorRoute: Hashable {
@@ -5,7 +6,7 @@ struct OrchestratorRoute: Hashable {
 }
 
 /// The orchestrator-first home: the owner's persistent coordinators with their agent, provider,
-/// state, last activity and idle stop.
+/// state, last activity and idle stop, grouped by status and newest first (`ListOrdering`).
 struct OrchestratorListView: View {
     @Environment(AppModel.self) private var app
     @State private var model: OrchestratorListModel?
@@ -13,6 +14,7 @@ struct OrchestratorListView: View {
     @State private var showingCreate = false
     @State private var showingAccount = false
     @State private var confirmingDiscard = false
+    @State private var disclosure = StatusSectionDisclosure()
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -63,6 +65,7 @@ struct OrchestratorListView: View {
             if model?.orgID != orgID {
                 model = OrchestratorListModel(service: app.orchestrators, orgID: orgID) { app.sessionEnded() }
                 path = []
+                disclosure = StatusSectionDisclosure()
             }
             await model?.load()
         }
@@ -133,20 +136,42 @@ struct OrchestratorListView: View {
                     .listRowBackground(Color.clear)
                 }
             } else {
-                Section {
-                    ForEach(model.items) { item in
-                        NavigationLink(value: OrchestratorRoute(id: item.id)) {
-                            OrchestratorRow(item: item)
+                let sections = ListOrdering.sections(
+                    model.items, group: { .orchestrator($0.state.rawValue) }, createdAt: \.createdAt, id: \.id
+                )
+                let groups = sections.map(\.group)
+                ForEach(sections, id: \.group) { section in
+                    let collapsed = disclosure.isCollapsed(section.group, groups: groups)
+                    Section {
+                        if !collapsed {
+                            ForEach(section.items) { item in
+                                NavigationLink(value: OrchestratorRoute(id: item.id)) {
+                                    OrchestratorRow(item: item)
+                                }
+                                .accessibilityIdentifier("orchestrators.row.\(item.id)")
+                            }
                         }
-                        .accessibilityIdentifier("orchestrators.row.\(item.id)")
+                    } header: {
+                        StatusSectionHeader(
+                            group: section.group,
+                            count: section.items.count,
+                            collapsed: Binding(
+                                get: { collapsed },
+                                set: { disclosure.set(section.group, collapsed: $0) }
+                            )
+                        )
                     }
-                    if model.hasMore {
+                }
+                if model.hasMore {
+                    Section {
                         HStack {
                             Spacer()
                             ProgressView()
                             Spacer()
                         }
-                        .task { await model.loadMore() }
+                        // Keyed by the row count: a page that lands only in a collapsed group adds nothing visible,
+                        // so the row never leaves the screen and must ask again after each page.
+                        .task(id: model.items.count) { await model.loadMore() }
                     }
                 }
             }

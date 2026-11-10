@@ -6,6 +6,7 @@ import * as core from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
@@ -134,8 +135,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     return json({
       type: "command.finished",
       success: true,
-      exitCode: 0,
-      stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${"a".repeat(40)}/.agents/skills\n`,
+      exitCode: JSON.stringify(body).includes("example/missing") ? 1 : 0,
+      stdout: catalogLock(JSON.stringify(body).includes("claude-code") ? "claude-code" : "codex"),
       stderr: "",
       timedOut: false,
     });
@@ -185,6 +186,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     );
     return json({ promptId: `prompt-${prompts}`, conversationId, status: "queued" }, 202);
   }
+  if (suffix === "/steer")
+    return Response.json({ ok: false, code: "no_running_turn", message: "Nothing runs" }, { status: 409 });
   if (suffix.startsWith("/prompts/"))
     return json({
       promptRun: {
@@ -290,6 +293,8 @@ try {
     const create = await cli([
       "create",
       `Boat ${harness}`,
+      "--skill",
+      catalogReference,
       "--org",
       orgId,
       "--golden",
@@ -313,6 +318,8 @@ try {
     }
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
+    assert.equal(detail.orchestrator.configuration.skill, catalogReference);
+    assert.deepEqual(detail.orchestrator.skillReceipt, catalogReceipt);
     let revision = detail.orchestrator.revision;
     const act = async (action: string, text?: string, expected = 0) => {
       const result = await cli(
@@ -369,7 +376,7 @@ try {
     ).rows[0]?.runtime_result;
     assert.equal(receipt?.kind, "prompt_receipt");
     assert.equal(receipt.promptId, `prompt-${prompts}`);
-    assert.equal(prompts, harness === "codex" ? 1 : 3, "Owner send must dispatch to Boat");
+    assert.equal(prompts, harness === "codex" ? 1 : 4, "Owner send must dispatch to Boat");
     const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
     const agentEvents = page.events
       .filter((item: core.OrchestratorEvent) => item.kind === "agent")
@@ -386,6 +393,35 @@ try {
       agentEvents.some((item) => item?.kind === "prompt" && item.status === "finished"),
       JSON.stringify(page),
     );
+    const steerRevision = revision;
+    const refused = await act("steer", "too late", 1);
+    assert.equal(refused.state, "failed", JSON.stringify(refused));
+    assert.equal(refused.errorCode, "no_running_turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.state, "ready");
+    assert.equal(detail.orchestrator.blockedReason, null);
+    const conversationId = detail.orchestrator.conversationId;
+    const steerDispatches = requests.filter((request) => request.endsWith("/steer")).length;
+    await act("send", "new turn");
+    detail = await cli(["detail", id, "--org", orgId]);
+    assert.equal(detail.orchestrator.conversationId, conversationId);
+    assert.equal(detail.orchestrator.state, "ready");
+    const replayedSteer = await cli(
+      [
+        "steer",
+        id,
+        "too late",
+        "--org",
+        orgId,
+        "--expected-revision",
+        String(steerRevision),
+        "--idempotency-key",
+        `${harness}-steer-${steerRevision}`,
+      ],
+      1,
+    );
+    assert.deepEqual(replayedSteer, refused);
+    assert.equal(requests.filter((request) => request.endsWith("/steer")).length, steerDispatches);
     await act("stop");
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
@@ -438,6 +474,34 @@ try {
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
   }
+  const beforeFailurePrompts = prompts;
+  const failed = await cli([
+    "create",
+    "missing method",
+    "--org",
+    orgId,
+    "--golden",
+    golden.id,
+    "--provider",
+    "boat",
+    "--agent",
+    "codex",
+    "--model",
+    core.resolveModelChoice("codex", {}).model,
+    "--model-account",
+    models.get("codex")!,
+    "--skill",
+    "example/missing@1.0.0",
+    "--idempotency-key",
+    "missing-method",
+  ]);
+  let blocked: core.OrchestratorDetail = await cli(["detail", failed.orchestratorId, "--org", orgId]);
+  for (let i = 0; i < 150 && blocked.orchestrator.state === "creating"; i++)
+    blocked = await cli(["detail", failed.orchestratorId, "--org", orgId]);
+  assert.equal(blocked.orchestrator.state, "blocked");
+  assert.equal(blocked.orchestrator.skillReceipt, null);
+  assert.equal(blocked.orchestrator.conversationId, null);
+  assert.equal(prompts, beforeFailurePrompts, "Failed installation must not start a turn");
   assert(logs.some((line) => line.includes('"kind":"prompt_dispatch"') && line.includes('"value":"accepted"')));
   assert(logs.some((line) => line.includes('"kind":"prompt_status"') && line.includes('"value":"finished"')));
   assert(logs.some((line) => line.includes('"kind":"events_poll"') && line.includes('"value":"published"')));

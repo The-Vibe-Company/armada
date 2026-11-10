@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { Machine } from "@armada/provider-modal";
+import { catalogLock } from "./skillpack-catalog.ts";
 
 type Grant = { token: string; generation: string; sandboxId: string };
 type Vm = {
@@ -56,7 +57,7 @@ export function fakeModalRuntime(input: {
         version: number;
         requestId: string;
         op: string;
-        input?: { command?: string };
+        input?: { command?: string; conversationId?: string };
         configuration?: { revision: string; servers: object };
         token?: string;
       };
@@ -68,13 +69,13 @@ export function fakeModalRuntime(input: {
       else if (packet.op === "exec")
         result = {
           detached: false,
-          exitCode: 0,
+          exitCode: packet.input?.command?.includes("example/missing") ? 1 : 0,
           stdout: packet.input?.command?.includes("ARMADA_RECOVERY")
             ? preservationFailure === "output_invalid"
               ? "not-json"
               : JSON.stringify({ status: "failed", reason: preservationFailure })
-            : packet.input?.command?.includes("skill install --project")
-              ? `Source: https://github.com/The-Vibe-Company/armada/tree/${input.skillRevision}/.agents/skills\n`
+            : packet.input?.command?.startsWith("skillpack install")
+              ? catalogLock("codex")
               : "",
           stderr: "",
           timedOut: !!capturing && preservationFailure === "timeout",
@@ -117,8 +118,13 @@ export function fakeModalRuntime(input: {
           nativeSessionId: null,
         };
       else if (packet.op === "interrupt") result = {};
+      else if (packet.op === "steer") return Response.json({ error: "no_running_turn" }, { status: 409 });
       else if (packet.op === "prompt")
-        result = { promptId: crypto.randomUUID(), conversationId: crypto.randomUUID(), status: "finished" };
+        result = {
+          promptId: crypto.randomUUID(),
+          conversationId: packet.input?.conversationId ?? crypto.randomUUID(),
+          status: "finished",
+        };
       else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };
       else {

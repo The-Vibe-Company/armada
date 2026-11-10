@@ -9,21 +9,19 @@ legacy disabled response remain unchanged. Boat pairs may be selected as `boat:c
 remains unavailable. Boat capabilities report `best_effort` (“resume not guaranteed”)
 and stored continuity stays `unverified`. Ordinary provider stop/resume preserves
 disk/conversation where possible, without a native checkpoint claim; an unavailable
-conversation fails closed. Modal native guarantees are not weakened. Delegated waits remain denied, not a basic-flow prerequisite.
+conversation may resume ready with a fresh conversation and the closed note
+`previous_conversation_not_continued` (continuity remains unverified). Modal native guarantees are not weakened. Delegated waits remain denied, not a basic-flow prerequisite.
 No implementation-session production call or live-conformance success is claimed.
 
 ## Actual dependencies and ownership
 
 The child service consumes `OrchestratorAuthority.admit` from #661, both for the
-atomic receipt reservation and again immediately before dispatch. The inspected
-candidate's authority, operation and migration208 bytes match committed #673
-`79472bf3f68f83ab53692a6655c484c9f9431a23`. The current delivery base is origin/main `e5fc554fd778e021f6c84984e8cee8ac4837ec09`, which contains #673, named-account #612 and sizing #658.
-`generation` in this consumer means SQL `lifecycle_generation`, **not** the
+atomic receipt reservation and again immediately before dispatch. `generation` in this consumer means SQL `lifecycle_generation`, **not** the
 provider's native `physicalGeneration`. Stop receipts bind both independently.
 The merged authority now binds SQL and native generations separately (migration216
 and `OrchestratorAuthority.installEpoch`/ACK/admission). The former mismatch warning
-is resolved; never cast one identity to the other. Boat-native observation and
-checkpoint/restore are separate unresolved requirements.
+is resolved; never cast one identity to the other. Boat uses SDK observation and ordinary retained stop/resume; it does not provide
+the native checkpoint/restore guarantee.
 
 `LifecycleRuntimeStore` extends the actual #662 store. An outer SQL transaction
 includes the producer's event/cursor acknowledgement and activity receipt; a
@@ -39,9 +37,6 @@ binding are mandatory. Missing202 schema or a legacy resolver fails before fork;
 wrong persisted billing identity fails before prompt. No account schema is
 reimplemented. Incomplete #604 private-state delivery is **not** advertised as
 supported. Child harness/account selection is independent of the parent.
-
-Dependencies are validated only in isolated checkouts under `.git`; their files
-are not copied into this focused delivery branch. Integrated types are regenerated against the merged producer schemas.
 
 ## Decisions and invariants
 

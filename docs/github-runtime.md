@@ -152,3 +152,216 @@ recovery; it does not provide uninterrupted output during a total redactor outag
 Diagnostics expose only fixed stage/reason labels, never exception text, socket paths,
 credential responses or environment values. A missing socket reports `socket_missing`;
 permission errors, refused connections and timeouts have distinct labels.
+
+### Automated first slice (#822)
+
+Run `bun scripts/post-deploy-smoke.ts --github-runtime` from a trusted checkout.
+This **staging-only, billable** mode shares the API transport, deadlines and cleanup
+of [post-deploy smoke](post-deploy-smoke.md). It does not enable the server gate.
+In addition to that page's `ARMADA_URL`, `ARMADA_TOKEN`, `ARMADA_SMOKE` and
+`ARMADA_SMOKE_CASES`, set:
+
+- Railway staging server: `ARMADA_GITHUB_RUNTIME_ENABLED=true` on every replica;
+  restart with the reviewed runtime artifacts. Never change production for this test.
+- Operator shell: `ARMADA_SMOKE_GITHUB_GATE=true` (an assertion, not remote detection).
+- `ARMADA_SMOKE_SERVER_REVISION` and `ARMADA_SMOKE_RUNTIME_REVISION`: the deployed
+  full 40-character lowercase Git SHAs, obtained from deployment/build records.
+  Evidence labels these **operator asserted**, not server-attested.
+- Each case: `disposableRepository` set to the exact credential-free HTTPS origin
+  URL, e.g. `https://github.com/your-org/disposable-runtime-smoke.git`. Use a
+  dedicated, disposable repository and smoke identity with push permission. The
+  persisted golden must authorize this repository and its checkout must already
+  have this exact origin. Include all four Boat/Modal × Claude/Codex pairs.
+
+The mode checks origin equality before asking the first native turn to run local
+Git, remote Git and a push of existing HEAD to a UUID scratch branch. It checks a
+private run-specific numeric receipt via exec, runs both read commands via exec,
+then repeats both in a second native turn. No commit or checkout is changed.
+Finally it attempts scratch deletion before stopping the sandbox, even on failure.
+A failed/ambiguous push or cleanup requires inspecting the reported scratch branch
+in the disposable repository; never blindly repeat an ambiguous launch. Native receipts are accepted only as three bounded numeric exit codes; both
+passing and failing operation codes are recorded, never arbitrary guest output.
+Malformed receipts emit `invalid_receipt`. Exec Git codes are also recorded.
+Cleanup first checks the exact scratch ref and reports `absent` or `deleted`;
+remote-query and deletion errors remain failures. A native agent is
+not a trusted attestor: these receipts prove the requested command sequence's
+results, not cryptographic session or process identity.
+
+**A zero script exit means only this automated slice passed.** Each case emits
+`enablement.complete=false`: it is not permission to enable production. The
+public API has no operation for forcing cached GitHub user access expiry, no
+private broker lifecycle/fault control, and no native process identity attestation.
+GitHub connection revocation fences the capability and requires reconnect; it is
+not a safe simulation of access expiry. Do not revoke credentials, manipulate the
+private socket, or copy tokens into the guest to manufacture renewal evidence.
+
+First run `bun scripts/post-deploy-smoke.ts` with the staging server gate off
+and all four cases to record the stock baseline (step 1). Retire these workers,
+turn the gate on on every staging replica and run `--github-runtime` with fresh
+workers. The default smoke covers stock native harness completion and exec Git;
+it is not native-tool Git evidence. Use the procedures below for renewal (step 4)
+and Boat broker faults (step 5). Modal's isolated broker restart is unavailable
+for the architectural reason below; this is a concrete remaining #822/#825 gap,
+not a sanctioned reason to kill the Runner or enable production.
+
+Rollout order: staging gate on → automated slice **and all manual checks** green
+for every provider/harness pair → coordinator enables production → authorized
+read-only Git verification → rollback by turning the gate off on every replica
+and retiring affected workers as described above. A partial or failed smoke blocks
+this rollout. This script never deploys, applies migrations, or changes a gate.
+
+#### Manual renewal: force server cache expiry, not GitHub revocation
+
+**Staging operator only. Do not run this SQL on production.** This is an explicit
+manual test-data mutation using the staging service role, not a migration and not
+a public API. This agent has not performed it. Use the dedicated disposable smoke
+identity only, with no other workers using that identity. Confirm the Supabase
+project reference against the staging deployment before opening a trusted `psql`
+session; provide the staging database connection through secure environment, not
+command arguments or shared logs. Disable query/result tracing. Never select or
+export ciphertext, refresh tokens, access tokens, or private socket replies.
+
+Why this works: `resolveGitHubAccess` in `packages/core/src/github.ts` reuses access
+only when `access_expires_at > now + 5 minutes`; otherwise it refreshes under the
+owner lock and rotation CAS. `GitHubBroker.acquire` in
+`packages/agent-runtime/src/github-broker.ts` calls the control plane on **every**
+acquisition. It remembers leaves for redaction, but has no access-token reuse
+cache. Setting the server expiry into the past therefore forces the next HTTPS
+Git credential-helper invocation to refresh, even inside an existing harness.
+It simulates cache expiry, not the actual passage of eight hours at GitHub.
+
+1. The automated script cleans up its workers, so **do not use their stopped IDs**.
+   For each provider/harness pair, launch a separate fresh worker with the same
+   case configuration using the API-only CLI (`ARMADA_URL` and `ARMADA_TOKEN`
+   remain staging values):
+
+   ```sh
+   armada launch "$GOLDEN" --org "$ORG" --provider "$PROVIDER" \
+     --agent "$HARNESS" --model "$MODEL" --credential-id "$MODEL_ACCOUNT_ID" \
+     --no-connections --ttl 1h --json
+   ```
+
+   Retain the returned sandbox UUID as `ID`. Send a first turn explicitly asking
+   for `git status -sb` and `git ls-remote origin HEAD` in the disposable checkout,
+   with stdout/stderr redirected and only numeric exit codes reported. Save its
+   `conversationId` as `CONVERSATION` and `promptId`; use
+   `armada wait "$ID" --org "$ORG" --prompt-id "$PROMPT_ID" --timeout 600 --json`.
+   Keep this same worker and conversation throughout; never stop/resume/relaunch
+   until the experiment finishes. Record server/runtime SHAs and gate assertion.
+2. Record VM and native identity before expiry and after every fault/recovery.
+   Through authorized exec, record `/proc/sys/kernel/random/boot_id` and native
+   process PID **and start time**, not PID alone. `ps -eo pid,comm,lstart` lists
+   names/times without command arguments or environment. Identify the Claude or
+   Codex native process in this isolated worker, record its row, and require the
+   identical PID/start time after recovery. Save the API conversation ID too.
+   If the native process cannot be unambiguously identified, record identity as
+   unverified and fail the continuity check; a second successful turn alone is
+   not proof. Never use `ps ... args`, `/proc/*/environ`, or credential commands.
+   Before the next step, admit the bounded delayed/marker-wait native remote
+   operation described in step 4; it must be running before SQL expiry is forced.
+3. In the **same trusted staging psql session**, substitute the smoke user's UUID
+   only (not a token). Preserve the temporary table for the final comparison:
+
+   ```sql
+   \set ON_ERROR_STOP on
+   \prompt 'Dedicated staging smoke user UUID: ' smoke_user
+   begin;
+   create temporary table smoke_github_before on commit preserve rows as
+     select user_id, sha256(access_token_enc) as access_digest,
+            sha256(refresh_token_enc) as refresh_digest
+     from public.github_connections
+     where user_id = :'smoke_user'::uuid and revoked_at is null
+       and access_token_enc is not null;
+   select count(*) = 1 as exactly_one from smoke_github_before \gset
+   \if :exactly_one
+     update public.github_connections set access_expires_at = now() - interval '1 minute'
+       where user_id = :'smoke_user'::uuid;
+     commit;
+   \else
+     rollback;
+     \quit
+   \endif
+   ```
+
+   Do not hold a transaction/row lock while invoking Git. Do not edit refresh
+   fences, capability revisions, connection epochs, tokens, or revocation state.
+4. **Before another send or exec** (which itself prepares authorization), tell
+   the already-running native turn to perform the remote operation. Arrange this
+   beforehand: its shell waits for a marker file in the checkout or a short,
+   bounded delay, then runs remote Git and records only its numeric result.
+   Release the marker through the provider's authorized out-of-band command
+   console, or use the predetermined delay; do not invoke Armada send/exec between
+   the SQL commit and the native remote operation. Otherwise refresh may happen
+   during preparation rather than credential acquisition and the experiment does
+   not prove in-harness renewal. Record the successful remote exit status.
+5. Back in that psql session, emit **booleans only**:
+
+   ```sql
+   select sha256(c.access_token_enc) is distinct from b.access_digest as access_rotated,
+          sha256(c.refresh_token_enc) is distinct from b.refresh_digest as refresh_rotated,
+          c.access_expires_at > now() + interval '5 minutes' as expiry_advanced,
+          c.revoked_at is null as still_connected
+   from public.github_connections c join smoke_github_before b using (user_id);
+   drop table smoke_github_before;
+   ```
+
+   Require one row, all true, successful remote Git, unchanged boot/native identity
+   and conversation. Repeat exec reads and a native turn with
+   `armada send "$ID" '<read-only Git prompt>' --org "$ORG" --conversation "$CONVERSATION" --json`,
+   then wait for its specific prompt. Record numeric results and harness survival.
+   A timeout/uncertain refresh is failure: do not restore old ciphertext or retry
+   the consumed refresh. Follow the ordinary reconnect procedure for this smoke
+   identity. Finally stop the worker, even on failure.
+
+#### Manual broker fault/recovery: Boat; Modal limitation
+
+Use a separate dedicated **Boat** smoke worker per harness, after the first native
+Git turn above. The Boat broker is a detached `bun .../github-<generation>/broker.js`
+process (`packages/mcp-server/src/github-boat.ts`); the harness is a different
+process. Signal only that exact broker, never a native child or a process group.
+Do not use a broad `pkill bun`. Preflight `pgrep -f` for the generation's exact
+broker path and require **one** PID; abort on zero/multiple matches. The generation
+suffix is the first 16 hex characters of SHA-256 of the boot ID, as implemented by
+`configureBoatGitHub`. Read process names/PIDs only; never print arguments.
+
+1. Admit a native turn first that waits up to 60 seconds for a marker, then runs
+   local Git and remote Git with numeric-only receipts. Capture its prompt ID,
+   conversation ID, boot ID and native PID/start time before injecting the fault.
+2. In one authorized Boat exec, obtain the exact broker PID as above; arm an EXIT
+   trap to `kill -CONT "$BROKER_PID"`. Send `kill -STOP "$BROKER_PID"`. Release
+   the marker and run `timeout 5 git -C /home/user/disposable status -sb` with
+   output redirected. Save its exit status; require zero. Keep the stall bounded
+   (e.g. 10 seconds), then `kill -CONT "$BROKER_PID"`, disarm the trap and emit only
+   numeric results. Native output may pause under redaction backpressure: that is
+   expected; a native exit or changed native identity is not. Do not issue another
+   Armada operation during the stall: its preparation may wait on `/configure`.
+3. For broker termination/restart, admit another delayed native turn, then in one
+   Boat exec send `kill -TERM "$BROKER_PID"`, release its marker, run the same
+   bounded local Git check, and return. Authenticated Git may fail with a closed,
+   bounded diagnostic; do not print stderr or socket responses. Now run an
+   authorized `armada exec "$ID" 'true' --org "$ORG"`: the existing Boat prepare
+   path reconnects, handles `ENOENT`/`ECONNREFUSED`, and recreates the broker through
+   private SSH/stdin. It does **not** replace the VM or harness. Require a new
+   broker PID, unchanged boot/native identity and conversation, resumed native
+   output and a finished prompt. Repeat exec reads and another native Git turn
+   on the recorded conversation, then stop the disposable worker. If bootstrap
+   fails or any identity changes, record failure and stop; never replay commands.
+
+**Modal does not have a separately signalable broker process.** In
+`packages/agent-runtime/src/main.ts`, `new GitHubBroker`, its listener, the Journal
+and `new Runner` live in the **same Bun process**. SIGSTOP stalls the control API
+as well, preventing authorized exec recovery; terminating/restarting it also
+replaces the Runner/session owner and is not the broker-only test required by
+step 5. `configureGitHub(null)` denies acquisition but does not close the listener;
+`githubSocket` is private to `main` and there is no public close/relisten operation.
+Thus do **not** apply the Boat PID procedure to Modal or claim a Runner restart
+as broker survival evidence. A provider-console SIGCONT could undo a whole-Runner
+stall, but cannot prove isolated broker restart.
+
+The smallest remaining guarded affordance (#825) is a staging-only, owner-authorized
+Runner control operation that closes/stalls/reopens **only** `githubSocket`, re-runs
+`prepareGitHubTools` with a fresh activation on reopen, preserves the Journal/native
+processes, and reports fixed fault/recovery and identity labels. It must reject
+production, recover automatically after a bounded interval, and expose no socket
+reply/token. Until that exists, record Modal broker fault coverage as **unsupported,
+not passed** and keep #822 open. This PR is partial evidence, not an enablement gate.

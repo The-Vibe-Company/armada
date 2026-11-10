@@ -1,7 +1,8 @@
 # Coordinator-owned independent review
 
 Factory logic stays with the coordinator. Workers complete ship-pr-dev with an
-author self-check and READY FOR REVIEW, never an independent approval.
+independent review gate and a READY TO MERGE or BLOCKED receipt. The
+coordinator's separate review is an additional gate before merging.
 Never give workers Armada identities or launch authority to obtain review.
 
 ## Admission and budget
@@ -114,11 +115,11 @@ Check the actual GitHub review's author, state and commit_id, not just its termi
 line. Record review URL/id, head, complete coverage, findings, routing, round and
 stop receipt in the ledger.
 On changes requested, send findings to the original worker session. Wait for its
-new READY FOR REVIEW head, then launch the next fresh reviewer with the same
+new READY TO MERGE head, then launch the next fresh reviewer with the same
 minimal prompt policy. Do not bias that reviewer with prior findings.
 After two rounds, unresolved findings/new changes require human direction.
 
 Merge only when authorized, current head equals the independently approved
 commit, every visible non-skipped latest-SHA CI is green, cleanup is confirmed
 and required real-provider section is present. A changed head requires a new
-round within budget. READY FOR REVIEW alone never authorizes merging.
+round within budget. READY TO MERGE alone never authorizes merging.
