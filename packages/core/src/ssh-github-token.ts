@@ -46,8 +46,13 @@ def credential():
     if not isinstance(expiry,(int,float)) or not time.time()*1000<expiry<float('inf'): raise ValueError()
     return token
 try:
-    token=credential()
     mode=sys.argv[1]
+    token=None
+    if mode=='git':
+        # Local status/commit must remain usable even when network credentials expire.
+        try: token=credential()
+        except Exception: pass
+    else: token=credential()
     if mode=='credential':
         if len(sys.argv)!=3 or sys.argv[2]!='get': sys.exit(0)
         fields={}
@@ -63,7 +68,9 @@ try:
     st=os.lstat(executable)
     if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022: raise ValueError()
     env=dict(os.environ)
-    env['GH_TOKEN']=token;env['GITHUB_TOKEN']=token;env['GH_HOST']='github.com'
+    env.pop('GH_TOKEN',None);env.pop('GITHUB_TOKEN',None)
+    if token is not None: env['GH_TOKEN']=token;env['GITHUB_TOKEN']=token
+    env['GH_HOST']='github.com'
     env.pop('GH_ENTERPRISE_TOKEN',None);env.pop('GITHUB_ENTERPRISE_TOKEN',None)
     env.pop('ARMADA_GIT_TOKEN',None)
     if mode=='git':
