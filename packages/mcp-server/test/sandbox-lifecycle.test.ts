@@ -43,12 +43,13 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
         fetch: (async (input: Request | string | URL, init?: RequestInit) => {
           const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
           requests.push(`${request.method} ${new URL(request.url).pathname}`);
-          if (request.method === "POST") {
+          if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
             if (outcome === "stop-error")
               return Response.json({ error: { code: "unavailable", message: "test failure" } }, { status: 503 });
             stopped = outcome !== "unconfirmed";
             return Response.json({ ok: true });
           }
+          if (request.method === "POST") return Response.json({ ok: true });
           if (outcome === "stale")
             await db.query(
               "update sandboxes set lifecycle_generation=lifecycle_generation+1,status='running' where id=$1",
@@ -78,7 +79,7 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
       expect(row.requested_ttl_seconds).toBe(60);
       if (outcome === "unconfirmed" || outcome === "stop-error") expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
-      expect(requests.filter((r) => r.startsWith("POST")).length).toBe(
+      expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
         outcome === "external-stop" || outcome === "stale" ? 0 : 1,
       );
     } finally {
@@ -119,10 +120,11 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
           }
           if (path.endsWith("/prompt"))
             return Response.json({ ok: true, promptId: "prompt_1", conversationId: "conv_1", status: "queued" });
-          if (request.method === "POST") {
+          if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
             stopped = true;
             return Response.json({ ok: true });
           }
+          if (request.method === "POST") return Response.json({ ok: true });
           return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "running" }) });
         }) as typeof fetch,
       });
@@ -156,7 +158,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         expect(row?.stopped_at).not.toBeNull();
         expect(row?.last_observed_at).not.toBeNull();
         expect(row?.lifecycle_error).toBeNull();
-        expect(methods).toEqual(observation === "expired" ? ["GET", "POST", "GET"] : ["GET"]);
+        expect(methods).toEqual(observation === "expired" ? ["GET", "GET", "POST", "POST", "POST", "GET"] : ["GET"]);
       }
       // Re-due historical failures: only unknown outcomes may consume provider work again.
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);

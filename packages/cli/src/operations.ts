@@ -215,11 +215,13 @@ export async function operation(
   }
   // A long operation gets its server budget plus transport grace, without retrying an ambiguous write.
   const seconds =
-    command === "wait"
-      ? Number(body.timeout_seconds ?? 60)
-      : command === "exec"
-        ? Number(body.timeout_seconds ?? 120)
-        : undefined;
+    command === "stop"
+      ? 150
+      : command === "wait"
+        ? Number(body.timeout_seconds ?? 60)
+        : command === "exec"
+          ? Number(body.timeout_seconds ?? 120)
+          : undefined;
   const result = await control(
     auth,
     route,

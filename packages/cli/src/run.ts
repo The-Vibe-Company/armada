@@ -320,6 +320,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "list":
     case "bind-credential":
     case "detail":
+    case "recovery":
     case "status":
     case "advice":
     case "send":

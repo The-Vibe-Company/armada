@@ -94,14 +94,16 @@ test("requested production pairs stay unavailable and explain their independent 
         harness: "claude",
         requested: true,
         enabled: false,
-        reason: "boat_native_checkpoint_restore_unavailable",
+        reason: "production_runtime_unavailable",
+        continuity: "best_effort",
       },
       {
         provider: "boat",
         harness: "codex",
         requested: true,
         enabled: false,
-        reason: "boat_native_checkpoint_restore_unavailable",
+        reason: "production_runtime_unavailable",
+        continuity: "best_effort",
       },
       {
         provider: "modal",
@@ -109,6 +111,7 @@ test("requested production pairs stay unavailable and explain their independent 
         requested: false,
         enabled: false,
         reason: "native_resume_driver_unavailable",
+        continuity: "native",
       },
       {
         provider: "modal",
@@ -116,6 +119,7 @@ test("requested production pairs stay unavailable and explain their independent 
         requested: true,
         enabled: false,
         reason: "production_runtime_unavailable",
+        continuity: "native",
       },
     ],
   };
