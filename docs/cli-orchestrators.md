@@ -26,6 +26,12 @@ is not functional success. Native stop/resume requires server-side conformance;
 the CLI never sends a synthetic prompt to simulate resume. No public wait or
 private delegated-callback command is provided.
 
+When at least one provider × harness pair is configured, `capabilities` also
+lists every pair with `enabled` and a `reason`, and `harnesses`: per harness, the
+suggested models and reasoning efforts (`MODEL_CATALOG`) and the credential kinds
+whose named accounts can run it (`accountKinds`). Clients such as the iOS app
+offer exactly these, so a new pair, model or harness needs no client release.
+
 ## Choices and defaults
 
 Choose `claude` or `codex`, model, optional reasoning effort and a named account.

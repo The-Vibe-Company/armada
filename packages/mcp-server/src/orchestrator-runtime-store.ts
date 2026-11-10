@@ -963,6 +963,25 @@ export class OrchestratorRuntimeStore {
     });
   }
 
+  async pendingPrompt(identity: RuntimeIdentity): Promise<{ operationId: string; promptId: string } | null> {
+    const row = (
+      await this.sql.query<{ id: string; prompt_id: string }>(
+        `select id,runtime_result->>'promptId' as prompt_id from public.orchestrator_operations
+       where orchestrator_id=$1 and actor_id=$2 and action='message' and state='succeeded'
+       and runtime_result->>'kind'='prompt_receipt' and runtime_result->>'conversationId'=$3
+       and coalesce(runtime_result->>'done','false')='false' order by revision desc limit 1`,
+        [identity.id, identity.ownerId, identity.conversationId],
+      )
+    ).rows[0];
+    return row ? { operationId: row.id, promptId: row.prompt_id } : null;
+  }
+  async finishPromptObservation(operationId: string): Promise<void> {
+    await this.sql.query(
+      `update public.orchestrator_operations set runtime_result=jsonb_set(runtime_result,'{done}','true') where id=$1 and runtime_result->>'kind'='prompt_receipt'`,
+      [operationId],
+    );
+  }
+
   /** Publication checks logical revision AND physical generation under the owner/member lock. */
   async complete(
     reservation: RuntimeReservation,
@@ -970,6 +989,7 @@ export class OrchestratorRuntimeStore {
       state: OrchestratorOperation["state"];
       parentState?: OrchestratorState;
       conversationId?: string;
+      promptReceipt?: { promptId: string; conversationId: string; status: string };
       errorCode?: string;
       continuity?: OrchestratorContinuity;
     },
@@ -989,9 +1009,14 @@ export class OrchestratorRuntimeStore {
       if (current.conversationId && result.conversationId && current.conversationId !== result.conversationId)
         return false;
       const updated = await tx.query(
-        `update public.orchestrator_operations set state=$2,error_code=$3, runtime_result=case when runtime_result->>'kind'='create_job' then jsonb_set(runtime_result,'{stage}','"settled"') else runtime_result end
+        `update public.orchestrator_operations set state=$2,error_code=$3, runtime_result=case when runtime_result->>'kind'='create_job' then jsonb_set(runtime_result,'{stage}','"settled"') else case when $4::jsonb is not null then $4::jsonb else runtime_result end end
         where id=$1 and state='pending' returning id`,
-        [operation.id, result.state, result.errorCode ?? null],
+        [
+          operation.id,
+          result.state,
+          result.errorCode ?? null,
+          result.promptReceipt ? JSON.stringify({ kind: "prompt_receipt", ...result.promptReceipt }) : null,
+        ],
       );
       if (!updated.rows.length) return false;
       if (result.parentState)

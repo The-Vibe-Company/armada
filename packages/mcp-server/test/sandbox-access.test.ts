@@ -40,6 +40,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
     const caller = (userId: string): Caller => ({ userId, via: "service", orgs: [{ orgId: p.org, role: "admin" }] });
     const data = (userId: string) => createSqlData(db)(caller(userId)).sandboxes;
     const expectedKeys = [
+      "usage",
       "preservationNote",
       "taskOutcome",
       "providerSandboxId",
@@ -104,7 +105,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         const rpc = await db.query<SandboxListMetadata>("select * from sandbox_list_metadata()");
         expect(rpc.rows.length).toBe(mayList ? 4 : 0);
         for (const row of rpc.rows) {
-          expect(Object.keys(row).sort()).toEqual(expectedKeys);
+          expect(Object.keys(row).sort()).toEqual(expectedKeys.filter((key) => key !== "usage"));
           expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
           expect(row.canOpen).toBe(mayOpen);
         }

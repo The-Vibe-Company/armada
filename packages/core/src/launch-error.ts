@@ -19,7 +19,10 @@ export const LAUNCH_FAILURE_REASONS = [
 ] as const;
 export type LaunchFailureReason = (typeof LAUNCH_FAILURE_REASONS)[number];
 
+import type { ApiFailureCode } from "./api-failure.ts";
+
 export type LaunchErrorCode =
+  | ApiFailureCode
   | "invalid_request"
   /** The harness has no credential for the caller or the org. */
   | "no_credentials"

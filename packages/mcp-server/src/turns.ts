@@ -5,9 +5,11 @@ import {
   type PromptOutcome,
   type Provider,
   promptOutcome,
+  reportedTurnUsage,
   type SandboxInfo,
   type SandboxPatch,
   type SandboxStatus,
+  type SandboxUsage,
   type TaskOutcome,
 } from "@armada/core";
 import type { SandboxView, ServerSandboxStore } from "./data.ts";
@@ -32,6 +34,7 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
   credentialId?: string | null;
@@ -84,6 +87,17 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
+  if (store.recordUsage) {
+    // Usage is optional telemetry: unavailable/truncated event history must not make status fail.
+    try {
+      const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
+      const collected = reportedTurnUsage(events);
+      await store.recordUsage(sandbox.id, collected);
+      sandbox = { ...sandbox, usage: { computeSeconds: sandbox.usage?.computeSeconds ?? null, ...collected } };
+    } catch {
+      /* Retain the last complete observation. */
+    }
+  }
   const info = await provider.get(sandbox.providerSandboxId);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
@@ -111,12 +125,23 @@ export async function readStatus(
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
     };
-    if (next === "failed" && info.physicalExitConfirmed) patch.stoppedAt = options.now.toISOString();
-    else if (next === "stopped") patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-    else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+    if (next === "failed" && info.physicalExitConfirmed) {
+      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+      patch.usageRuntimeUnknown = !info.stoppedAt;
+    } else if (next === "stopped") {
+      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+      patch.usageRuntimeUnknown = !info.stoppedAt;
+    } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     await store.update(sandbox.id, patch);
   }
-  return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
+  const refreshed = store.recordUsage ? await store.get(sandbox.id) : null;
+  return report(
+    { ...sandbox, usage: refreshed?.usage ?? sandbox.usage ?? null, statusReason: reason },
+    next,
+    info,
+    prompt,
+    info.expiresAt ?? null,
+  );
 }
 
 function failureReason(info: SandboxInfo, prompt: PromptReport | null): string | null {
@@ -150,6 +175,7 @@ function report(
 ): StatusReport {
   const machineDown = status === "stopped" || status === "deleted" || status === "failed";
   return {
+    usage: sandbox.usage ?? null,
     taskOutcome: sandbox.taskOutcome ?? null,
     id: sandbox.id,
     golden: sandbox.golden,
@@ -186,11 +212,16 @@ export async function latestPrompt(
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
 }
 
-async function allEvents(provider: Provider, sandboxId: string, complete = false): Promise<AgentEvent[]> {
+async function allEvents(
+  provider: Provider,
+  sandboxId: string,
+  complete = false,
+  maxPages?: number,
+): Promise<AgentEvent[]> {
   const all: AgentEvent[] = [];
   let cursor: string | undefined;
   const cursors = new Set<string>();
-  for (let page = 0; complete || page < EVENT_PAGES; page++) {
+  for (let page = 0; maxPages === undefined ? complete || page < EVENT_PAGES : page < maxPages; page++) {
     const read = await provider.events({ sandboxId, ...(cursor ? { cursor } : {}), limit: EVENT_PAGE_LIMIT });
     all.push(...read.events);
     if (!read.hasMore) break;
@@ -198,6 +229,8 @@ async function allEvents(provider: Provider, sandboxId: string, complete = false
       if (complete) throw new Error("Cannot prove latest turn: provider event cursor did not advance.");
       break;
     }
+    if (complete && maxPages !== undefined && page === maxPages - 1)
+      throw new Error("Complete event history exceeds the read budget.");
     cursors.add(read.cursor);
     cursor = read.cursor;
   }

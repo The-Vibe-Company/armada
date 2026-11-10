@@ -1,4 +1,4 @@
-import type { Harness, SandboxProviderId } from "@armada/core";
+import { HARNESS_KINDS, type Harness, MODEL_CATALOG, type SandboxProviderId } from "@armada/core";
 
 export type OrchestratorPair = `${SandboxProviderId}:${Harness}`;
 const PAIRS = ["boat:claude", "boat:codex", "modal:claude", "modal:codex"] as const;
@@ -49,6 +49,27 @@ export function orchestratorCapabilities(
     enabled,
     reason: enabled ? null : off.reason,
     pairs,
+    harnesses: harnessCatalog(),
     delegatedWaits: { enabled: false, reason: "admit_wait_not_supported" },
   };
+}
+
+/**
+ * What a create form may offer for each harness: the suggested models and efforts of `MODEL_CATALOG` and the
+ * credential kinds whose named accounts can run it. Clients (the iOS app) read this instead of shipping their own
+ * copy, so a new model or harness reaches them without a release. Suggestions only: the server still decides.
+ */
+function harnessCatalog() {
+  return (Object.keys(MODEL_CATALOG) as Harness[]).map((harness) => ({
+    harness,
+    defaultModel: MODEL_CATALOG[harness].defaultModel,
+    defaultReasoningEffort: MODEL_CATALOG[harness].defaultReasoningEffort,
+    reasoningEfforts: [...MODEL_CATALOG[harness].reasoningEfforts],
+    models: MODEL_CATALOG[harness].models.map((model) => ({
+      id: model.id,
+      label: model.label,
+      reasoningEfforts: [...model.reasoningEfforts],
+    })),
+    accountKinds: [...HARNESS_KINDS[harness]],
+  }));
 }

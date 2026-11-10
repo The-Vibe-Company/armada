@@ -438,7 +438,9 @@ function Lifecycle({
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => command.run("stop")}>Stop orchestrator</AlertDialogAction>
+              <AlertDialogAction variant="destructive" onClick={() => command.run("stop")}>
+                Stop orchestrator
+              </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>

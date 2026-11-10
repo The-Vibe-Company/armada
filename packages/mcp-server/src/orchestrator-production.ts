@@ -18,6 +18,7 @@ import {
   type NamedOrchestratorCredentials,
 } from "./orchestrator-backend-resolver.ts";
 import { createBoatBestEffortAdapter } from "./orchestrator-boat-best-effort.ts";
+import { createBoatOrchestratorRecovery } from "./orchestrator-boat-recovery.ts";
 import { launchOrchestratorChild } from "./orchestrator-child-launch.ts";
 import type { OrchestratorChildExecutor } from "./orchestrator-children.ts";
 import { createOrchestratorCreateRecovery } from "./orchestrator-create-recovery.ts";
@@ -202,6 +203,8 @@ export function createProductionOrchestrators(input: {
       };
     },
   };
+  const recoverModal = createOrchestratorCreateRecovery(sql, input.providers, input.diagnosticLog);
+  const recoverBoat = createBoatOrchestratorRecovery(sql, input.providers);
   return createOrchestratorServices(sql, {
     scopedMcpUrl: input.scopedMcpUrl,
     runtime: {
@@ -210,7 +213,15 @@ export function createProductionOrchestrators(input: {
       skillRevision: input.skillRevision,
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs,
-      recoverCreate: createOrchestratorCreateRecovery(sql, input.providers, input.diagnosticLog),
+      recoverCreate: async (request, diagnostics) => {
+        const row = (
+          await sql.query<{ provider: string }>(
+            `select configuration->>'provider' as provider from public.orchestrator_runtime where orchestrator_id=$1`,
+            [request.id],
+          )
+        ).rows[0];
+        return row?.provider === "boat" ? recoverBoat(request) : recoverModal(request, diagnostics);
+      },
       resolveBackend: selection.resolveBackend,
       managed: { sql, resolveManaged: selection.resolveManaged },
     },

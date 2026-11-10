@@ -4,6 +4,7 @@ import type { Sql } from "./golden-store.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
+import type { SandboxUsage } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
@@ -15,6 +16,7 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
   /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
@@ -57,6 +59,8 @@ export interface SandboxRecord {
 export interface SandboxPatch {
   /** Admission guard for explicit owner/admin deletion of terminal, unmanaged sandboxes. */
   deleteRequested?: boolean;
+  /** Physical interval endpoint is unknown; never fabricate a duration. */
+  usageRuntimeUnknown?: boolean;
   clearTaskOutcome?: boolean;
   taskPromptId?: string;
   renewLifecycle?: boolean;
@@ -145,7 +149,11 @@ export async function cleanupSandboxes(
       }
     }
     try {
-      await store.update(sandbox.id, { status: "deleted", deletedAt: now.toISOString() });
+      await store.update(sandbox.id, {
+        status: "deleted",
+        deletedAt: now.toISOString(),
+        ...(sandbox.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
+      });
       result.deleted.push(sandbox.id);
     } catch (error) {
       result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
@@ -155,6 +163,7 @@ export async function cleanupSandboxes(
 }
 
 export interface SandboxRow {
+  usage?: SandboxUsage | null;
   preservation_note?: string | null;
   task_outcome?: TaskOutcome | null;
   task_prompt_id?: string | null;
@@ -235,6 +244,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
         params.push(value);
         sets.push(`${column} = $${params.length}${cast}`);
       };
+      if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
       if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
       if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
       if (patch.status !== undefined) set("status", patch.status, "::public.sandbox_status");
@@ -279,6 +289,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
+    usage: row.usage ?? null,
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
     taskPromptId: row.task_prompt_id ?? null,

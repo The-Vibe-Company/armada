@@ -10,6 +10,11 @@ struct OrchestratorConversationView: View {
     @State private var model: OrchestratorConversationModel?
     @State private var showingDetails = false
     @State private var confirmingStop = false
+    @State private var confirmingResume = false
+    @State private var confirmingRecover = false
+    /// Recover chosen in Details: confirmed once the sheet has finished closing, so the two
+    /// presentations never overlap.
+    @State private var recoverAfterDetails = false
     @State private var confirmingDiscard = false
     @State private var discardBubbleID: String?
 
@@ -110,10 +115,16 @@ struct OrchestratorConversationView: View {
                         .accessibilityIdentifier("conversation.discardUnconfirmed")
                     }
                     if model.canResume {
-                        Button("Resume", systemImage: "play.fill") { model.resume() }
+                        Button("Resume…", systemImage: "play.fill") { confirmingResume = true }
+                            .accessibilityIdentifier("conversation.resume")
+                    }
+                    if model.canRecover {
+                        Button("Recover…", systemImage: "wrench.and.screwdriver") { confirmingRecover = true }
+                            .accessibilityIdentifier("conversation.recover")
                     }
                     if model.canStop {
-                        Button("Stop", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
+                        Button("Stop…", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
+                            .accessibilityIdentifier("conversation.stop")
                     }
                 } label: {
                     Label("Actions", systemImage: "ellipsis")
@@ -130,6 +141,24 @@ struct OrchestratorConversationView: View {
         } message: {
             Text(stopMessage(model))
         }
+        .confirmationDialog(
+            "Resume \(model.summary?.name ?? "this orchestrator")?",
+            isPresented: $confirmingResume,
+            titleVisibility: .visible
+        ) {
+            Button("Resume") { model.resume() }
+        } message: {
+            Text("Compute starts again and continues the same saved conversation. No message is sent.")
+        }
+        .confirmationDialog(
+            "Recover \(model.summary?.name ?? "this orchestrator")?",
+            isPresented: $confirmingRecover,
+            titleVisibility: .visible
+        ) {
+            Button("Recover", role: .destructive) { model.recover() }
+        } message: {
+            Text("Armada settles what it could not confirm and stops this orchestrator without starting anything new. Its history stays readable; to continue, you may need a new orchestrator.")
+        }
         .confirmationDialog("Forget this unconfirmed request?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
             Button("Forget Local Tracking", role: .destructive) {
                 let bubbleID = discardBubbleID
@@ -138,16 +167,24 @@ struct OrchestratorConversationView: View {
         } message: {
             Text("The action may already have happened. This only forgets local tracking; it does not cancel the request. Trying a new request may duplicate its effects. Message text will not be restored to the draft.")
         }
-        .sheet(isPresented: $showingDetails) {
+        .sheet(isPresented: $showingDetails, onDismiss: {
+            if recoverAfterDetails {
+                recoverAfterDetails = false
+                confirmingRecover = true
+            }
+        }) {
             if let detail = model.detail {
-                OrchestratorDetailsSheet(detail: detail)
+                OrchestratorDetailsSheet(detail: detail, canRecover: model.canRecover) {
+                    recoverAfterDetails = true
+                    showingDetails = false
+                }
             }
         }
         .task(id: model.orchestratorID) {
             await model.follow()
         }
-        .task(id: model.lifecycle) {
-            await model.pollWhileInProgress()
+        .task(id: model.pollKey) {
+            await model.pollDetail()
         }
         .onChange(of: model.feed.conversation.items) { _, _ in
             Task { await model.streamChanged() }
@@ -159,6 +196,21 @@ struct OrchestratorConversationView: View {
         VStack(spacing: 8) {
             if case .reconnecting = model.feed.connection {
                 InlineBanner(text: "Reconnecting… The conversation continues from where it stopped.", style: .info)
+            }
+            if let detail = model.detail {
+                switch detail.createProgress {
+                case .creating where model.lifecycle == nil:
+                    InlineBanner(text: "Armada is creating this orchestrator. You can write once it is ready.", style: .info)
+                case .failed(let reason) where model.lifecycle == nil:
+                    InlineBanner(
+                        text: reason,
+                        style: .error,
+                        actionTitle: model.canRecover ? "Recover…" : nil,
+                        action: { confirmingRecover = true }
+                    )
+                default:
+                    EmptyView()
+                }
             }
             switch model.lifecycle {
             case .sending(let kind):
@@ -195,6 +247,7 @@ struct OrchestratorConversationView: View {
         switch kind {
         case .stop: "Stopping… Admission closes first, then the conversation is saved."
         case .resume: "Resuming the same conversation…"
+        case .recover: "Recovering… Armada is settling what it could not confirm."
         default: "Sending the \(kind.label.lowercased()) again…"
         }
     }

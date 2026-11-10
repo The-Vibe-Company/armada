@@ -51,8 +51,11 @@ export async function mirrorStoppedHistory(
        and s.orchestrator_native_generation=$7 and r.conversation_id=$6
        and r.provider_cursor is not distinct from $8::text
        and p.id=$5 and p.action='stop' and p.revision=o.revision and p.state in ('pending','uncertain')
-       and p.runtime_result->>'state'='uncertain' and p.runtime_result->>'physicalGeneration'=$7
-       and p.runtime_result->>'sandboxId'=s.id::text and p.runtime_result->>'generation'=s.lifecycle_generation::text for update of o,s,p,r`,
+       and ((p.runtime_result->>'state'='uncertain' and p.runtime_result->>'physicalGeneration'=$7)
+         or (s.provider='boat' and s.stop_requested_at is not null and p.runtime_result->>'kind'='boat_retirement'))
+       and p.runtime_result->>'sandboxId'=s.id::text and p.runtime_result->>'generation'=s.lifecycle_generation::text
+       and (p.runtime_result->>'kind' is distinct from 'boat_retirement' or p.runtime_result->>'providerSandboxId'=s.provider_sandbox_id)
+       for update of o,s,p,r`,
       [
         machine.orchestratorId,
         machine.sandboxId,

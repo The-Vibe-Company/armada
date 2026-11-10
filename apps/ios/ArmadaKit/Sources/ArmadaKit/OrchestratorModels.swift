@@ -2,10 +2,26 @@ import Foundation
 
 public enum OrchestratorState: String, Codable, Sendable { case creating, ready, stopping, stopped, resuming, blocked }
 public enum OrchestratorContinuity: String, Codable, Sendable { case notStarted = "not_started", native, unverified, lost }
-public enum OrchestratorAction: String, Codable, Sendable { case create, message, steer, stop, resume }
+/// `recover` is a request only: its receipt is the `stop` (or `create`) operation it settles.
+public enum OrchestratorAction: String, Codable, Sendable { case create, message, steer, stop, resume, recover
+    /// Receipt kinds the server answers for this request.
+    var receiptKinds: Set<OrchestratorAction> { self == .recover ? [.stop, .create] : [self] }
+}
 public enum OrchestratorOperationState: String, Codable, Sendable { case pending, succeeded, failed, uncertain }
-public enum ArmadaProvider: String, Codable, Sendable { case boat, modal }
-public enum ArmadaHarness: String, Codable, Sendable { case claude, codex }
+/// Provider and harness ids are open: the server's capabilities say which exist and which pairs are
+/// enabled, so a new one reaches the app without a release. The constants only name today's ids.
+public struct ArmadaProvider: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+    public init?(rawValue: String) { guard !rawValue.isEmpty else { return nil }; self.rawValue = rawValue }
+    public static let boat = ArmadaProvider(rawValue: "boat")!
+    public static let modal = ArmadaProvider(rawValue: "modal")!
+}
+public struct ArmadaHarness: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+    public init?(rawValue: String) { guard !rawValue.isEmpty else { return nil }; self.rawValue = rawValue }
+    public static let claude = ArmadaHarness(rawValue: "claude")!
+    public static let codex = ArmadaHarness(rawValue: "codex")!
+}
 
 /// Canonical public wire values from merged #653 machine-size.ts. Resolution
 /// stays on the server: override > explicitly selected repository > golden > legacy.
@@ -13,7 +29,7 @@ public enum MachineSize: String, Codable, Sendable, CaseIterable { case small, m
 
 /// Exact #661/#662 create contract including optional size from b6ca6e184f.
 /// nil omits the override; it does not submit a fabricated "default" size.
-public struct OrchestratorCreate: Codable, Sendable {
+public struct OrchestratorCreate: Codable, Sendable, Equatable {
     public let version: Int
     public let orgId: String
     public let name: String
@@ -95,9 +111,39 @@ public struct OrchestratorDetail: Decodable, Sendable {
     public let childSandboxIds: [String]
 }
 public struct OrchestratorCapabilities: Decodable, Sendable {
+    /// One provider × harness pair as the server reports it. Only `enabled` pairs may be offered;
+    /// a disabled one keeps the server's `reason` (see `OrchestratorExplanation`).
+    public struct Pair: Decodable, Sendable, Equatable {
+        public let provider: ArmadaProvider
+        public let harness: ArmadaHarness
+        public let enabled: Bool
+        public let reason: String?
+    }
+    /// What a create form may offer for one harness: suggested models and efforts, and the
+    /// credential kinds whose named accounts run it.
+    public struct HarnessCatalog: Decodable, Sendable, Equatable {
+        public struct Model: Decodable, Sendable, Equatable, Identifiable {
+            public let id: String
+            public let label: String
+            public let reasoningEfforts: [String]
+        }
+        public let harness: ArmadaHarness
+        public let defaultModel: String
+        public let defaultReasoningEffort: String
+        public let reasoningEfforts: [String]
+        public let models: [Model]
+        public let accountKinds: [String]
+        /// A suggested model takes its own efforts; another id takes the harness's.
+        public func efforts(for model: String) -> [String] {
+            models.first { $0.id == model }?.reasoningEfforts ?? reasoningEfforts
+        }
+    }
     public let version: Int
     public let enabled: Bool
     public let reason: String?
+    /// Absent on servers with no pair configured (or older ones): nothing can be created then.
+    public let pairs: [Pair]?
+    public let harnesses: [HarnessCatalog]?
 }
 
 /// Unknown tool payloads retain their JSON value, never reinterpret as instructions.

@@ -1,4 +1,5 @@
-import { MACHINE_SIZES, ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
+import { API_FAILURE_STATUS, MACHINE_SIZES, ORCHESTRATOR_DEFAULTS, type OrchestratorCreate } from "@armada/core";
+import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { type OrchestratorPair, orchestratorCapabilities } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
@@ -189,12 +190,7 @@ export async function orchestratorHttp(
     );
     return Response.json(result, { status: read ? 200 : 202, headers: { "cache-control": "no-store" } });
   } catch (error) {
-    const code =
-      error instanceof OrchestratorRuntimeError
-        ? error.code
-        : error instanceof SyntaxError
-          ? "invalid_request"
-          : "unavailable";
+    const code = orchestratorFailureCode(error);
     return Response.json(
       {
         error: {
@@ -209,9 +205,25 @@ export async function orchestratorHttp(
         },
       },
       {
-        status: code === "not_found" ? 404 : code === "conflict" ? 409 : code === "invalid_request" ? 400 : 503,
+        status:
+          code === "not_found"
+            ? 404
+            : code === "conflict"
+              ? 409
+              : code === "invalid_request"
+                ? 400
+                : API_FAILURE_STATUS[code],
         headers: { "cache-control": "no-store" },
       },
     );
   }
+}
+
+export function orchestratorFailureCode(error: unknown) {
+  if (error instanceof OrchestratorRuntimeError) {
+    if (error.admission === "unknown") return "outcome_unknown" as const;
+    return error.code === "unavailable" ? ("dependency_unavailable" as const) : error.code;
+  }
+  if (error instanceof SyntaxError) return "invalid_request" as const;
+  return apiFailureCode(error) ?? "dependency_unavailable";
 }

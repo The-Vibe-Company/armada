@@ -53,6 +53,7 @@ const STAGES = [
   "stop_revalidation",
   "epoch_scrub",
   "native_checkpoint",
+  "ordinary_stop",
   "stop_validation",
   "stop_receipt_publication",
   "stop_reconcile",
@@ -164,7 +165,7 @@ const SQL_CODES: Readonly<Record<string, string>> = {
   "57P01": "sql_shutdown",
 };
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const ACTIONS = new Set(["create", "message", "steer", "stop", "resume", "recover"]);
+const ACTIONS = new Set(["create", "message", "steer", "stop", "resume", "recover", "events"]);
 
 /** Closed metadata only: no exception message, SQL text, detail, hint or causal traversal. */
 function publicationFailure(error: unknown): {
@@ -368,6 +369,33 @@ export class OrchestratorDiagnostics {
     if (input.operationId && UUID.test(input.operationId)) this.operationId = input.operationId;
     if (input.orchestratorId && UUID.test(input.orchestratorId)) this.orchestratorId = input.orchestratorId;
     if (input.sandboxId && UUID.test(input.sandboxId)) this.sandboxId = input.sandboxId;
+  }
+  /** Closed observations only; acceptance is not proof of harness execution. */
+  observe(kind: "prompt_dispatch" | "prompt_status" | "events_poll", value: string): void {
+    const allowed = {
+      prompt_dispatch: ["accepted", "not_confirmed"],
+      prompt_status: ["queued", "running", "finished", "failed", "interrupted", "unknown", "unavailable"],
+      events_poll: ["empty", "published", "fenced", "failed"],
+    };
+    if (!Object.hasOwn(allowed, kind) || !allowed[kind].includes(value)) return;
+    try {
+      void Promise.resolve(
+        this.log?.(
+          JSON.stringify({
+            event: "orchestrator_runtime_observation",
+            component: ["owner", "managed", "lifecycle"].includes(this.component) ? this.component : "owner",
+            action: ACTIONS.has(this.action) ? this.action : "unknown",
+            kind,
+            value,
+            ...(this.operationId ? { operationId: this.operationId } : {}),
+            ...(this.orchestratorId ? { orchestratorId: this.orchestratorId } : {}),
+            ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
+          }),
+        ),
+      ).catch(() => {});
+    } catch {
+      /* Diagnostics cannot change effects. */
+    }
   }
   stage(stage: OrchestratorDiagnosticStage): void {
     if ((STAGES as readonly string[]).includes(stage)) this.current = stage;
