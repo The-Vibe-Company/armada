@@ -295,7 +295,7 @@ Surface order within each stage remains API/MCP → CLI → dashboard → iOS.
 | 6. Template surfaces | CLI publish/use; dashboard Build > Templates and launch warnings; iOS consumption; safe revision mismatch diagnostics | None unless a separately reviewed dashboard mutation function is needed | Real staging CLI/browser/device publish/launch/revoke on both providers; no secret DTO or client persistence |
 | 7. Routine model and manual occurrence | §8 ownership/revisions/delegation; run-now uses same admission/idempotency/outcome path; no scheduler yet | routines/revisions, occurrence claims/results, delegation epoch bindings, private/org RLS and grants | Manual staging occurrence on Boat + Modal, duplicate request, removed owner and revoked secret fail safely; outcome links to exact prompt |
 | 8. Routine scheduler and admission limits | Durable timer worker, occurrence claims/fencing, missed/overlap/pause policies, concurrency/spend reservation, native-account exclusivity | next_due/anchor/interval, worker leases/fences, concurrency and budget reservations/ledger, unique occurrence index | Two staging workers, crash/restart and lost response: no duplicate; missed/overlap recorded, pause fence wins, two routines sharing native account cannot allocate twice; budget race rejects loser |
-| 9. Routine outcomes and unattended recovery | Outcome observer, bounded retries, value-free reasons, unknown-outcome reconciliation and cleanup; no replay of side-effecting prompts | outcome cursor/lease, terminal reason/cleanup state and notification outbox if needed | Staging auth expiry, usage limit, provider move, timeout, revoke during allocation and observer restart; no false success or repeat task; physical cleanup confirmed |
+| 9. Routine outcomes and unattended recovery | Outcome observer, bounded retries, value-free reasons, unknown-outcome reconciliation and cleanup; no replay of side-effecting prompts | outcome cursor/lease, terminal reason/cleanup state and notification outbox if needed | Staging auth expiry, usage limit, provider move, timeout, revoke during allocation and observer restart; over-50-page history, stalled cursor and raw-error canary prove unknown rather than false success/no secret reason; physical cleanup confirmed |
 | 10. Routine surfaces in Run | API/MCP then CLI, dashboard Run > Routines, iOS; safe configure/pause/run-now/history/outcome access | None beyond 7–9 | Real staging UI creates every-X-hours routine, pauses/resumes, displays missed/busy/budget/failure and exact redacted run outcome; cross-org/private access denied |
 
 Implementation tickets must name actual new timestamped migration files when scoped;
@@ -486,8 +486,16 @@ allocation or prompt status remains reconciling/unknown, never fabricated succes
 A durable observer resumes from its cursor and records an outcome through
 [turns.ts](../../packages/mcp-server/src/turns.ts) and
 [promptOutcome](../../packages/core/src/outcome.ts), not by assuming process exit,
-sandbox status or last event text means success. Existing auth_expiry/usage_limit
-classification remains authoritative. “Finished” means the agent turn ended, not
+sandbox status or last event text means success. Reuse existing auth_expiry/usage_limit semantics, but **not** the current helper
+unchanged: outcome.ts has a 50-page scan budget and may return finished after a
+partial scan; generic provider failure reasons may contain raw text. Slice 9 must
+introduce a complete-evidence boundary before routine use. Persist a per-prompt
+observer cursor and terminal evidence transactionally; exhausting a page budget,
+a stalled cursor, unavailable history or a gap yields outcome_unknown/reconciling,
+never finished. Confirm terminal prompt state and complete relevant failure-event
+coverage (or equivalent provider terminal proof) before recording success. Map all
+reasons to the allowlist and redact before any persistence, API DTO or notification;
+never forward raw provider/SDK reasons through turns.ts into routine records. “Finished” means the agent turn ended, not
 that its business task succeeded; task assertions require a future explicit contract.
 Link the exact sandbox/prompt for redacted logs and artifacts under normal access
 rules. Notifications use safe IDs/status/reason, never raw output.
