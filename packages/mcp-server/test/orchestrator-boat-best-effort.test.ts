@@ -47,6 +47,7 @@ test.each(["claude", "codex"] as const)(
         await placement.provider.interrupt({ sandboxId });
         return { acknowledged: true };
       },
+      stopBestEffort: async (sandboxId) => placement.provider.stop({ sandboxId }),
       conversations: async () =>
         available ? [{ id: "conv_1", running: false, lastHarness: harness, lastModel: choice.model }] : [],
       resumeBestEffort: async (id) => {

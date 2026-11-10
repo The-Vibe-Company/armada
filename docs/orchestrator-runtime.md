@@ -162,7 +162,7 @@ handshake for Runner-owned sessions, but its Claude driver has no `resumeSession
 Installing a second Runner beside Boat's native process does not bridge these
 contracts and is not an acceptable capability declaration.
 
-Verified native Boat continuity would still require either (1) authorize a separate implementation of an
+Verified native Boat continuity would still require either (1) a separately authorized implementation of an
 **Armada-owned harness runtime on Boat**, including private runtime transport,
 native process/session ownership, credentials lifecycle, durable journal ACKs and
 both Claude/Codex restore drivers, or (2) obtain upstream Boat native observation,
@@ -322,8 +322,9 @@ modules. The native-credential admission fixture now passes against merged #604
 and is included in normal verification; neither is native conformance.
 The private Runner-owned Codex no-text handshake tests verify exact thread/model
 identity without `thread/start` or `turn/start`. They do not cover Boat-owned
-sessions. Claude has no verified equivalent and must remain disabled until its
-real driver supplies one.
+sessions. Claude has no verified equivalent: Modal × Claude and native-continuity
+claims for Boat × Claude remain disabled until a real driver supplies one.
+Boat × Claude is available only under the best-effort policy above.
 
 ## Operator live-conformance evidence checklist
 

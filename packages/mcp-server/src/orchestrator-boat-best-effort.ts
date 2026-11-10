@@ -11,6 +11,7 @@ function boat(provider: Provider): BoatProvider {
   if (
     provider.id !== "boat" ||
     typeof candidate.resumeBestEffort !== "function" ||
+    typeof candidate.stopBestEffort !== "function" ||
     typeof candidate.conversations !== "function"
   )
     throw new OrchestratorRuntimeError("unavailable");
@@ -86,7 +87,7 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
             )
           ).rows[0];
           if (!row) throw new OrchestratorRuntimeError("conflict");
-          await provider.stop({ sandboxId: current.providerSandboxId });
+          await ordinary.stopBestEffort(current.providerSandboxId);
           const physical = await provider.get(current.providerSandboxId);
           if (physical.state !== "stopped") throw new OrchestratorRuntimeError("unavailable");
           // Boat history is durable/readable after ordinary archival, but has no native ACK watermark.

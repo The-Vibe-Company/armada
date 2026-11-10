@@ -33,6 +33,7 @@ import {
   type PromptRequestProviderEnum,
   type Sandbox,
   type SavedSnapshot,
+  type StopOperationResponse,
 } from "@boatdev/sdk";
 import {
   parseVmResourceFiles,
@@ -161,6 +162,8 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
 export interface BoatProvider extends Provider {
   /** Ordinary VM activation only. Does not restore or verify a native harness session. */
   resumeBestEffort(sandboxId: string): Promise<void>;
+  /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
+  stopBestEffort(sandboxId: string): Promise<void>;
   conversations(
     sandboxId: string,
   ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
@@ -363,6 +366,23 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         info = await provider.get(sandboxId, { signal });
       }
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
+    },
+    async stopBestEffort(sandboxId: string): Promise<void> {
+      await options.beforeStop?.(provider, sandboxId);
+      const signal = AbortSignal.timeout(150_000);
+      const response = await call(() => api.stop({ sandboxId }, { signal }));
+      const stopId = response.sandbox?.stop?.id;
+      if (!stopId) throw unexpectedAnswer("stop operation");
+      for (let attempt = 0; attempt < 120; attempt++) {
+        signal.throwIfAborted();
+        const observed: StopOperationResponse = await call(() => api.getStop({ sandboxId, stopId }, { signal }));
+        if (observed.id !== sandboxId || observed.stop?.id !== stopId) throw unexpectedAnswer("stop operation");
+        if (observed.stop.status === "completed") return;
+        if (!["pending", "failing"].includes(observed.stop.status))
+          throw invalidRequest("Sandbox archival was superseded.");
+        await sleep(1000);
+      }
+      throw invalidRequest("Sandbox archival remains unconfirmed.");
     },
     async conversations(sandboxId: string) {
       const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));

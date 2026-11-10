@@ -734,3 +734,35 @@ test("managed best-effort activation uses ordinary VM resume and conversation me
     ["GET", `/api/v1/sandboxes/${ID}/conversations`],
   ]);
 });
+
+// Boat returns acceptance before archival; neither acceptance nor a different
+// operation may be presented as successful managed stop.
+test.each(["completed", "superseded", "wrong-operation"])(
+  "managed Boat archival waits for its exact stop (%s)",
+  async (outcome) => {
+    const stop = { id: "stop-owned", status: "pending" };
+    const boat = fakeBoat(
+      { status: 202, body: { ok: true, sandbox: sandbox({ state: "archiving", stop }) } },
+      { body: { ok: true, id: ID, stop } },
+      {
+        body: {
+          ok: true,
+          id: ID,
+          stop: {
+            ...stop,
+            status: outcome === "wrong-operation" ? "completed" : outcome,
+            ...(outcome === "wrong-operation" ? { id: "stop-other" } : {}),
+          },
+        },
+      },
+    );
+    if (outcome === "completed") await boat.provider.stopBestEffort(ID);
+    else await expect(boat.provider.stopBestEffort(ID)).rejects.toBeInstanceOf(ProviderError);
+    expect(boat.sleeps).toEqual([1000]);
+    expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
+      ["POST", `/api/v1/sandboxes/${ID}/stop`],
+      ["GET", `/api/v1/sandboxes/${ID}/stops/stop-owned`],
+      ["GET", `/api/v1/sandboxes/${ID}/stops/stop-owned`],
+    ]);
+  },
+);
