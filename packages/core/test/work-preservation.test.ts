@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecRequest, ExecResult } from "../src/provider.ts";
@@ -28,10 +28,19 @@ async function fixture() {
   await run(["git", "add", "tracked"], repo);
   await run(["git", "commit", "-qm", "base"], repo);
   await run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], repo);
+  // Exercise the real collector on Linux with neither Python nor OpenSSL in PATH.
+  const bin = join(home, ".collector-bin");
+  await mkdir(bin);
+  for (const tool of ["git", "bun"]) {
+    const executable = Bun.which(tool);
+    if (!executable) throw new Error(`Missing test prerequisite: ${tool}`);
+    await symlink(executable, join(bin, tool));
+  }
+  expect(Bun.which("python3", { PATH: bin })).toBeNull();
   const provider = {
     async exec(request: ExecRequest): Promise<ExecResult> {
-      const process = Bun.spawn(["bash", "-c", request.command], {
-        env: { ...processEnv(), HOME: home },
+      const process = Bun.spawn(["/bin/bash", "-c", request.command], {
+        env: { ...processEnv(), HOME: home, PATH: bin },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -81,6 +90,9 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   await run(["git", "add", "tracked"], repo);
   await writeFile(join(repo, "tracked"), "unstaged\n");
   await writeFile(join(repo, "new-file"), "untracked\n");
+  const longName = "long-" + "x".repeat(120);
+  await writeFile(join(repo, longName), "long path\n");
+  await symlink(longName, join(repo, "link"));
   const result = await preserveWork(provider, "sandbox");
   expect(result.status).toBe("preserved");
   if (result.status !== "preserved") throw new Error("Expected archive");
@@ -99,6 +111,8 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   expect(await readFile(join(restored, "tracked"), "utf8")).toBe("unstaged\n");
   expect(await run(["git", "show", ":tracked"], restored)).toBe("staged\n");
   expect(await readFile(join(recovery, "repo-0", "untracked", "new-file"), "utf8")).toBe("untracked\n");
+  expect(await readFile(join(recovery, "repo-0", "untracked", longName), "utf8")).toBe("long path\n");
+  expect(await readlink(join(recovery, "repo-0", "untracked", "link"))).toBe(longName);
   expect((await run(["git", "rev-parse", "HEAD"], repo)).trim()).toBe(head);
 });
 
@@ -234,7 +248,7 @@ test("collector failures are closed and provider output never becomes a reason",
     [{ truncated: true }, "output_truncated"],
     [{ stdout: "private invalid output" }, "output_invalid"],
     [{ stdout: '{"status":"failed","reason":"private data"}' }, "output_invalid"],
-    ...(["missing_git", "missing_python3", "missing_openssl", "size_limit", "timeout"] as const).map(
+    ...(["missing_git", "missing_bun", "missing_openssl", "size_limit", "timeout"] as const).map(
       (reason) => [{ stdout: JSON.stringify({ status: "failed", reason }) }, reason] as const,
     ),
   ] as const) {
