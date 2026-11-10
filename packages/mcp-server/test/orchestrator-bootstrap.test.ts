@@ -195,6 +195,6 @@ test.each(["boat", "modal"] as const)("private bootstrap without a key fails clo
         },
       },
     ),
-  ).rejects.toThrow("orchestrator_skill_bootstrap_failed");
+  ).rejects.toThrow("skillpack_credential_missing");
   expect(calls).toEqual([]);
 });

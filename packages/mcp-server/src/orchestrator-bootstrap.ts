@@ -123,6 +123,7 @@ export async function bootstrapOrchestrator(
     if (error instanceof PrivateSkillError) request.diagnostics?.captureReason(error.reason);
     else if (validatingReceipt) request.diagnostics?.captureReason("skill_provenance_missing");
     else request.diagnostics?.capture(error);
+    if (error instanceof PrivateSkillError) throw error;
     throw new Error("orchestrator_skill_bootstrap_failed");
   }
   await request.recordReceipt?.(receipt);

@@ -10,6 +10,7 @@ import type {
   SandboxRecord,
 } from "@armada/core";
 import { ProviderError } from "@armada/core";
+import { PrivateSkillError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
@@ -658,7 +659,9 @@ export class OrchestratorRuntime {
           ? "boat_conversation_unavailable"
           : lost
             ? "native_continuity_lost"
-            : "runtime_uncertain";
+            : error instanceof PrivateSkillError
+              ? error.reason
+              : "runtime_uncertain";
       diagnostics.report(state, refused ? error.refusal : error);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation

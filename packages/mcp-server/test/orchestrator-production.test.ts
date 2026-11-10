@@ -358,6 +358,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "registration",
       "initialization",
       "skills",
+      "private-skill",
       "epoch",
       "completion",
       "failure_publication",
@@ -376,7 +377,11 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         create trigger diagnostic_publication_fault before update on orchestrator_operations for each row execute function diagnostic_publication_fault()`);
       const admitted = await bundle.runtime.create(
         caller,
-        { ...config, name: `diagnostic-${scenario}` },
+        {
+          ...config,
+          name: `diagnostic-${scenario}`,
+          ...(scenario === "private-skill" ? { skill: "notes@1.0.0" } : {}),
+        },
         `diagnostic-${scenario}`,
       );
       expect(admitted.state).toBe("pending");
@@ -387,6 +392,12 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(operation?.state).toBe(
         scenario === "launcher" ? "failed" : scenario === "failure_publication" ? "pending" : "uncertain",
       );
+      if (scenario === "private-skill") {
+        expect(operation?.errorCode).toBe("skillpack_credential_missing");
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          "skillpack_credential_missing",
+        );
+      }
       if (scenario === "registration")
         await db.exec(
           "drop trigger diagnostic_registration_fault on sandboxes; drop function diagnostic_registration_fault()",
@@ -402,6 +413,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         registration: ["registration", "sql_check"],
         initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
+        "private-skill": ["skills", "skillpack_credential_missing"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
         failure_publication: ["completion", "sql_serialization"],
@@ -431,7 +443,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         const forks = placement.forks.length;
         const replay = await bundle.runtime.create(
           caller,
-          { ...config, name: `diagnostic-${scenario}` },
+          {
+            ...config,
+            name: `diagnostic-${scenario}`,
+          },
           `diagnostic-${scenario}`,
         );
         expect(replay.state).toBe("uncertain");
