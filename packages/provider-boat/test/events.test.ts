@@ -185,3 +185,36 @@ test("Boat preserves supplied message semantics and leaves historical responses 
     [undefined, undefined],
   ]);
 });
+
+test("logs normalize recoverable Boat failures into closed interruption reasons", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [
+        {
+          ...failed,
+          data: {
+            status: "failed",
+            error: "The box moved to a new machine while this prompt was running. Send it again.",
+          },
+        },
+        {
+          ...failed,
+          id: "exit",
+          data: {
+            status: "failed",
+            error: "Codex app-server exited with signal SIGTERM; the next prompt starts a fresh process",
+          },
+        },
+      ],
+      pageInfo: { nextCursor: null, hasMore: false, limit: 100 },
+    },
+  });
+  const page = await boat.provider.events({ sandboxId: ID });
+  expect(page.events).toMatchObject([
+    { kind: "prompt", status: "interrupted", reason: "interrupted_by_provider_move" },
+    { kind: "prompt", status: "interrupted", reason: "interrupted_by_harness_exit" },
+  ]);
+});

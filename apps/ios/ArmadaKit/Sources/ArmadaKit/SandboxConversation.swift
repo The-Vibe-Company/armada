@@ -8,6 +8,16 @@ public struct SandboxTurn: Decodable, Sendable, Equatable {
     public let state: String
     /// Safe, server-written reason of a failed or interrupted turn.
     public let reason: String?
+
+    /// Closed interruption reasons are safe to offer as a manual resend, never an automatic replay.
+    public var resendHint: String? {
+        guard state == "interrupted" else { return nil }
+        switch reason {
+        case "interrupted_by_provider_move": return "The sandbox moved to a new machine. Send the prompt again."
+        case "interrupted_by_harness_exit": return "Send the prompt again to start a fresh agent process."
+        default: return nil
+        }
+    }
 }
 
 /// Interior detail of one sandbox: `POST /api/v1/sandbox/detail`, the same route `armada status`
