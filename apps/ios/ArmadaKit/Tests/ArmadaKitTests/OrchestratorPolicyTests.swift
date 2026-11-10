@@ -408,3 +408,22 @@ private actor Sleeps {
     }
     #expect(await transport.requests.allSatisfy { !$0.url!.path.hasPrefix("/api/v1/orchestrators") })
 }
+
+@Test func followingStopsAfterRepeatedFailedReads() async throws {
+    let enabled = #"{"version":1,"enabled":true,"reason":null}"#
+    let outage = #"{"error":{"code":"unavailable","message":"unavailable"}}"#
+    let (client, _, _) = try await signedIn([(200, enabled), (202, createReceipt("pending")), (503, outage), (503, outage)])
+    let (catalog, _) = try await catalog()
+    var draft = catalog.initialDraft()
+    catalog.adopt(golden: try #require(catalog.goldens.first { $0.id == "g-modal" }), into: &draft)
+    draft.name = "Release"
+    let command = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    _ = try await client.submitOrchestratorOperation(command.id)
+    let sleeps = Sleeps()
+    await #expect(throws: ArmadaError.unavailable) {
+        _ = try await client.followOrchestratorCreate(command.id, maxFailedReads: 2) { await sleeps.record($0) }
+    }
+    #expect(await sleeps.delays == [.seconds(2)])
+    // The accepted create stays saved for the list to settle later.
+    #expect(await client.pendingOperations.first { $0.id == command.id }?.state == .pending)
+}

@@ -160,9 +160,12 @@ extension ArmadaClient {
     /// succeeded and the orchestrator past `creating`; `.failed` with a plain sentence otherwise.
     /// `sleep` is the clock (injected by tests); cancelling the task stops following.
     /// Throws `ArmadaError.conflict` when the saved operation is not an accepted create, and
-    /// rethrows a read failure that waiting cannot fix (signed out, no access, unsupported answer).
+    /// rethrows a read failure that waiting cannot fix (signed out, no access, unsupported answer)
+    /// or the last one after `maxFailedReads` failed reads in a row (the saved command stays for
+    /// the list to settle later).
     public func followOrchestratorCreate(
         _ operationID: UUID,
+        maxFailedReads: Int = 8,
         sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) async throws -> OrchestratorCreateProgress {
         var failures = 0
@@ -187,8 +190,9 @@ extension ArmadaClient {
                                                         hasOpenOperation: true, consecutiveFailures: 0)
                     ?? OrchestratorPolling.settling
             } catch let error as ArmadaError where error == .unavailable || error == .http(429) {
-                // Offline, a server error or rate limiting: wait longer and read again.
+                // Offline, a server error or rate limiting: wait longer and read again, up to a bound.
                 failures += 1
+                if failures >= maxFailedReads { throw error }
                 delay = OrchestratorPolling.backoff(failures)
             }
             try await sleep(delay)

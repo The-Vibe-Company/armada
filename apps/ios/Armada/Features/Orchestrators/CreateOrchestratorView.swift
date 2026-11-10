@@ -215,7 +215,7 @@ struct CreateOrchestratorView: View {
             if !disabled.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(disabled) { offer in
-                        Text("\(Self.offerLabel(offer)) isn't available: \(offer.explanation ?? "turned off on this server.")")
+                        Text("\(HarnessName.label(offer.harness.rawValue)) isn't available: \(offer.explanation ?? "turned off on this server.")")
                     }
                 }
                 .accessibilityIdentifier("create.disabledPairs")

@@ -202,7 +202,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             switch try await client.followOrchestratorCreate(id) {
             case .ready: return .ready
             case .failed(let reason): return .failed(reason)
-            case .creating: return .ready
+            // Not settled: the list keeps showing it in progress.
+            case .creating: throw .offline
             }
         } catch {
             if error is CancellationError { throw .offline }
