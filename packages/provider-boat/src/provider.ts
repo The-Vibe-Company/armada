@@ -164,6 +164,9 @@ export interface BoatProvider extends Provider {
   resumeBestEffort(sandboxId: string): Promise<void>;
   /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
   stopBestEffort(sandboxId: string): Promise<void>;
+  /** Terminal managed retirement only: caller must durably fence activation and
+   * withhold unsynchronized native output before using this cloud-only port. */
+  retireBestEffort?(sandboxId: string): Promise<void>;
   conversations(
     sandboxId: string,
   ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
@@ -194,6 +197,33 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     );
     if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
     return sandboxInfo(response.sandbox);
+  }
+
+  async function archive(sandboxId: string): Promise<void> {
+    const signal = AbortSignal.timeout(150_000);
+    // The generated SandboxActionResponse omits the documented top-level stop.
+    // Read the raw acceptance so the exact operation fence is not discarded.
+    const response = await call(async () => {
+      const accepted = await api.stopRaw({ sandboxId }, { signal });
+      return (await accepted.raw.json()) as {
+        id?: string;
+        stop?: { id?: string };
+        sandbox?: { stop?: { id?: string } };
+      };
+    });
+    if (response.id !== sandboxId) throw unexpectedAnswer("stop operation");
+    const stopId = response.stop?.id ?? response.sandbox?.stop?.id;
+    if (!stopId) throw unexpectedAnswer("stop operation");
+    for (let attempt = 0; attempt < 120; attempt++) {
+      signal.throwIfAborted();
+      const observed: StopOperationResponse = await call(() => api.getStop({ sandboxId, stopId }, { signal }));
+      if (observed.id !== sandboxId || observed.stop?.id !== stopId) throw unexpectedAnswer("stop operation");
+      if (observed.stop.status === "completed") return;
+      if (!["pending", "failing"].includes(observed.stop.status))
+        throw invalidRequest("Sandbox archival was superseded.");
+      await sleep(1000);
+    }
+    throw invalidRequest("Sandbox archival remains unconfirmed.");
   }
 
   const provider: BoatProvider = {
@@ -369,30 +399,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
     async stopBestEffort(sandboxId: string): Promise<void> {
       await options.beforeStop?.(provider, sandboxId);
-      const signal = AbortSignal.timeout(150_000);
-      // The generated SandboxActionResponse omits the documented top-level stop.
-      // Read the raw acceptance so the exact operation fence is not discarded.
-      const response = await call(async () => {
-        const accepted = await api.stopRaw({ sandboxId }, { signal });
-        return (await accepted.raw.json()) as {
-          id?: string;
-          stop?: { id?: string };
-          sandbox?: { stop?: { id?: string } };
-        };
-      });
-      if (response.id !== sandboxId) throw unexpectedAnswer("stop operation");
-      const stopId = response.stop?.id ?? response.sandbox?.stop?.id;
-      if (!stopId) throw unexpectedAnswer("stop operation");
-      for (let attempt = 0; attempt < 120; attempt++) {
-        signal.throwIfAborted();
-        const observed: StopOperationResponse = await call(() => api.getStop({ sandboxId, stopId }, { signal }));
-        if (observed.id !== sandboxId || observed.stop?.id !== stopId) throw unexpectedAnswer("stop operation");
-        if (observed.stop.status === "completed") return;
-        if (!["pending", "failing"].includes(observed.stop.status))
-          throw invalidRequest("Sandbox archival was superseded.");
-        await sleep(1000);
-      }
-      throw invalidRequest("Sandbox archival remains unconfirmed.");
+      await archive(sandboxId);
+    },
+    async retireBestEffort(sandboxId: string): Promise<void> {
+      await archive(sandboxId);
     },
     async conversations(sandboxId: string) {
       const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));

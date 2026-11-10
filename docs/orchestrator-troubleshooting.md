@@ -252,3 +252,40 @@ Boat prompt status and provider event response/cursor for diagnosis. Never inclu
 credentials or guest output containing secrets. The production-composition test
 proves request dispatch, event publication and reconnect against documented Boat
 responses; it cannot explain an upstream accepted-but-never-delivered turn.
+
+### Boat pull ownership and closed observations
+
+Boat `/prompt` is posted synchronously by owner send. The accepted receipt now
+persists `promptId`, `conversationId` and normalized status in the message
+operation's `runtime_result` (`kind=prompt_receipt`). It is not a harness-execution
+acknowledgement. Legacy message receipts have no prompt ID and cannot be repaired
+retroactively from a conversation alone.
+
+Previously managed Boat parents had no background event consumer: owner
+`orchestrator events` was the only puller. The server now registers a fair Boat
+pull lane alongside create/lifecycle/child workers. It consumes the same provider
+cursor and atomic journal/activity transaction as owner reconnects. Polling never
+renews owner activity by itself; only new meaningful agent events do. The real
+serve regression verifies cursor/activity publication **before** any owner events
+request. This repairs missing unattended activity, not proof that the historical
+150-second upstream-empty response had the same cause.
+
+Closed JSON observations (`event=orchestrator_runtime_observation`) contain only
+Armada UUIDs plus these labels, never prompt text, tokens or raw provider errors:
+
+- `kind=prompt_dispatch`: `accepted` (HTTP receipt returned) or `not_confirmed`
+  (dispatch/preparation failed or acknowledgement lost; not proof of no effect).
+- `kind=prompt_status`: `queued`, `running`, `finished`, `failed`, `interrupted`,
+  `unknown`, `unavailable`. Boat `sending` is normalized to `queued`.
+- `kind=events_poll`: `empty`, `published`, `fenced` (another cursor/incarnation
+  won), `failed`. Failure records retain the existing closed reason classifier.
+
+Compare these labels during the next production smoke; an accepted/queued turn
+with empty polls is distinct from failed polls or missing dispatch.
+
+Terminal retirement first attempts normal native credential preservation. If
+SSH/native capture fails, it durably withholds the unsynchronized native tail
+before a private cloud-only archival fallback. Already-published redacted SQL
+history remains readable. The permanent stop fence prevents activation, and
+withheld history is never upgraded on retry. Already-archived native-auth parents
+can likewise be retired without trying to reactivate them for SSH sampling.

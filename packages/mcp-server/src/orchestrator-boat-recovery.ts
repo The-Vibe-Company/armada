@@ -16,6 +16,7 @@ type Recovery = {
   sandboxId: string;
   providerSandboxId: string;
   generation: string;
+  history?: "withheld";
 };
 type Row = {
   id: string;
@@ -166,12 +167,22 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
           source_golden_visibility: "org" | "private";
           orchestrator_native_generation: string | null;
           conversation_id: string | null;
+          credential_kind: string | null;
         }>(
-          `select s.source_golden_visibility,s.orchestrator_native_generation,r.conversation_id from public.sandboxes s join public.orchestrators o on o.sandbox_id=s.id join public.orchestrator_runtime r on r.orchestrator_id=o.id where s.id=$1 and s.provider_sandbox_id=$2 and s.lifecycle_generation=$3`,
+          `select s.source_golden_visibility,s.orchestrator_native_generation,r.conversation_id,c.kind as credential_kind from public.sandboxes s join public.orchestrators o on o.sandbox_id=s.id join public.orchestrator_runtime r on r.orchestrator_id=o.id left join public.credentials c on c.id=s.credential_id where s.id=$1 and s.provider_sandbox_id=$2 and s.lifecycle_generation=$3`,
           [b.sandboxId, b.providerSandboxId, b.generation],
         )
       ).rows[0];
       if (!source) throw new OrchestratorRuntimeError("conflict");
+      const withholdHistory = () =>
+        sql.transaction!(async (tx) => {
+          await bound(tx, operation);
+          await tx.query(
+            `update public.orchestrator_operations set runtime_result=jsonb_set(runtime_result,'{history}','"withheld"') where id=$1`,
+            [operation.id],
+          );
+          b.history = "withheld";
+        });
       const provider = await providers.resolve(
         {
           provider: "boat",
@@ -193,23 +204,45 @@ export function createBoatOrchestratorRecovery(sql: Sql, providers: ProviderRegi
       );
       if (provider.id !== "boat" || typeof (provider as BoatProvider).stopBestEffort !== "function")
         throw new OrchestratorRuntimeError("unavailable");
-      if ((await provider.get(b.providerSandboxId)).state !== "stopped")
-        await (provider as BoatProvider).stopBestEffort(b.providerSandboxId);
+      if ((await provider.get(b.providerSandboxId)).state !== "stopped") {
+        try {
+          // Preserve the ordinary native-auth capture path when guest I/O works.
+          await (provider as BoatProvider).stopBestEffort(b.providerSandboxId);
+        } catch {
+          const retire = (provider as BoatProvider).retireBestEffort;
+          if (!retire) throw new OrchestratorRuntimeError("unavailable");
+          // Native capture can fail before any cloud request. Retirement must
+          // still remove compute, but unknown rotated secrets make its unread
+          // native tail unsafe. Persist that denial BEFORE bypassing guest I/O;
+          // it survives a lost cloud acknowledgement and can never be upgraded.
+          await withholdHistory();
+          await retire.call(provider, b.providerSandboxId);
+        }
+      }
       const archived = (await provider.get(b.providerSandboxId)).state === "stopped";
-      if (archived)
-        await mirrorStoppedHistory(
-          sql,
-          provider,
-          {
-            orchestratorId: input.id,
-            sandboxId: b.sandboxId,
-            providerSandboxId: b.providerSandboxId,
-            generation: b.generation,
-            physicalGeneration: source.orchestrator_native_generation,
-          },
-          operation.id,
-          source.conversation_id,
-        );
+      const history = await sql.transaction(async (tx) => (await bound(tx, operation)).runtime_result.history);
+      if (archived && history !== "withheld") {
+        try {
+          await mirrorStoppedHistory(
+            sql,
+            provider,
+            {
+              orchestratorId: input.id,
+              sandboxId: b.sandboxId,
+              providerSandboxId: b.providerSandboxId,
+              generation: b.generation,
+              physicalGeneration: source.orchestrator_native_generation,
+            },
+            operation.id,
+            source.conversation_id,
+          );
+        } catch (error) {
+          // An already archived native-auth machine cannot be safely sampled by
+          // SSH. Terminal retirement may withhold its tail, never release it.
+          if (source.credential_kind !== "codex_auth") throw error;
+          await withholdHistory();
+        }
+      }
       stopped = archived;
     } catch {
       /* Preserve the retirement fence and let the same key retry archival. */

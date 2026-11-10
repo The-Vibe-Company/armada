@@ -296,3 +296,15 @@ test("publication preserves native Bun SQLSTATE and database identifiers, never 
   expect(JSON.parse(lines[1]!)).not.toHaveProperty("constraint");
   expect(lines.join("")).not.toContain("private");
 });
+
+test("runtime observations reject untrusted labels and values without leaking payloads", () => {
+  const lines: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "events");
+  diagnostics.observe("events_poll", "published");
+  diagnostics.observe("prompt_status", "running");
+  diagnostics.observe("prompt_dispatch", "not_confirmed");
+  diagnostics.observe("prompt_status", "private-provider-error-or-prompt");
+  diagnostics.observe("private-token" as "events_poll", "published");
+  expect(lines.map((line) => JSON.parse(line).value)).toEqual(["published", "running", "not_confirmed"]);
+  expect(lines.join(" ")).not.toContain("private-");
+});

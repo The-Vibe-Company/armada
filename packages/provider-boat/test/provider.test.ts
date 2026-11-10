@@ -766,3 +766,30 @@ test.each(["completed", "superseded", "wrong-operation"])(
     ]);
   },
 );
+
+// Terminal retirement must remain cloud-only when native-auth preservation is
+// unavailable; the managed owner must persist its activation/output fences first.
+test("terminal Boat archival does not require the failing guest preservation hook", async () => {
+  let captures = 0;
+  const requests: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    beforeStop: async () => {
+      captures++;
+      throw Error("native SSH unavailable");
+    },
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
+      return Response.json(
+        { ok: true, id: ID, stop: { id: "retirement-stop", status: "completed" } },
+        { status: init?.method === "POST" ? 202 : 200 },
+      );
+    }) as typeof fetch,
+  });
+  await expect(provider.stopBestEffort(ID)).rejects.toThrow("native SSH unavailable");
+  expect(requests).toEqual([]);
+  await provider.retireBestEffort?.(ID);
+  expect(captures).toBe(1);
+  expect(requests).toEqual([`POST /api/v1/sandboxes/${ID}/stop`, `GET /api/v1/sandboxes/${ID}/stops/retirement-stop`]);
+});

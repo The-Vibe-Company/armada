@@ -96,6 +96,8 @@ let prompts = 0,
   stops = 0,
   failStop = false;
 const requests: string[] = [];
+let eventReads = 0;
+let observedPoll: (() => void) | undefined;
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
   if (url.hostname === "127.0.0.1") return realFetch(input, init);
@@ -183,7 +185,18 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     );
     return json({ promptId: `prompt-${prompts}`, conversationId, status: "queued" }, 202);
   }
+  if (suffix.startsWith("/prompts/"))
+    return json({
+      promptRun: {
+        promptId: suffix.split("/").at(-1),
+        conversationId: machine.conversation,
+        status: "finished",
+        done: true,
+      },
+    });
   if (suffix === "/events") {
+    eventReads++;
+    observedPoll?.();
     const cursor = url.searchParams.get("cursor");
     const anchor = cursor ? Buffer.from(cursor, "base64url").toString("utf8") : null;
     const start = anchor ? machine.events.findIndex((event) => `${event.timestamp}:${event.id}` === anchor) + 1 : 0;
@@ -319,7 +332,43 @@ try {
       if (result.revision) revision = result.revision;
       return result;
     };
+    const readsBeforeSend = eventReads;
     await act("send", "hello");
+    // No owner events request yet: only the production background consumer can
+    // pull this page and publish its cursor/activity. Await I/O, never a sleep.
+    if (eventReads === readsBeforeSend)
+      await new Promise<void>((resolve, reject) => {
+        const deadline = setTimeout(() => reject(Error("Managed Boat event consumer never polled")), 10000);
+        observedPoll = () => {
+          clearTimeout(deadline);
+          observedPoll = undefined;
+          resolve();
+        };
+      });
+    let journal: { provider_cursor: string | null; count: number } | undefined;
+    for (let attempts = 0; attempts < 1000; attempts++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      journal = (
+        await sql.query<{ provider_cursor: string | null; count: number }>(
+          `select provider_cursor,(select count(*)::int from public.orchestrator_activity where orchestrator_id=$1) as count
+         from public.orchestrator_runtime where orchestrator_id=$1`,
+          [id],
+        )
+      ).rows[0];
+      if (journal?.provider_cursor && journal.count > 0) break;
+    }
+    assert(
+      journal?.provider_cursor && journal.count > 0,
+      `Background pull must publish activity and cursor before owner reads ${JSON.stringify({ journal, logs, requests })}`,
+    );
+    const receipt = (
+      await sql.query<{ runtime_result: { kind: string; promptId: string } }>(
+        `select runtime_result from public.orchestrator_operations where orchestrator_id=$1 and action='message' order by revision desc limit 1`,
+        [id],
+      )
+    ).rows[0]?.runtime_result;
+    assert.equal(receipt?.kind, "prompt_receipt");
+    assert.equal(receipt.promptId, `prompt-${prompts}`);
     assert.equal(prompts, harness === "codex" ? 1 : 3, "Owner send must dispatch to Boat");
     const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
     const agentEvents = page.events
@@ -389,6 +438,9 @@ try {
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
   }
+  assert(logs.some((line) => line.includes('"kind":"prompt_dispatch"') && line.includes('"value":"accepted"')));
+  assert(logs.some((line) => line.includes('"kind":"prompt_status"') && line.includes('"value":"finished"')));
+  assert(logs.some((line) => line.includes('"kind":"events_poll"') && line.includes('"value":"published"')));
   assert(!logs.some((line) => line.includes('stage="native_checkpoint"')), logs.join("\n"));
   console.log(`SERVE_BOAT_RECEIPT ${JSON.stringify({ prompts, stops, sshCalls: sshCalls.length })}`);
 } finally {
