@@ -266,3 +266,25 @@ test("unstructured HTTP failures identify the actual origin without relaying ups
     expect(result.err).not.toContain("test-armada-bearer");
   }
 });
+
+// Transport boundary: a lost synchronous stop response must not invite a second stop.
+test("stop transport loss gives reconciliation instructions and never retries", async () => {
+  const h = harness(() => {
+    throw new Error("transport lost");
+  });
+  const result = await h.invoke([
+    "stop",
+    "parent-1",
+    "--org",
+    "org-1",
+    "--expected-revision",
+    "7",
+    "--idempotency-key",
+    "same-key",
+    "--json",
+  ]);
+  expect(result.code).toBe(1);
+  expect(JSON.parse(result.err).error.message).toContain("armada orchestrator detail parent-1 --org org-1");
+  expect(JSON.parse(result.err).error.message).toContain("same idempotency key");
+  expect(h.requests).toHaveLength(1);
+});
