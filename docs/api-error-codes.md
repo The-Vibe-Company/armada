@@ -1,6 +1,6 @@
 # API error-code catalogue
 
-Audit baseline: 2026-11-10 (#829). Scope: authenticated Armada control API
+Audit baseline: 2026-11-10 (#829). Scope: Armada control API
 `/api/v1/` and its shared MCP tools, not OAuth protocol errors, dashboard
 PostgREST errors or provider-native exceptions. Sources:
 `packages/core/src/api-failure.ts`, `launch-error.ts`, `provider.ts`;
