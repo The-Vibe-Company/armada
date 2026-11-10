@@ -5,12 +5,15 @@ import {
   createSqlVaultStore,
   mapSandboxRow,
   OrchestratorAuthority,
+  PrivateSkillError,
   type ProviderRegistry,
   reserveOrchestratorOperation,
   resolveCredentials,
+  resolveSkillpackCredential,
   type SandboxRow,
   type Sql,
   sandboxActivity,
+  VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
@@ -232,6 +235,24 @@ export function createProductionOrchestrators(input: {
       authority,
       reserveOperation: reserveOrchestratorOperation,
       skillRevision,
+      skillpackKey: async (ownerId, orgId) => {
+        try {
+          return (
+            (
+              await resolveSkillpackCredential(createSqlVaultStore(sql), input.encryptionKey, {
+                userId: ownerId,
+                orgId,
+              })
+            )?.key ?? null
+          );
+        } catch (error) {
+          throw new PrivateSkillError(
+            error instanceof VaultError && error.code === "credential_refused"
+              ? "skillpack_credential_refused"
+              : "skillpack_install_failed",
+          );
+        }
+      },
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs,
       recoverCreate: async (request, diagnostics) => {
