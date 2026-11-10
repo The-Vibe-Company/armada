@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CreateGoldenRequest, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
-import { machineCapacity, parseMachineSize, resolveModelChoice } from "@armada/core";
+import { machineCapacity, ProviderError, parseMachineSize, resolveModelChoice } from "@armada/core";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -12,6 +12,7 @@ import {
   checkpointReceipt,
   type ModalOrchestratorCheckpoint,
 } from "./orchestrator-checkpoint.ts";
+import { createOrchestratorCreateRecovery } from "./orchestrator-create-recovery.ts";
 import type {
   Machine,
   McpConfiguration,
@@ -224,6 +225,31 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("conflict", "Named machine ownership does not match the reservation; resource not modified.");
     return sb;
   }
+  const createRecovery = createOrchestratorCreateRecovery({
+    store,
+    scope: options.scope,
+    sourceScope: source.scope,
+    assertSource: assertMachineSource,
+    namedOwned,
+  });
+  async function bootStage<T>(
+    stage: "binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication",
+    work: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await work();
+    } catch (error) {
+      const safe = modalError(error);
+      throw new ProviderError({
+        provider: "modal",
+        code: safe.code,
+        retryable: safe.retryable,
+        ...(safe.status === undefined ? {} : { status: safe.status }),
+        providerCode: `modal_boot_${stage}`,
+        message: "Modal bootstrap failed; inspect the durable lifecycle receipt.",
+      });
+    }
+  }
   async function create(
     row: Machine,
     save: (row: Machine) => Promise<void>,
@@ -268,21 +294,24 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.runtimePolicy === "explicit-vm-v1")
       row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
     row.phase = "booting";
-    await save(row);
-    if (distribution.captureProcessBaseline && !row.processBaseline) {
-      if (row.freshStatePreparedGeneration === row.generation)
-        throw refusal(
-          "conflict",
-          "Cannot trust a control baseline captured after bootstrap; physical source retained.",
-        );
-      row.processBaseline = await distribution.captureProcessBaseline(sb, row);
-      await save(row);
-    }
-    if (
-      row.processBaseline &&
-      (row.processBaseline.physicalId !== row.physicalId || row.processBaseline.generation !== row.generation)
-    )
-      throw refusal("conflict", "Physical process baseline does not match this incarnation.");
+    await bootStage("binding", () => save(row));
+    if (distribution.prepareRuntime) await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
+    await bootStage("baseline", async () => {
+      if (distribution.captureProcessBaseline && !row.processBaseline) {
+        if (row.freshStatePreparedGeneration === row.generation)
+          throw refusal(
+            "conflict",
+            "Cannot trust a control baseline captured after bootstrap; physical source retained.",
+          );
+        row.processBaseline = await distribution.captureProcessBaseline(sb, row);
+        await save(row);
+      }
+      if (
+        row.processBaseline &&
+        (row.processBaseline.physicalId !== row.physicalId || row.processBaseline.generation !== row.generation)
+      )
+        throw refusal("conflict", "Physical process baseline does not match this incarnation.");
+    });
     // Only a never-bootstrapped fresh master/new logical fork may discard inherited managed
     // state. Persist the marker BEFORE boot so retries cannot erase a same-id/generation fence.
     if (
@@ -290,30 +319,34 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       (row.golden || row.generation === 1) &&
       row.freshStatePreparedGeneration !== row.generation
     ) {
-      await distribution.prepareFreshMachine(sb, row);
-      row.freshStatePreparedGeneration = row.generation;
-      await save(row);
+      await bootStage("fresh", async () => {
+        await distribution.prepareFreshMachine!(sb, row);
+        row.freshStatePreparedGeneration = row.generation;
+        await save(row);
+      });
     }
-    await distribution.start(sb, row, env);
-    let healthy = false;
-    for (let attempt = 0; attempt < 120; attempt++) {
-      try {
-        const health = await runner.call<{ generation?: string; ready?: boolean }>(row, "health", {});
-        if (health.generation !== String(row.generation) || health.ready !== true)
-          throw refusal("conflict", "Runner health belongs to another or closed generation.");
-        healthy = true;
-        break;
-      } catch (error) {
-        if (attempt === 119) throw error;
-        await Bun.sleep(250);
+    await bootStage("start", () => distribution.start(sb, row, env));
+    await bootStage("health", async () => {
+      let healthy = false;
+      for (let attempt = 0; attempt < 120; attempt++) {
+        try {
+          const health = await runner.call<{ generation?: string; ready?: boolean }>(row, "health", {});
+          if (health.generation !== String(row.generation) || health.ready !== true)
+            throw refusal("conflict", "Runner health belongs to another or closed generation.");
+          healthy = true;
+          break;
+        } catch (error) {
+          if (attempt === 119) throw error;
+          await Bun.sleep(250);
+        }
       }
-    }
-    if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
+      if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
+    });
     row.phase = "active";
     row.info.state = "ready";
     row.info.providerState = "active";
     row.info.expiresAt = new Date(row.grantExpiresAt ?? Date.now());
-    await save(row);
+    await bootStage("active_publication", () => save(row));
     return sandboxInfo(row);
   }
   async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
@@ -1279,6 +1312,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
     },
+    recoverOrchestratorCreate: createRecovery.recover,
+    readOrchestratorCreateRecovery: createRecovery.read,
     async findGoldenBuilder(request) {
       assertRecoveryTarget(request);
       const row = await store.findByRequestKey(request.requestKey);

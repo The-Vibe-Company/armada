@@ -53,3 +53,20 @@ On interruption or a failed poll, reconnect with the last delivered cursor.
 Delivery is at-least-once across an interruption: deduplicate by event ID if a
 page must be replayed. Cursors are opaque; never substitute provider cursors.
 Polling is read-only and does not keep a runtime active.
+
+## Recover an allocated but unbound Modal create
+
+`armada orchestrator recover ID --org ORG --expected-revision ORIGINAL_REVISION
+--idempotency-key RECOVERY_KEY --json` is a narrow owner recovery, not a generic
+retry. It discovers the original uncertain create's exact private Modal resource,
+terminates/confirms it through Armada's fenced provider path, and publishes a
+stop-kind receipt only after positive terminal proof. It never allocates a
+replacement or requests model-account values. Keep the original key and revision
+for reconciliation; do not generate new keys after uncertainty. A manual replay
+of an unconfirmed recovery may idempotently terminate the exact same fenced
+physical resource again; a successful receipt replay is read-only. No automatic
+CLI retry or new allocation is performed. See
+[troubleshooting](orchestrator-troubleshooting.md) for scope, proof requirements
+and safe retry limits. A successful recovery keeps history and clears the old
+create's busy fence, allowing a later ordinary stop; it does not invent native
+continuity for a never-started conversation.

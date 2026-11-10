@@ -4,6 +4,11 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 
 export type OrchestratorDiagnosticLog = (line: string) => void;
 const STAGES = [
+  "recovery_reservation",
+  "recovery_dispatch",
+  "recovery_observation",
+  "recovery_validation",
+  "recovery_publication",
   "authorization",
   "request_lookup",
   "identity_read",
@@ -103,6 +108,15 @@ const CODES = new Set([
   "timeout",
   "capacity",
 ]);
+const MODAL_BOOT_CODES = new Set([
+  "modal_boot_binding",
+  "modal_boot_runtime",
+  "modal_boot_baseline",
+  "modal_boot_fresh",
+  "modal_boot_start",
+  "modal_boot_health",
+  "modal_boot_active_publication",
+]);
 const SQL_CODES: Readonly<Record<string, string>> = {
   "23502": "sql_not_null",
   "23503": "sql_foreign_key",
@@ -121,7 +135,7 @@ const SQL_CODES: Readonly<Record<string, string>> = {
   "57P01": "sql_shutdown",
 };
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const ACTIONS = new Set(["create", "message", "steer", "stop", "resume"]);
+const ACTIONS = new Set(["create", "message", "steer", "stop", "resume", "recover"]);
 
 /** No message, stack, details, request, provider ID, config, or causal payload is read.
  * Untrusted error codes are projected through closed allowlists, not sanitized strings. */
@@ -144,7 +158,18 @@ function reason(error: unknown): string {
               : error instanceof OrchestratorRuntimeError
                 ? "runtime"
                 : undefined;
-    if (family && CODES.has(code)) return `${family}_${code}`;
+    if (family && CODES.has(code)) {
+      if (family === "provider") {
+        // Only closed provider-owned boot labels, never arbitrary SDK diagnostics.
+        try {
+          const boot: unknown = Reflect.get(error, "providerCode");
+          if (typeof boot === "string" && MODAL_BOOT_CODES.has(boot)) return `${family}_${code}_${boot}`;
+        } catch {
+          /* Preserve the normalized code even for a hostile getter. */
+        }
+      }
+      return `${family}_${code}`;
+    }
     if (Object.hasOwn(SQL_CODES, code)) return SQL_CODES[code]!;
   } catch {
     /* Hostile getters and logger failures never become operation failures. */

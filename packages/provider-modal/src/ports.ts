@@ -54,6 +54,11 @@ import type { ModalOrchestratorCheckpointRecord } from "./orchestrator-checkpoin
 
 export interface Machine {
   orchestratorCheckpoint?: ModalOrchestratorCheckpointRecord;
+  orchestratorCreateRecovery?: {
+    request: import("@armada/core").OrchestratorCreateRecoveryRequest;
+    binding: Omit<import("@armada/core").OrchestratorCreateRecoveryProof, "state">;
+    state: "dispatched" | "terminated";
+  };
   info: SandboxInfo;
   generation: number;
   /** Assigned only when reserving a NEW managed launch; legacy/unknown rows stay unknown. */
@@ -162,6 +167,9 @@ export interface RunnerDistribution {
   prepareFreshMachine?(sandbox: Sandbox, machine: Machine): Promise<void>;
   /** Mandatory for privileged build images: capture before first user/runner/init work. */
   captureProcessBaseline?(sandbox: Sandbox, machine: Machine): Promise<ProcessBaseline>;
+  /** Install only the trusted current public runtime on eligible fresh machines,
+   * before capturing the control-process baseline. Never touches native history. */
+  prepareRuntime?(sandbox: Sandbox, machine: Machine): Promise<void>;
   start(sandbox: Sandbox, machine: Machine, env: Readonly<Record<string, string>>): Promise<void>;
   restoreEnv(machine: Machine): Promise<Readonly<Record<string, string>>>;
   /** After verified checkpoint ACK: quiesce ALL writers/SSH and remove transient keys/auth.

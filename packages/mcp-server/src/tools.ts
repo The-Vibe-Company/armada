@@ -266,6 +266,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     "steer",
     "stop",
     "resume",
+    "recover",
     "reconcile",
   ]) {
     server.registerTool(

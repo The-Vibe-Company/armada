@@ -25,9 +25,9 @@ In the caller's organization, use an existing **Modal** golden with a saved
 snapshot and its immutable workspace/environment/App binding registered by
 Armada. The bound Modal org/user credential must still be present in the vault;
 use the normal provider setup and golden creation path, not a hand-written App ID
-or the historical stopped conformance App. The golden must contain `git` and an
-`armada` CLI on `PATH` supporting `skill install --project --yes --revision`;
-install a reviewed CLI build while preparing the golden, before snapshotting.
+or the historical stopped conformance App. The golden must contain `git` and Node/npm. Existing `armada` CLI installations
+are used for skill bootstrap; otherwise an explicitly pinned public CLI installer
+is fetched with registry scripts disabled. Public Git/npm egress is required.
 Do not preinstall the four managed skill packages into the selected project:
 the first-create installer refuses conflicts rather than overwriting user files.
 The optional repo must exist in that golden. Select a current named **Codex**

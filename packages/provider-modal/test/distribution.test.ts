@@ -83,3 +83,81 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
     }
   },
 );
+
+(process.platform === "linux" ? test : test.skip)(
+  "fresh saved-golden fork receives current verified runtime without editing native state or restored code",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-runtime-overlay-"));
+    const runtime = join(root, "runtime");
+    const globalBun = join(root, "global-bun");
+    const bundle = Buffer.from("// current server runner\n");
+    const digest = createHash("sha256").update(bundle).digest("hex");
+    execFileSync("sudo", ["mkdir", "-p", runtime]);
+    execFileSync("sudo", ["cp", process.execPath, globalBun]);
+    execFileSync("sudo", ["chmod", "555", globalBun]);
+    execFileSync("sudo", ["chown", "-R", "0:0", root]);
+    execFileSync("sudo", ["chmod", "755", root]);
+    let calls = 0;
+    const sdk = {
+      async exec(argv: string[]) {
+        calls++;
+        const child = Bun.spawn(
+          [
+            "sudo",
+            "-n",
+            ...argv.map((arg) =>
+              arg
+                .replaceAll("/opt/armada", runtime)
+                .replaceAll("'/opt'", JSON.stringify(root))
+                .replaceAll("/usr/local/lib/node_modules/bun/bin/bun.exe", globalBun),
+            ),
+          ],
+          { stdin: "pipe", stdout: "pipe", stderr: "ignore" },
+        );
+        return {
+          stdin: {
+            writeText: async (text: string) => {
+              child.stdin.write(text);
+            },
+            close: async () => {
+              child.stdin.end();
+            },
+          },
+          stdout: { readText: () => new Response(child.stdout).text() },
+          wait: () => child.exited,
+        };
+      },
+    } as unknown as import("modal").Sandbox;
+    const distribution = createRunnerDistribution({
+      ...MODAL_IMAGE_LOCK,
+      bundle,
+      sha256: digest,
+      capabilities: {} as RunnerDistribution["capabilities"],
+      bootstrap: async () => {
+        throw Error("No private bootstrap before artifact installation");
+      },
+      restoreEnv: async () => ({}),
+      prepareSnapshot: async () => {},
+    });
+    const fresh = { generation: 1, golden: false } as import("../src/ports.ts").Machine;
+    try {
+      execFileSync("sudo", ["sh", "-c", 'printf "%s" "old snapshot runner" > "$1/main.js"', "sh", runtime]);
+      await distribution.prepareRuntime?.(sdk, fresh);
+      expect(await Bun.file(join(runtime, "main.js")).text()).toBe(bundle.toString());
+      expect(execFileSync(join(runtime, "runtime-bun/bun"), ["--version"], { encoding: "utf8" }).trim()).toBe("1.4.2");
+      const before = calls;
+      await distribution.prepareRuntime?.(sdk, { ...fresh, generation: 2 });
+      expect(calls).toBe(before); // No code change during native checkpoint restore.
+      await distribution.prepareRuntime?.(sdk, { ...fresh, freshStatePreparedGeneration: 1 });
+      expect(calls).toBe(before); // An uncertain same-generation bootstrap must not be rewritten either.
+      const userFile = join(root, "keep-native-state");
+      execFileSync("sudo", ["sh", "-c", 'printf "%s" "native state untouched" > "$1"', "sh", userFile]);
+      execFileSync("sudo", ["rm", join(runtime, "main.js")]);
+      execFileSync("sudo", ["ln", "-s", userFile, join(runtime, "main.js")]);
+      await expect(distribution.prepareRuntime?.(sdk, fresh)).rejects.toMatchObject({ code: "conflict" });
+      expect(await Bun.file(userFile).text()).toBe("native state untouched");
+    } finally {
+      execFileSync("sudo", ["rm", "-rf", "--", root]);
+    }
+  },
+);

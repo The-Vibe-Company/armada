@@ -312,6 +312,7 @@ describe("tools", () => {
         "orchestrator_steer",
         "orchestrator_stop",
         "orchestrator_resume",
+        "orchestrator_recover",
         "orchestrator_reconcile",
         "resource_advice",
         "send",

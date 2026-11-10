@@ -3,6 +3,7 @@ import { gzipSync } from "node:zlib";
 import type { ModalClient, Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerDistribution } from "./ports.ts";
+import { prepareRuntimeArtifact } from "./runtime-overlay.ts";
 
 export interface DistributionOptions {
   /** Immutable OCI digest. Image must contain Debian apt and node/npm. */
@@ -56,6 +57,11 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
   );
   return {
     capabilities: options.capabilities,
+    async prepareRuntime(sandbox, machine) {
+      if ((machine.generation !== 1 && !machine.golden) || machine.freshStatePreparedGeneration === machine.generation)
+        return;
+      await prepareRuntimeArtifact(sandbox, options);
+    },
     async image(client: ModalClient) {
       const commands = [
         `RUN apt-get update && apt-get install -y --no-install-recommends git=${options.apt.git} gh=${options.apt.gh} openssh-server=${options.apt.opensshServer} sudo=${options.apt.sudo} ca-certificates=${options.apt.caCertificates} curl=${options.apt.curl} unzip=${options.apt.unzip} python3=${options.apt.python3} && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*`,

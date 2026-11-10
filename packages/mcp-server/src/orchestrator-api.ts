@@ -17,7 +17,7 @@ export async function callOrchestrator(
   if (!service) throw new OrchestratorRuntimeError("unavailable");
   if (typeof args.orgId !== "string") throw new OrchestratorRuntimeError("invalid_request");
   if (
-    ["create", "message", "steer", "stop", "resume", "reconcile"].includes(action) &&
+    ["create", "message", "steer", "stop", "resume", "recover", "reconcile"].includes(action) &&
     (!key || !/^[ -~]{1,128}$/.test(key))
   )
     throw new OrchestratorRuntimeError("invalid_request");
@@ -47,6 +47,7 @@ export async function callOrchestrator(
     steer: ["orgId", "id", "expectedRevision", "text"],
     stop: ["orgId", "id", "expectedRevision"],
     resume: ["orgId", "id", "expectedRevision"],
+    recover: ["orgId", "id", "expectedRevision"],
   };
   if (action !== "create" && (!fields[action] || Object.keys(args).some((key) => !fields[action]?.includes(key))))
     throw new OrchestratorRuntimeError("invalid_request");
@@ -97,6 +98,16 @@ export async function callOrchestrator(
     return service.create(caller, args as unknown as OrchestratorCreate, key ?? "");
   }
   if (typeof args.id !== "string") throw new OrchestratorRuntimeError("invalid_request");
+  if (action === "recover") {
+    if (!Number.isSafeInteger(args.expectedRevision) || Number(args.expectedRevision) < 0)
+      throw new OrchestratorRuntimeError("invalid_request");
+    return service.recover(caller, {
+      orgId: args.orgId,
+      id: args.id,
+      expectedRevision: Number(args.expectedRevision),
+      key: key ?? "",
+    });
+  }
   if (action === "detail") return service.detail(caller, args.orgId, args.id);
   if (action === "events") {
     if (
@@ -153,7 +164,7 @@ export async function orchestratorHttp(
       (read && !["list", "detail", "events", "capabilities"].includes(action)) ||
       (!read &&
         (request.method !== "POST" ||
-          !["create", "message", "steer", "stop", "resume", "reconcile"].includes(action))) ||
+          !["create", "message", "steer", "stop", "resume", "recover", "reconcile"].includes(action))) ||
       parts.length > 2
     )
       throw new OrchestratorRuntimeError("invalid_request");
