@@ -27,6 +27,13 @@ Not rendered on a device or simulator before this build: the New Orchestrator fo
 checked by ArmadaKit tests and a compile only.
 Conversation: send and steer, the event stream updating live, Details listing the
 workers it launched with a link to each worker's sandbox.
+Follow-up after a turn (#847): send a message, wait for the reply, then send a second one
+right away, including with "Steer now" still selected. It must arrive as a normal message
+(no "Steer" caption), never as "Not confirmed" with Dismiss and Retry. If Armada answers that
+no turn was running, the same text is sent as a new message on its own and "is working"
+disappears. In a sandbox, "is working" and the composer follow the end of the turn as soon
+as the conversation shows it. If Armada still cannot confirm a steer, the composer says what
+you can do instead of only waiting.
 Actions menu: Stop, Resume and Recover each ask for confirmation. Turn on Airplane
 Mode during an action: it shows as not confirmed with Retry, which repeats the same
 request; Recover is offered when the orchestrator needs attention.
