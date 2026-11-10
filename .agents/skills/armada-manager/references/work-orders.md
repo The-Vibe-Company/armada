@@ -16,7 +16,7 @@ Own issue <id> in <repo>, branch <branch>, isolated worktree <path>.
 Implement <observable result>; preserve <specific existing behavior>.
 Your scope is <files/module>; <owner> owns <shared contract/files>.
 Consume <producer revision>; independent work can proceed before it merges.
-Complete ship-pr-dev here, fix findings and latest-head CI, then hand READY FOR REVIEW
+Complete ship-pr-dev here, fix findings and latest-head CI, then hand READY TO MERGE
 with exact head, self-check/evidence paths and deployment prerequisites to <integrator>.
 Keep compute warm through review, CI and integration. Report completion so the
 coordinator can verify the role is terminal before stopping it.

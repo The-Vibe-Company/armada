@@ -55,12 +55,13 @@ must explicitly update that pin and rebuild/audit affected goldens. Installing
 does not update existing destinations; preserve and inspect old copies before
 reinstallation. This is a rollout prerequisite, not permission to deploy.
 
-Delivery stays owned by the worker: implementation, author self-check, PR and
-green latest-head CI. It ends with READY FOR REVIEW and needs no Armada identity.
-Independent review belongs to the coordinator alone, using its existing CLI or
-an orchestrator parent's scoped launch tool, never a worker credential.
+Delivery stays owned by the worker: implementation, ship-pr-dev's unchanged
+independent review gate, PR and green latest-head CI. It ends with READY TO MERGE
+or BLOCKED and needs no Armada launch identity. The coordinator may then launch
+an additional separate reviewer using its existing CLI or an orchestrator parent's
+scoped launch tool, never a worker credential.
 See armada-manager/references/reviewer.md for launch commands, the minimal
 issue/PR/review prompt, GitHub approval/request-changes, two-round budget,
 corrections to the original worker and mandatory stop receipts.
 The coordinator merges only an approved unchanged head with green CI and any
-required Real-provider verification section. READY FOR REVIEW is not approval.
+required Real-provider verification section. The worker's READY TO MERGE receipt alone does not authorize the coordinator to merge.
