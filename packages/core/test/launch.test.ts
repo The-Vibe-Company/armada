@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -429,6 +429,11 @@ describe("launch", () => {
     { repo: undefined, transient: false },
     { repo: "example/web", transient: false },
   ])("ownership rejection retries once, then succeeds or cleans up (%j)", async ({ repo, transient }) => {
+    const diagnostics: string[] = [];
+    const waits: number[] = [];
+    const log = spyOn(console, "info").mockImplementation((line: string) => {
+      diagnostics.push(line);
+    });
     let rejectedPulls = 0;
     const world = setup({
       golden: golden("org"),
@@ -441,12 +446,40 @@ describe("launch", () => {
             }
           : { exitCode: 0 },
     });
-    const failure = await launchSandbox(world.provider, world.stores, owner, {
-      golden: "web",
-      harness: "claude",
-      ...(repo === undefined ? {} : { repo }),
-      prompt: "go",
-    }).catch((error: unknown) => error as LaunchError);
+    let failure: unknown;
+    try {
+      failure = await launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        {
+          golden: "web",
+          harness: "claude",
+          ...(repo === undefined ? {} : { repo }),
+          prompt: "go",
+        },
+        {
+          sleep: async (ms) => {
+            expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+            waits.push(ms);
+          },
+        },
+      ).catch((error: unknown) => error as LaunchError);
+    } finally {
+      log.mockRestore();
+    }
+    expect(waits).toEqual([1000]);
+    expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+      {
+        event: "launch_repository_ownership_retry",
+        sandboxId: [...world.rows.keys()][0],
+        provider: "boat",
+        providerSandboxId: "bx_1",
+        attempt: 2,
+        delayMs: 1000,
+        outcome: transient ? "recovered" : "failed",
+      },
+    ]);
     expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
       2,
     );

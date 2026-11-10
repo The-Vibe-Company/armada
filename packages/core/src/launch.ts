@@ -37,6 +37,7 @@ export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
 export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS).map((limits) => limits.maxTtlSeconds));
 
 const OUTPUT_LIMIT = 2000;
+const OWNERSHIP_RETRY_DELAY_MS = 1000;
 
 export interface LaunchRequest {
   skills?: string[];
@@ -354,7 +355,7 @@ export async function launchSandbox(
           : { status: github.status, message: github.message };
       if (github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      await setup(provider, ready.id, record.id, golden, secrets, progress);
+      await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
@@ -517,12 +518,14 @@ async function setup(
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
     await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
       dir: repo.dir,
       sandboxId: armadaSandboxId,
+      sleep,
     });
   }
   for (const [index, command] of golden.config.init.entries()) {
@@ -576,7 +579,7 @@ async function run(
   spec: ShellCommand,
   label: string,
   secrets: readonly string[],
-  repository?: { dir: string; sandboxId: string },
+  repository?: { dir: string; sandboxId: string; sleep: (ms: number) => Promise<void> },
 ): Promise<void> {
   const request = {
     sandboxId,
@@ -593,8 +596,30 @@ async function run(
     !result.timedOut &&
     result.exitCode === 128 &&
     result.stderr.includes("detected dubious ownership in repository")
-  )
-    result = await provider.exec(request);
+  ) {
+    await repository.sleep(OWNERSHIP_RETRY_DELAY_MS);
+    let recovered = false;
+    try {
+      result = await provider.exec(request);
+      recovered = !result.detached && !result.timedOut && result.exitCode === 0;
+    } finally {
+      try {
+        console.info(
+          JSON.stringify({
+            event: "launch_repository_ownership_retry",
+            sandboxId: repository.sandboxId,
+            provider: provider.id,
+            providerSandboxId: sandboxId,
+            attempt: 2,
+            delayMs: OWNERSHIP_RETRY_DELAY_MS,
+            outcome: recovered ? "recovered" : "failed",
+          }),
+        );
+      } catch {
+        // Best-effort diagnostics must not change launch or cleanup outcomes.
+      }
+    }
+  }
   if (result.detached) throw new LaunchError("init_failed", `${label} started in the background.`);
   if (result.timedOut) {
     throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
