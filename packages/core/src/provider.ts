@@ -29,6 +29,13 @@ export interface OrchestratorCreateRecoveryRequest {
   ownerId: string;
   orgId: string;
   providerSnapshotId: string;
+  intendedSandboxId?: string;
+  originalSandbox?: {
+    sandboxId: string;
+    providerSandboxId: string;
+    sqlGeneration: string;
+    nativeGeneration: string | null;
+  };
   target: ProviderTarget;
 }
 export interface OrchestratorCreateRecoveryProof {
@@ -44,6 +51,7 @@ export interface OrchestratorCreateRecoveryProof {
   physicalId: string;
   physicalName: string;
   generation: 1;
+  originalSandbox?: OrchestratorCreateRecoveryRequest["originalSandbox"];
   state: "terminated";
 }
 

@@ -133,6 +133,41 @@ is not proof of Boat-native continuation. Delegated wait mutations remain outsid
 the actual four `worker:*` scopes: see the lifecycle document for the precise
 unsupported boundary.
 
+## Create admission, background preparation and failure settlement
+
+Create now returns its durable **pending** receipt after owner/member SQL admission,
+without waiting for provider lookup/fork, repository setup, public skills or epoch
+installation. Poll detail/events by that receipt's orchestrator ID; a pending
+receipt is admission, not a ready machine or completed model turn. Selection
+validation in the background can produce a failed preallocation receipt. Transport
+loss still requires the identical original key/payload—never a new allocation key.
+
+The production worker claims only new tagged queued jobs. Dispatch/lease tokens,
+planned sandbox UUID and a pre-fork SQL fence prevent duplicate allocation and
+late dispatch after owner abort. Dispatched/legacy ambiguous jobs are not blindly
+forked again after restart; uncertainty requires exact reconciliation/recovery.
+Shutdown closes admission and tracks/drains work. No owner browser token or model
+credential value is persisted in the job marker.
+
+The launcher hands off the exact committed registration tuple before any init.
+Failure publication therefore compares against the initial created sandbox's
+actual SQL generation, not the old null preallocation snapshot. Initialization
+status writes are fenced by original operation/revision/sandbox/generation;
+stale work must not overwrite a recovered or newer machine. Failure receipts can
+settle without falsely publishing success or adopting newer state. Database
+outages remain explicit uncertainty, never a basis to repeat provider effects.
+Managed initialization never uses generic logical-ID stop/delete cleanup: only
+exact owner recovery may terminate its captured original resource, so a late
+catch cannot stop a replacement incarnation.
+
+Managed parent MCP setup uses a private operation-scoped path. The ordinary public
+MCP registry intentionally still hides parents, including from owners/admins.
+Default connections are preserved; the internal path checks current private owner,
+membership, exact pending operation/revision and SQL generation before/after SQL
+transactions. Native turns use the same internal validation; resume prepares MCP
+before reinstalling the private epoch, not through assumed hot reload. A golden
+rebuild cannot repair a server that passed the parent through the public registry.
+
 ## Shared owner policy and durable state
 
 HTTP `/api/v1/orchestrators` and MCP `orchestrator_*` use `callOrchestrator`.

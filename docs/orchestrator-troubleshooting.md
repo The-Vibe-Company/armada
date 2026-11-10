@@ -76,8 +76,8 @@ or retry the effect. A changed payload under that key is a conflict. The read-on
 reconcile endpoint likewise discovers the receipt, not a successful allocation.
 
 `stop` by itself is not an escape hatch for a pending/uncertain create. For the
-specific Modal case with **no public sandbox/conversation binding** and an
-uncertain first create, the owner can explicitly recover through Armada:
+specific Modal first-create case with **no conversation** and a pending/uncertain
+create (with or without an already registered sandbox), the owner can explicitly recover through Armada:
 
 ```sh
 armada orchestrator recover ID --org ORG --expected-revision ORIGINAL_REVISION \
@@ -105,6 +105,14 @@ follow the operator recovery instructions in the PR. Ordinary `stop` can settle
 normally after confirmed recovery clears the original uncertain-create fence.
 This recovery is not a native resume; an orchestrator that never began a native
 conversation has no verified conversation to resume.
+
+An undispatched new queued job may be cancelled only using its durable SQL
+pre-fork fence, which blocks the original callback before any allocation. This is
+not inferred from an empty provider list. A legacy pending create or dispatched
+job still requires positive native proof. Registered abort also fences the exact
+public binding/generation and revokes authority before cleanup; model-account
+ownership/credential state is not reset. Keep the same key/revision on manual
+recovery after uncertainty.
 
 A **fresh create name/key is another allocation**, not an idempotent retry. It is
 safe from duplicating this original resource only after exact recovery succeeds.
@@ -192,3 +200,25 @@ its authentication boundary, not admit an effect. If that direct URL still emits
 an unstructured 404, capture safe response status/headers/body and verify the
 actual deployed service/image/domain routing; do not infer a missing handler from
 the status alone or bypass the private owner boundary.
+
+## Initialization failure with a pending receipt after registration
+
+A preallocation reservation has no sandbox generation. A launcher that registers
+then throws before refreshing that snapshot could log failure but reject its own
+publication (null versus the newly assigned generation), leaving create pending.
+The registration handoff now pins the committed initial tuple before preparation;
+never recover this by blindly rereading/adopting a later generation in catch.
+
+The ordinary public MCP registry refuses managed parents. Passing its preparation
+hook to a parent guaranteed `No such sandbox` even for zero default connections.
+This is a server composition defect, not a golden requirement. Internal scoped MCP
+preparation fixes it without exposing managed parents to generic APIs. Other
+readiness/GitHub/repository/MCP failures have distinct initialization phases and
+known causal codes. Raw guest output/status_reason must not be pasted into logs.
+
+Create responds with admission promptly and background work publishes terminal
+results; detail/events may show creating/pending while initialization is genuinely
+running. Do not mistake that pending receipt for successful preparation. Explicit
+owner recovery can abort a never-conversed registered pending first create, fence
+late original callbacks, and settle it only after exact termination proof. Do not
+use a fresh create key to get around a pending receipt.

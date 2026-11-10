@@ -182,11 +182,20 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       reasoningEffort: "high",
       modelAccountId: account.id,
     };
-    await expect(
-      bundle.runtime.create(caller, { ...config, harness: "claude", model: "claude-opus-5-5" }, "unsupported-claude"),
-    ).rejects.toThrow("unavailable");
+    const settleCreate = async (configuration: core.OrchestratorCreate, key: string) => {
+      const admitted = await bundle!.runtime.create(caller, configuration, key);
+      await bundle!.runtime.createWorker.drain();
+      const result = (await bundle!.store.operations(p.owner, p.org, admitted.orchestratorId)).find(
+        (operation) => operation.id === admitted.id,
+      );
+      if (!result) throw Error("Create receipt missing after worker drain.");
+      return result;
+    };
+    expect(
+      (await settleCreate({ ...config, harness: "claude", model: "claude-opus-5-5" }, "unsupported-claude")).state,
+    ).toBe("failed");
     expect(placement.forks).toHaveLength(0);
-    const created = await bundle.runtime.create(caller, config, "production-create");
+    const created = await settleCreate(config, "production-create");
     expect(created.state).toBe("succeeded");
     expect(grant).toMatch(/^armada_epoch_[a-f0-9]{64}$/);
     const id = created.orchestratorId;
@@ -367,15 +376,19 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         await db.exec(`create function diagnostic_publication_fault() returns trigger language plpgsql as $$ begin
         if new.state='succeeded' or (new.state='uncertain' and ${scenario === "failure_publication" ? "true" : "false"}) then raise exception using errcode='40001',message='synthetic-private-sql'; end if; return new; end $$;
         create trigger diagnostic_publication_fault before update on orchestrator_operations for each row execute function diagnostic_publication_fault()`);
-      const operation = bundle.runtime.create(
+      const admitted = await bundle.runtime.create(
         caller,
         { ...config, name: `diagnostic-${scenario}` },
         `diagnostic-${scenario}`,
       );
-      if (scenario === "initialization")
-        await expect(operation).rejects.toMatchObject({ code: "conflict", admission: "unknown" });
-      else if (scenario === "failure_publication") await expect(operation).rejects.toMatchObject({ code: "40001" });
-      else expect((await operation).state).toBe("uncertain");
+      expect(admitted.state).toBe("pending");
+      await bundle.runtime.createWorker.drain();
+      const operation = (await bundle.store.operations(p.owner, p.org, admitted.orchestratorId)).find(
+        (item) => item.id === admitted.id,
+      );
+      expect(operation?.state).toBe(
+        scenario === "launcher" ? "failed" : scenario === "failure_publication" ? "pending" : "uncertain",
+      );
       if (scenario === "registration")
         await db.exec(
           "drop trigger diagnostic_registration_fault on sandboxes; drop function diagnostic_registration_fault()",
@@ -389,7 +402,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         launcher: ["launcher_configuration", "launcher_invalid_request"],
         fork: ["fork", "provider_unavailable"],
         registration: ["registration", "sql_check"],
-        initialization: ["initialization", "launcher_init_failed"],
+        initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
@@ -398,13 +411,13 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(records[0]).toMatchObject({
         component: "owner",
         action: "create",
-        outcome: "uncertain",
+        outcome: scenario === "launcher" ? "failed" : "uncertain",
         stage: expected[0],
         reason: expected[1],
       });
       expect(records[0].operationId).toMatch(/^[a-f0-9-]{36}$/);
       expect(records[0].orchestratorId).toMatch(/^[a-f0-9-]{36}$/);
-      if (scenario === "initialization" || scenario === "failure_publication")
+      if (scenario === "failure_publication")
         expect(records[1]).toMatchObject({
           outcome: "publication_failed",
           stage: "failure_publication",
@@ -457,6 +470,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       },
     ]);
   } finally {
+    await bundle?.runtime.createWorker.drain();
     await bundle?.lifecycleWorker.drain();
     await bundle?.childWorker.drain();
     await db.close();

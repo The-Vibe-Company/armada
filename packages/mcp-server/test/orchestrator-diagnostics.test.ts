@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ProviderError } from "@armada/core/server";
+import { LaunchError, ProviderError, VaultError } from "@armada/core/server";
 import { OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
 
 test("diagnostics project only safe codes/UUIDs and retain failure identity across cleanup/publication", () => {
@@ -147,4 +147,29 @@ test("Modal boot labels are allowlisted while opaque provider diagnostics stay p
     "provider_conflict",
   ]);
   expect(lines.join("\n")).not.toContain("private-provider-detail");
+});
+
+test("launcher causes expose only normalized codes and bounded data-property metadata", () => {
+  const lines: string[] = [];
+  const cause = new VaultError("not_found", "private-registry-output");
+  const wrapped = new LaunchError("start_failed", "private-launcher-output", { cause });
+  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "create");
+  diagnostics.stage("initialization_mcp");
+  diagnostics.report("uncertain", wrapped);
+  expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
+    stage: "initialization_mcp",
+    reason: "launcher_start_failed_caused_by_credential_not_found",
+  });
+  let reads = 0;
+  const hostile = new LaunchError("start_failed", "private-launcher-output");
+  Object.defineProperty(hostile, "cause", {
+    get() {
+      reads++;
+      throw Error("private-cause");
+    },
+  });
+  const safe = new OrchestratorDiagnostics((line) => lines.push(line), "create");
+  safe.report("uncertain", hostile);
+  expect(reads).toBe(0);
+  expect(lines.join("\n")).not.toContain("private-");
 });

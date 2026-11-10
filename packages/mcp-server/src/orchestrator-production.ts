@@ -33,6 +33,8 @@ export function createProductionOrchestrators(input: {
   providers: ProviderRegistry;
   credentials: NamedOrchestratorCredentials;
   connections: LaunchStores["connections"];
+  /** Private parent port; children retain ordinary preparation. */
+  managedConnections?: LaunchStores["connections"];
   encryptionKey: string;
   scopedMcpUrl: string;
   requestedPairs: readonly OrchestratorPair[];
@@ -71,7 +73,9 @@ export function createProductionOrchestrators(input: {
     sql,
     providers: input.providers,
     credentials: input.credentials,
-    ...(input.connections ? { connections: input.connections } : {}),
+    ...((input.managedConnections ?? input.connections)
+      ? { connections: input.managedConnections ?? input.connections }
+      : {}),
     encryptionKey: input.encryptionKey,
     mcpUrl: input.scopedMcpUrl,
     native: (provider, harness) => (provider === "modal" && harness === "codex" ? native : undefined),
@@ -200,7 +204,7 @@ export function createProductionOrchestrators(input: {
       skillRevision: input.skillRevision,
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs: ["modal:codex"],
-      recoverCreate: createOrchestratorCreateRecovery(sql, input.providers),
+      recoverCreate: createOrchestratorCreateRecovery(sql, input.providers, input.diagnosticLog),
       resolveBackend: selection.resolveBackend,
       managed: { sql, resolveManaged: selection.resolveManaged },
     },

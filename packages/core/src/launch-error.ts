@@ -1,3 +1,24 @@
+export const LAUNCH_INITIALIZATION_STAGES = [
+  "initialization_bind",
+  "initialization_ready",
+  "initialization_hydrate",
+  "initialization_github",
+  "initialization_repository",
+  "initialization_commands",
+  "initialization_cwd",
+  "initialization_mcp",
+  "initialization_publish",
+] as const;
+export type LaunchInitializationStage = (typeof LAUNCH_INITIALIZATION_STAGES)[number];
+export const LAUNCH_FAILURE_REASONS = [
+  "github_setup_background",
+  "github_setup_timeout",
+  "github_setup_nonzero",
+  "native_auth_write_failed",
+  "visibility_not_persisted",
+] as const;
+export type LaunchFailureReason = (typeof LAUNCH_FAILURE_REASONS)[number];
+
 export type LaunchErrorCode =
   | "invalid_request"
   /** The harness has no credential for the caller or the org. */
@@ -14,10 +35,16 @@ export class LaunchError extends Error {
   readonly code: LaunchErrorCode;
   /** Armada's id of the sandbox that was recorded before the failure, when there was one. */
   readonly sandboxId: string | undefined;
+  readonly safeReason: LaunchFailureReason | undefined;
 
-  constructor(code: LaunchErrorCode, message: string, options?: { cause?: unknown; sandboxId?: string }) {
+  constructor(
+    code: LaunchErrorCode,
+    message: string,
+    options?: { cause?: unknown; sandboxId?: string; safeReason?: LaunchFailureReason },
+  ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.sandboxId = options?.sandboxId;
+    this.safeReason = options?.safeReason;
   }
 }

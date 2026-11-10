@@ -53,6 +53,7 @@ export async function startServer(
       credentials: NamedOrchestratorCredentials;
       encryptionKey: string | undefined;
       connections: NonNullable<ConfiguredControlOptions["connections"]>;
+      managedConnections: NonNullable<ConfiguredControlOptions["connections"]>;
       publicUrl: string;
       scopedMcpUrl: string;
     }) =>
@@ -223,6 +224,7 @@ export async function startServer(
     credentials,
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
+    managedConnections: mcp.managedConnections,
     publicUrl: config.publicUrl,
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
@@ -289,9 +291,12 @@ export async function startServer(
     goldenRetirements,
     () => pruneResourceObservations(sql, new Date()),
     orchestrators
-      ? "lifecycle" in orchestrators
-        ? orchestrators.lifecycle
-        : [orchestrators.lifecycleWorker, orchestrators.childWorker]
+      ? [
+          orchestrators.runtime.createWorker,
+          ...("lifecycle" in orchestrators
+            ? [orchestrators.lifecycle]
+            : [orchestrators.lifecycleWorker, orchestrators.childWorker]),
+        ]
       : [],
   );
   const invitationWorker =

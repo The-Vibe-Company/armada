@@ -42,6 +42,8 @@ export interface RuntimeReservation {
   operation: OrchestratorOperation;
   identity: RuntimeIdentity;
   fresh: boolean;
+  createDispatchId?: string;
+  createForkDispatched?: boolean;
 }
 
 /** Canonical JSON deliberately rejects exotic values rather than digesting lossy JSON. */
@@ -199,6 +201,7 @@ export class OrchestratorRuntimeStore {
     configuration: OrchestratorCreate;
     key: string;
     skillRevision: string;
+    queued?: true;
   }): Promise<RuntimeReservation> {
     const { ownerId, configuration, key, skillRevision } = input;
     const digest = orchestratorRequestDigest({
@@ -264,6 +267,11 @@ export class OrchestratorRuntimeStore {
           expectedRevision: Number(currentRevision.revision),
         },
       );
+      if (!old && input.queued)
+        await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
+          receipt.id,
+          JSON.stringify({ version: 1, kind: "create_job", stage: "queued" }),
+        ]);
       const identity = await this.read(ownerId, configuration.orgId, id, tx);
       const persisted = await tx.query<{ error_code: string | null }>(
         `select error_code from public.orchestrator_operations where id=$1`,
@@ -628,6 +636,295 @@ export class OrchestratorRuntimeStore {
     });
   }
 
+  /** A queued admission is the ONLY automatically dispatchable create. Legacy or
+   * previously dispatched pending receipts are never turned into another fork. */
+  async claimCreateJob(): Promise<RuntimeReservation | null> {
+    return this.transaction(async (tx) => {
+      const next = (
+        await tx.query<{
+          id: string;
+          orchestrator_id: string;
+          owner_id: string;
+          org_id: string;
+          revision: number | string;
+        }>(
+          `select p.id,p.orchestrator_id,o.owner_id,o.org_id,p.revision from public.orchestrator_operations p
+         join public.orchestrators o on o.id=p.orchestrator_id join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
+         where p.action='create' and p.state='pending' and p.runtime_result->>'kind'='create_job' and p.runtime_result->>'version'='1'
+         and p.runtime_result->>'stage'='queued' and o.revision=p.revision and o.state='creating' and o.sandbox_id is null
+         order by o.created_at,p.id for update of p,o,m skip locked limit 1`,
+        )
+      ).rows[0];
+      if (!next) return null;
+      const dispatchId = crypto.randomUUID();
+      await tx.query(
+        `update public.orchestrator_operations set runtime_result=jsonb_build_object('version',1,'kind','create_job','stage','running','dispatchId',$2::text,'leaseUntil',clock_timestamp()+interval '2 minutes') where id=$1`,
+        [next.id, dispatchId],
+      );
+      const identity = await this.read(next.owner_id, next.org_id, next.orchestrator_id, tx);
+      return {
+        identity,
+        fresh: true,
+        createDispatchId: dispatchId,
+        createForkDispatched: false,
+        operation: {
+          version: 1,
+          id: next.id,
+          orchestratorId: next.orchestrator_id,
+          kind: "create",
+          state: "pending",
+          revision: Number(next.revision),
+          errorCode: null,
+        },
+      };
+    });
+  }
+
+  async assertCreateCurrent(reservation: RuntimeReservation, sql: Sql = this.sql, lock = false): Promise<void> {
+    const i = reservation.identity;
+    const row = await sql.query(
+      `select p.id from public.orchestrator_operations p join public.orchestrators o on o.id=p.orchestrator_id
+      join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id left join public.sandboxes s on s.id=o.sandbox_id
+      where p.id=$1 and p.action='create' and p.actor_id=$2 and o.owner_id=$2 and o.org_id=$3 and o.id=$4 and o.revision=$5
+      and o.state in ('creating','ready') and p.state='pending' and p.runtime_result->>'kind'='create_job' and p.runtime_result->>'dispatchId'=$6
+      and ((o.sandbox_id is null and $7::uuid is null) or (s.id=$7 and s.provider_sandbox_id=$8 and s.lifecycle_generation=$9)) ${lock ? "for update of o,p,m" : ""}`,
+      [
+        reservation.operation.id,
+        i.ownerId,
+        i.orgId,
+        i.id,
+        reservation.operation.revision,
+        reservation.createDispatchId ?? null,
+        i.sandboxId,
+        i.providerSandboxId,
+        i.generation,
+      ],
+    );
+    if (row.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+  }
+
+  async dispatchCreateFork(reservation: RuntimeReservation, sandboxId: string): Promise<void> {
+    await this.transaction(async (tx) => {
+      await this.assertCreateCurrent(reservation, tx, true);
+      const row = await tx.query(
+        `update public.orchestrator_operations set runtime_result=runtime_result || jsonb_build_object('stage','fork_dispatched','intendedSandboxId',$3::text)
+        where id=$1 and runtime_result->>'dispatchId'=$2 and runtime_result->>'stage'='running' returning id`,
+        [reservation.operation.id, reservation.createDispatchId ?? null, sandboxId],
+      );
+      if (row.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+    });
+    reservation.createForkDispatched = true;
+  }
+
+  /** Called only after registration COMMIT is positively acknowledged. The caller
+   * supplies that INSERT's saved row, never an error-path read of a newer machine. */
+  async registeredCreate(
+    reservation: RuntimeReservation,
+    saved: import("@armada/core").SandboxRecord & { lifecycleGeneration: number },
+  ): Promise<void> {
+    const i = reservation.identity;
+    if (
+      saved.ownerId !== i.ownerId ||
+      saved.orgId !== i.orgId ||
+      saved.goldenId !== i.configuration.goldenId ||
+      saved.provider !== i.configuration.provider ||
+      saved.harness !== i.configuration.harness ||
+      saved.credentialId !== i.configuration.modelAccountId ||
+      saved.conversationIds.length !== 0 ||
+      !Number.isSafeInteger(saved.lifecycleGeneration) ||
+      saved.lifecycleGeneration < 1 ||
+      (i.sandboxId !== null && i.sandboxId !== saved.id)
+    )
+      throw new OrchestratorRuntimeError("conflict");
+    reservation.identity = {
+      ...i,
+      sandboxId: saved.id,
+      providerSandboxId: saved.providerSandboxId,
+      generation: saved.lifecycleGeneration,
+    };
+    await this.transaction(async (tx) => {
+      await this.assertCreateCurrent(reservation, tx, true);
+      const updated = await tx.query(
+        `update public.orchestrator_operations set runtime_result=runtime_result || jsonb_build_object('stage','registered','binding',$3::jsonb)
+        where id=$1 and runtime_result->>'dispatchId'=$2 and runtime_result->>'intendedSandboxId'=$4 and runtime_result->>'stage' in ('fork_dispatched','registered') returning id`,
+        [
+          reservation.operation.id,
+          reservation.createDispatchId ?? null,
+          JSON.stringify({
+            sandboxId: saved.id,
+            providerSandboxId: saved.providerSandboxId,
+            generation: saved.lifecycleGeneration,
+          }),
+          saved.id,
+        ],
+      );
+      if (updated.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+    });
+  }
+
+  async renewCreateJob(reservation: RuntimeReservation): Promise<void> {
+    await this.sql.query(
+      `update public.orchestrator_operations p set runtime_result=jsonb_set(p.runtime_result,'{leaseUntil}',to_jsonb(clock_timestamp()+interval '2 minutes'))
+      from public.orchestrators o where p.id=$1 and p.runtime_result->>'dispatchId'=$2 and p.state='pending' and o.id=p.orchestrator_id and o.revision=p.revision`,
+      [reservation.operation.id, reservation.createDispatchId ?? null],
+    );
+  }
+
+  /** Local positive control-flow proof: the worker never passed the fork fence.
+   * This may fail a request, not publish native success or adopt a machine. */
+  async failCreateBeforeFork(reservation: RuntimeReservation): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const row = await tx.query(
+        `update public.orchestrator_operations p set state='failed',error_code='create_preallocation_failed',runtime_result=p.runtime_result || '{"stage":"settled","noFork":true}'::jsonb
+        from public.orchestrators o where p.id=$1 and p.runtime_result->>'dispatchId'=$2 and p.state='pending' and o.id=p.orchestrator_id
+        and o.revision=p.revision and o.sandbox_id is null and p.runtime_result->>'stage' in ('running','fork_dispatched') returning p.orchestrator_id,p.revision`,
+        [reservation.operation.id, reservation.createDispatchId ?? null],
+      );
+      if (!row.rows.length) return false;
+      await tx.query(`update public.orchestrators set state='blocked' where id=$1 and revision=$2`, [
+        reservation.identity.id,
+        reservation.operation.revision,
+      ]);
+      await tx.query(
+        `update public.orchestrator_runtime set blocked_reason='create_preallocation_failed',updated_at=now() where orchestrator_id=$1`,
+        [reservation.identity.id],
+      );
+      await tx.query(
+        `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event) values($1,$2,$3::jsonb)`,
+        [
+          reservation.identity.id,
+          reservation.operation.revision,
+          JSON.stringify({
+            kind: "operation",
+            operation: { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" },
+          }),
+        ],
+      );
+      return true;
+    });
+  }
+
+  /** A known execution/publication failure may settle only its own ledger as
+   * uncertain. It grants no parent/machine generation publication permission. */
+  async markCreateUncertain(reservation: RuntimeReservation): Promise<void> {
+    await this.transaction(async (tx) => {
+      const row = await tx.query(
+        `select p.id from public.orchestrators o join public.orchestrator_operations p on p.orchestrator_id=o.id
+        where p.id=$1 and p.state='pending' and p.action='create' and p.runtime_result->>'kind'='create_job' and p.runtime_result->>'dispatchId'=$2 for update of o,p`,
+        [reservation.operation.id, reservation.createDispatchId ?? null],
+      );
+      if (!row.rows.length) return;
+      await tx.query(
+        `update public.orchestrator_operations set state='uncertain',error_code='create_publication_fenced' where id=$1`,
+        [reservation.operation.id],
+      );
+      const i = reservation.identity;
+      await tx.query(
+        `update public.orchestrators o set state='blocked' where o.id=$1 and o.revision=$2 and
+        ((o.sandbox_id is null and $3::uuid is null) or exists(select 1 from public.sandboxes s where s.id=o.sandbox_id and s.id=$3 and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5))`,
+        [i.id, reservation.operation.revision, i.sandboxId, i.providerSandboxId, i.generation],
+      );
+    });
+  }
+
+  /** Revocation of queued, never-dispatched intent is positive no-fork proof.
+   * Legacy or dispatched work cannot take this preallocation-failure path. */
+  async failRevokedQueuedCreate(): Promise<OrchestratorOperation | null> {
+    return this.transaction(async (tx) => {
+      const row = (
+        await tx.query<{ id: string; orchestrator_id: string; revision: number | string }>(
+          `select p.id,p.orchestrator_id,p.revision from public.orchestrators o join public.orchestrator_operations p on p.orchestrator_id=o.id
+         where p.action='create' and p.state='pending' and p.runtime_result->>'kind'='create_job' and p.runtime_result->>'version'='1' and p.runtime_result->>'stage'='queued'
+         and not (p.runtime_result ? 'dispatchId') and not (p.runtime_result ? 'intendedSandboxId') and o.sandbox_id is null and o.revision=p.revision
+         and not exists(select 1 from public.members m where m.org_id=o.org_id and m.user_id=o.owner_id) order by p.id for update of o,p skip locked limit 1`,
+        )
+      ).rows[0];
+      if (!row) return null;
+      const operation: OrchestratorOperation = {
+        version: 1,
+        id: row.id,
+        orchestratorId: row.orchestrator_id,
+        kind: "create",
+        state: "failed",
+        revision: Number(row.revision),
+        errorCode: "create_authority_revoked",
+      };
+      await tx.query(
+        `update public.orchestrator_operations set state='failed',error_code='create_authority_revoked',runtime_result=runtime_result || '{"stage":"settled","noFork":true}'::jsonb where id=$1`,
+        [row.id],
+      );
+      await tx.query(
+        `update public.orchestrators set state='blocked' where id=$1 and revision=$2 and sandbox_id is null`,
+        [row.orchestrator_id, row.revision],
+      );
+      await tx.query(
+        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',updated_at=now() where orchestrator_id=$1`,
+        [row.orchestrator_id],
+      );
+      await tx.query(
+        `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event) values($1,$2,$3::jsonb),($1,$2,$4::jsonb)`,
+        [
+          row.orchestrator_id,
+          row.revision,
+          JSON.stringify({ kind: "operation", operation }),
+          JSON.stringify({ kind: "state", state: "blocked", continuity: "not_started" }),
+        ],
+      );
+      return operation;
+    });
+  }
+
+  /** A crashed/expired dispatcher is observation-only uncertainty. Never retry its
+   * fork or classify it failed merely because time passed. Untagged legacy rows
+   * are intentionally recovery-only, not executable queue entries. */
+  async reconcileExpiredCreateJob(): Promise<OrchestratorOperation | null> {
+    return this.transaction(async (tx) => {
+      const row = (
+        await tx.query<{
+          id: string;
+          orchestrator_id: string;
+          revision: number | string;
+          runtime_result: { binding?: { sandboxId: string; providerSandboxId: string; generation: number } };
+        }>(
+          `select p.id,p.orchestrator_id,p.revision,p.runtime_result from public.orchestrator_operations p
+         where p.action='create' and p.state='pending' and p.runtime_result->>'kind'='create_job' and p.runtime_result->>'version'='1' and p.runtime_result->>'stage' in ('running','fork_dispatched','registered')
+         and (p.runtime_result->>'leaseUntil')::timestamptz<clock_timestamp() order by p.id for update skip locked limit 1`,
+        )
+      ).rows[0];
+      if (!row) return null;
+      await tx.query(
+        `update public.orchestrator_operations set state='uncertain',error_code='create_worker_interrupted' where id=$1`,
+        [row.id],
+      );
+      const b = row.runtime_result.binding;
+      await tx.query(
+        `update public.orchestrators o set state='blocked' where o.id=$1 and o.revision=$2 and
+        ((o.sandbox_id is null and $3::uuid is null) or exists(select 1 from public.sandboxes s where s.id=o.sandbox_id and s.id=$3 and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5))`,
+        [
+          row.orchestrator_id,
+          Number(row.revision),
+          b?.sandboxId ?? null,
+          b?.providerSandboxId ?? null,
+          b?.generation ?? null,
+        ],
+      );
+      const operation: OrchestratorOperation = {
+        version: 1,
+        id: row.id,
+        orchestratorId: row.orchestrator_id,
+        kind: "create",
+        state: "uncertain",
+        revision: Number(row.revision),
+        errorCode: "create_worker_interrupted",
+      };
+      await tx.query(
+        `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event) values($1,$2,$3::jsonb)`,
+        [row.orchestrator_id, row.revision, JSON.stringify({ kind: "operation", operation })],
+      );
+      return operation;
+    });
+  }
+
   async preparing(reservation: RuntimeReservation): Promise<RuntimeIdentity> {
     return this.transaction(async (tx) => {
       const identity = await this.read(
@@ -638,6 +935,28 @@ export class OrchestratorRuntimeStore {
         true,
       );
       if (identity.revision !== reservation.operation.revision || !identity.sandboxId)
+        throw new OrchestratorRuntimeError("conflict");
+      const pending = (
+        await tx.query<{ runtime_result: { kind?: string; dispatchId?: string } | null }>(
+          `select runtime_result from public.orchestrator_operations where id=$1 and orchestrator_id=$2 and actor_id=$3 and action=$4 and revision=$5 and state='pending' for update`,
+          [
+            reservation.operation.id,
+            identity.id,
+            identity.ownerId,
+            reservation.operation.kind,
+            reservation.operation.revision,
+          ],
+        )
+      ).rows[0];
+      if (!pending) throw new OrchestratorRuntimeError("conflict");
+      if (
+        reservation.operation.kind === "create" &&
+        pending.runtime_result?.kind === "create_job" &&
+        (pending.runtime_result.dispatchId !== reservation.createDispatchId ||
+          identity.sandboxId !== reservation.identity.sandboxId ||
+          identity.providerSandboxId !== reservation.identity.providerSandboxId ||
+          identity.generation !== reservation.identity.generation)
+      )
         throw new OrchestratorRuntimeError("conflict");
       await tx.query(`update public.orchestrators set state='ready' where id=$1`, [identity.id]);
       return { ...identity, state: "ready" };
@@ -670,7 +989,7 @@ export class OrchestratorRuntimeStore {
       if (current.conversationId && result.conversationId && current.conversationId !== result.conversationId)
         return false;
       const updated = await tx.query(
-        `update public.orchestrator_operations set state=$2,error_code=$3
+        `update public.orchestrator_operations set state=$2,error_code=$3, runtime_result=case when runtime_result->>'kind'='create_job' then jsonb_set(runtime_result,'{stage}','"settled"') else runtime_result end
         where id=$1 and state='pending' returning id`,
         [operation.id, result.state, result.errorCode ?? null],
       );

@@ -18,6 +18,18 @@ export function createOrchestratorCreateRecovery(input: {
   function assert(row: Machine, request: OrchestratorCreateRecoveryRequest) {
     input.assertSource(row);
     const { target } = request;
+    const registered = request.originalSandbox;
+    const expanded = !!registered || !!request.intendedSandboxId;
+    if (request.intendedSandboxId && row.info.labels.sandbox !== request.intendedSandboxId)
+      throw refusal("conflict", "Intended registration changed.");
+    if (
+      registered &&
+      (registered.sandboxId !== row.info.labels.sandbox ||
+        registered.providerSandboxId !== row.info.id ||
+        !/^[1-9][0-9]*$/.test(registered.sqlGeneration) ||
+        (registered.nativeGeneration !== null && registered.nativeGeneration !== String(row.generation)))
+    )
+      throw refusal("conflict", "Registered generation binding changed.");
     if (
       request.version !== 1 ||
       !UUID.test(request.createOperationId) ||
@@ -44,9 +56,14 @@ export function createOrchestratorCreateRecovery(input: {
       row.generation !== 1 ||
       !row.physicalId ||
       row.launchUserId !== request.ownerId ||
-      !["booting", "deleting", "deleted"].includes(row.phase) ||
-      row.orchestratorCheckpoint ||
-      row.recoveryImageId ||
+      !(
+        expanded
+          ? ["booting", "active", "stopped", "terminate", "deleting", "deleted"]
+          : ["booting", "deleting", "deleted"]
+      ).includes(row.phase) ||
+      (expanded
+        ? row.orchestratorCheckpoint?.receipt.conversationId != null
+        : !!row.orchestratorCheckpoint || !!row.recoveryImageId) ||
       !row.sourceImage ||
       row.sourceImage.name !== request.providerSnapshotId ||
       row.sourceImage.imageId !== row.imageId ||
@@ -85,6 +102,15 @@ export function createOrchestratorCreateRecovery(input: {
             saved.request.target.modal?.[key as keyof Scope["binding"]] !==
             request.target.modal?.[key as keyof Scope["binding"]],
         ) ||
+        saved.request.intendedSandboxId !== request.intendedSandboxId ||
+        saved.request.originalSandbox?.sandboxId !== registered?.sandboxId ||
+        saved.request.originalSandbox?.providerSandboxId !== registered?.providerSandboxId ||
+        saved.request.originalSandbox?.sqlGeneration !== registered?.sqlGeneration ||
+        saved.request.originalSandbox?.nativeGeneration !== registered?.nativeGeneration ||
+        saved.binding.originalSandbox?.sandboxId !== registered?.sandboxId ||
+        saved.binding.originalSandbox?.providerSandboxId !== registered?.providerSandboxId ||
+        saved.binding.originalSandbox?.sqlGeneration !== registered?.sqlGeneration ||
+        saved.binding.originalSandbox?.nativeGeneration !== registered?.nativeGeneration ||
         saved.binding.version !== 1 ||
         saved.binding.provider !== "modal" ||
         saved.binding.createOperationId !== request.createOperationId ||
@@ -100,7 +126,8 @@ export function createOrchestratorCreateRecovery(input: {
         saved.binding.sandboxId !== row.info.labels.sandbox)
     )
       throw refusal("conflict", "Create recovery belongs to another incarnation or operation.");
-    if (!saved && row.phase !== "booting") throw refusal("conflict", "No exact recovery receipt for this phase.");
+    if (!saved && !expanded && row.phase !== "booting")
+      throw refusal("conflict", "No exact recovery receipt for this phase.");
   }
   async function recover(request: OrchestratorCreateRecoveryRequest, dispatch: boolean) {
     const found = await input.store.findByRequestKey(request.createOperationId);
@@ -130,6 +157,7 @@ export function createOrchestratorCreateRecovery(input: {
           physicalId: row.physicalId!,
           physicalName: row.physicalName,
           generation: 1,
+          ...(request.originalSandbox ? { originalSandbox: { ...request.originalSandbox } } : {}),
         };
         row.orchestratorCreateRecovery = { request, binding, state: "dispatched" };
         row.phase = "deleting";

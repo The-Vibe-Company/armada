@@ -7,10 +7,12 @@ import type {
   OrchestratorList,
   OrchestratorOperation,
   Provider,
+  SandboxRecord,
 } from "@armada/core";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
+import { OrchestratorCreateJobs } from "./orchestrator-create-jobs.ts";
 import { type OrchestratorDiagnosticLog, OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 import { createManagedOrchestratorRuntime } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeFoundation, OrchestratorRuntimeTransport } from "./orchestrator-runtime-foundation.ts";
@@ -23,6 +25,12 @@ import {
 import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
 class NativeContinuityLost extends Error {}
+
+export interface OrchestratorCreateHooks {
+  registered(saved: SandboxRecord & { lifecycleGeneration: number }): Promise<void>;
+  beforeFork(intendedSandboxId: string): Promise<void>;
+  assertCurrent?(): Promise<void>;
+}
 
 /** Trusted server adapter: never populated from HTTP request fields or guest flags.
  * Each implementation needs operator-verified, version-bound native proof. */
@@ -39,9 +47,14 @@ export interface OrchestratorRuntimeBackend {
   assertNativeProof(): Promise<void>;
   /** Reuses launchSandbox with private insertion/managed-parent binding in one SQL transaction.
    * Must pass the durable operation ID as provider fork idempotency/correlation key. */
-  launch(reservation: RuntimeReservation, diagnostics?: OrchestratorDiagnostics): Promise<void>;
+  launch(
+    reservation: RuntimeReservation,
+    diagnostics?: OrchestratorDiagnostics,
+    hooks?: OrchestratorCreateHooks,
+  ): Promise<void>;
   /** Provider-native, no synthetic prompt. Absent means resume is unavailable. */
   resumeWithoutText?: (identity: RuntimeIdentity, operationId: string) => Promise<void>;
+  prepareMcp?(identity: RuntimeIdentity): Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
   revalidate(identity: RuntimeIdentity): Promise<void>;
 }
@@ -77,8 +90,14 @@ export class OrchestratorRuntime {
   get enabledPairs(): readonly OrchestratorPair[] {
     return this.options.enabledPairs ?? [];
   }
+  readonly createWorker: OrchestratorCreateJobs;
   readonly lifecycleRuntime: ReturnType<typeof createManagedOrchestratorRuntime> | undefined;
   constructor(private readonly options: OrchestratorRuntimeOptions) {
+    this.createWorker = new OrchestratorCreateJobs(
+      options.store,
+      (reservation) => this.executeCreate(reservation),
+      options.diagnosticLog,
+    );
     this.lifecycleRuntime = options.managed
       ? createManagedOrchestratorRuntime({
           ...options.managed,
@@ -194,35 +213,49 @@ export class OrchestratorRuntime {
         configuration,
       });
       if (prior) return this.recorded(prior, diagnostics);
-      diagnostics.stage("backend_resolution");
-      const backend = await this.options.resolveBackend(configuration, ownerId);
-      diagnostics.stage("native_prerequisites");
-      await backend.assertNativeProof();
       diagnostics.stage("reservation");
       const reservation = await this.options.store.create({
         ownerId,
         configuration,
         key,
         skillRevision: this.options.skillRevision,
+        queued: true,
       });
       if (!reservation.fresh) return this.recorded(reservation.operation, diagnostics);
-      diagnostics.bind({ operationId: reservation.operation.id, orchestratorId: reservation.identity.id });
-      return this.execute(reservation, diagnostics, async () => {
-        diagnostics.stage("revalidation");
-        await backend.revalidate(reservation.identity);
-        diagnostics.stage("launcher_preflight");
-        await backend.launch(reservation, diagnostics);
-        diagnostics.stage("preparing");
-        const identity = await this.options.store.preparing(reservation);
-        reservation.identity = identity;
-        diagnostics.bind({ sandboxId: identity.sandboxId });
-        await this.prepare(backend, identity, diagnostics);
-        return { parentState: "ready" as const };
-      });
+      this.createWorker.wake();
+      return reservation.operation;
     } catch (error) {
       diagnostics.reportUnhandled(error);
       throw error;
     }
+  }
+
+  private executeCreate(reservation: RuntimeReservation): Promise<OrchestratorOperation> {
+    const diagnostics = new OrchestratorDiagnostics(this.options.diagnosticLog, "create");
+    diagnostics.bind({ operationId: reservation.operation.id, orchestratorId: reservation.identity.id });
+    return this.execute(reservation, diagnostics, async () => {
+      diagnostics.stage("backend_resolution");
+      const backend = await this.options.resolveBackend(
+        reservation.identity.configuration,
+        reservation.identity.ownerId,
+      );
+      diagnostics.stage("native_prerequisites");
+      await backend.assertNativeProof();
+      diagnostics.stage("revalidation");
+      await backend.revalidate(reservation.identity);
+      diagnostics.stage("launcher_preflight");
+      await backend.launch(reservation, diagnostics, {
+        beforeFork: (sandboxId) => this.options.store.dispatchCreateFork(reservation, sandboxId),
+        registered: (saved) => this.options.store.registeredCreate(reservation, saved),
+        assertCurrent: () => this.options.store.assertCreateCurrent(reservation),
+      });
+      diagnostics.stage("preparing");
+      const identity = await this.options.store.preparing(reservation);
+      reservation.identity = identity;
+      diagnostics.bind({ sandboxId: identity.sandboxId });
+      await this.prepare(backend, identity, diagnostics, () => this.options.store.assertCreateCurrent(reservation));
+      return { parentState: "ready" as const };
+    });
   }
 
   async mutate(
@@ -343,6 +376,8 @@ export class OrchestratorRuntime {
           diagnostics.stage("resume_validation");
           if (restored.conversationId !== current.conversationId) throw new OrchestratorRuntimeError("conflict");
           reservation.identity = restored;
+          diagnostics.stage("initialization_mcp");
+          await backend.prepareMcp?.(restored);
           await this.configureAuthority(backend, restored, diagnostics);
           return { parentState: "ready" as const };
         }
@@ -407,7 +442,9 @@ export class OrchestratorRuntime {
     backend: OrchestratorRuntimeBackend,
     identity: RuntimeIdentity,
     diagnostics: OrchestratorDiagnostics,
+    validate?: () => Promise<void>,
   ): Promise<void> {
+    await validate?.();
     if (!identity.providerSandboxId) throw new OrchestratorRuntimeError("unavailable");
     diagnostics.stage("skills");
     await bootstrapOrchestrator(backend.provider, {
@@ -415,7 +452,10 @@ export class OrchestratorRuntime {
       sandboxId: identity.providerSandboxId,
       projectDir: backend.projectDir,
       skillRevision: identity.skillRevision,
-      configureAuthority: () => this.configureAuthority(backend, identity, diagnostics),
+      configureAuthority: async () => {
+        await validate?.();
+        await this.configureAuthority(backend, identity, diagnostics);
+      },
     });
   }
 
@@ -466,6 +506,19 @@ export class OrchestratorRuntime {
       }
       return { ...reservation.operation, state: "succeeded" };
     } catch (error) {
+      if (
+        reservation.operation.kind === "create" &&
+        reservation.createDispatchId &&
+        !reservation.createForkDispatched
+      ) {
+        diagnostics.report("failed", error);
+        diagnostics.stage("failure_publication");
+        if (!(await this.options.store.failCreateBeforeFork(reservation))) {
+          diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
+          throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
+        }
+        return { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" };
+      }
       const lost = error instanceof NativeContinuityLost;
       const state = lost ? ("failed" as const) : ("uncertain" as const);
       const errorCode = lost ? "native_continuity_lost" : "runtime_uncertain";

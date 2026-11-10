@@ -218,6 +218,43 @@ async function fixture() {
     wrongPhysical: () => {
       wrongPhysical = true;
     },
+    async register(phase: "active" | "stopped", pending: boolean) {
+      const saved = await core.createSqlSandboxStore(sql).insert({
+        id: row.info.labels.sandbox!,
+        provider: "modal",
+        providerSandboxId: row.info.id,
+        goldenId: golden.id,
+        orgId: p.org,
+        ownerId: p.owner,
+        harness: "codex",
+        model: "gpt-6.1-sol",
+        reasoningEffort: "medium",
+        status: "failed",
+        visibility: "private",
+      });
+      if (phase === "stopped")
+        await core
+          .createSqlSandboxStore(sql)
+          .update(saved.id, { status: "stopped", stoppedAt: new Date().toISOString() });
+      await sql.query("update orchestrators set sandbox_id=$2,state=$3 where id=$1", [
+        create.identity.id,
+        saved.id,
+        pending ? "creating" : "blocked",
+      ]);
+      await sql.query("update orchestrator_operations set state=$2 where id=$1", [
+        create.operation.id,
+        pending ? "pending" : "uncertain",
+      ]);
+      await sql.query("update sandboxes set orchestrator_native_generation='1' where id=$1", [saved.id]);
+      await native.lease(row.info.id, async (current, save) => {
+        current.phase = phase;
+        if (phase === "stopped") current.recoveryImageId = "im_retained_cleanup";
+        await save(current);
+      });
+      if (phase === "stopped") exit = 0;
+      return saved;
+    },
+    configuration: create.identity.configuration,
     stats: () => ({ terminations, allocations }),
     loseFenceAck: () => {
       loseFenceAck = true;
@@ -436,3 +473,87 @@ test("a lost SQL recovery publication never settles the create until proof publi
     await f.db.close();
   }
 }, 20_000);
+
+test.each(["active", "stopped"] as const)(
+  "owner abort recovers a registered legacy pending first create (%s)",
+  async (phase) => {
+    const f = await fixture();
+    try {
+      const saved = await f.register(phase, true);
+      const result = await f.recover(f.input);
+      expect(result.state).toBe("succeeded");
+      expect(f.stats()).toEqual({ allocations: 0, terminations: phase === "active" ? 1 : 0 });
+      expect(await f.store.read(f.p.owner, f.p.org, f.input.id)).toMatchObject({
+        state: "stopped",
+        sandboxId: saved.id,
+        generation: 1,
+        continuity: "unverified",
+      });
+      expect(
+        (await f.sql.query("select state from orchestrator_operations where id=$1", [f.create.operation.id])).rows,
+      ).toEqual([{ state: "failed" }]);
+      const native = await f.native.get(f.row.info.id);
+      expect(native.orchestratorCreateRecovery?.binding.originalSandbox).toEqual({
+        sandboxId: saved.id,
+        providerSandboxId: f.row.info.id,
+        sqlGeneration: "1",
+        nativeGeneration: "1",
+      });
+      expect((await f.sql.query("select status from sandboxes where id=$1", [saved.id])).rows).toEqual([
+        { status: "stopped" },
+      ]);
+      expect(f.modelLookups()).toBe(0);
+    } finally {
+      await f.db.close();
+    }
+  },
+  20_000,
+);
+
+test.each([false, true])(
+  "a durable pre-fork owner abort cannot later dispatch a fork (claimed=%s)",
+  async (claimed) => {
+    const f = await fixture();
+    try {
+      const queued = await f.store.create({
+        ownerId: f.p.owner,
+        configuration: { ...f.configuration, name: "cancel queued" },
+        key: "cancel-queued-create",
+        skillRevision: "a".repeat(40),
+        queued: true,
+      });
+      const job = claimed ? await f.store.claimCreateJob() : null;
+      const result = await f.recover({ ...f.input, id: queued.identity.id, key: "abort-queued" });
+      expect(result.state).toBe("succeeded");
+      const events = (
+        await f.sql.query<{ event: { kind: string; operation?: { id: string; state: string }; state?: string } }>(
+          "select event from orchestrator_runtime_events where orchestrator_id=$1",
+          [queued.identity.id],
+        )
+      ).rows.map((row) => row.event);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "operation",
+          operation: expect.objectContaining({ id: queued.operation.id, state: "failed" }),
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "operation",
+          operation: expect.objectContaining({ id: result.id, state: "succeeded" }),
+        }),
+      );
+      expect(events).toContainEqual(expect.objectContaining({ kind: "state", state: "stopped" }));
+      expect(f.stats()).toEqual({ allocations: 0, terminations: 0 });
+      expect(
+        (await f.store.operations(f.p.owner, f.p.org, queued.identity.id)).find((p) => p.id === queued.operation.id)
+          ?.state,
+      ).toBe("failed");
+      if (job) await expect(f.store.dispatchCreateFork(job, crypto.randomUUID())).rejects.toThrow("conflict");
+      expect((await f.native.get(f.row.info.id)).phase).toBe("booting"); // Unrelated original resource untouched.
+    } finally {
+      await f.db.close();
+    }
+  },
+  20_000,
+);

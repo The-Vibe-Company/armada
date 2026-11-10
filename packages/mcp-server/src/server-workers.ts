@@ -4,6 +4,7 @@ import { startGoldenWorker } from "./golden-worker.ts";
 export interface ServerLifecycleLane {
   reconcileOne(signal: AbortSignal): Promise<boolean>;
   drain(): Promise<void>;
+  stopAdmission?(): void;
 }
 
 /** Independent tracked lanes: a golden build can legitimately take an hour. */
@@ -135,6 +136,7 @@ export function startServerWorkers(
     retirementWorker: { done: retirementDone },
     done,
     stop() {
+      for (const lane of lanes) lane.stopAdmission?.();
       goldenWorker.stop();
       shutdown.abort();
       if (idleTimer) clearTimeout(idleTimer);
