@@ -586,13 +586,23 @@ try {
     const stopped = await row(scenario.id);
     assert.equal(stopped.status, "stopped", JSON.stringify({ scenario, stopped, logs, effects }));
     assert.equal(stopped.status_reason, "expired");
-    assert.equal(stopped.preservation_note, "unpushed work could not be preserved (missing_bun)");
+    assert.equal(
+      stopped.preservation_note,
+      "unpushed work could not be preserved (missing_bun). Resume the sandbox and push or copy any local work before stopping again.",
+    );
     const operations = effects
       .slice(expirationStart)
       .filter((item) => item.id === scenario.nativeId)
       .map((item) => item.op);
-    assert(operations.indexOf("interrupt") >= 0, JSON.stringify({ scenario, operations }));
-    assert(operations.indexOf("preserve") > operations.indexOf("interrupt"), JSON.stringify({ scenario, operations }));
+    if (scenario.provider === "boat" && !scenario.active) {
+      assert.equal(operations.includes("interrupt"), false, "Idle Boat capture needs no harness interruption");
+    } else {
+      assert(operations.indexOf("interrupt") >= 0, JSON.stringify({ scenario, operations }));
+      assert(
+        operations.indexOf("preserve") > operations.indexOf("interrupt"),
+        JSON.stringify({ scenario, operations }),
+      );
+    }
     assert(operations.indexOf("stop") > operations.indexOf("preserve"), JSON.stringify({ scenario, operations }));
     if (scenario.provider === "modal") {
       assert(operations.indexOf("checkpoint") > operations.indexOf("preserve"));

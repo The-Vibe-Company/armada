@@ -6,6 +6,7 @@ import {
   mapSandboxRow,
   OrchestratorAuthority,
   PrivateSkillError,
+  ProviderError,
   type ProviderRegistry,
   reserveOrchestratorOperation,
   resolveCredentials,
@@ -215,7 +216,16 @@ export function createProductionOrchestrators(input: {
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       await sandboxActivity(stores.sandboxes, saved, { stopRequested: true }, async () => {
-        await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId).catch(() => {});
+        if (
+          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId).catch(() => {})) ===
+          "pending"
+        )
+          throw new ProviderError({
+            provider: provider.id,
+            code: "sandbox_not_ready",
+            retryable: true,
+            message: "Interruption is pending; retry stop after turns settle.",
+          });
         await provider.stop({ sandboxId: saved.providerSandboxId });
         return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
       });

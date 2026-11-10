@@ -1505,10 +1505,22 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         },
         async (signal) => {
           signal.throwIfAborted();
-          if (
-            !(found.status === "stopping" && found.preservationNote?.startsWith("unpushed work could not be preserved"))
-          )
-            await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
+          // A historical warning is not proof that this stop has captured current work.
+          const preservation = await data.sandboxes
+            .preserveWork?.(found.id, provider, found.providerSandboxId)
+            .catch(() => {});
+          signal.throwIfAborted();
+          if (preservation === "pending")
+            return {
+              result: {
+                id: found.id,
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+              },
+              patch: {
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+                stopRequested: true,
+              },
+            };
           let terminal = false;
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;

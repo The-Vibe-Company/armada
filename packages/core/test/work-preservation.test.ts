@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExecRequest, ExecResult } from "../src/provider.ts";
+import { type ExecRequest, type ExecResult, ProviderError } from "../src/provider.ts";
 import { preserveWork } from "../src/work-preservation.ts";
 
 const homes: string[] = [];
@@ -135,7 +135,11 @@ test("an unresponsive provider is bounded and late output cannot become success"
   try {
     const result = preserveWork({ exec: () => new Promise(() => {}) }, "sandbox");
     expire?.();
-    expect(await result).toEqual({ status: "failed", reason: "timeout" });
+    expect(await result).toEqual({
+      status: "failed",
+      reason: "timeout",
+      diagnostic: { stage: "collect_exec", errorClass: "timeout", providerStatus: null },
+    });
   } finally {
     globalThis.setTimeout = original;
   }
@@ -191,6 +195,33 @@ test("archives larger than the runtime stdout cap are recovered through bounded 
   expect(result.status).toBe("preserved");
   if (result.status !== "preserved") throw new Error("Expected archive");
   expect(Buffer.from(result.archive, "base64").includes(original)).toBe(true);
+  const refusedChunks = await preserveWork(
+    {
+      exec: async (request) => {
+        if (request.command.includes("fs.readSync(fd,data,"))
+          throw new ProviderError({
+            provider: "boat",
+            code: "unavailable",
+            status: 504,
+            retryable: true,
+            message: "private transport response",
+            providerCode: "private code",
+            details: { secret: "private body" },
+          });
+        return provider.exec(request);
+      },
+    },
+    "sandbox",
+  );
+  expect(refusedChunks).toEqual({
+    status: "failed",
+    reason: "exec_failed",
+    diagnostic: {
+      stage: "chunk_exec",
+      errorClass: "provider_unavailable",
+      providerStatus: 504,
+    },
+  });
   // Provider-retained stdout contains ciphertext, not plaintext archive chunks.
   for (const output of responses.filter((value) => /^[A-Za-z0-9+/=]+\s*$/.test(value)))
     expect(Buffer.from(output.trim(), "base64").includes(original.subarray(0, 64))).toBe(false);
@@ -245,10 +276,48 @@ test("an unresolved conflict index fails closed because patches cannot restore i
 });
 
 test("collector failures are closed and provider output never becomes a reason", async () => {
+  const providerError = new ProviderError({
+    provider: "boat",
+    code: "unavailable",
+    status: 502,
+    retryable: true,
+    message: "PRIVATE_MESSAGE",
+    providerCode: "PRIVATE_CODE",
+    details: { secret: "PRIVATE_BODY" },
+  });
+  for (const [error, errorClass, providerStatus] of [
+    [new Error("PRIVATE_MESSAGE"), "unexpected", null],
+    [providerError, "provider_unavailable", 502],
+    [
+      Object.assign(new ProviderError({ provider: "boat", code: "unknown", retryable: false, message: "PRIVATE" }), {
+        code: "PRIVATE_CODE",
+        status: 9000,
+      }),
+      "provider_unknown",
+      null,
+    ],
+    [Object.assign(new Error("PRIVATE_MESSAGE"), { name: "TimeoutError" }), "timeout", null],
+  ] as const) {
+    expect(
+      await preserveWork(
+        {
+          exec: async () => {
+            throw error;
+          },
+        },
+        "sandbox",
+      ),
+    ).toEqual({
+      status: "failed",
+      reason: "exec_failed",
+      diagnostic: { stage: "collect_exec", errorClass, providerStatus },
+    });
+  }
   for (const [output, expected] of [
     [{ exitCode: 127 }, "collector_exit"],
     [{ exitCode: 137 }, "collector_signal"],
     [{ truncated: true }, "output_truncated"],
+    [{ timedOut: true }, "timeout"],
     [{ stdout: "private invalid output" }, "output_invalid"],
     [{ stdout: '{"status":"failed","reason":"private data"}' }, "output_invalid"],
     ...(["missing_git", "missing_bun", "missing_openssl", "size_limit", "timeout"] as const).map(
@@ -274,6 +343,12 @@ test("collector failures are closed and provider output never becomes a reason",
         },
         "sandbox",
       ),
-    ).toEqual({ status: "failed", reason: expected });
+    ).toEqual({
+      status: "failed",
+      reason: expected,
+      ...("timedOut" in output && output.timedOut
+        ? { diagnostic: { stage: "collect_exec", errorClass: "timeout", providerStatus: null } }
+        : {}),
+    });
   }
 });

@@ -616,6 +616,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async quiesce(request) {
+      const active = (conversation: { id: string; running: boolean }) =>
+        (!request.conversationId || conversation.id === request.conversationId) && conversation.running;
+      // Idle reviewers have no turn to interrupt. Avoid making preservation
+      // depend on the harness accepting an unnecessary interruption.
+      if (!(await provider.conversations(request.sandboxId)).some(active)) return;
       await provider.interrupt(request);
       const conversations = await provider.conversations(request.sandboxId);
       if (
