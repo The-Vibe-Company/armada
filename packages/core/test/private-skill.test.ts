@@ -6,7 +6,19 @@ import { join } from "node:path";
 // Owns actual guest script execution, command-local auth and receipt/error sanitization.
 // Child process isolation keeps fake transport executables out of other suites' PATH.
 // Fake SSH maps the provider's guest home to a temporary home, never the CI host's /home/user.
-test.each(["ok", "refused", "broad key", "missing", "wrong receipt"])("private installer %s", (mode) => {
+test.each([
+  "ok",
+  "refused",
+  "broad key",
+  "missing",
+  "wrong receipt",
+  "cli unavailable",
+  "missing executable",
+  "auth unavailable",
+  "protocol",
+  "conflict",
+  "rejected",
+])("private installer %s", (mode) => {
   const root = mkdtempSync(join(tmpdir(), "private-skill-"));
   const originalKeys = "# unrelated authorization\nssh-ed25519 AAAA existing\n";
   const homes = [root, join(root, ".root")];
@@ -21,8 +33,13 @@ const kind=path.basename(process.argv[1]);
 if(kind==='ssh-keygen'){const target=process.argv[process.argv.indexOf('-f')+1];fs.writeFileSync(target,'fake key');fs.writeFileSync(target+'.pub','ssh-ed25519 AAAA fake');process.exit(0);}
 if(kind==='ssh'){const input=fs.readFileSync(0,'utf8').replaceAll("'/home/user'",JSON.stringify(process.env.HOME)).replaceAll("/root",process.env.HOME+"/.root");const r=cp.spawnSync('bash',['-c','bash -c '+process.argv.at(-1)],{input,encoding:'utf8'});process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??1);}
 if(!process.env.SKILLPACK_API_KEY||process.env.ARMADA_GIT_TOKEN)process.exit(9);
+if(process.env.MODE==='cli unavailable')process.exit(2);
+if(process.env.MODE==='auth unavailable')process.exit(8);
+if(process.env.MODE==='protocol'){process.stdout.write('not JSON');process.exit(0);}
 if(process.env.MODE==='refused')process.exit(3);
 if(process.argv[2]==='auth'){process.stdout.write(JSON.stringify({workspace:{id:'11111111-1111-4111-8111-111111111111'},token:{scopes:process.env.MODE==='broad key'?['skills:read','secrets:read']:['skills:read']}}));process.exit(0);}
+if(process.env.MODE==='conflict')process.exit(6);
+if(process.env.MODE==='rejected')process.exit(5);
 if(process.env.MODE==='missing')process.exit(4);
 const root=process.argv[process.argv.indexOf('--project')+1],checksum='sha256:'+'a'.repeat(64);
 fs.mkdirSync(root+'/.companion',{recursive:true});
@@ -30,6 +47,8 @@ fs.writeFileSync(root+'/.companion/skills.lock.json',JSON.stringify({lockfileVer
 process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process.env.SKILLPACK_API_KEY);
 `;
     for (const name of ["ssh", "ssh-keygen", "skillpack"]) writeFileSync(join(root, name), fake, { mode: 0o755 });
+    if (mode === "missing executable")
+      writeFileSync(join(root, "skillpack"), "#!/nonexistent/skillpack-interpreter\n", { mode: 0o755 });
     const entry = join(import.meta.dir, "../src/private-skill.ts");
     const script = `import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:'notes@1.0.0',harness:'codex',key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
@@ -51,11 +70,21 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       });
     else
       expect(value.reason).toBe(
-        mode === "refused" || mode === "broad key"
+        mode === "refused"
           ? "skillpack_credential_refused"
-          : mode === "missing"
-            ? "skillpack_skill_unavailable"
-            : "skillpack_install_failed",
+          : mode === "broad key"
+            ? "skillpack_scope_refused"
+            : mode === "missing"
+              ? "skillpack_skill_unavailable"
+              : {
+                  "wrong receipt": "skillpack_receipt_invalid",
+                  "cli unavailable": "skillpack_cli_unavailable",
+                  "missing executable": "skillpack_cli_unavailable",
+                  "auth unavailable": "skillpack_auth_unavailable",
+                  protocol: "skillpack_protocol_invalid",
+                  conflict: "skillpack_install_conflict",
+                  rejected: "skillpack_request_rejected",
+                }[mode],
       );
     for (const home of homes) expect(readFileSync(join(home, ".ssh/authorized_keys"), "utf8")).toBe(originalKeys);
     for (const path of readdirSync(root, { recursive: true })) {

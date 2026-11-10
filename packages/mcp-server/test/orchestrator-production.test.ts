@@ -408,8 +408,26 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         (item) => item.id === admitted.id,
       );
       expect(operation?.state).toBe(
-        scenario === "launcher" ? "failed" : scenario === "failure_publication" ? "pending" : "uncertain",
+        scenario === "launcher" || scenario === "private-skill" || storedSkillKey
+          ? "failed"
+          : scenario === "failure_publication"
+            ? "pending"
+            : "uncertain",
       );
+      if (storedSkillKey || scenario === "private-skill") {
+        const failedParent = (await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator;
+        expect(failedParent.state).toBe("stopped");
+        expect(failedParent.conversationId).toBeNull();
+        expect(failedParent.skillReceipt).toBeNull();
+        const sandbox = (
+          await sql.query<{ status: string; stopped_at: unknown }>(
+            "select status,stopped_at from public.sandboxes where id=$1",
+            [failedParent.sandboxId],
+          )
+        ).rows[0];
+        expect(sandbox?.status).toBe("stopped");
+        expect(sandbox?.stopped_at).not.toBeNull();
+      }
       if (storedSkillKey) {
         const expectedReason =
           scenario === "expired-skill-key" ? "skillpack_credential_refused" : "skillpack_install_failed";
@@ -443,9 +461,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         registration: ["registration", "sql_check"],
         initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
-        "private-skill": ["skills", "skillpack_credential_missing"],
-        "expired-skill-key": ["skills", "skillpack_credential_refused"],
-        "undecryptable-skill-key": ["skills", "skillpack_install_failed"],
+        "private-skill": ["skills_transport", "skillpack_credential_missing"],
+        "expired-skill-key": ["skills_transport", "skillpack_credential_refused"],
+        "undecryptable-skill-key": ["skills_transport", "skillpack_install_failed"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
         failure_publication: ["completion", "sql_serialization"],
@@ -453,7 +471,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(records[0]).toMatchObject({
         component: "owner",
         action: "create",
-        outcome: scenario === "launcher" ? "failed" : "uncertain",
+        outcome: scenario === "launcher" || scenario === "private-skill" || storedSkillKey ? "failed" : "uncertain",
         stage: expected[0],
         reason: expected[1],
       });

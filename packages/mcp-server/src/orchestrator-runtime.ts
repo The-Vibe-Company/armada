@@ -652,7 +652,25 @@ export class OrchestratorRuntime {
       if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");
       const lost = error instanceof NativeContinuityLost || unavailable;
       const refused = error instanceof PromptRefused;
-      const state = lost || refused ? ("failed" as const) : ("uncertain" as const);
+      const privateFailure = error instanceof PrivateSkillError;
+      let privateCreateStopped = false;
+      if (privateFailure && reservation.operation.kind === "create") {
+        // Skills precede authority installation and the first conversation. Stop the
+        // failed allocation; never claim a terminal parent while it may still run.
+        try {
+          const identity = reservation.identity;
+          await this.options.store.assertCreateCurrent(reservation);
+          const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
+          await backend.revalidate(identity);
+          if (identity.providerSandboxId && !identity.conversationId) {
+            await backend.provider.stop({ sandboxId: identity.providerSandboxId });
+            privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+          }
+        } catch {
+          // Preserve the installation reason. Unconfirmed cleanup stays blocked.
+        }
+      }
+      const state = lost || refused || privateFailure ? ("failed" as const) : ("uncertain" as const);
       const errorCode = refused
         ? error.refusal.code
         : unavailable
@@ -670,7 +688,7 @@ export class OrchestratorRuntime {
       try {
         published = await this.options.store.complete(reservation, {
           state,
-          parentState: refused ? "ready" : "blocked",
+          parentState: refused ? "ready" : privateCreateStopped ? "stopped" : "blocked",
           errorCode,
           ...(lost
             ? { continuity: "lost" as const }

@@ -222,3 +222,31 @@ The first staging failure in #897 did not include enough evidence to distinguish
 an old golden from a CLI/API failure. Its cause must not be inferred from the
 opaque legacy reason. A staging rerun should capture only Armada's closed reason
 and stage, and check the golden prerequisites above.
+
+Closed reasons and corrective actions (API operation `errorCode`, event operation
+receipt and server diagnostics use the same codes):
+
+| Reason | Action |
+| --- | --- |
+| `skillpack_credential_missing` | Store a personal or org Skillpack credential. |
+| `skillpack_credential_refused` | Replace an expired/revoked key; check workspace membership. |
+| `skillpack_scope_refused` | Replace the key with one scoped **only** to `skills:read`. |
+| `skillpack_cli_unavailable` | Rebuild the golden with the trusted native CLI executable on PATH; check its permissions/version. |
+| `skillpack_auth_unavailable` | Check registry connectivity and CLI/API compatibility during auth status. |
+| `skillpack_protocol_invalid` | Update the trusted native CLI/API; auth status did not return the supported workspace contract. |
+| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's workspace access; secret-projecting skills are not supported. |
+| `skillpack_install_conflict` | Inspect project lock/install state in a disposable sandbox; rebuild a clean golden. |
+| `skillpack_request_rejected` | Check the requested version/tool and update CLI/API compatibility. |
+| `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
+| `skillpack_timeout` | Check guest resources and registry connectivity; inspect before retrying. |
+| `skillpack_receipt_invalid` | Rebuild with a compatible native CLI; inspect project permissions and lockfile without exposing package contents. |
+| `skillpack_transport_failed` | Check SSH connectivity, Node, Bash, `flock`, home permissions and pinned-host access. |
+| `skillpack_install_failed` | Inspect the golden's local install prerequisites; provide only the closed diagnostic stage to support, not raw CLI output. |
+
+Diagnostics distinguish `skills_auth`, `skills_install`, `skills_receipt` and
+`skills_transport`. A private installation error settles the operation as
+`failed`, never `uncertain`: no delegated authority or conversation has started.
+Create attempts stop the failed allocation and publish `stopped` only after the
+provider confirms it. If cleanup cannot be confirmed, the parent remains
+`blocked` for explicit owner cleanup; the original failure reason is preserved.
+A new create needs a new idempotency key; replay returns the failed receipt.
