@@ -17,6 +17,7 @@ import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protoco
 export class CodexDriver implements Driver {
   private children = new ChildOwner();
   private nativeWriter = false;
+  private tokenTotals = new Map<string, Record<string, number>>();
   constructor(
     private options: {
       executable: string;
@@ -75,6 +76,9 @@ export class CodexDriver implements Driver {
       closed = false,
       stopping = false,
       steering = false;
+    let baseline: Record<string, number> | null = c.sessionId
+      ? (this.tokenTotals.get(c.sessionId) ?? null)
+      : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
     const earlyTerminals = new Map<string, TurnCompletedNotification>();
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
@@ -128,6 +132,30 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.params?.threadId !== threadId) return;
+        if (m.method === "thread/tokenUsage/updated") {
+          const total = m.params?.tokenUsage?.total;
+          if (
+            total &&
+            ["inputTokens", "outputTokens", "cachedInputTokens"].every(
+              (key) => Number.isSafeInteger(total[key]) && total[key] >= 0,
+            )
+          ) {
+            const delta = (key: string) =>
+              baseline && total[key] >= baseline[key]! ? total[key] - baseline[key]! : null;
+            c.emit({
+              kind: "other",
+              type: "armada/turnUsage",
+              data: {
+                model: c.request.model ?? "gpt-6.1-sol",
+                inputTokens: delta("inputTokens"),
+                outputTokens: delta("outputTokens"),
+                cachedTokens: delta("cachedInputTokens"),
+              },
+            });
+            this.tokenTotals.set(threadId, { ...total });
+          }
+          return;
+        }
         if (m.method === "turn/completed") {
           c.emit({ kind: "other", type: m.method, data: m.params });
           const terminal = m.params as TurnCompletedNotification;
@@ -200,6 +228,7 @@ export class CodexDriver implements Driver {
     });
     const begin = async (text: string) => {
       turnId = "";
+      if (threadId && this.tokenTotals.has(threadId)) baseline = this.tokenTotals.get(threadId) ?? null;
       const terminal = new Promise<TurnCompletedNotification>((resolve, reject) => {
         terminalResolve = resolve;
         terminalReject = reject;

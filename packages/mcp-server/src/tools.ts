@@ -168,7 +168,25 @@ const taskOutcome = z.discriminatedUnion("state", [
   z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
 ]);
 
+const sandboxUsage = z
+  .object({
+    computeSeconds: z.number().nullable(),
+    turnCount: z.number().nullable(),
+    turns: z.array(
+      z.object({
+        promptId: z.string(),
+        model: z.string().nullable(),
+        inputTokens: z.number().nullable(),
+        outputTokens: z.number().nullable(),
+        cachedTokens: z.number().nullable(),
+      }),
+    ),
+  })
+  .nullable()
+  .optional();
+
 const sandboxListMetadata = z.object({
+  usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   providerSandboxId: z.string().nullable(),
   boatId: z.string().nullable(),
@@ -199,6 +217,7 @@ const prompt = z.object({
 });
 
 const status = {
+  usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
   golden: z.string(),

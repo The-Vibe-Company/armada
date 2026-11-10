@@ -48,6 +48,18 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
     ]);
     expect(events.filter((e) => e.kind === "message" && e.text === "redirect delivered once")).toHaveLength(1);
     expect(events.filter((e) => e.kind === "other" && e.type === "turn/completed")).toHaveLength(2);
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: null, outputTokens: null, cachedTokens: null },
+      },
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: 100, outputTokens: 20, cachedTokens: 30 },
+      },
+    ]);
   } finally {
     await driver.close();
   }

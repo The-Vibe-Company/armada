@@ -4,6 +4,7 @@ import type { Sql } from "./golden-store.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
+import type { SandboxUsage } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
@@ -15,6 +16,7 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
   /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
@@ -153,6 +155,7 @@ export async function cleanupSandboxes(
 }
 
 export interface SandboxRow {
+  usage?: SandboxUsage | null;
   preservation_note?: string | null;
   task_outcome?: TaskOutcome | null;
   task_prompt_id?: string | null;
@@ -277,6 +280,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
+    usage: row.usage ?? null,
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
     taskPromptId: row.task_prompt_id ?? null,
