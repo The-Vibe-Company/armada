@@ -478,6 +478,7 @@ describe("launch", () => {
         attempt: 2,
         delayMs: 1000,
         outcome: transient ? "recovered" : "failed",
+        retry: transient ? "succeeded" : "ownership_refused",
       },
     ]);
     expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(

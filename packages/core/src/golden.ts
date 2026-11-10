@@ -695,7 +695,7 @@ function saveInProgress(error: unknown): boolean {
   return error instanceof ProviderError && error.code === "conflict" && error.providerCode === "save_in_progress";
 }
 
-function delay(ms: number): Promise<void> {
+export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 

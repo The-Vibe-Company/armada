@@ -11,6 +11,7 @@ import {
   gitSetupCommand,
 } from "./github.ts";
 import {
+  delay,
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
@@ -518,7 +519,7 @@ async function setup(
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep: (ms: number) => Promise<void> = delay,
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
@@ -598,10 +599,16 @@ async function run(
     result.stderr.includes("detected dubious ownership in repository")
   ) {
     await repository.sleep(OWNERSHIP_RETRY_DELAY_MS);
-    let recovered = false;
+    let retry: "ownership_refused" | "exit_nonzero" | "timed_out" | "detached" | "exec_threw" | "succeeded" =
+      "exec_threw";
     try {
       result = await provider.exec(request);
-      recovered = !result.detached && !result.timedOut && result.exitCode === 0;
+      if (result.detached) retry = "detached";
+      else if (result.timedOut) retry = "timed_out";
+      else if (result.exitCode === 0) retry = "succeeded";
+      else if (result.exitCode === 128 && result.stderr.includes("detected dubious ownership in repository"))
+        retry = "ownership_refused";
+      else retry = "exit_nonzero";
     } finally {
       try {
         console.info(
@@ -612,7 +619,8 @@ async function run(
             providerSandboxId: sandboxId,
             attempt: 2,
             delayMs: OWNERSHIP_RETRY_DELAY_MS,
-            outcome: recovered ? "recovered" : "failed",
+            outcome: retry === "succeeded" ? "recovered" : "failed",
+            retry,
           }),
         );
       } catch {
