@@ -331,7 +331,11 @@ export async function launchSandbox(
           );
         });
       return {
-        patch: { status: "running" as const, conversationIds: [receipt.conversationId] },
+        patch: {
+          status: "running" as const,
+          conversationIds: [receipt.conversationId],
+          taskPromptId: receipt.promptId,
+        },
         result: finish(
           record,
           golden,

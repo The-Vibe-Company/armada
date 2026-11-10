@@ -290,6 +290,7 @@ describe("tools", () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(
       [
         "exec",
+        "work_recovery",
         "golden_build_status",
         "golden_capabilities",
         "golden_create",
@@ -314,6 +315,7 @@ describe("tools", () => {
         "orchestrator_resume",
         "orchestrator_recover",
         "orchestrator_reconcile",
+        "report",
         "resource_advice",
         "send",
         "status",

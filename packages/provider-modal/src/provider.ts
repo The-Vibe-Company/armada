@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
-import type { CreateGoldenRequest, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
+import type { CreateGoldenRequest, ExecResult, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
 import { machineCapacity, ProviderError, parseMachineSize, resolveModelChoice } from "@armada/core";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
@@ -1210,6 +1210,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     },
     interrupt: (r) => call(r.sandboxId, "interrupt", r),
     async exec(r) {
+      if (r.onlyIfRunning)
+        return admit(r.sandboxId, async (row) => {
+          if (row.phase !== "active") throw refusal("sandbox_not_ready", "Recovery capture requires active compute.");
+          return runner.call<ExecResult>(row, "exec", { input: r });
+        });
       const target = await store.get(r.sandboxId);
       if (!target.golden) return call(r.sandboxId, "exec", { input: r });
       return admit(r.sandboxId, async (row, save) => {

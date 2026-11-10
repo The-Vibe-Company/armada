@@ -24,6 +24,7 @@ import {
 } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
+export class BestEffortConversationUnavailable extends Error {}
 class NativeContinuityLost extends Error {}
 
 export interface OrchestratorCreateHooks {
@@ -33,8 +34,9 @@ export interface OrchestratorCreateHooks {
 }
 
 /** Trusted server adapter: never populated from HTTP request fields or guest flags.
- * Each implementation needs operator-verified, version-bound native proof. */
+ * Boat explicitly opts into best-effort; native adapters retain their proof policy. */
 export interface OrchestratorRuntimeBackend {
+  readonly continuity?: "best_effort";
   provider: Provider;
   /** Persisted launch choice, never a new default selected on a later turn. */
   selection?: ModelChoice;
@@ -351,7 +353,12 @@ export class OrchestratorRuntime {
             diagnostics.captureReason("native_continuity_lost");
             throw new NativeContinuityLost();
           }
-          if (stopped.state !== "stopped" || (stopped.continuity !== "native" && current.conversationId !== null)) {
+          if (
+            stopped.state !== "stopped" ||
+            (stopped.continuity !== "native" &&
+              current.conversationId !== null &&
+              current.configuration.provider !== "boat")
+          ) {
             diagnostics.captureReason("native_stop_unconfirmed");
             throw new OrchestratorRuntimeError("unavailable");
           }
@@ -365,7 +372,11 @@ export class OrchestratorRuntime {
         await backend.revalidate(current);
         if (input.action === "resume") {
           if (current.state === "ready") return { parentState: "ready" as const };
-          if (current.state !== "stopped" || !current.conversationId || current.continuity !== "native")
+          if (
+            current.state !== "stopped" ||
+            (backend.continuity !== "best_effort" && (!current.conversationId || current.continuity !== "native")) ||
+            (backend.continuity === "best_effort" && current.configuration.provider !== "boat")
+          )
             throw new OrchestratorRuntimeError("conflict");
           diagnostics.stage("authority_revoke");
           await this.options.authority.revoke(current.id);
@@ -379,7 +390,10 @@ export class OrchestratorRuntime {
           diagnostics.stage("initialization_mcp");
           await backend.prepareMcp?.(restored);
           await this.configureAuthority(backend, restored, diagnostics);
-          return { parentState: "ready" as const };
+          return {
+            parentState: "ready" as const,
+            ...(backend.continuity === "best_effort" ? { continuity: "unverified" as const } : {}),
+          };
         }
         diagnostics.stage("native_admission");
         if (current.state !== "ready" || !current.providerSandboxId) throw new OrchestratorRuntimeError("conflict");
@@ -402,6 +416,13 @@ export class OrchestratorRuntime {
                 ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
                 ...(current.conversationId ? { conversationId: current.conversationId } : {}),
               });
+        if (
+          backend.continuity === "best_effort" &&
+          current.configuration.provider === "boat" &&
+          current.conversationId &&
+          receipt.conversationId !== current.conversationId
+        )
+          throw new BestEffortConversationUnavailable();
         return { conversationId: receipt.conversationId };
       });
     } catch (error) {
@@ -519,9 +540,14 @@ export class OrchestratorRuntime {
         }
         return { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" };
       }
-      const lost = error instanceof NativeContinuityLost;
+      const unavailable = error instanceof BestEffortConversationUnavailable;
+      const lost = error instanceof NativeContinuityLost || unavailable;
       const state = lost ? ("failed" as const) : ("uncertain" as const);
-      const errorCode = lost ? "native_continuity_lost" : "runtime_uncertain";
+      const errorCode = unavailable
+        ? "boat_conversation_unavailable"
+        : lost
+          ? "native_continuity_lost"
+          : "runtime_uncertain";
       diagnostics.report(state, error);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation

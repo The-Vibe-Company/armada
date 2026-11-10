@@ -127,6 +127,30 @@ export function parseAccount(value: unknown): ModelAccount | null {
   };
 }
 
+/**
+ * `creds/list {org}`'s `{user: [...], orgs: [{id, credentials: [...]}]}`, reduced to the model accounts of the
+ * viewer and of that one org. A row without the account fields (a hosting key, an older server) is not an account
+ * and is left out; scope comes from where the row sits, never from the row itself.
+ */
+export function accountsFromList(payload: unknown, org: string): { accounts: ModelAccount[]; legacy: boolean } {
+  const record = isRow(payload) ? payload : {};
+  let legacy = false;
+  const rows = (items: unknown, scope: AccountScope) =>
+    (Array.isArray(items) ? items : [])
+      .map((item) => {
+        if (typeof item !== "object" || item === null) return null;
+        const account = parseAccount({ ...item, scope });
+        // A model credential without an id is a row from a server older than named accounts.
+        if (!account && oneOf(ACCOUNT_KINDS, (item as { kind?: unknown }).kind) && !("id" in item)) legacy = true;
+        return account;
+      })
+      .filter((row): row is ModelAccount => row !== null);
+  const orgs = Array.isArray(record.orgs) ? record.orgs : [];
+  const mine = orgs.find((item) => isRow(item) && item.id === org);
+  const accounts = [...rows(record.user, "user"), ...rows(isRow(mine) ? mine.credentials : undefined, "org")];
+  return { accounts, legacy };
+}
+
 /** A value quoted for a POSIX shell: a name with spaces, quotes or `$` is passed as one literal argument. */
 export function shellQuote(value: string): string {
   return /^[A-Za-z0-9._-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;

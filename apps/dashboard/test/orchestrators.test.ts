@@ -233,31 +233,36 @@ test("the idle choices stay within the server's bounds and mark its default", ()
 
 test("model accounts are the named, active ones of the viewer and the selected org only", () => {
   const now = Date.parse("2026-11-09T12:00:00.000Z");
+  const account = (id: string, name: string, kind: string, fields: Record<string, unknown> = {}) => ({
+    id: `00000000-0000-4000-8000-0000000000${id}`,
+    name,
+    kind,
+    status: "active",
+    isDefault: false,
+    expiresAt: null,
+    updatedAt: "2026-11-08T10:00:00.000Z",
+    version: 1,
+    ...fields,
+  });
   const accounts = parseModelAccounts(
     {
       user: [
         { kind: "anthropic", createdAt: null },
-        { id: "u1", name: "Mine", kind: "claude_oauth", status: "active", isDefault: true },
-        { id: "u2", name: "Old", kind: "openai", expiresAt: "2026-11-01T00:00:00.000Z" },
-        { id: "u3", name: "Gone", kind: "codex_auth", status: "revoked" },
+        account("01", "Mine", "claude_oauth", { isDefault: true }),
+        account("02", "Old", "openai", { expiresAt: "2026-11-01T00:00:00.000Z" }),
+        account("03", "Gone", "codex_auth", { status: "revoked" }),
       ],
       orgs: [
-        {
-          id: ORG,
-          credentials: [
-            { id: "o1", name: "Team", kind: "openai" },
-            { kind: "boat", createdAt: null },
-          ],
-        },
-        { id: "another", credentials: [{ id: "x1", name: "Elsewhere", kind: "anthropic" }] },
+        { id: ORG, credentials: [account("04", "Team", "openai"), { kind: "boat", createdAt: null }] },
+        { id: "another", credentials: [account("05", "Elsewhere", "anthropic")] },
       ],
     },
     ORG,
     now,
   );
   expect(accounts).toEqual([
-    { id: "u1", name: "Mine", harness: "claude", scope: "user", isDefault: true },
-    { id: "o1", name: "Team", harness: "codex", scope: "org", isDefault: false },
+    { id: "00000000-0000-4000-8000-000000000001", name: "Mine", harness: "claude", scope: "user", isDefault: true },
+    { id: "00000000-0000-4000-8000-000000000004", name: "Team", harness: "codex", scope: "org", isDefault: false },
   ]);
 });
 

@@ -24,12 +24,12 @@ export function SandboxActions({ sandboxId, status }: { sandboxId: string; statu
   return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} /> : null;
 }
 
-export function StopButton({ sandboxId }: { sandboxId: string }) {
+export function StopButton({ sandboxId, size }: { sandboxId: string; size?: "sm" }) {
   const [state, action, pending] = useActionState(stopSandbox, null);
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="destructive" disabled={pending}>
+        <Button variant="destructive" size={size} disabled={pending}>
           <SquareIcon /> Stop
         </Button>
       </AlertDialogTrigger>

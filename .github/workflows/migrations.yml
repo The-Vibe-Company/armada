@@ -65,6 +65,60 @@ jobs:
           PGSSLMODE: disable # Disposable service only; production retains TLS.
         run: supabase db push --db-url postgresql://postgres@127.0.0.1:5432/postgres --dry-run
 
+  staging:
+    name: Staging migrations
+    # Independent of production: missing staging configuration must not block it.
+    # History/repair remain production-only; staging supports forward migrations.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'migrate')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    concurrency:
+      group: staging-supabase-migrations
+      cancel-in-progress: false
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      - name: Check staging migration configuration
+        id: config
+        shell: bash
+        run: |
+          enabled=true
+          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
+            if [[ -z "${!key}" ]]; then
+              echo "::notice::Staging migrations are not configured; missing staging secret: $key. No database connection made."
+              enabled=false
+            fi
+          done
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+      # Always use current main, just like production, including older retries.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.config.outputs.enabled == 'true'
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        if: steps.config.outputs.enabled == 'true'
+        with:
+          version: 2.75.0
+      - name: Link staging project
+        if: steps.config.outputs.enabled == 'true'
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Show local and applied staging versions
+        if: steps.config.outputs.enabled == 'true'
+        run: supabase migration list --linked
+      - name: Preview pending staging migrations
+        if: steps.config.outputs.enabled == 'true'
+        run: supabase db push --linked --dry-run
+      - name: Apply pending staging migrations (forward only)
+        if: steps.config.outputs.enabled == 'true' && (github.event_name == 'push' || !inputs.dry_run)
+        run: supabase db push --linked --yes
+      - name: Show resulting staging versions
+        if: steps.config.outputs.enabled == 'true'
+        run: supabase migration list --linked
+
   production:
     name: Production migrations
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (vars.RELEASE_SYNCED_DEPLOYS != 'true' || inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)

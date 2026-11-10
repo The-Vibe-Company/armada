@@ -3,34 +3,11 @@ import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { requireViewer } from "@/lib/data/viewer";
-import { parseEventPage } from "@/lib/events";
+import { readLogPages } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
 import { createClient } from "@/lib/supabase/server";
 
 type Context = { params: Promise<{ id: string }> };
-
-const MAX_LOG_PAGES = 100;
-
-export async function readLogPages(
-  logs: (id: string, cursor?: string | null) => Promise<unknown>,
-  id: string,
-  initialCursor: string | null,
-) {
-  const events = [];
-  let cursor = initialCursor;
-  let hasMore = false;
-  for (let pageNumber = 0; pageNumber < MAX_LOG_PAGES; pageNumber += 1) {
-    const page = parseEventPage(await logs(id, cursor));
-    events.push(...page.events);
-    hasMore = page.hasMore;
-    if (!page.hasMore || !page.cursor || page.cursor === cursor) {
-      cursor = page.cursor ?? cursor;
-      break;
-    }
-    cursor = page.cursor;
-  }
-  return { events, cursor, hasMore };
-}
 
 /** One page of a sandbox's events after `cursor`, and its current status, for the live logs. */
 export async function GET(request: Request, context: Context) {
