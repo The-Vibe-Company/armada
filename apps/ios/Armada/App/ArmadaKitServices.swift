@@ -73,8 +73,9 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             throw .unavailable(ArmadaKit.OrchestratorExplanation.text(for: capabilities.reason ?? "native_conformance_required"))
         }
         do {
-            async let goldens = client.goldens()
-            async let accounts = client.modelAccounts()
+            // The New sandbox form's reads (#750): the same goldens and named accounts.
+            async let goldens = client.launchGoldens()
+            async let accounts = client.launchAccounts()
             return CreateOptions(catalog: ArmadaKit.OrchestratorCreateCatalog(
                 capabilities: capabilities, goldens: try await goldens, accounts: try await accounts
             ))
@@ -193,6 +194,23 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     func settle(handle: String) async {
         guard let id = UUID(uuidString: handle) else { return }
         _ = try? await client.reconcileOrchestratorOperation(id)
+    }
+
+    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement {
+        guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
+        let progress: ArmadaKit.OrchestratorCreateProgress
+        do {
+            progress = try await client.followOrchestratorCreate(id)
+        } catch {
+            if error is CancellationError { throw .offline }
+            throw Self.readFailure(error)
+        }
+        switch progress {
+        case .ready: return .ready
+        case .failed(let reason): return .failed(reason)
+        // Not settled: the list keeps showing it in progress.
+        case .creating: throw .offline
+        }
     }
 
     // MARK: Sandboxes
