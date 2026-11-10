@@ -229,3 +229,27 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+test.skipIf(process.platform !== "linux")(
+  "checkpoint reconciles completed exec with unavailable process birth evidence",
+  async () => {
+    const s = setup();
+    try {
+      const response = await call(s.runner, {
+        op: "exec",
+        input: { sandboxId: "logical", command: "printf completed" },
+      });
+      expect((await payload(response)).result).toMatchObject({ exitCode: 0, stdout: "completed" });
+      const rows = s.journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[];
+      for (const row of rows) {
+        const record = JSON.parse(row.body);
+        delete record.identity;
+        s.journal.db.query("UPDATE processes SET body=? WHERE pid=?").run(JSON.stringify(record), row.pid);
+      }
+      const restarted = new Runner(s.journal, grant, { claude: unused, codex: unused });
+      expect((await call(restarted, { op: "checkpoint" })).status).toBe(200);
+    } finally {
+      s.close();
+    }
+  },
+);

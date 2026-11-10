@@ -24,14 +24,23 @@ export function processIdentity(pid: number): ProcessIdentity | undefined {
 }
 /** Never signal a persisted numeric PID: it may now belong to another process. */
 export function groupState(pid: number, identity?: ProcessIdentity): "live" | "gone" | "unverifiable" {
-  if (!identity) return "unverifiable";
-  if (readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== identity.boot) return "gone";
-  const leader = stat(pid);
-  if (leader && leader.start !== identity.start) return "unverifiable";
+  if (identity && readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== identity.boot) return "gone";
+  // Every exec starts a fresh detached group whose ID is its leader PID. Even if
+  // the short-lived leader's birth record was lost, an empty group proves there
+  // are no remaining writers. Never infer quiescence from the leader alone.
+  const group = identity?.group ?? pid;
+  let present = false;
   for (const name of readdirSync("/proc")) {
     if (!/^\d+$/.test(name)) continue;
     const member = stat(Number(name));
-    if (member && member.group === identity.group && member.state !== "Z" && member.state !== "X") return "live";
+    if (member && member.group === group && member.state !== "Z" && member.state !== "X") {
+      present = true;
+      break;
+    }
   }
-  return "gone";
+  if (!present) return "gone";
+  if (!identity) return "unverifiable";
+  const leader = stat(pid);
+  if (leader && leader.start !== identity.start) return "unverifiable";
+  return "live";
 }

@@ -38,6 +38,7 @@ export function fakeModalRuntime(input: {
   let providerReads = 0;
   const privateTokens = new Set<string>();
   let expectedMcp = 0;
+  let preservationFailure = "missing_python3";
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -66,9 +67,11 @@ export function fakeModalRuntime(input: {
         result = {
           detached: false,
           exitCode: 0,
-          stdout: packet.input?.command?.includes("skill install --project")
-            ? `Source: https://github.com/The-Vibe-Company/armada/tree/${input.skillRevision}/.agents/skills\n`
-            : "",
+          stdout: packet.input?.command?.includes("ARMADA_RECOVERY")
+            ? JSON.stringify({ status: "failed", reason: preservationFailure })
+            : packet.input?.command?.includes("skill install --project")
+              ? `Source: https://github.com/The-Vibe-Company/armada/tree/${input.skillRevision}/.agents/skills\n`
+              : "",
           stderr: "",
           timedOut: false,
           truncated: false,
@@ -109,6 +112,9 @@ export function fakeModalRuntime(input: {
           acknowledgedSequence: 0,
           nativeSessionId: null,
         };
+      else if (packet.op === "interrupt") result = {};
+      else if (packet.op === "prompt")
+        result = { promptId: crypto.randomUUID(), conversationId: crypto.randomUUID(), status: "finished" };
       else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };
       else {
@@ -236,6 +242,9 @@ export function fakeModalRuntime(input: {
     close() {}
   }
   return {
+    failPreservation(reason: string) {
+      preservationFailure = reason;
+    },
     Client,
     effects,
     localOrigin,

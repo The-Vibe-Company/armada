@@ -9,7 +9,15 @@ export class ToolApiError extends Error {
     if (this.code === "unknown") return 502;
     if (this.code === "not_found") return 404;
     if (this.code === "forbidden") return 403;
-    if (["credential_binding_required", "credential_binding_unsafe", "conflict", "no_running_turn"].includes(this.code))
+    if (
+      [
+        "credential_binding_required",
+        "credential_binding_unsafe",
+        "conflict",
+        "sandbox_not_ready",
+        "no_running_turn",
+      ].includes(this.code)
+    )
       return 409;
     if (["provider_not_configured", "unavailable", "internal"].includes(this.code)) return 503;
     return 400;

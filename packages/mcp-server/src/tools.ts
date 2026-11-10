@@ -1466,6 +1466,6 @@ function describe(error: unknown): { code: string; message: string } {
       message: error.message,
     };
   if (error instanceof EncryptionKeyError) return { code: "unavailable", message: error.message };
-  if (error instanceof DataError) return { code: "unavailable", message: error.message };
+  if (error instanceof DataError) return { code: error.code, message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };
 }
