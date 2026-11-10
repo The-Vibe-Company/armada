@@ -48,6 +48,3 @@ export type Blocker = {
 
 /** The URL parameter that names the selected row, so a reload or a shared link reopens its panel. */
 export const ITEM_PARAM = "item";
-
-/** The panel key of the create form. */
-export const NEW_ITEM = "new";

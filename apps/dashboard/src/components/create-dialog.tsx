@@ -32,6 +32,7 @@ export function CreateDialog({
   onOpenChange,
   className,
   triggerAttrs,
+  onCloseAutoFocus,
 }: {
   /** The header button's text, beside a plus. */
   label: string;
@@ -45,6 +46,8 @@ export function CreateDialog({
   className?: string;
   /** `data-*` attributes of the button, for tests. */
   triggerAttrs?: Record<string, string>;
+  /** Where the focus goes on close, when not back to the button (`preventDefault` keeps it elsewhere). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   return (
     <Dialog {...(open === undefined ? {} : { open })} {...(onOpenChange ? { onOpenChange } : {})}>
@@ -53,7 +56,10 @@ export function CreateDialog({
           <PlusIcon /> {label}
         </Button>
       </DialogTrigger>
-      <DialogContent className={cn("max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl", className)}>
+      <DialogContent
+        className={cn("max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl", className)}
+        {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}

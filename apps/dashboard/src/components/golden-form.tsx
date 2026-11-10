@@ -1,7 +1,7 @@
 "use client";
 
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
-import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
+import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { type FormEvent, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { buildGolden, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
 import { Button } from "@/components/ui/button";
@@ -225,30 +225,37 @@ function ScopedGoldenForm({
   // An admitted job that has not finished keeps the form locked: nothing is edited or sent again meanwhile.
   const jobActive = observed !== null && ["queued", "running", "recovery_required"].includes(observed.state);
   const builtOn = admittedProvider ? `${PROVIDER_LABELS[admittedProvider]} ` : "";
+  // Two connected providers are a choice above the name; a single one is a fact beside it.
+  const providerChoice = chosenProvider && (
+    <ProviderChoice
+      idPrefix={id}
+      value={chosenProvider}
+      onChange={setChosenProvider}
+      providers={providers}
+      capacities={capacities}
+    />
+  );
   return (
     <form
       action={formAction}
       onSubmit={guard}
       aria-busy={pending}
       aria-label={mode === "create" ? "Create a golden" : `Rebuild ${name} on ${PROVIDER_LABELS[provider ?? "boat"]}`}
-      className="space-y-5"
+      className="space-y-4"
       data-golden-form={mode}
     >
       <input type="hidden" name="idempotencyKey" value={admissionKey} />
       <input type="hidden" name="mode" value={mode} />
       <input type="hidden" name="org" value={orgId} />
-      <fieldset disabled={pending || jobActive} className="space-y-5 disabled:opacity-70">
-        {mode === "create" && chosenProvider && (
-          <ProviderChoice
-            idPrefix={id}
-            value={chosenProvider}
-            onChange={setChosenProvider}
-            providers={providers}
-            capacities={capacities}
-          />
-        )}
+      <fieldset disabled={pending || jobActive} className="space-y-4 disabled:opacity-70">
+        {mode === "create" && chosenProvider && providers.length > 1 && providerChoice}
         {mode === "create" ? (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div
+            className={cn(
+              "grid gap-4 sm:grid-cols-2",
+              providers.length === 1 && "lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:gap-x-6",
+            )}
+          >
             <div className="space-y-2">
               <Label htmlFor={`${id}-name`}>Name</Label>
               <Input
@@ -288,10 +295,11 @@ function ScopedGoldenForm({
                   Only me
                 </label>
               </div>
-              <p id={`${id}-visibility-hint`} className="text-xs text-muted-foreground">
-                {isAdmin ? "Org goldens are visible to every member." : "Only an org admin creates org goldens."}
+              <p id={`${id}-visibility-hint`} className="max-w-64 text-xs text-muted-foreground">
+                {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org goldens."}
               </p>
             </fieldset>
+            {providers.length === 1 && providerChoice}
           </div>
         ) : (
           <>
@@ -305,9 +313,9 @@ function ScopedGoldenForm({
           </>
         )}
 
-        <fieldset className="space-y-3">
+        <fieldset className="relative space-y-3">
           <legend className="text-sm font-medium">Repositories</legend>
-          <p className="text-xs text-muted-foreground">
+          <p className={cn("-mt-2 text-xs text-muted-foreground", mode === "create" && "sm:pr-40")}>
             owner/repo or a github.com URL. Defaults: branch main, directory /home/user/&lt;repo&gt;.
           </p>
           <ol className="space-y-3">
@@ -370,6 +378,9 @@ function ScopedGoldenForm({
             type="button"
             variant="outline"
             size="sm"
+            // After the rows for the keyboard. In the create view, which is wide, it sits beside the legend and costs
+            // no line; the rebuild form lives in the narrow row panel and keeps it below.
+            className={cn(mode === "create" && "sm:absolute sm:-top-8 sm:right-0")}
             disabled={rows.length >= MAX_GOLDEN_REPOS}
             onClick={() => setRows((current) => [...current, keyed({ url: "", branch: "", dir: "" })])}
           >
@@ -392,7 +403,7 @@ function ScopedGoldenForm({
               className="font-mono text-xs"
             />
             <p id={`${id}-init-hint`} className="text-xs text-muted-foreground">
-              One per line. Recorded in the golden and run when it is built. Never put a secret here.
+              One per line, recorded in the golden. Never put a secret here.
             </p>
           </div>
           <div className="space-y-2">
@@ -415,81 +426,94 @@ function ScopedGoldenForm({
         </div>
       </fieldset>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <Button type="submit" disabled={!admissionKey || pending || jobActive || !canStart}>
-          {pending && <Loader2Icon className="animate-spin" />}
-          {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
-        </Button>
-        <BuildStatus
-          pending={pending}
-          state={
-            observed
-              ? observed.state === "failed" || observed.state === "recovery_required"
-                ? {
-                    ok: false,
-                    error: `Build ${observed.jobId}: ${observed.state} (build_failed). Last-good golden retained.`,
-                  }
-                : {
-                    ok: true,
-                    message:
-                      observed.state === "succeeded" && observed.result
-                        ? `${mode === "create" ? "Built" : "Rebuilt"} ${builtOn}golden '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
-                        : `Build ${observed.jobId}: ${observed.state} (${observed.phase})`,
-                  }
-              : state
-          }
-        />
-        {observed && (
-          <Button type="button" variant="outline" onClick={() => void refreshStatus(observed.jobId)}>
-            Check build status
+      <div className="space-y-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <Button type="submit" disabled={!admissionKey || pending || jobActive || !canStart}>
+            {pending && <Loader2Icon className="animate-spin" />}
+            {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
           </Button>
-        )}
-        {observed && ["succeeded", "failed"].includes(observed.state) && (
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setObserved(null);
-              const key = crypto.randomUUID();
-              setAdmissionKey(key);
-              const url = new URL(window.location.href);
-              url.searchParams.delete(jobParam);
-              url.searchParams.delete(providerParam);
-              url.searchParams.set(keyParam, key);
-              window.history.replaceState(null, "", url);
-            }}
-          >
-            New build request
-          </Button>
-        )}
-        {!observed && (
-          <Button
-            type="button"
-            variant="outline"
-            onClick={async () => {
-              try {
-                const recovered = await recoverGoldenBuild(admissionKey, orgId);
-                setObserved(recovered);
-                rememberJob(jobParam, recovered.jobId);
-                setPollError("");
-              } catch {
-                setPollError(
-                  "No visible admission receipt yet. Keep this key and check again; do not blindly resubmit.",
-                );
-              }
-            }}
-          >
-            Recover admission by key
-          </Button>
-        )}
+          <BuildStatus
+            pending={pending}
+            state={
+              observed
+                ? observed.state === "failed" || observed.state === "recovery_required"
+                  ? {
+                      ok: false,
+                      error: `Build ${observed.jobId}: ${observed.state} (build_failed). Last-good golden retained.`,
+                    }
+                  : {
+                      ok: true,
+                      message:
+                        observed.state === "succeeded" && observed.result
+                          ? `${mode === "create" ? "Built" : "Rebuilt"} ${builtOn}golden '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
+                          : `Build ${observed.jobId}: ${observed.state} (${observed.phase})`,
+                    }
+                : state
+            }
+          />
+          {observed && (
+            <Button type="button" variant="outline" onClick={() => void refreshStatus(observed.jobId)}>
+              Check build status
+            </Button>
+          )}
+          {observed && ["succeeded", "failed"].includes(observed.state) && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setObserved(null);
+                const key = crypto.randomUUID();
+                setAdmissionKey(key);
+                const url = new URL(window.location.href);
+                url.searchParams.delete(jobParam);
+                url.searchParams.delete(providerParam);
+                url.searchParams.set(keyParam, key);
+                window.history.replaceState(null, "", url);
+              }}
+            >
+              New build request
+            </Button>
+          )}
+        </div>
         {pollError && <p role="alert">{pollError}</p>}
-        <p className="text-xs text-muted-foreground">
-          Admission key: {admissionKey}. Keep it to recover an uncertain admission; never blindly resubmit.
+        <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+          <span>
+            Admission key <span className="font-mono">{admissionKey}</span>: keep it to recover an uncertain admission,
+            never resubmit blindly.
+          </span>
+          {!observed && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-xs"
+              onClick={async () => {
+                try {
+                  const recovered = await recoverGoldenBuild(admissionKey, orgId);
+                  setObserved(recovered);
+                  rememberJob(jobParam, recovered.jobId);
+                  setPollError("");
+                } catch {
+                  setPollError(
+                    "No visible admission receipt yet. Keep this key and check again; do not blindly resubmit.",
+                  );
+                }
+              }}
+            >
+              Recover admission by key
+            </Button>
+          )}
         </p>
       </div>
     </form>
   );
 }
+
+/** What the chosen visibility means for an admin, who may change it later from the golden's panel. */
+const VISIBILITY_HINT: Record<"org" | "private", string> = {
+  org: "Visible to every member. You can make it private later.",
+  private: "Only you see it. You can share it with the org later.",
+};
 
 const CAPACITY_HINT: Record<CapacityState["kind"], (state: CapacityState) => string> = {
   available: (state) =>
@@ -522,19 +546,22 @@ function ProviderChoice({
     const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
     const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";
     return (
-      <div className="space-y-1" data-provider-fixed={value}>
+      <div className="space-y-2" data-provider-fixed={value}>
         <input type="hidden" name="provider" value={value} />
-        <p className="text-sm">
-          <span className="font-medium">Provider:</span> {PROVIDER_LABELS[value]}
+        <p className="text-sm font-medium">Provider</p>
+        <p className="flex flex-wrap items-center gap-2 pt-1 text-sm">
+          {PROVIDER_LABELS[value]}
+          <Permanent />
         </p>
-        {hint && <p className={cn("text-xs", warn ? "text-warning" : "text-muted-foreground")}>{hint}</p>}
-        <p className="text-xs text-muted-foreground">A golden stays on its provider for good.</p>
+        {hint && <p className={cn("max-w-56 text-xs", warn ? "text-warning" : "text-muted-foreground")}>{hint}</p>}
       </div>
     );
   }
   return (
     <fieldset className="space-y-2">
-      <legend className="text-sm font-medium">Provider</legend>
+      <legend className="flex flex-wrap items-center gap-2 text-sm font-medium">
+        Provider <Permanent />
+      </legend>
       <input type="hidden" name="provider" value={value} />
       <div className="grid gap-2 sm:grid-cols-2">
         {providers.map((option) => {
@@ -571,10 +598,21 @@ function ProviderChoice({
           );
         })}
       </div>
-      <p className="text-xs text-muted-foreground">
-        A golden stays on its provider for good. The same name may exist once on each provider.
-      </p>
+      <p className="text-xs text-muted-foreground">The same name may exist once on each provider.</p>
     </fieldset>
+  );
+}
+
+/** Marks the one choice of the create form that no later action changes: where the golden is built. */
+function Permanent() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-warning"
+      data-permanent
+    >
+      <LockIcon aria-hidden className="size-3" />
+      Cannot be changed later
+    </span>
   );
 }
 

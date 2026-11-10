@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { alert, goldenPanel, goldenRow, LABELS, MOCK, openCreate, signIn } from "./helpers";
+import { alert, goldenPanel, goldenRow, LABELS, leaveCreate, MOCK, openCreate, signIn } from "./helpers";
 
 /**
  * Sandbox providers (#598): Settings connects, replaces and disconnects the active organization's Boat and Modal, as
@@ -127,7 +127,8 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   await expect((await goldenPanel(page, "shared-golden")).locator("[data-rebuild-paused]")).toHaveText(
     "Rebuilding needs Boat connected.",
   );
-  await expect(page.locator('form[data-golden-form="create"] [data-provider-fixed="modal"]')).toHaveCount(1);
+  await expect((await openCreate(page)).locator('[data-provider-fixed="modal"]')).toHaveCount(1);
+  await leaveCreate(page);
   await expect(page.locator("[data-capacity-provider]")).toHaveCount(1);
   await expect(page.locator('[data-capacity-provider="modal"]')).toBeVisible();
 
@@ -269,7 +270,7 @@ test("a build the page tracks keeps its form while the org has no provider", asy
   await page.goto(`/environments?build-key.create.${ORION}=${key}`);
   await expect(page).toHaveURL(/\/environments\?/);
   await expect(page.locator('[data-blocker="provider"]')).toBeVisible();
-  // The tracked build reopens the create panel.
+  // The tracked build reopens the create dialog.
   const form = page.locator('form[data-golden-form="create"]');
   await expect(form).toBeVisible();
   await expect(form).toHaveCount(1);
