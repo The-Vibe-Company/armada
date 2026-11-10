@@ -90,7 +90,7 @@ bun test packages/mcp-server/test/orchestrator-create-recovery.test.ts
 
 The real Linux fixture starts the flock/runuser launcher, native Codex and two
 initialized stdio MCP servers. It proves PID1 namespace access is denied, denies
-pidfds using real seccomp (and separately exercises native pidfds), then requires
+pidfds using real seccomp (and separately denies numeric kill to prove native pidfds), then requires
 the real checkpoint scrub to succeed with no live writers. Removing CAP_KILL
 separately proves an actual survivor still refuses with closed diagnostics. The
 PGlite regression uses the real migrations and reproduces the exact legacy

@@ -66,8 +66,10 @@ if (process.argv.includes("--parent")) {
   let dropKill = false;
   let restricted = false;
   const fixtureHome = mkdtempSync(join(tmpdir(), "checkpoint-home-"));
-  const wrapper = join(fixtureHome, "deny-pidfd");
-  // Real seccomp, not a model of the controller: gVisor may not implement pidfds.
+  const wrapper = join(fixtureHome, "signal-policy");
+  // Real seccomp, not a controller mock. Native mode denies numeric kill, so a
+  // silent fallback cannot masquerade as evidence that the pidfd path works.
+  const deniedSyscalls = denyPidfd ? ["__NR_pidfd_open", "__NR_pidfd_send_signal"] : ["__NR_kill"];
   const compiler = Bun.spawn(["cc", "-x", "c", "-o", wrapper, "-"], {
     stdin: "pipe",
     stdout: "ignore",
@@ -82,8 +84,7 @@ if (process.argv.includes("--parent")) {
 #include <errno.h>
 int main(int argc,char **argv){struct sock_filter code[]={
 BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
-BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_pidfd_open,0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|ENOSYS),
-BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_pidfd_send_signal,0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|ENOSYS),
+${deniedSyscalls.map((syscall) => `BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,${syscall},0,1),BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|${denyPidfd ? "ENOSYS" : "EPERM"}),`).join("\n")}
 BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)};struct sock_fprog filter={sizeof(code)/sizeof(code[0]),code};
 if(argc<2||prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)||prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter))return 125;
 execvp(argv[1],argv+1);return 126;}`);
@@ -103,12 +104,7 @@ execvp(argv[1],argv+1);return 126;}`);
             .replaceAll("/root/.ssh", join(fixtureHome, "root-ssh")),
         );
       if (restricted)
-        args = [
-          "setpriv",
-          "--bounding-set=-sys_ptrace,-net_raw" + (dropKill ? ",-kill" : ""),
-          ...(denyPidfd ? [wrapper] : []),
-          ...args,
-        ];
+        args = ["setpriv", "--bounding-set=-sys_ptrace,-net_raw" + (dropKill ? ",-kill" : ""), wrapper, ...args];
       const child = Bun.spawn(args, {
         stdin: "pipe",
         stdout: "pipe",
@@ -207,6 +203,6 @@ execvp(argv[1],argv+1);return 126;}`);
   if (live.length) throw Error("Managed process survived quiescence");
   writeFileSync(
     "/dev/stdout",
-    "PASS: unreadable PID1 namespaces + unsupported pidfds checkpoint successfully; real signal survivor classified\n",
+    `PASS: unreadable PID1 namespaces checkpoint with ${denyPidfd ? "pidfds denied" : "numeric signals denied"}; real survivor classified\n`,
   );
 }
