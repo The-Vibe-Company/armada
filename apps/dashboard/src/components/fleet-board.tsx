@@ -1,16 +1,26 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { MessageSquareIcon, RefreshCwIcon, SendIcon } from "lucide-react";
+import {
+  CheckIcon,
+  MessageSquareIcon,
+  PlayIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  SendIcon,
+  Undo2Icon,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useActionState, useEffect, useId, useState, useTransition } from "react";
+import { useFormStatus } from "react-dom";
+import { acknowledgeFleetRow, restoreFleetRow } from "@/app/actions/fleet";
 import { sendToSandbox } from "@/app/actions/sandboxes";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { StopButton } from "@/components/sandbox-actions";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { preview } from "@/lib/fleet";
+import { type Attention, CONTINUE_PROMPT, preview } from "@/lib/fleet";
 
 /** How often an open board reads the fleet again, while the tab is visible. */
 const REFRESH_MS = 60_000;
@@ -68,8 +78,10 @@ const CAN_STOP: readonly SandboxStatus[] = ["starting", "ready", "running"];
 const CAN_SEND: readonly SandboxStatus[] = ["ready", "running", "stopped"];
 
 /**
- * Open the conversation, send the next prompt without leaving the board, or stop the machine. A running turn is
- * steered from its conversation, where the composer offers steer and interrupt; the board only opens new turns.
+ * What the operator does about a row without leaving the board: resend an interrupted prompt, tell an agent that
+ * finished without an outcome to continue, answer a blocked one, open the conversation, stop the machine, or
+ * acknowledge the row so it leaves "Needs you". A running turn is steered from its conversation; the board only
+ * opens new turns.
  */
 export function FleetRowActions({
   sandboxId,
@@ -77,12 +89,20 @@ export function FleetRowActions({
   status,
   configured,
   busy,
+  attention,
+  resend,
+  ackKey,
+  dismissed,
 }: {
   sandboxId: string;
   name: string;
   status: SandboxStatus;
   configured: boolean;
   busy: boolean;
+  attention: Attention | null;
+  resend: { text: string; conversationId: string | null } | null;
+  ackKey: string;
+  dismissed: boolean;
 }) {
   const [state, action, pending] = useActionState(sendToSandbox, null);
   const [prompt, setPrompt] = useState("");
@@ -90,9 +110,10 @@ export function FleetRowActions({
     if (state?.ok) setPrompt("");
   }, [state]);
   const canSend = configured && !busy && CAN_SEND.includes(status);
+  const reply = canSend && attention !== null && attention !== "ready" && attention !== "expiring";
   return (
     <div className="space-y-2">
-      {canSend && (
+      {reply && (
         <form action={action} className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <input type="hidden" name="sandbox" value={sandboxId} />
           <Textarea
@@ -100,7 +121,7 @@ export function FleetRowActions({
             rows={1}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Send a follow-up prompt"
+            placeholder={attention === "blocked" ? "Answer the agent" : "Send a follow-up prompt"}
             aria-label={`Follow-up prompt for ${name}`}
             className="min-h-9 flex-1"
             required
@@ -119,6 +140,25 @@ export function FleetRowActions({
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
+        {canSend && attention === "interrupted" && resend && (
+          <form action={action}>
+            <input type="hidden" name="sandbox" value={sandboxId} />
+            <input type="hidden" name="prompt" value={resend.text} />
+            {resend.conversationId && <input type="hidden" name="conversation" value={resend.conversationId} />}
+            <Button type="submit" size="sm" disabled={pending} aria-label={`Resend the interrupted prompt to ${name}`}>
+              <RotateCcwIcon /> Resend
+            </Button>
+          </form>
+        )}
+        {canSend && attention === "unconcluded" && (
+          <form action={action}>
+            <input type="hidden" name="sandbox" value={sandboxId} />
+            <input type="hidden" name="prompt" value={CONTINUE_PROMPT} />
+            <Button type="submit" size="sm" disabled={pending} aria-label={`Tell ${name} to continue`}>
+              <PlayIcon /> Continue
+            </Button>
+          </form>
+        )}
         <Button variant="outline" size="sm" asChild>
           <Link href={`/sandboxes/${sandboxId}`} aria-label={`Open the conversation of ${name}`}>
             <LinkPendingIcon>
@@ -128,7 +168,29 @@ export function FleetRowActions({
           </Link>
         </Button>
         {configured && CAN_STOP.includes(status) && <StopButton sandboxId={sandboxId} size="sm" />}
+        {attention !== null && (
+          <form action={dismissed ? restoreFleetRow : acknowledgeFleetRow} className="ml-auto">
+            <input type="hidden" name="key" value={ackKey} />
+            <AckButton dismissed={dismissed} name={name} />
+          </form>
+        )}
       </div>
     </div>
+  );
+}
+
+function AckButton({ dismissed, name }: { dismissed: boolean; name: string }) {
+  const { pending } = useFormStatus();
+  return (
+    <Button
+      type="submit"
+      variant="ghost"
+      size="sm"
+      disabled={pending}
+      aria-label={dismissed ? `Bring ${name} back to Needs you` : `Dismiss ${name} from Needs you`}
+    >
+      {dismissed ? <Undo2Icon /> : <CheckIcon />}
+      {dismissed ? "Restore" : "Dismiss"}
+    </Button>
   );
 }
