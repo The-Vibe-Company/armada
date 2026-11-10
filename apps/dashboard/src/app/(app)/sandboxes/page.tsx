@@ -1,4 +1,4 @@
-import { HARNESSES, type SandboxListMetadata } from "@armada/core";
+import { HARNESSES, type SandboxCost, type SandboxListMetadata } from "@armada/core";
 import { BoxesIcon, ListFilterIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { readProviderSetup } from "@/lib/data/provider-setup";
-import { listSandboxes } from "@/lib/data/sandboxes";
+import { listSandboxCosts, listSandboxes } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
@@ -21,6 +21,7 @@ import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycl
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import { costFigure, costTitle } from "@/lib/sandbox-cost";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -46,6 +47,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
       ),
     selected ? readProviderSetup(selected.org.id) : null,
   ]);
+  const costs = await listSandboxCosts(supabase, rows);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = Boolean(filters.status || filters.harness || filters.owner);
@@ -158,6 +160,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                 <TableHead className="hidden md:table-cell">Size</TableHead>
                 <TableHead className="hidden md:table-cell">Owner</TableHead>
                 <TableHead className="hidden lg:table-cell">Created</TableHead>
+                <TableHead className="hidden text-right sm:table-cell">Cost</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -172,6 +175,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                         {sandbox.machineSize && `, ${machineSizeLabel(sandbox.machineSize)}`}
                       </span>
                     </p>
+                    <PhoneCost cost={costs.get(sandbox.id)} />
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={sandbox.status} />
@@ -195,6 +199,9 @@ export default async function SandboxesPage({ searchParams }: Props) {
                   {/* Above the row's link, so the exact time stays reachable by pointer and keyboard. */}
                   <TableCell className="relative z-10 hidden text-muted-foreground lg:table-cell">
                     <CreatedAt iso={sandbox.createdAt} now={now.getTime()} />
+                  </TableCell>
+                  <TableCell className="hidden text-right sm:table-cell">
+                    <CostCell cost={costs.get(sandbox.id)} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -256,6 +263,44 @@ function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
       <LockIcon aria-hidden="true" className="size-3.5 shrink-0" />
       <span className="sr-only">Only its owner and organization admins can open it</span>
     </span>
+  );
+}
+
+/**
+ * The row's cost figure. Usage is interior: a sandbox the viewer may not open has none to show, as on the server's list.
+ * The title says whether the figure is an estimate or the API equivalent of a subscription's tokens.
+ */
+function CostCell({ cost }: { cost: SandboxCost | undefined }) {
+  if (!cost)
+    return (
+      <span className="text-muted-foreground" title="Only its owner and organization admins see its usage">
+        <span aria-hidden="true">–</span>
+        <span className="sr-only">Usage not visible</span>
+      </span>
+    );
+  const figure = costFigure(cost);
+  if (figure.kind !== "priced")
+    return (
+      <span className="text-xs whitespace-normal text-muted-foreground" data-row-cost={figure.kind}>
+        {figure.text}
+      </span>
+    );
+  return (
+    <span className="font-medium tabular-nums" title={costTitle(cost)} data-row-cost="priced">
+      {figure.partial ? "≥ " : ""}
+      {figure.text}
+    </span>
+  );
+}
+
+/** On a phone the cost column is folded under the name, with the same words. */
+function PhoneCost({ cost }: { cost: SandboxCost | undefined }) {
+  if (!cost) return null;
+  const figure = costFigure(cost);
+  return (
+    <p className="text-xs text-muted-foreground tabular-nums sm:hidden" data-phone-cost={figure.kind}>
+      {figure.kind === "priced" ? `${cost.label}: ${figure.partial ? "≥ " : ""}${figure.text}` : figure.text}
+    </p>
   );
 }
 
