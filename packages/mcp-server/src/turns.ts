@@ -110,15 +110,24 @@ export async function readStatus(
     : await latestPrompt(provider, sandbox.providerSandboxId);
   let prompt: PromptReport | null = null;
   if (target) {
-    const outcome = await promptOutcome(provider, {
-      sandboxId: sandbox.providerSandboxId,
-      promptId: target.promptId,
-      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-    });
     const recorded = await store.readTurnModel?.(sandbox.id, target.promptId);
+    const retained = recorded?.evidence as (TurnModelEvidence & { terminalOutcome?: PromptOutcome }) | null;
+    const outcome =
+      retained?.terminalOutcome ??
+      (await promptOutcome(provider, {
+        sandboxId: sandbox.providerSandboxId,
+        promptId: target.promptId,
+        ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+      }));
     let evidence: TurnModelEvidence;
     // Terminal observations survive provider history retention. Never substitute the sandbox default.
-    if (recorded?.evidence) evidence = recorded.evidence as TurnModelEvidence;
+    if (retained)
+      evidence = {
+        requestedModel: retained.requestedModel,
+        observedModel: retained.observedModel,
+        modelSelectionReason: retained.modelSelectionReason,
+        modelSelectionMessage: retained.modelSelectionMessage,
+      };
     else {
       let events: AgentEvent[] = [];
       let complete = false;
@@ -133,7 +142,8 @@ export async function readStatus(
         requestedModel: recorded?.requestedModel ?? null,
         complete,
       });
-      if (outcome.state !== "running") await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, evidence);
+      if (outcome.state !== "running")
+        await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, { ...evidence, terminalOutcome: outcome });
     }
     const selectionFailed = outcome.state === "finished" && evidence.modelSelectionReason !== null;
     prompt = {

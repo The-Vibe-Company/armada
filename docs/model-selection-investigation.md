@@ -71,3 +71,7 @@ assistant prose or title-generation cost metadata. Partial, nested and
 retracted responses are excluded; aliases are not guessed. Missing or
 truncated evidence fails verification. Terminal evidence is retained per turn
 so historical requests are not compared with the sandbox default.
+
+Steer has no model-selection argument and Boat may return a steer-record ID
+rather than the actual run ID. A new run without recorded request provenance
+is unverified; Armada does not invent its request from the next-send default.

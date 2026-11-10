@@ -762,6 +762,7 @@ describe("tools", () => {
       },
     });
     boat.sandbox("bx_1").events.length = 0;
+    boat.sandbox("bx_1").prompts.delete("prompt_1");
     const historical = await call(mcp, "status", { id, prompt_id: "prompt_1" });
     expect(historical.data.prompt).toMatchObject({
       state: "failed",
