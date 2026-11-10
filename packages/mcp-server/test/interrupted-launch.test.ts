@@ -12,7 +12,7 @@ for (const missing of [false, true]) {
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
-        const { text, values } = await request.json();
+        const { text, values } = (await request.json()) as { text: string; values: unknown[] };
         try {
           return Response.json(await sql.query(text, values));
         } catch {

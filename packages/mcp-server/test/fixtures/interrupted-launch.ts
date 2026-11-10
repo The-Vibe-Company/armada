@@ -9,7 +9,7 @@ const sql = {
   async query<T>(text: string, values?: unknown[]): Promise<{ rows: T[] }> {
     const response = await fetch(endpoint, { method: "POST", body: JSON.stringify({ text, values }) });
     if (!response.ok) throw Error("SQL fixture failed");
-    return response.json();
+    return (await response.json()) as { rows: T[] };
   },
 };
 const data = createSqlData(sql)({

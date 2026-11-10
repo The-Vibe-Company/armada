@@ -176,12 +176,7 @@ async function refresh(
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
   } catch {
-    throw new AuthError(
-      path === "/api/v1/sandbox/launch"
-        ? "Launch outcome unknown. Run armada list to check before retrying."
-        : "Armada could not reach the server.",
-      "unavailable",
-    );
+    throw new AuthError("Armada could not reach the server.", "unavailable");
   }
   const value = (await response.json().catch(() => null)) as {
     accessToken?: unknown;
