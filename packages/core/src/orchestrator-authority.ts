@@ -29,6 +29,7 @@ const methods: Record<string, OrchestratorScope> = {
   read: "worker:read",
   message: "worker:message",
   stop: "worker:stop",
+  extend: "worker:extend",
 };
 export class OrchestratorAuthorityDenied extends Error {
   constructor() {

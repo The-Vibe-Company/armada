@@ -318,3 +318,46 @@ test("stop transport loss gives reconciliation instructions and never retries", 
   expect(JSON.parse(result.err).error.message).toContain("same idempotency key");
   expect(h.requests).toHaveLength(1);
 });
+
+test("detail prints own and aggregate child measurements without converting unknown fields to zero", async () => {
+  const tokens = {
+    inputTokens: 13136,
+    outputTokens: 5,
+    cachedTokens: 0,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  };
+  const detail = {
+    version: 1,
+    orchestrator: {
+      id: "parent-1",
+      configuration: { name: "Coordinator", harness: "codex", model: "gpt-5", provider: "modal" },
+      state: "ready",
+      continuity: "native",
+      revision: 1,
+      idleDeadline: null,
+    },
+    operations: [],
+    waits: [],
+    childSandboxIds: ["child-1"],
+    usage: {
+      own: { computeSeconds: 12.5, turnCount: 1, turns: [{ promptId: "turn-1", model: "gpt-5", ...tokens }] },
+      children: { computeSeconds: null, turnCount: 2, ...tokens },
+    },
+  };
+  const result = await harness(() => Response.json(detail)).invoke(["detail", "parent-1", "--org", "org-1"]);
+  expect(result.code).toBe(0);
+  expect(result.err).toBe("");
+  expect(result.out).toContain(
+    "Own usage: compute 12.5 seconds; turns 1; input 13136; output 5; cached 0; cache write unknown; reasoning unknown",
+  );
+  expect(result.out).toContain(
+    "Child aggregate usage: compute unknown seconds; turns 2; input 13136; output 5; cached 0; cache write unknown; reasoning unknown",
+  );
+  expect(result.out).toContain("not provider-billed seconds");
+  const { usage: _usage, ...legacy } = detail;
+  const older = await harness(() => Response.json(legacy)).invoke(["detail", "parent-1", "--org", "org-1"]);
+  expect(older.code).toBe(0);
+  expect(older.out).toContain("Own usage: compute unknown seconds; turns unknown; input unknown");
+  expect(older.out).toContain("Child aggregate usage: compute unknown seconds; turns unknown; input unknown");
+});

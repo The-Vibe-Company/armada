@@ -522,7 +522,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         return SandboxState(
             status: SandboxStatus(rawValue: value.status),
             statusReason: value.statusReason,
-            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason) },
+            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason, requestedModel: $0.requestedModel, observedModel: $0.observedModel, modelSelectionReason: $0.modelSelectionReason, modelSelectionMessage: $0.modelSelectionMessage) },
             admission: admission,
             canStop: value.canStop,
             isWorking: value.isWorking

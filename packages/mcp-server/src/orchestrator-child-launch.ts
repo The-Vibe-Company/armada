@@ -38,6 +38,7 @@ export interface PinnedModelAccountResolver {
  * Own-child reservation already exists before any fork, and relation is bound before prompt.
  * Provider idempotency/correlation comes from that durable reservation, never a new UUID. */
 export async function launchOrchestratorChild(input: {
+  extensionHeadroomSeconds?: number;
   sql: Sql;
   provider: Provider;
   stores: LaunchStores;
@@ -141,7 +142,7 @@ export async function launchOrchestratorChild(input: {
         )
           throw new Error("Child registration identity mismatch.");
         return sql.transaction(async (tx) => {
-          const saved = await createSqlSandboxStore(tx).insert({
+          const saved = await createSqlSandboxStore(tx, { turnModels: true }).insert({
             ...record,
             credentialId: selection.credentialId,
             credentialVersion: selection.credentialVersion,
@@ -194,11 +195,17 @@ export async function launchOrchestratorChild(input: {
         harness: selection.harness,
         model: selection.model,
         ...(selection.size === undefined ? {} : { size: selection.size }),
+        ...(selection.skills === undefined ? {} : { skills: selection.skills }),
         ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
         ...(selection.repo ? { repo: selection.repo } : {}),
         ...(selection.prompt ? { prompt: selection.prompt } : {}),
       },
-      { newId: () => op.sandboxId },
+      {
+        newId: () => op.sandboxId,
+        ...(input.extensionHeadroomSeconds === undefined
+          ? {}
+          : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
+      },
     );
     return { providerSandboxId: launched.sandbox.providerSandboxId };
   } catch (error) {

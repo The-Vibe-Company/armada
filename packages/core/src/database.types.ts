@@ -2372,6 +2372,35 @@ export type Database = {
           },
         ];
       };
+      sandbox_turn_models: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          requested_model: string | null;
+          evidence: Json | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          requested_model?: string | null;
+          evidence?: Json | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          requested_model?: string | null;
+          evidence?: Json | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_turn_models_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_work_recovery: {
         Row: {
           id: string;
@@ -2450,6 +2479,7 @@ export type Database = {
           usage_runtime_seconds: number | null;
           usage_running_since: string | null;
           usage_turns: Json | null;
+          skills: Json;
         };
         Insert: {
           id?: string;
@@ -2499,6 +2529,7 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
         };
         Update: {
           id?: string;
@@ -2548,6 +2579,7 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
         };
         Relationships: [
           {
@@ -2634,7 +2666,7 @@ export type Database = {
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal";
+      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal" | "skillpack";
       credential_scope: "user" | "org";
       harness: "claude" | "codex";
       member_role: "admin" | "member";
@@ -2699,6 +2731,7 @@ export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrator
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
+export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

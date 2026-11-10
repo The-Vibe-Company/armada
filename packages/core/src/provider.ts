@@ -190,6 +190,10 @@ export interface Provider {
   /** Events oldest first, after `cursor`. Poll with the cursor of the previous page. */
   events(request: EventsRequest): Promise<EventPage>;
 
+  /** Interrupt and prove all relevant turns settled. Refuse while interruption is pending. */
+  quiesce?(request: InterruptRequest): Promise<void>;
+  /** Reset the physical lifetime without restoring or replacing compute. Returns the confirmed hard deadline. */
+  extendLifetime?(request: { sandboxId: string; ttlSeconds: number }): Promise<Date>;
   /** Removes the machine and keeps the disk and the conversations. */
   stop(request: { sandboxId: string }): Promise<void>;
   /** Removes the sandbox and its disk for good. */
@@ -461,6 +465,12 @@ export type AgentEvent =
       /** Append a delta; replace the message text with a snapshot. Absent on legacy events. */
       textMode?: "delta" | "snapshot";
       model?: string;
+      /** Native nested-agent parent. A non-null value is not main-thread model evidence. */
+      parentToolUseId?: string;
+      /** Tool results are not assistant response model evidence. */
+      responseKind?: "assistant" | "tool_result";
+      /** Provider-retracted response; retained in history but not execution evidence. */
+      retracted?: boolean;
       tools: ToolCall[];
     })
   | (EventBase & { kind: "steer"; text: string; mode?: string })

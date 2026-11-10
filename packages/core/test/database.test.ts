@@ -105,6 +105,7 @@ describe("database", () => {
         "organization_invitations",
         "orgs",
         "resource_observations",
+        "sandbox_turn_models",
         "sandbox_work_recovery",
         "sandboxes",
         "service_tokens",
@@ -130,6 +131,7 @@ describe("database", () => {
         "boat",
         "codex_auth",
         "modal",
+        "skillpack",
       ]);
       expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
     } finally {

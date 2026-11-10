@@ -17,6 +17,7 @@ type Vm = {
   grant?: Grant;
   epoch: boolean;
   mcp: boolean;
+  prompts?: Map<string, { promptId: string; conversationId: string; status: "finished"; done: true }>;
 };
 export function fakeModalRuntime(input: {
   appName: string;
@@ -33,6 +34,8 @@ export function fakeModalRuntime(input: {
     terminations: 0,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [] as string[],
     mcpConfigurations: 0,
     epochInstalls: 0,
   };
@@ -62,11 +65,20 @@ export function fakeModalRuntime(input: {
         version: number;
         requestId: string;
         op: string;
+        promptId?: string;
         input?: { command?: string; conversationId?: string };
         configuration?: { revision: string; servers: object };
         token?: string;
       };
       effects.runnerCalls++;
+      if (packet.op === "exec" && packet.input?.command?.includes("git rev-parse --git-path info/exclude"))
+        effects.skillLaunchOrder.push("exclude");
+      if (packet.op === "exec" && packet.input?.command?.startsWith("skillpack install"))
+        effects.skillLaunchOrder.push("install");
+      if (packet.op === "prompt") {
+        effects.promptCalls++;
+        effects.skillLaunchOrder.push("prompt");
+      }
       const capturing = packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY");
       if (capturing && preservationFailure === "unavailable") return new Response(null, { status: 503 });
       let result: unknown;
@@ -130,8 +142,20 @@ export function fakeModalRuntime(input: {
         assert(!running);
         lastPromptServers = vm.servers ?? [];
         vm.conversation ??= packet.input?.conversationId ?? crypto.randomUUID();
-        result = { promptId: crypto.randomUUID(), conversationId: vm.conversation, status: "finished" };
-      } else if (packet.op === "checkpoint")
+        const accepted = {
+          promptId: crypto.randomUUID(),
+          conversationId: vm.conversation,
+          status: "finished" as const,
+          done: true as const,
+        };
+        vm.prompts ??= new Map();
+        vm.prompts.set(accepted.promptId, accepted);
+        result = accepted;
+      } else if (packet.op === "getPrompt") {
+        result = vm.prompts?.get(packet.promptId ?? "");
+        assert(result, "Only accepted fixture prompt ids can be read");
+      } else if (packet.op === "events") result = { events: [], hasMore: false };
+      else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };
       else {
         effects.modelCalls++;

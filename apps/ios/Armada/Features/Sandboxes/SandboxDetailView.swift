@@ -51,7 +51,7 @@ struct SandboxDetailView: View {
                             SheetValueRow(title: "Agent", value: sandbox.agentLabel)
                             if let model = sandbox.model {
                                 SheetSeparator()
-                                SheetValueRow(title: "Model", value: [model, sandbox.reasoningEffort].compactMap { $0 }.joined(separator: " · "))
+                                SheetValueRow(title: "Requested default", value: [model, sandbox.reasoningEffort].compactMap { $0 }.joined(separator: " · "))
                             }
                         }
                     }
@@ -206,6 +206,13 @@ struct SandboxConversationView: View {
     @ViewBuilder
     private func banners(_ model: SandboxConversationModel) -> some View {
         VStack(spacing: 8) {
+            if let turn = model.state?.turn {
+                InlineBanner(text: "Requested: \(turn.requestedModel ?? "unknown") · Observed: \(turn.observedModel ?? "unknown")", style: .info)
+                if let reason = turn.modelSelectionReason {
+                    let mismatch = reason == "model_selection_mismatch"
+                    InlineBanner(text: "\(mismatch ? "Model selection changed" : "Model not verified"): \(turn.modelSelectionMessage ?? "Model evidence is unavailable.")", style: mismatch ? .warning : .info)
+                }
+            }
             if case .reconnecting = model.feed.connection {
                 InlineBanner(text: "Reconnecting… The conversation continues from where it stopped.", style: .info)
             }

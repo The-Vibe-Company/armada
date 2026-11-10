@@ -7,6 +7,7 @@ import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
+import { checkSandboxSkillLaunch } from "./sandbox-skill-launch.ts";
 import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
@@ -105,6 +106,7 @@ let prompts = 0,
   stops = 0,
   failStop = false;
 const requests: string[] = [];
+const skillLaunchOrder: string[] = [];
 let eventReads = 0;
 let observedPoll: (() => void) | undefined;
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -142,6 +144,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   if (suffix === "/commands") {
     if (body.command.includes("python3 -c 'import json,os,signal,stat,subprocess,threading,uuid'"))
       managedWrapperInstalls.set(machine.id, (managedWrapperInstalls.get(machine.id) ?? 0) + 1);
+    if (JSON.stringify(body).includes("git rev-parse --git-path info/exclude")) skillLaunchOrder.push("exclude");
+    if (JSON.stringify(body).includes("skillpack install")) skillLaunchOrder.push("install");
     return json({
       type: "command.finished",
       success: true,
@@ -157,6 +161,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     });
   }
   if (suffix === "/prompt") {
+    skillLaunchOrder.push("prompt");
     prompts++;
     lastPromptServers = mcpServers.get(machine.id) ?? [];
     machine.model = body.model;
@@ -637,7 +642,37 @@ try {
   assert(logs.some((line) => line.includes('"kind":"prompt_status"') && line.includes('"value":"finished"')));
   assert(logs.some((line) => line.includes('"kind":"events_poll"') && line.includes('"value":"published"')));
   assert(!logs.some((line) => line.includes('stage="native_checkpoint"')), logs.join("\n"));
-  console.log(`SERVE_BOAT_RECEIPT ${JSON.stringify({ prompts, stops, sshCalls: sshCalls.length })}`);
+  const baselinePrompts = prompts,
+    baselineStops = stops;
+  await checkSandboxSkillLaunch({
+    sql,
+    orgId,
+    body: {
+      golden: golden.name,
+      org: orgId,
+      provider: "boat",
+      harness: "codex",
+      credentialId: models.get("codex"),
+      connections: [],
+    },
+    allocations: () => machines.size,
+    prompts: () => prompts,
+    stops: () => stops,
+    order: skillLaunchOrder,
+    request: async (action, body) => {
+      const response = await fakeFetch(`${origin}/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() };
+    },
+  });
+  assert.equal(prompts - baselinePrompts, 1);
+  assert.equal(stops - baselineStops, 2);
+  console.log(
+    `SERVE_BOAT_RECEIPT ${JSON.stringify({ prompts, stops, sshCalls: sshCalls.length, sandboxSkills: true })}`,
+  );
 } finally {
   await server.stop(true);
   await server.workerDone;

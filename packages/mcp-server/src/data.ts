@@ -1,4 +1,5 @@
 import {
+  createSqlSandboxStore,
   GoldenError,
   type GoldenRow,
   type GoldenStore,
@@ -16,6 +17,7 @@ import {
   statusReasonOf,
   type TaskOutcome,
   type Visibility,
+  withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
@@ -35,6 +37,7 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<void>;
@@ -75,7 +78,7 @@ const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility
   g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.created_at`;
 const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
+  s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
   g.modal_environment, g.modal_app_id`;
 /** `$1` is the caller's orgs and `$2` the caller. */
@@ -232,6 +235,25 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordTurnModel(id, promptId, requestedModel) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
+      },
+      async readTurnModel(id, promptId) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        return createSqlSandboxStore(sql, { turnModels: true }).readTurnModel!(id, promptId);
+      },
+      async recordTurnModelEvidence(id, promptId, evidence) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
+      },
+      async recordSkills(id, skills) {
+        const result = await sql.query(
+          "update public.sandboxes s set skills=$3::text::jsonb where s.id=$1::uuid and s.owner_id=$2::uuid returning id",
+          [id, caller.userId, JSON.stringify(skills)],
+        );
+        if (result.rows.length !== 1) throw new DataError("Skill receipts could not be recorded.");
+      },
       async insert(input) {
         if (!orgIds.includes(input.orgId) || input.ownerId !== caller.userId) {
           throw new DataError("A sandbox is recorded for its caller only.");
@@ -241,7 +263,7 @@ export function createSqlData(sql: Sql): DataSource {
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
              reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,visible.visibility,$2::uuid,$12::text,$13::integer,$14::integer,now()+$14 * interval '1 second',$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb from visible
+             $9::text, $10::text, $11::public.sandbox_provider,visible.visibility,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb from visible
            returning credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
              conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
@@ -263,11 +285,25 @@ export function createSqlData(sql: Sql): DataSource {
             input.credentialVersion ?? null,
             JSON.stringify(input.machineSize ?? null),
             JSON.stringify(input.resourceProject ?? null),
+            input.expiresAt ?? null,
           ],
         );
         const row = result.rows[0];
         if (!row) throw new DataError("The sandbox could not be recorded.");
         return mapSandboxRow(row);
+      },
+      async assertExtensionAllowed(id) {
+        if (!UUID.test(id)) throw new GoldenError("not_found", "Sandbox not found.");
+        const row = (
+          await sql.query<{ allowed: boolean }>(
+            `select exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
+             and (s.owner_id=$2::uuid or m.role='admin')) as allowed
+           from public.sandboxes s where ${SANDBOX_MEMBER} and s.id=$3::uuid`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new GoldenError("not_found", "Sandbox not found.");
+        if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
       async assertDeletionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
@@ -291,7 +327,9 @@ export function createSqlData(sql: Sql): DataSource {
       async recordUsage(id, usage) {
         await sql.query(
           `update public.sandboxes s set usage_turns=$4::text::jsonb
-          where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          where ${SANDBOX_VISIBLE} and s.id=$3::uuid
+            -- Managed parents use their durable journal as the sole usage writer.
+            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
           [...scope, id, JSON.stringify(usage)],
         );
       },
@@ -315,8 +353,10 @@ export function createSqlData(sql: Sql): DataSource {
           sets.push("activity_until = now() + interval '2 minutes'");
         }
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
-        if (patch.stopRequested !== undefined)
+        if (patch.stopRequested !== undefined) {
           set("stop_requested_at", patch.stopRequested ? new Date().toISOString() : null, "::timestamptz");
+          if (patch.stopRequested) sets.push("reconcile_after = now()");
+        }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
           sets.push(
@@ -342,6 +382,9 @@ export function createSqlData(sql: Sql): DataSource {
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
         if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
         if (patch.status === "deleted") sets.push("preservation_note = null");
+        if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
+        if (patch.effectiveTtlSeconds !== undefined)
+          set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
         const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
@@ -433,6 +476,7 @@ export function createSqlData(sql: Sql): DataSource {
             .filter((row): row is SandboxListMetadata & { total: number } => row.id !== null)
             .map(({ total: _total, ...row }) => ({
               ...row,
+              usage: withUsageTotals(row.usage),
               createdAt: new Date(row.createdAt).toISOString(),
               stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
               expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),

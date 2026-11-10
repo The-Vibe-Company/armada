@@ -7,7 +7,16 @@ import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { bunLikeSql, database } from "./support.ts";
 
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
-for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", "stale", "manual-stop"] as const) {
+for (const outcome of [
+  "external-stop",
+  "expired",
+  "expired-external-stop",
+  "interrupt-pending",
+  "unconfirmed",
+  "stop-error",
+  "stale",
+  "manual-stop",
+] as const) {
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await database();
     try {
@@ -55,10 +64,18 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
               "update sandboxes set lifecycle_generation=lifecycle_generation+1,status='running' where id=$1",
               [id],
             );
+          if (new URL(request.url).pathname.endsWith("/conversations"))
+            return Response.json({
+              ok: true,
+              conversations: outcome === "interrupt-pending" ? [{ id: "conv-pending", running: true }] : [],
+            });
           return Response.json({
             ok: true,
             sandbox: sandbox({
-              state: stopped || outcome === "external-stop" || outcome === "stale" ? "archived" : "running",
+              state:
+                stopped || outcome === "external-stop" || outcome === "expired-external-stop" || outcome === "stale"
+                  ? "archived"
+                  : "running",
             }),
           });
         }) as typeof fetch,
@@ -71,19 +88,41 @@ for (const outcome of ["external-stop", "expired", "unconfirmed", "stop-error", 
           effective_ttl_seconds: number;
           requested_ttl_seconds: number;
           usage_runtime_seconds: number | null;
+          status_reason: string | null;
         }>("select * from sandboxes where id=$1", [id])
       ).rows[0]!;
       expect(row.status).toBe(
-        outcome === "external-stop" || outcome === "expired" || outcome === "manual-stop" ? "stopped" : "running",
+        outcome === "external-stop" ||
+          outcome === "expired" ||
+          outcome === "expired-external-stop" ||
+          outcome === "manual-stop"
+          ? "stopped"
+          : outcome === "stale"
+            ? "running"
+            : "stopping",
+      );
+      expect(row.status_reason).toBe(
+        ["expired", "expired-external-stop", "interrupt-pending", "unconfirmed", "stop-error"].includes(outcome)
+          ? "expired"
+          : null,
       );
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
-      // This wire fixture supplies no physical stop timestamp: observation time is not runtime.
-      if (["external-stop", "expired", "manual-stop"].includes(outcome)) expect(row.usage_runtime_seconds).toBeNull();
-      if (outcome === "unconfirmed" || outcome === "stop-error") expect(row.lifecycle_error).toContain("Retrying");
+      // Without a provider timestamp, confirmed stops close the observed interval locally.
+      if (["external-stop", "expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+        expect(row.usage_runtime_seconds).not.toBeNull();
+        expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
+      }
+      if (outcome === "unconfirmed" || outcome === "stop-error" || outcome === "interrupt-pending")
+        expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
       expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-        outcome === "external-stop" || outcome === "stale" ? 0 : 1,
+        outcome === "external-stop" ||
+          outcome === "expired-external-stop" ||
+          outcome === "stale" ||
+          outcome === "interrupt-pending"
+          ? 0
+          : 1,
       );
     } finally {
       await db.close();
@@ -128,6 +167,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
             return Response.json({ ok: true });
           }
           if (request.method === "POST") return Response.json({ ok: true });
+          if (path.endsWith("/conversations")) return Response.json({ ok: true, conversations: [] });
           return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "running" }) });
         }) as typeof fetch,
       });
@@ -161,7 +201,9 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         expect(row?.stopped_at).not.toBeNull();
         expect(row?.last_observed_at).not.toBeNull();
         expect(row?.lifecycle_error).toBeNull();
-        expect(methods).toEqual(observation === "expired" ? ["GET", "GET", "POST", "POST", "POST", "GET"] : ["GET"]);
+        expect(methods).toEqual(
+          observation === "expired" ? ["GET", "POST", "GET", "GET", "POST", "POST", "POST", "GET"] : ["GET"],
+        );
       }
       // Re-due historical failures: only unknown outcomes may consume provider work again.
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);

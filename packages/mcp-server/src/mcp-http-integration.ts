@@ -10,6 +10,7 @@ import {
   type Provider,
   parsePinnedMcpStdio,
   type Sql,
+  sshHydrateGitHubToken,
   VaultError,
 } from "@armada/core/server";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -25,6 +26,7 @@ import {
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
 import { createSqlData } from "./data.ts";
+import { createLegacyGitHubPreparation } from "./github-legacy.ts";
 import { createGitHubRuntime } from "./github-runtime.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
@@ -39,6 +41,8 @@ export function createMcpHttpIntegration(options: {
   sql: Sql;
   /** Trusted server opt-in, never a request parameter. Defaults off. */
   githubRuntimeEnabled?: boolean;
+  /** Default off until the coordinator verifies the legacy installer on a real Boat image. */
+  githubLegacyAutoPrepareEnabled?: boolean;
   github?: import("@armada/core/server").GitHubResolveDeps;
   encryptionKey: string | undefined;
   publicUrl: string;
@@ -67,6 +71,10 @@ export function createMcpHttpIntegration(options: {
           origin: new URL(options.publicUrl).origin,
           providerForSandbox: options.providerForSandbox,
         })
+      : undefined;
+  const prepareLegacyGitHub =
+    options.githubLegacyAutoPrepareEnabled === true && options.githubRuntimeEnabled !== true && options.github
+      ? createLegacyGitHubPreparation({ sql, github: options.github, hydrate: sshHydrateGitHubToken })
       : undefined;
   const lifecycle = createMcpLifecycle({
     sql,
@@ -620,6 +628,10 @@ export function createMcpHttpIntegration(options: {
     },
     connections: {
       ...lifecycle.connections,
+      renewLifetime: async (provider: Provider, sandboxId: string) => {
+        await lifecycle.connections.renewLifetime?.(provider, sandboxId);
+        await refreshActiveExpiries(sandboxId);
+      },
       prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
         await lifecycle.connections.prepare?.(...args);
         await refreshActiveExpiries(args[1].id);
@@ -634,6 +646,7 @@ export function createMcpHttpIntegration(options: {
     beforePrompt: async (...args: Parameters<typeof lifecycle.beforePrompt>) => {
       const sandboxId = (await managedMcp.beforePrompt(...args)) ?? (await lifecycle.beforePrompt(...args));
       await refreshActiveExpiries(sandboxId);
+      await prepareLegacyGitHub?.(args[0], sandboxId);
     },
     beforeSnapshot: async (...args: Parameters<typeof lifecycle.beforeSnapshot>) => {
       await lifecycle.beforeSnapshot(...args);

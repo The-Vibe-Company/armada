@@ -14,7 +14,13 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { API_FAILURE_STATUS, goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
+import {
+  API_FAILURE_STATUS,
+  goldenForSettings,
+  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
+  parseMachineSize,
+  parseMachineSizePolicy,
+} from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -602,7 +608,7 @@ async function dispatch(
     return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
-  if (route.startsWith("github/")) {
+  if (route.startsWith("github/") && route !== "github/refresh") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);
   }
@@ -638,6 +644,7 @@ async function dispatch(
     {
       "golden/capabilities": "golden_capabilities",
       "golden/adopt": "golden_adopt",
+      "github/refresh": "github_refresh",
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
@@ -646,6 +653,7 @@ async function dispatch(
       "sandbox/send": "send",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
+      "sandbox/extend": "extend",
       "sandbox/delete": "delete",
       "sandbox/wait": "wait",
       "sandbox/exec": "exec",
@@ -654,6 +662,22 @@ async function dispatch(
     } as Record<string, string>
   )[route];
   if (toolName) {
+    if (
+      route === "sandbox/extend" &&
+      Number.isSafeInteger(body.ttl_seconds) &&
+      Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS
+    )
+      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
+    if (
+      route === "sandbox/extend" &&
+      (!Number.isSafeInteger(body.ttl_seconds) ||
+        Number(body.ttl_seconds) < 1 ||
+        Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
+    )
+      throw new VaultError(
+        "invalid",
+        "ttl_seconds must be a positive whole number of seconds within the server maximum.",
+      );
     if (
       route === "golden/capabilities" &&
       optional(body, "provider") !== undefined &&
@@ -672,6 +696,7 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         provider: (target) =>
           options.providers
@@ -686,7 +711,12 @@ async function dispatch(
               providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
             }
           : {}),
-        launchCredentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
+        launchCredentials: launchCredentials(
+          options.store,
+          options.encryptionKey,
+          options.github ? { ...options.github, store: options.store } : undefined,
+          options.modelAuth,
+        ),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
         now: options.now ?? (() => new Date()),
@@ -1190,6 +1220,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
@@ -1255,6 +1286,7 @@ function launchJson(result: LaunchResult) {
     github: {
       status: result.github.status,
       login: result.github.login ?? null,
+      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
       message: result.github.message ?? null,
     },
   };

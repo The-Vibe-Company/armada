@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { boatFull, capacityParts, environmentBlockers, environmentState } from "../src/lib/environments.ts";
 import { goldenLaunchReadiness } from "../src/lib/golden-form.ts";
 import { matchesQuery, sortResources } from "../src/lib/resource-list.ts";
-import { serviceState, toolBlockers, toolFact, toolState, unaddedServices } from "../src/lib/tools.ts";
+import { serviceOffer, toolBlockers, toolFact, toolState } from "../src/lib/tools.ts";
 
 describe("the Build lists", () => {
   test("sort what needs action first, then what is ready, then the rest, by name inside each", () => {
@@ -194,11 +194,21 @@ describe("a tool's row", () => {
     ]);
   });
 
-  test("a catalog service already connected is not offered again; one that needs setup says so", () => {
-    const services = [{ id: "linear" }, { id: "notion" }];
-    expect(unaddedServices(services, [{ catalogId: "linear" }, {}])).toEqual([{ id: "notion" }]);
-    expect(serviceState({ availability: "available" }).label).toBe("Not added");
-    expect(serviceState({ availability: "setup_required" }).label).toBe("Needs server setup");
+  test("a catalog service offers Connect, then Connect another per account; one that needs setup offers its setup", () => {
+    const linear = { id: "linear", availability: "available" } as const;
+    expect(serviceOffer(linear, [{}])).toEqual({ tone: "neutral", label: "Not added", count: 0, action: "connect" });
+    expect(serviceOffer(linear, [{ catalogId: "linear" }, { catalogId: "linear" }, {}])).toEqual({
+      tone: "success",
+      label: "Added",
+      count: 2,
+      action: "another",
+    });
+    expect(serviceOffer({ id: "slack", availability: "setup_required" }, [{ catalogId: "slack" }])).toEqual({
+      tone: "warning",
+      label: "Needs server setup",
+      count: 1,
+      action: "setup",
+    });
   });
 
   test("its useful fact is who it signed in as and how many tools it exposes", () => {

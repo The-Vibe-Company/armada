@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type AgentEvent,
   type CredentialSource,
@@ -25,6 +28,7 @@ import {
   type SandboxRecord,
   type SandboxStore,
 } from "../src/index.ts";
+import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
@@ -180,7 +184,7 @@ describe("launch", () => {
       from: SNAPSHOT,
       noEnv: true,
       env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
-      ttlSeconds: 7200,
+      ttlSeconds: 7500,
       labels: {
         armada: "sandbox",
         sandbox: "sbx-1",
@@ -225,7 +229,7 @@ describe("launch", () => {
     expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "claude-opus-5-5", reasoningEffort: "medium" });
     expect(result.conversationId).toBeUndefined();
     expect(result.ttlSeconds).toBe(14_400);
-    expect(world.forks[0]?.ttlSeconds).toBe(14_400);
+    expect(world.forks[0]?.ttlSeconds).toBe(14_700);
     expect([...world.rows.values()][0]).toMatchObject({ status: "ready", conversationIds: [] });
   });
 
@@ -302,7 +306,7 @@ describe("launch", () => {
         "prepare",
         "prompt",
       ]);
-      expect(world.forks[0]?.ttlSeconds).toBe(7200);
+      expect(world.forks[0]?.ttlSeconds).toBe(7500);
       expect([...world.rows.values()][0]?.status).toBe("running");
     });
   }
@@ -416,6 +420,63 @@ describe("launch", () => {
       launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/git pull of web failed \(exit 128\)\.\nfatal: not possible to fast-forward/);
     expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+  });
+
+  test.each([
+    { repo: undefined, transient: true },
+    { repo: "example/web", transient: true },
+    { repo: undefined, transient: false },
+    { repo: "example/web", transient: false },
+  ])("ownership rejection retries once, then succeeds or cleans up (%j)", async ({ repo, transient }) => {
+    let rejectedPulls = 0;
+    const world = setup({
+      golden: golden("org"),
+      prepare: true,
+      exec: (command) =>
+        command.includes("'pull'") && (!transient || rejectedPulls++ === 0)
+          ? {
+              exitCode: 128,
+              stderr: "fatal: detected dubious ownership in repository at '/home/user/web'\n" + "x".repeat(2500),
+            }
+          : { exitCode: 0 },
+    });
+    const failure = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      ...(repo === undefined ? {} : { repo }),
+      prompt: "go",
+    }).catch((error: unknown) => error as LaunchError);
+    expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
+      2,
+    );
+    if (transient) {
+      expect(failure).not.toBeInstanceOf(LaunchError);
+      expect([...world.rows.values()][0]?.status).toBe("running");
+      expect(world.execs.filter((exec) => exec.command === "pnpm i")).toHaveLength(1);
+      expect(world.prompts).toHaveLength(1);
+      expect(world.stopped).toEqual([]);
+      return;
+    }
+    expect(failure).toBeInstanceOf(LaunchError);
+    const error = failure as LaunchError;
+    expect(error.code).toBe("init_failed");
+    expect(error.safeReason).toBe("repository_ownership_mismatch");
+    expect(error.cause).toBeInstanceOf(LaunchError);
+    expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
+    expect(error.sandboxId).toBeString();
+    expect(error.message).toContain(`sandbox ${error.sandboxId}:`);
+    expect(error.message).not.toContain("bx_1");
+    expect(error.message).not.toContain("selected machine size");
+    expect(error.message).toContain("checkout ownership");
+    expect(error.message).toContain("Report this golden and sandbox ID");
+    expect(error.message).not.toContain("rebuild");
+    expect(error.message).not.toContain("fatal:");
+    expect(error.message).not.toContain("safe.directory");
+    expect(world.rows.get(error.sandboxId ?? "")).toMatchObject({ status: "failed", statusReason: error.message });
+    expect(world.stopped).toEqual(["bx_1"]);
+    expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.prompts).toEqual([]);
   });
 
   test("a refused first prompt leaves a failed sandbox and says so", async () => {
@@ -754,7 +815,7 @@ function setup(options: Setup) {
     state,
     providerState: state,
     labels: {},
-    expiresAt: new Date("2026-11-08T16:00:00.000Z"),
+    expiresAt: new Date(Date.now() + 86400000),
   });
   const provider = {
     id: "boat",
@@ -915,7 +976,11 @@ function outcomeProvider(status: PromptStatus, pages: AgentEvent[][]): Provider 
     async getPrompt() {
       return { promptId: "p1", status, done: status !== "running" && status !== "queued" };
     },
-    async events({ cursor }: { cursor?: string }) {
+    async events({ cursor, direction }: { cursor?: string; direction?: string }) {
+      if (direction === "backward") {
+        const index = cursor ? Number(cursor) : pages.length - 1;
+        return { events: pages[index] ?? [], olderCursor: String(index - 1), hasMore: index > 0 };
+      }
       const index = cursor ? Number(cursor) : 0;
       const page = pages[index] ?? [];
       const more = index + 1 < pages.length;
@@ -964,3 +1029,57 @@ test("launch resolves defaults once, respects exact and empty overrides, and fai
   ).rejects.toThrow("Reconnect");
   expect(world.forks).toEqual([]);
 });
+
+for (const harness of ["claude", "codex"] as const) {
+  test(`${harness} launch artifacts stay out of worker Git staging without changing tracked skills`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "armada-skill-exclude-"));
+    const run = (...args: string[]) => {
+      const result = Bun.spawnSync(args, { cwd: dir });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString();
+    };
+    try {
+      run("git", "init", "--quiet");
+      if (harness === "codex") rmSync(join(dir, ".git/info"), { recursive: true });
+      else writeFileSync(join(dir, ".git/info/exclude"), "*.log"); // Existing file lacks a final LF.
+      mkdirSync(join(dir, ".companion"), { recursive: true });
+      writeFileSync(
+        join(dir, ".companion/skills.lock.json"),
+        catalogLock(harness === "claude" ? "claude-code" : "codex"),
+      );
+      writeFileSync(join(dir, ".companion/skills.lock.json.lock"), "");
+      for (const tool of harness === "claude" ? [".agents", ".claude"] : [".agents"]) {
+        mkdirSync(join(dir, tool, "skills/notes"), { recursive: true });
+        writeFileSync(join(dir, tool, "skills/notes/SKILL.md"), "installed skill");
+      }
+      mkdirSync(join(dir, ".agents/skills/owned"), { recursive: true });
+      writeFileSync(join(dir, ".agents/skills/owned/SKILL.md"), "owned skill");
+      run("git", "add", ".agents/skills/owned/SKILL.md");
+      writeFileSync(join(dir, "worker.ts"), "worker change");
+      const world = setup({
+        golden: golden("org"),
+        prepare: true,
+        exec: (command) => {
+          if (command.startsWith("skillpack install"))
+            return { exitCode: 0, stdout: catalogLock(harness === "claude" ? "claude-code" : "codex") };
+          if (command.startsWith("exclude=")) run("sh", "-c", command);
+          return { exitCode: 0 };
+        },
+      });
+      world.stores.sandboxes.recordSkills = async () => {};
+      await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness,
+        repo: "web",
+        skills: [catalogReference],
+      });
+      run("git", "add", "-A");
+      expect(run("git", "diff", "--cached", "--name-only").trim().split("\n")).toEqual([
+        ".agents/skills/owned/SKILL.md",
+        "worker.ts",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

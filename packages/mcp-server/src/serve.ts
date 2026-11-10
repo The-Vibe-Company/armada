@@ -69,6 +69,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const launch = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
     env,
     config.encryptionKey,
@@ -86,6 +87,7 @@ export async function startServer(
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
     githubRuntimeEnabled: config.githubRuntimeEnabled,
+    githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
     github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,
@@ -171,6 +173,7 @@ export async function startServer(
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ConfiguredControlOptions = {
+    launch,
     orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
     modelAuth,
@@ -220,6 +223,7 @@ export async function startServer(
     Reflect.get(control, "modelAuth"),
   ]) as NamedOrchestratorCredentials;
   const orchestratorContext = {
+    extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds,
     sql,
     providers,
     credentials,
@@ -244,6 +248,7 @@ export async function startServer(
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
+    launch,
     orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     modelAuth,

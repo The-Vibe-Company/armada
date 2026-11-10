@@ -5,12 +5,15 @@ import {
   type PromptOutcome,
   type Provider,
   promptOutcome,
+  readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
   type SandboxPatch,
   type SandboxStatus,
   type SandboxUsage,
   type TaskOutcome,
+  type TurnModelEvidence,
+  turnModelEvidence,
 } from "@armada/core";
 import type { SandboxView, ServerSandboxStore } from "./data.ts";
 
@@ -26,6 +29,10 @@ const EVENT_PAGES = 50;
 export const WAIT_POLL_MS = 1000;
 
 export interface PromptReport {
+  requestedModel?: string | null;
+  observedModel?: string | null;
+  modelSelectionReason?: TurnModelEvidence["modelSelectionReason"];
+  modelSelectionMessage?: string | null;
   promptId: string;
   conversationId: string | null;
   state: PromptOutcome["state"];
@@ -46,8 +53,9 @@ export interface StatusReport {
   /** Persisted native repository directory; not an access boundary. */
   repositoryDir: string | null;
   machineSize: MachineSizeEvidence | null;
-  /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
+  /** Requested next-send default; not evidence of execution. */
   model: string | null;
+  skills?: SandboxView["skills"];
   reasoningEffort: string | null;
   /** Armada's status, after this read. */
   status: SandboxStatus;
@@ -87,7 +95,102 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  if (store.recordUsage) {
+  const info = await provider.get(sandbox.providerSandboxId);
+  const target = options.promptId
+    ? { promptId: options.promptId, conversationId: null }
+    : sandbox.taskPromptId
+      ? { promptId: sandbox.taskPromptId, conversationId: null }
+      : await latestPrompt(provider, sandbox.providerSandboxId);
+  let prompt: PromptReport | null = null;
+  if (target) {
+    let recorded: { requestedModel: string | null; evidence: unknown } | null = null;
+    try {
+      recorded = (await store.readTurnModel?.(sandbox.id, target.promptId)) ?? null;
+    } catch {
+      /* Telemetry unavailable: neutral unknown. */
+    }
+    const cached = recorded?.evidence as (TurnModelEvidence & { terminalOutcome?: PromptOutcome }) | null;
+    const retained =
+      recorded?.requestedModel && cached && cached.modelSelectionReason !== "model_selection_unverified"
+        ? cached
+        : null;
+    const request = {
+      sandboxId: sandbox.providerSandboxId,
+      promptId: target.promptId,
+      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+    };
+    let outcome: PromptOutcome;
+    let evidence: TurnModelEvidence;
+    // Terminal observations survive provider history retention. Never substitute the sandbox default.
+    if (retained?.terminalOutcome) {
+      outcome = retained.terminalOutcome;
+      evidence = {
+        requestedModel: retained.requestedModel,
+        observedModel: retained.observedModel,
+        modelSelectionReason: retained.modelSelectionReason,
+        modelSelectionMessage: retained.modelSelectionMessage,
+      };
+    } else {
+      const state = await provider.getPrompt(request);
+      if (state.status === "running" || state.status === "queued") {
+        outcome = { state: "running" };
+        evidence = {
+          requestedModel: recorded?.requestedModel ?? null,
+          observedModel: null,
+          modelSelectionReason: null,
+          modelSelectionMessage: null,
+        };
+      } else {
+        let events: AgentEvent[] = [];
+        let complete = false;
+        try {
+          const read = await readPromptEvents(provider, {
+            sandboxId: sandbox.providerSandboxId,
+            promptId: target.promptId,
+            ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+          });
+          events = read.events;
+          complete = read.complete;
+        } catch {
+          /* Missing history cannot prove exact-model execution. */
+        }
+        outcome = await promptOutcome(provider, request, { state, events });
+        evidence = turnModelEvidence(events, {
+          promptId: target.promptId,
+          requestedModel: recorded?.requestedModel ?? null,
+          complete,
+        });
+        // Unknown observations can be retried; telemetry persistence cannot change the outcome.
+        if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+          try {
+            await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
+              ...evidence,
+              terminalOutcome: outcome,
+            });
+          } catch {
+            /* Next read can retry telemetry storage. */
+          }
+        }
+      }
+    }
+    const selectionFailed =
+      outcome.state === "finished" &&
+      recorded?.requestedModel != null &&
+      evidence.modelSelectionReason === "model_selection_mismatch";
+    prompt = {
+      ...evidence,
+      promptId: target.promptId,
+      conversationId: target.conversationId,
+      state: selectionFailed ? "failed" : outcome.state,
+      reason: selectionFailed
+        ? evidence.modelSelectionReason
+        : outcome.state === "failed" || outcome.state === "interrupted"
+          ? (outcome.reason ?? null)
+          : null,
+    };
+  }
+
+  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
     // Usage is optional telemetry: unavailable/truncated event history must not make status fail.
     try {
       const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
@@ -98,27 +201,13 @@ export async function readStatus(
       /* Retain the last complete observation. */
     }
   }
-  const info = await provider.get(sandbox.providerSandboxId);
-  const target = options.promptId
-    ? { promptId: options.promptId, conversationId: null }
-    : await latestPrompt(provider, sandbox.providerSandboxId);
-  let prompt: PromptReport | null = null;
-  if (target) {
-    const outcome = await promptOutcome(provider, {
-      sandboxId: sandbox.providerSandboxId,
-      promptId: target.promptId,
-      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-    });
-    prompt = {
-      promptId: target.promptId,
-      conversationId: target.conversationId,
-      state: outcome.state,
-      reason: outcome.state === "failed" || outcome.state === "interrupted" ? (outcome.reason ?? null) : null,
-    };
-  }
-
   const next = nextStatus(sandbox.status, info, prompt);
-  const reason = next === "failed" ? (failureReason(info) ?? sandbox.statusReason) : null;
+  const reason =
+    next === "failed"
+      ? (failureReason(info) ?? sandbox.statusReason)
+      : (next === "stopped" || next === "stopping") && sandbox.statusReason === "expired"
+        ? "expired"
+        : null;
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,
@@ -127,10 +216,8 @@ export async function readStatus(
     };
     if (next === "failed" && info.physicalExitConfirmed) {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     await store.update(sandbox.id, patch);
   }
@@ -153,6 +240,7 @@ function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptRep
   if (info.state === "stopped") return current === "failed" && !prompt ? "failed" : "stopped";
   if (info.state === "stopping") return current === "failed" && !prompt ? "failed" : "stopping";
   if (info.state === "failed") return "failed";
+  if (current === "stopping") return "stopping";
   if (info.state === "starting") return current === "running" ? "running" : "starting";
   if (!prompt) return current === "starting" ? "ready" : current === "running" ? "running" : current;
   switch (prompt.state) {
@@ -181,15 +269,16 @@ function report(
     repositoryDir: sandbox.repositoryDir ?? null,
     machineSize: sandbox.machineSize ?? null,
     model: sandbox.model,
+    skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,
     status,
-    statusReason: status === "failed" ? sandbox.statusReason : null,
+    statusReason: status === "failed" || status === "stopped" || status === "stopping" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
-    expiresAt: expiresAt ? expiresAt.toISOString() : null,
+    expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
     prompt,
     settled: machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting"),
   };
@@ -202,9 +291,23 @@ export async function latestPrompt(
   complete = false,
 ): Promise<{ promptId: string; conversationId: string | null } | null> {
   let latest: AgentEvent | undefined;
-  for (const event of await allEvents(provider, sandboxId, complete)) {
-    if (event.kind !== "prompt" || !event.promptId) continue;
-    if (!latest || event.at >= latest.at) latest = event;
+  let cursor: string | undefined;
+  for (let page = 0; page < EVENT_PAGES; page++) {
+    const read = await provider.events({
+      sandboxId,
+      direction: "backward",
+      limit: EVENT_PAGE_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const event of read.events) {
+      if (event.kind === "prompt" && event.promptId && (!latest || event.at >= latest.at)) latest = event;
+    }
+    if (latest || !read.hasMore) break;
+    if (!read.olderCursor || read.olderCursor === cursor) {
+      if (complete) throw new Error("Cannot prove latest turn: provider event cursor did not advance.");
+      break;
+    }
+    cursor = read.olderCursor;
   }
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
 }

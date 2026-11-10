@@ -13,10 +13,30 @@ const ENV = {
 };
 
 describe("config", () => {
-  test("managed GitHub runtime requires the exact explicit opt-in", () => {
+  test("GitHub runtime and automatic legacy preparation each require an exact explicit opt-in", () => {
     for (const value of [undefined, "", "false", "1", "TRUE", " true "])
       expect(configFromEnv({ ...ENV, ARMADA_GITHUB_RUNTIME_ENABLED: value }).githubRuntimeEnabled).toBe(false);
     expect(configFromEnv({ ...ENV, ARMADA_GITHUB_RUNTIME_ENABLED: "true" }).githubRuntimeEnabled).toBe(true);
+    for (const value of [undefined, "", "false", "1", "TRUE", " true "])
+      expect(
+        configFromEnv({ ...ENV, ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED: value }).githubLegacyAutoPrepareEnabled,
+      ).toBe(false);
+    expect(
+      configFromEnv({ ...ENV, ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED: "true" }).githubLegacyAutoPrepareEnabled,
+    ).toBe(true);
+  });
+
+  test("server Modal extension headroom is bounded, configurable and defaults to one hour", () => {
+    expect(configFromEnv(ENV).sandboxExtensionHeadroomSeconds).toBe(3600);
+    for (const seconds of [0, 1800, 86100])
+      expect(
+        configFromEnv({ ...ENV, ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS: String(seconds) })
+          .sandboxExtensionHeadroomSeconds,
+      ).toBe(seconds);
+    for (const invalid of ["-1", "1.5", "Infinity", "86101", "invalid-policy"])
+      expect(() => configFromEnv({ ...ENV, ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS: invalid })).toThrow(
+        "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be",
+      );
   });
 
   test("reads the environment, with PORT defaulting to 8080", () => {

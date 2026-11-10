@@ -5,13 +5,17 @@ import {
   createSqlVaultStore,
   mapSandboxRow,
   OrchestratorAuthority,
+  PrivateSkillError,
   type ProviderRegistry,
   reserveOrchestratorOperation,
   resolveCredentials,
+  resolveSkillpackCredential,
   type SandboxRow,
   type Sql,
   sandboxActivity,
+  VaultError,
 } from "@armada/core/server";
+import { createSqlData } from "./data.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import {
   createOrchestratorBackendResolver,
@@ -26,12 +30,14 @@ import type { OrchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-native.ts";
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
+import { extendSandbox } from "./sandbox-extend.ts";
 import { preserveBeforeStop } from "./work-preservation.ts";
 
 /** Real production composition. Modal Codex retains its native checkpoint lane;
  * Boat is explicitly best-effort ordinary archival/activation. Deployment intent
  * alone never upgrades either pair's continuity guarantees. */
 export function createProductionOrchestrators(input: {
+  extensionHeadroomSeconds?: number;
   sql: Sql;
   providers: ProviderRegistry;
   credentials: NamedOrchestratorCredentials;
@@ -89,7 +95,7 @@ export function createProductionOrchestrators(input: {
     // Never infer consent to all of the owner's accounts or organization goldens.
     async consent(_actor, configuration) {
       return {
-        scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
+        scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
         goldenIds: [configuration.goldenId],
         credentialIds: [configuration.modelAccountId],
       };
@@ -97,7 +103,7 @@ export function createProductionOrchestrators(input: {
   });
   const stores = {
     goldens: createSqlGoldenStore(sql),
-    sandboxes: createSqlSandboxStore(sql),
+    sandboxes: createSqlSandboxStore(sql, { turnModels: true }),
     credentials: input.credentials,
     ...(input.connections ? { connections: input.connections } : {}),
   };
@@ -135,6 +141,9 @@ export function createProductionOrchestrators(input: {
         sql,
         operation,
         selection: chosen,
+        ...(input.extensionHeadroomSeconds === undefined
+          ? {}
+          : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
         stores: {
           ...stores,
           goldens: new Proxy(stores.goldens, {
@@ -169,6 +178,15 @@ export function createProductionOrchestrators(input: {
           ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
           ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
         });
+        try {
+          await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
+        } catch {
+          try {
+            console.error("armada: turn model request record unavailable; accepted prompt continues.");
+          } catch {
+            /* Logging must not change accepted work. */
+          }
+        }
         return {
           result: undefined,
           patch: {
@@ -178,6 +196,21 @@ export function createProductionOrchestrators(input: {
           },
         };
       });
+    },
+    async extend(operation, ttlSeconds) {
+      const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+      const scoped = createSqlData(input.sql)({
+        via: "service",
+        userId: operation.ownerId,
+        orgs: [{ orgId: operation.orgId, role: "member" }],
+      });
+      await extendSandbox(
+        scoped.sandboxes,
+        saved,
+        provider,
+        ttlSeconds,
+        () => input.connections?.renewLifetime?.(provider, saved.id) ?? Promise.resolve(),
+      );
     },
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
@@ -225,6 +258,24 @@ export function createProductionOrchestrators(input: {
       authority,
       reserveOperation: reserveOrchestratorOperation,
       skillRevision,
+      skillpackKey: async (ownerId, orgId) => {
+        try {
+          return (
+            (
+              await resolveSkillpackCredential(createSqlVaultStore(sql), input.encryptionKey, {
+                userId: ownerId,
+                orgId,
+              })
+            )?.key ?? null
+          );
+        } catch (error) {
+          throw new PrivateSkillError(
+            error instanceof VaultError && error.code === "credential_refused"
+              ? "skillpack_credential_refused"
+              : "skillpack_install_failed",
+          );
+        }
+      },
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs,
       recoverCreate: async (request, diagnostics) => {

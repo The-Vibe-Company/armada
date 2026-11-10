@@ -140,6 +140,7 @@ for (const path of [
   "sandbox/send",
   "sandbox/exec",
   "sandbox/stop",
+  "sandbox/extend",
   "logs/read",
   "mcp/sandbox-connections",
 ]) {

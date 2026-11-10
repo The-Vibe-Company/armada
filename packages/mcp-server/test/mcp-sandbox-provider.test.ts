@@ -131,7 +131,7 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
       origin: "https://armada.test",
       registry: createSqlMcpRegistry(db, ENCRYPTION_KEY),
     });
-    await lifecycle.renewLeases(await resolve(sandbox), sandbox);
+    await lifecycle.connections.renewLifetime?.(await resolve(sandbox), sandbox);
     const renewed = (await db.query<{ expires_at: Date }>("select expires_at from mcp_leases where id=$1", [lease]))
       .rows[0];
     expect(new Date(renewed?.expires_at ?? 0).getTime()).toBe(expiry.getTime());

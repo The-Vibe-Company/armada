@@ -11,6 +11,7 @@ import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
+import { checkSandboxSkillLaunch } from "./sandbox-skill-launch.ts";
 import { catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
@@ -368,6 +369,8 @@ try {
     terminations: 0,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [],
     mcpConfigurations: 0,
     epochInstalls: 0,
   });
@@ -401,6 +404,8 @@ try {
     terminations: 1,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [],
     mcpConfigurations: 0,
     epochInstalls: 0,
   });
@@ -651,7 +656,7 @@ try {
       });
       const result = (await response.json()) as any;
       if (
-        status === 200 &&
+        (status === 200 || action === "steer") &&
         action !== "launch" &&
         response.status === 409 &&
         result.error?.code === "sandbox_not_ready"
@@ -796,6 +801,47 @@ try {
   ).rows[0];
   assert(failedPhysical?.physical_id);
   expectedPhysicalExits.add(failedPhysical.physical_id);
+  const beforeSkillSandboxIds = new Set(
+    (await sql.query<{ id: string }>("select id from public.sandboxes where org_id=$1", [orgId])).rows.map(
+      (row) => row.id,
+    ),
+  );
+  await checkSandboxSkillLaunch({
+    sql,
+    orgId,
+    body: {
+      golden: golden.name,
+      org: orgId,
+      provider: "modal",
+      harness: "codex",
+      credentialId: modelId,
+      connections: [],
+    },
+    allocations: () => effects.allocations,
+    prompts: () => effects.promptCalls,
+    stops: () => effects.terminations,
+    order: effects.skillLaunchOrder,
+    request: async (action, body) => {
+      const response = await socketFetch(`${origin}/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() };
+    },
+  });
+  const skillSandboxes = (
+    await sql.query<{ id: string; physical_id: string }>(
+      `select s.id,m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+     on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.org_id=$1`,
+      [orgId],
+    )
+  ).rows.filter((row) => !beforeSkillSandboxIds.has(row.id));
+  assert.equal(skillSandboxes.length, 2, "Successful and failed skill launches must retain both allocated identities");
+  for (const sandbox of skillSandboxes) {
+    assert(sandbox.physical_id);
+    expectedPhysicalExits.add(sandbox.physical_id);
+  }
   // Prove exact recovery/child/ordinary/failed-installer resource closure, not transport attempt
   // counts. Missing stops or an accidental stop of either live parent must fail.
   const physicalExits = fake.physicalExits();
@@ -813,7 +859,7 @@ try {
   );
   assert.deepEqual([...new Set(fake.terminationAttempts)].sort(), physicalExits);
   console.log(
-    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", proxyRecovery: true, replayProviderReads, routes, effects, physicalExits, terminationAttempts: fake.terminationAttempts })}`,
+    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", sandboxSkills: true, proxyRecovery: true, replayProviderReads, routes, effects, physicalExits, terminationAttempts: fake.terminationAttempts })}`,
   );
 } finally {
   fake.release();

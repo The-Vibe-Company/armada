@@ -2,9 +2,10 @@ import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
 import type { Sql } from "./golden-store.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
+import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
-import type { SandboxUsage } from "./sandbox-usage.ts";
+import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
@@ -16,6 +17,7 @@ export interface ResourceProject {
 }
 
 export interface SandboxRecord {
+  skills?: OrchestratorSkillReceipt[];
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
@@ -57,6 +59,8 @@ export interface SandboxRecord {
 }
 
 export interface SandboxPatch {
+  expiresAt?: string;
+  effectiveTtlSeconds?: number;
   /** Admission guard for explicit owner/admin deletion of terminal, unmanaged sandboxes. */
   deleteRequested?: boolean;
   /** Physical interval endpoint is unknown; never fabricate a duration. */
@@ -86,6 +90,10 @@ export interface SandboxPatch {
  * to its current organization owner/admin for interior. Lists use the separate SandboxListMetadata projection.
  */
 export interface SandboxStore {
+  recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
+  readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
+  recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
+  recordSkills?(id: string, skills: OrchestratorSkillReceipt[]): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
   insert(input: {
@@ -103,6 +111,7 @@ export interface SandboxStore {
     machineSize?: MachineSizeEvidence;
     resourceProject?: ResourceProject;
     activityLeaseId?: string;
+    expiresAt?: string;
     requestedTtlSeconds?: number;
     effectiveTtlSeconds?: number;
     repositoryDir?: string | null;
@@ -185,6 +194,7 @@ export interface SandboxRow {
   deleted_at: string | Date | null;
   status_reason: string | null;
   model: string | null;
+  skills?: OrchestratorSkillReceipt[];
   reasoning_effort: string | null;
   repository_dir: string | null;
   visibility?: "private" | "org";
@@ -199,16 +209,25 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
-export function createSqlSandboxStore(sql: Sql): SandboxStore {
+/** Turn evidence is service-role-only; caller-role stores must not gain these ports. */
+export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
   return {
+    ...(options.turnModels ? sqlTurnModelStore(sql) : {}),
+    async recordSkills(id, skills) {
+      const result = await sql.query(
+        "update public.sandboxes set skills=$2::text::jsonb where id=$1::uuid returning id",
+        [id, JSON.stringify(skills)],
+      );
+      if (result.rows.length !== 1) throw new Error("Skill receipts could not be recorded.");
+    },
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
            reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -230,6 +249,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
           input.credentialVersion ?? null,
           JSON.stringify(input.machineSize ?? null),
           JSON.stringify(input.resourceProject ?? null),
+          input.expiresAt ?? null,
         ],
       );
       const row = result.rows[0];
@@ -251,6 +271,8 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
       if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
       if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
       if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
+      if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
+      if (patch.effectiveTtlSeconds !== undefined) set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
       const reason = statusReasonOf(patch);
       if (reason !== undefined) set("status_reason", reason, "::text");
       if (sets.length === 0) return;
@@ -289,7 +311,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
-    usage: row.usage ?? null,
+    usage: withUsageTotals(row.usage),
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
     taskPromptId: row.task_prompt_id ?? null,
@@ -314,6 +336,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     resourceProject: row.resource_project ?? null,
     model: row.model ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
+    skills: row.skills ?? [],
   };
 }
 
@@ -322,6 +345,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
  * any other status, and undefined (left as it is) when the patch does not touch either.
  */
 export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
+  if (patch.statusReason === "expired" && (patch.status === "stopped" || patch.status === "stopping")) return "expired";
   if (patch.status !== undefined && patch.status !== "failed") return null;
   if (patch.statusReason === undefined) return undefined;
   if (patch.statusReason === null || patch.statusReason.trim() === "") return null;
@@ -343,4 +367,31 @@ function decodeLifecycleGeneration(value: SandboxRow["lifecycle_generation"]): n
   const decoded = Number(value);
   if (!Number.isSafeInteger(decoded) || decoded < 1) throw new Error("Sandbox lifecycle generation is invalid.");
   return decoded;
+}
+
+function sqlTurnModelStore(
+  sql: Sql,
+): Pick<SandboxStore, "recordTurnModel" | "readTurnModel" | "recordTurnModelEvidence"> {
+  return {
+    async recordTurnModel(id, promptId, requestedModel) {
+      await sql.query(
+        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
+        values($1::uuid,$2,$3) on conflict do nothing`,
+        [id, promptId, requestedModel],
+      );
+    },
+    async readTurnModel(id, promptId) {
+      const result = await sql.query<{ requestedModel: string | null; evidence: unknown }>(
+        `select requested_model as "requestedModel", evidence from public.sandbox_turn_models where sandbox_id=$1::uuid and prompt_id=$2`,
+        [id, promptId],
+      );
+      return result.rows[0] ?? null;
+    },
+    async recordTurnModelEvidence(id, promptId, evidence) {
+      await sql.query(
+        `update public.sandbox_turn_models set evidence=$3::text::jsonb where sandbox_id=$1::uuid and prompt_id=$2`,
+        [id, promptId, JSON.stringify(evidence)],
+      );
+    },
+  };
 }

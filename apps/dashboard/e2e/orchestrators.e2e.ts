@@ -138,18 +138,29 @@ test("create sends the v1 request with a named account and the server's defaults
   expect(create?.body).not.toHaveProperty("maxActiveChildren");
 });
 
-test("the chat shows the conversation, workers and waits, and sends with the fence", async ({ page }) => {
+test("the chat shows the conversation, workers and waits, and sends with the fence", async ({ page }, testInfo) => {
   await signIn(page, "alice@example.com", DETAIL);
   await expect(messages(page).getByText("Ship issues #12 and #13, one worker each.")).toBeVisible();
   await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
   await expect(page.getByText("Native conversation kept")).toBeVisible();
 
   const side = page.getByRole("complementary", { name: "Orchestrator details" });
+  const usage = side.getByRole("region", { name: "Measured usage" });
+  await expect(usage.getByText("Own usage")).toBeVisible();
+  const own = usage.getByRole("heading", { name: "Own usage" }).locator("..");
+  const childUsage = usage.getByRole("heading", { name: "Child aggregate usage" }).locator("..");
+  await expect(own.getByText("Input tokens", { exact: true }).locator("..")).toHaveText("Input tokens10");
+  await expect(childUsage.getByText("Input tokens", { exact: true }).locator("..")).toHaveText("Input tokens20");
+  await expect(childUsage.getByText("Cache write tokens", { exact: true }).locator("..")).toHaveText(
+    "Cache write tokensUnknown",
+  );
+  await testInfo.attach("measured-usage", { body: await page.screenshot(), contentType: "image/png" });
+
   await side.locator("summary", { hasText: "Workers" }).click();
   await expect(side.getByRole("link", { name: "00000000" })).toHaveAttribute("href", /\/sandboxes\/0{8}-/);
   await side.locator("summary", { hasText: "Waiting on" }).click();
   await expect(side.getByText("CI: CI of #12")).toBeVisible();
-  await expect(side.getByText(/token|secret/i)).toHaveCount(0);
+  await expect(side.getByText(/secret/i)).toHaveCount(0);
 
   const box = composer(page).getByLabel("Message");
   await box.fill("Also open #14.");

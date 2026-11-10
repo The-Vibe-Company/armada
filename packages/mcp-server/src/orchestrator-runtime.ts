@@ -10,6 +10,7 @@ import type {
   SandboxRecord,
 } from "@armada/core";
 import { ProviderError } from "@armada/core";
+import { PrivateSkillError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
@@ -89,6 +90,7 @@ export interface OrchestratorRuntimeOptions {
   store: OrchestratorRuntimeStore;
   authority: OrchestratorRuntimeFoundation["authority"];
   skillRevision: string;
+  skillpackKey?: (ownerId: string, orgId: string) => Promise<string | null>;
   /** Trusted removed-owner cleanup lane; no user/model credential resolution. */
   managed?: Pick<Parameters<typeof createManagedOrchestratorRuntime>[0], "sql" | "resolveManaged">;
   /** Actual #663 lifecycle projection; absence is unavailable, never invented empty waits. */
@@ -96,7 +98,7 @@ export interface OrchestratorRuntimeOptions {
     ownerId: string,
     orgId: string,
     id: string,
-  ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds">>;
+  ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds" | "usage">>;
   /** Actual named-account/provider/golden/sizing authorization; no legacy account fallback. */
   resolveBackend(
     configuration: OrchestratorCreate,
@@ -614,6 +616,7 @@ export class OrchestratorRuntime {
       projectDir: backend.projectDir,
       skillRevision: identity.skillRevision,
       skill: identity.configuration.skill,
+      skillpackKey: () => this.options.skillpackKey?.(identity.ownerId, identity.orgId) ?? Promise.resolve(null),
       harness: identity.configuration.harness,
       recordReceipt: async (receipt) => {
         await validate?.();
@@ -699,7 +702,9 @@ export class OrchestratorRuntime {
           ? "boat_conversation_unavailable"
           : lost
             ? "native_continuity_lost"
-            : "runtime_uncertain";
+            : error instanceof PrivateSkillError
+              ? error.reason
+              : "runtime_uncertain";
       diagnostics.report(state, refused ? error.refusal : error);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation

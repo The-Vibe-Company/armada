@@ -13,6 +13,8 @@ import {
   type OrchestratorMessage,
   type OrchestratorOperation,
   parseMachineSize,
+  type SandboxUsageSummary,
+  summarizeSandboxUsage,
 } from "@armada/core";
 import { type Args, parseArgs, single } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
@@ -20,7 +22,7 @@ import type { AuthIo } from "./auth-commands.ts";
 
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
-         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>] [--skill <org/slug@version>]
+         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>] [--skill <org/slug@version|slug@version>]
          [--connections <id,...> | --no-connections]
          [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
@@ -239,9 +241,14 @@ export function orchestratorSummary(value: OrchestratorList | OrchestratorDetail
     );
   if ("orchestrator" in value) {
     const item = value.orchestrator;
-    return `${item.configuration.name} (${item.id})\n${item.state}; continuity ${item.continuity}; revision ${item.revision}\n${item.configuration.harness}/${item.configuration.model} on ${item.configuration.provider}\nIdle deadline: ${item.idleDeadline ?? "none"}${item.blockedReason ? `\nBlocked: ${item.blockedReason}` : ""}\n${value.operations.length} operations; ${value.waits.length} waits; ${value.childSandboxIds.length} children`;
+    return `${item.configuration.name} (${item.id})\n${item.state}; continuity ${item.continuity}; revision ${item.revision}\n${item.configuration.harness}/${item.configuration.model} on ${item.configuration.provider}\nIdle deadline: ${item.idleDeadline ?? "none"}${item.blockedReason ? `\nBlocked: ${item.blockedReason}` : ""}\n${value.operations.length} operations; ${value.waits.length} waits; ${value.childSandboxIds.length} children\n${orchestratorUsageSummary("Own usage", summarizeSandboxUsage(value.usage?.own))}\n${orchestratorUsageSummary("Child aggregate usage", value.usage?.children)}\nCompute is Armada-observed elapsed time, not provider-billed seconds. Token fields are reported separately, not a unique-token total.`;
   }
   return `${value.kind} ${value.state}: operation ${value.id}; orchestrator ${value.orchestratorId}; revision ${value.revision}${value.errorCode ? `; ${value.errorCode}` : ""}`;
+}
+
+function orchestratorUsageSummary(label: string, usage: SandboxUsageSummary | undefined): string {
+  const measured = (value: number | null | undefined) => value ?? "unknown";
+  return `${label}: compute ${measured(usage?.computeSeconds)} seconds; turns ${measured(usage?.turnCount)}; input ${measured(usage?.inputTokens)}; output ${measured(usage?.outputTokens)}; cached ${measured(usage?.cachedTokens)}; cache write ${measured(usage?.cacheWriteTokens)}; reasoning ${measured(usage?.reasoningTokens)}`;
 }
 
 export function orchestratorEventSummary(event: OrchestratorEvent): string {

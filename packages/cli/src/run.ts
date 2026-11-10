@@ -39,7 +39,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
-import { operation } from "./operations.ts";
+import { operation, parseTtl } from "./operations.ts";
 import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
@@ -113,7 +113,7 @@ Usage:
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
-                [--connections <id,...> | --no-connections] [--org <org>]
+                [--skill org/slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
@@ -141,6 +141,7 @@ Usage:
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
+  armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
@@ -170,6 +171,7 @@ Usage:
   armada org current                        Show selected organization
   armada account status|logout              Account identity / revoke current login session
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
+  armada github refresh <sandbox>
                                            Browser authorization waits for real completion; --no-browser prints URL
   armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
   armada org invitations list [--org <name|UUID>] [--json]
@@ -191,7 +193,7 @@ Usage:
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]
   armada creds rm <kind> [--org <name>]
-                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal
+                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal, skillpack
 
 Every command after 'armada login' acts as the user who signed in. golden commands take --org <name>
 when you belong to more than one org.
@@ -283,6 +285,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "interrupt",
     "exec",
     "stop",
+    "extend",
     "rm",
     "wait",
     "logs",
@@ -331,6 +334,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "interrupt":
     case "exec":
     case "stop":
+    case "extend":
     case "rm":
     case "wait":
     case "mcp":
@@ -755,7 +759,7 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv, ["--size"], ["--sized"]);
+  const args = parseArgs(argv, ["--size", "--skill"], ["--sized"]);
   const rawSize = single(args, "--size");
   const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
@@ -797,6 +801,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
         ...(connections === undefined ? {} : { connections: connections.split(",") }),
         credentialId: single(args, "--credential-id"),
         golden: name,
@@ -816,7 +821,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       signal: AbortSignal.timeout(10 * 60_000),
     }),
   );
-  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
+  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result, auth.now()));
   if (
     size !== undefined &&
     (result.sandbox.machineSize?.requested !== size ||
@@ -919,17 +924,7 @@ function harnessOf(value: string | undefined): Harness {
   return harness;
 }
 
-/** `90`, `90s`, `30m`, `4h` or `2d`. A bare number is seconds. */
-function parseTtl(value: string): number {
-  const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
-  const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];
-  if (!match?.[1] || unit === undefined) {
-    throw new GoldenError("invalid_config", `--ttl '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
-  }
-  return Number(match[1]) * unit;
-}
-
-function launchText(result: LaunchResult): string {
+function launchText(result: LaunchResult, now: Date): string {
   const { sandbox, golden } = result;
   const lines = [
     `Launched ${sandbox.harness} sandbox from golden ${golden.name}.`,
@@ -945,13 +940,14 @@ function launchText(result: LaunchResult): string {
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),
+    ...(sandbox.skills?.map((skill) => `Skill: ${skill.reference} (${skill.checksum})`) ?? []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (sandbox.credentialId)
     lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
-  lines.push(githubLine(result));
+  lines.push(githubLine(result, now));
   if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
   lines.push(
     result.expiresAt
@@ -961,9 +957,20 @@ function launchText(result: LaunchResult): string {
   return `${lines.join("\n")}\n`;
 }
 
-function githubLine(result: LaunchResult): string {
+function githubLine(result: LaunchResult, now: Date): string {
   const { github } = result;
-  if (github.status === "connected") return `GitHub: git and gh act as ${github.login} (token valid for 8 hours).`;
+  if (github.status === "connected") {
+    const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
+    const lifetime =
+      expiry && Number.isFinite(expiry.getTime())
+        ? `launch token expires at ${expiry.toISOString()} (~${Math.max(0, Math.floor((expiry.getTime() - now.getTime()) / 60_000))} minutes remaining)`
+        : "launch token remaining lifetime unknown";
+    const repair =
+      result.sandbox.provider === "boat"
+        ? `Use armada github refresh ${result.sandbox.id} for a running legacy sandbox; automatic next-prompt repair is experimental and off by default.`
+        : "Reconnect GitHub if needed and resume to re-resolve credentials.";
+    return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
+  }
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 
@@ -978,6 +985,7 @@ function jsonLaunch(result: LaunchResult) {
     repositoryDir: sandbox.repositoryDir ?? null,
     harness: sandbox.harness,
     model: sandbox.model,
+    skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,
@@ -990,6 +998,7 @@ function jsonLaunch(result: LaunchResult) {
     github: {
       status: result.github.status,
       login: result.github.login ?? null,
+      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
       message: result.github.message ?? null,
     },
   };

@@ -16,6 +16,7 @@ import {
   type LaunchStores,
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
+  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   type MemberRole,
   MODEL_CATALOG,
   type ModelChoice,
@@ -53,6 +54,7 @@ import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
+import { extendSandbox } from "./sandbox-extend.ts";
 import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -68,7 +70,7 @@ export interface ToolContext {
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
   /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
   provider(target: ProviderTarget): Promise<Provider>;
-  /** Deletion only: resolve the sandbox owner's immutable source management authority after authorization. */
+  /** Authorized lifecycle management: resolve the sandbox owner's immutable source management authority after authorization. */
   deletionProvider?(sandbox: SandboxView): Promise<Provider>;
   providerMetadata?: (selection: { orgId: string; provider: SandboxProviderId }) => Promise<GoldenProviderMetadata>;
   goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
@@ -126,7 +128,7 @@ const effortInput = z.string().min(1).optional().describe("The reasoning effort;
 const modelOutput = {
   credentialId: z.string().nullable().optional(),
   credentialVersion: z.number().int().nullable().optional(),
-  model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
+  model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
   reasoningEffort: z.string().nullable(),
 };
 
@@ -175,6 +177,15 @@ const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
     turnCount: z.number().nullable(),
+    tokenTotals: z
+      .object({
+        inputTokens: z.number().nullable(),
+        outputTokens: z.number().nullable(),
+        cachedTokens: z.number().nullable(),
+        cacheWriteTokens: z.number().nullable(),
+        reasoningTokens: z.number().nullable(),
+      })
+      .optional(),
     turns: z.array(
       z.object({
         promptId: z.string(),
@@ -182,6 +193,8 @@ const sandboxUsage = z
         inputTokens: z.number().nullable(),
         outputTokens: z.number().nullable(),
         cachedTokens: z.number().nullable(),
+        cacheWriteTokens: z.number().nullable().optional(),
+        reasoningTokens: z.number().nullable().optional(),
       }),
     ),
   })
@@ -217,9 +230,26 @@ const prompt = z.object({
   conversationId: z.string().nullable(),
   state: z.enum(["running", "finished", "interrupted", "failed"]),
   reason: z.string().nullable(),
+  requestedModel: z.string().nullable().optional(),
+  observedModel: z.string().nullable().optional(),
+  modelSelectionReason: z.enum(["model_selection_mismatch", "model_selection_unverified"]).nullable().optional(),
+  modelSelectionMessage: z.string().nullable().optional(),
 });
 
+const skillReceipts = z
+  .array(
+    z.object({
+      reference: z.string(),
+      version: z.string(),
+      skillId: z.string(),
+      checksum: z.string(),
+      origin: z.string(),
+    }),
+  )
+  .optional();
+
 const status = {
+  skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
@@ -389,6 +419,34 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       now: context.now(),
     });
   };
+
+  tool(
+    "github_refresh",
+    {
+      title: "Repair sandbox GitHub access",
+      description:
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+      input: { id },
+      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+    },
+    async (args) => {
+      const { sandbox: found, provider } = await live(args.id);
+      if (found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      const machine = await provider.get(found.providerSandboxId);
+      if (!["ready", "running"].includes(machine.state))
+        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
+      if (!context.launchCredentials.refreshGitHub)
+        throw new ToolError("unavailable", "GitHub repair is not configured.");
+      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
+      const result = await context.launchCredentials.refreshGitHub(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        provider,
+        found.providerSandboxId,
+      );
+      return { id: found.id, status: "connected" as const, login: result.login };
+    },
+  );
 
   tool(
     "golden_list",
@@ -666,6 +724,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         input: {
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
           visibility: z.enum(["private", "org"]).optional(),
+          skills: z.array(z.string()).max(20).optional(),
           connections: z.array(z.string().uuid()).max(100).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
           org: z
@@ -707,6 +766,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: z.string(),
           visibility: z.enum(["org", "private"]),
           harness: z.enum(HARNESSES),
+          skills: skillReceipts,
           repositoryDir: z
             .string()
             .nullable()
@@ -722,6 +782,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .object({
               status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
               login: z.string().nullable(),
+              tokenExpiresAt: z.string().nullable(),
               message: z.string().nullable(),
             })
             .describe(
@@ -753,6 +814,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skills === undefined ? {} : { skills: args.skills }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),
             ...(args.credentialId ? { credentialId: args.credentialId } : {}),
             ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
@@ -767,6 +829,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: result.golden.name,
           visibility: result.sandbox.visibility ?? result.golden.visibility,
           harness: result.sandbox.harness,
+          skills: result.sandbox.skills ?? [],
           repositoryDir: result.sandbox.repositoryDir ?? null,
           model: result.sandbox.model,
           reasoningEffort: result.sandbox.reasoningEffort,
@@ -781,6 +844,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           github: {
             status: result.github.status,
             login: result.github.login ?? null,
+            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
             message: result.github.message ?? null,
           },
         };
@@ -1035,7 +1099,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         await data.sandboxes.update(found.id, {
           status: "stopped",
           stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
-          ...(machine.stoppedAt ? {} : { usageRuntimeUnknown: true }),
           ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
         });
       }
@@ -1066,6 +1129,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             })
             .catch(unknownMutationOutcome);
           acknowledged = true;
+          try {
+            await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          } catch {
+            try {
+              (context.logError ?? console.error)(
+                "armada: turn model request record unavailable; accepted prompt continues.",
+              );
+            } catch {
+              /* Logging must not change accepted work. */
+            }
+          }
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];
@@ -1375,6 +1449,41 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "extend",
+    {
+      title: "Extend a sandbox lifetime",
+      description:
+        "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
+      input: { id, ttl_seconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) },
+      output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
+    },
+    async (args) => {
+      await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
+        if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
+          throw new ToolError(
+            error.code === "forbidden" ? "extension_not_allowed" : "extension_not_found",
+            error.message,
+          );
+        throw error;
+      });
+      const sandbox = await data.sandboxes.get(args.id);
+      if (!sandbox) throw new ToolError("extension_not_found", "Sandbox not found or not accessible.");
+      const provider = await (context.deletionProvider?.(sandbox) ?? context.provider(sandbox)).catch((error) => {
+        if (error instanceof ProviderError && error.code === "forbidden")
+          throw new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
+        throw error;
+      });
+      return extendSandbox(
+        data.sandboxes,
+        sandbox,
+        provider,
+        args.ttl_seconds,
+        () => context.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
+      );
+    },
+  );
+
+  tool(
     "stop",
     {
       title: "Stop a sandbox",
@@ -1391,7 +1500,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       return sandboxActivity(
         data.sandboxes,
         found,
-        { status: found.status === "failed" ? "failed" : "stopping", stoppedAt: null, stopRequested: true },
+        {
+          status: found.status === "failed" ? "failed" : "stopping",
+          stoppedAt: null,
+          stopRequested: true,
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
+        },
         async (signal) => {
           signal.throwIfAborted();
           if (
@@ -1419,11 +1533,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             patch: {
               status,
               stopRequested: !terminal,
-              ...(status === "failed" ? { statusReason: found.statusReason } : {}),
+              ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
               ...(terminal
                 ? {
                     stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                    usageRuntimeUnknown: !stoppedAt && found.stoppedAt === null,
                   }
                 : {}),
             },

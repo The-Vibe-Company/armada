@@ -1,4 +1,4 @@
-import { MACHINE_SIZES, VERSION } from "@armada/core";
+import { MACHINE_SIZES, MAX_SANDBOX_EXTENSION_TTL_SECONDS, VERSION } from "@armada/core";
 import { OrchestratorAuthorityDenied } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -29,6 +29,7 @@ const selection = z
     credentialId: z.uuid(),
     credentialVersion: z.number().int().positive().safe(),
     model: z.string().min(1).max(200),
+    skills: z.array(z.string()).max(20).optional(),
     reasoningEffort: z.string().min(1).optional(),
     repo: z.string().min(1).optional(),
     prompt: text.optional(),
@@ -40,12 +41,20 @@ const schemas = {
   read: z.object({ sandboxId: z.uuid() }).strict(),
   message: z.object({ idempotencyKey: key, sandboxId: z.uuid(), text }).strict(),
   stop: z.object({ idempotencyKey: key, sandboxId: z.uuid() }).strict(),
+  extend: z
+    .object({
+      idempotencyKey: key,
+      sandboxId: z.uuid(),
+      ttlSeconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS),
+    })
+    .strict(),
 };
 const restSchemas = {
   launch: schemas.launch.omit({ idempotencyKey: true }),
   read: schemas.read,
   message: schemas.message.omit({ idempotencyKey: true }),
   stop: schemas.stop.omit({ idempotencyKey: true }),
+  extend: schemas.extend.omit({ idempotencyKey: true }),
 };
 type Method = keyof typeof schemas;
 const childMethod = (value: string): value is Method => Object.hasOwn(schemas, value);
@@ -72,6 +81,7 @@ export function createOrchestratorScopedGateway(children: ReturnType<typeof crea
         credentialId: chosen.credentialId,
         credentialVersion: chosen.credentialVersion,
         model: chosen.model,
+        ...(chosen.skills === undefined ? {} : { skills: chosen.skills }),
         ...(chosen.repo === undefined ? {} : { repo: chosen.repo }),
         ...(chosen.prompt === undefined ? {} : { prompt: chosen.prompt }),
         ...(chosen.reasoningEffort === undefined ? {} : { reasoningEffort: chosen.reasoningEffort }),
@@ -85,6 +95,10 @@ export function createOrchestratorScopedGateway(children: ReturnType<typeof crea
     if (name === "message") {
       const input = schemas.message.parse(args);
       return children.message(token, input.idempotencyKey, input.sandboxId, input.text);
+    }
+    if (name === "extend") {
+      const input = schemas.extend.parse(args);
+      return children.extend(token, input.idempotencyKey, input.sandboxId, input.ttlSeconds);
     }
     const input = schemas.stop.parse(args);
     return children.stop(token, input.idempotencyKey, input.sandboxId);
