@@ -122,8 +122,8 @@ test("signs with the distribution identity, uploads and distributes without expo
   expect(archive).toContain("CURRENT_PROJECT_VERSION=1042");
   expect(archive).toContain(`CODE_SIGN_IDENTITY=${IDENTITY}`);
   expect(archive).toContain("-destination generic/platform=iOS");
-  expect(result.calls.at(-2)).toContain(
-    "--apple-id 6832706228 --bundle-id co.thevibecompany.armada --bundle-version 1042 --bundle-short-version-string 1.0.0",
+  expect(result.calls.at(-2)).toBe(
+    `xcrun altool --upload-package ${join(result.paths.temp, "testflight/export/Armada.ipa")} --platform ios --apple-id 6832706228 --bundle-id co.thevibecompany.armada --bundle-version 1042 --bundle-short-version-string 1.0.0 --api-key KEY123 --api-issuer issuer-uuid`,
   );
   expect(result.calls.at(-1)).toContain("distribute 6832706228 1.0.0 1042 Armada Internal");
   // Neither the private key nor the certificate ever reaches a command line or the log.

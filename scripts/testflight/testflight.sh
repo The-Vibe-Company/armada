@@ -121,10 +121,10 @@ EOF
   fi
 
   echo "Uploading Armada $version ($BUILD_NUMBER)."
-  API_PRIVATE_KEYS_DIR="$work/private_keys" xcrun altool --upload-package "$ipa" --type ios \
+  API_PRIVATE_KEYS_DIR="$work/private_keys" xcrun altool --upload-package "$ipa" --platform ios \
     --apple-id "$APP_ID" --bundle-id "$BUNDLE_ID" \
     --bundle-version "$BUILD_NUMBER" --bundle-short-version-string "$version" \
-    --apiKey "$APP_STORE_CONNECT_API_KEY_ID" --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
+    --api-key "$APP_STORE_CONNECT_API_KEY_ID" --api-issuer "$APP_STORE_CONNECT_API_ISSUER_ID"
 
   # Fails unless the build appears and processes, so an upload that silently did nothing is caught here.
   bun "$root/scripts/testflight/app-store-connect.ts" distribute \
