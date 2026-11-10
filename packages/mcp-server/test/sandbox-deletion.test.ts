@@ -211,13 +211,19 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
 
 // Wrong-account not_found is not proof that the owner's retained resources are gone.
 // Exercise both real entrypoints with distinct provider accounts, not a fake policy store.
-test("admin deletion resolves private-source resources through their owner's provider account", async () => {
+test("admin extension and deletion resolve private-source resources through their owner's provider account", async () => {
   const retained = new Set(["bx_private_api", "bx_private_mcp"]);
   const accounts: string[] = [];
   const adminKey = "boat-admin-test-account-distinct";
   const providerFor = (key: string): Provider =>
     ({
       id: "boat",
+      async extendLifetime() {
+        accounts.push(key === SECRETS.personalBoat ? "owner" : "wrong-account");
+        if (key !== SECRETS.personalBoat)
+          throw new ProviderError({ provider: "boat", code: "not_found", message: "Wrong account", retryable: false });
+        return new Date(Date.now() + 3_600_000);
+      },
       async delete({ sandboxId }: { sandboxId: string }) {
         accounts.push(key === SECRETS.personalBoat ? "owner" : "wrong-account");
         if (key !== SECRETS.personalBoat)
@@ -254,6 +260,22 @@ test("admin deletion resolves private-source resources through their owner's pro
         values($1,$2,$3,$4,$5,'claude','stopped',now())`,
         [id, providerId, golden.id, p.org, p.owner],
       );
+      await db.query(
+        "update sandboxes set status='ready',stopped_at=null,expires_at=now()+interval '1 minute' where id=$1",
+        [id],
+      );
+      if (transport === "api") {
+        const result = await handleControlRequest(
+          new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({ id, ttl_seconds: 600 }),
+          }),
+          options,
+        );
+        expect(result?.status).toBe(200);
+      } else expect((await call(mcp, "extend", { id, ttl_seconds: 600 })).isError).toBe(false);
+      await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
       await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
         id,
         new Uint8Array([1]),
@@ -277,7 +299,7 @@ test("admin deletion resolves private-source resources through their owner's pro
       ]);
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
     }
-    expect(accounts).toEqual(["owner", "owner"]);
+    expect(accounts).toEqual(["owner", "owner", "owner", "owner"]);
   } finally {
     await server.close();
   }

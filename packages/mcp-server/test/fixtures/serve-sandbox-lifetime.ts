@@ -394,6 +394,12 @@ const scenarios: {
   conversation: string | null;
 }[] = [];
 try {
+  const missing = await request<{ error: { code: string } }>(
+    "extend",
+    { id: crypto.randomUUID(), ttl_seconds: 600 },
+    404,
+  );
+  assert.equal(missing.error.code, "extension_not_found");
   for (const provider of ["boat", "modal"] as const) {
     for (const active of [false, true]) {
       const launch = await request<{ sandbox: { id: string } }>("launch", {
@@ -464,8 +470,15 @@ try {
           900,
         );
       const acceptedDeadline = new Date((await row(id)).expires_at).toISOString();
-      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101])
-        await request("extend", { id, ttl_seconds }, ttl_seconds === 1 ? 409 : 400);
+      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101]) {
+        const refusal = await request<{ error: { code: string } }>(
+          "extend",
+          { id, ttl_seconds },
+          ttl_seconds === 1 ? 409 : 400,
+        );
+        if (ttl_seconds > 0)
+          assert.equal(refusal.error.code, ttl_seconds === 1 ? "extension_state" : "extension_maximum");
+      }
       assert.equal(
         new Date((await row(id)).expires_at).toISOString(),
         acceptedDeadline,
@@ -473,7 +486,7 @@ try {
       );
       if (provider === "boat") {
         shortBoatConfirmation = true;
-        await request("extend", { id, ttl_seconds: 900 }, 400);
+        await request("extend", { id, ttl_seconds: 900 }, 409);
         shortBoatConfirmation = false;
         const shortened = await row(id);
         assert(
@@ -497,7 +510,8 @@ try {
           native.grantExpiresAt = Date.now() + 900_000;
           await save(native);
         });
-        await request("extend", { id, ttl_seconds: 1200 }, 400);
+        const refusal = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 1200 }, 400);
+        assert.equal(refusal.error.code, "extension_maximum");
         assert.equal(new Date((await row(id)).expires_at).toISOString(), acceptedDeadline);
         await nativeStore.lease(before.provider_sandbox_id, async (native, save) => {
           native.grantExpiresAt = originalGrant;
