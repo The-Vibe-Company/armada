@@ -61,8 +61,8 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
               <TurnTable cost={cost} />
             </details>
             <p className="text-xs text-muted-foreground">
-              List prices of {MODEL_PRICES_AS_OF}. Cache writes are not reported by the harnesses, so they are not
-              counted.
+              List prices of {MODEL_PRICES_AS_OF}, short-prompt rates. Armada does not record cache writes, so they are
+              not counted.
             </p>
           </>
         )}
@@ -72,6 +72,10 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
 }
 
 function TurnTable({ cost }: { cost: SandboxCost }) {
+  // A turn is a prompt: its rows (one per model) share its number.
+  const numbers = new Map<string, number>();
+  for (const turn of cost.turns) if (!numbers.has(turn.promptId)) numbers.set(turn.promptId, numbers.size + 1);
+  const several = cost.models.length > 1 || cost.turns.some((turn) => turn.model === null);
   return (
     <div className="mt-2 overflow-x-auto">
       <table className="w-full text-xs tabular-nums" aria-label="Cost per turn">
@@ -95,9 +99,17 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-border/70">
-          {cost.turns.map((turn, index) => (
-            <tr key={`${turn.promptId}:${turn.model ?? ""}`} title={turn.model ?? "Model not reported"}>
-              <td className="py-1 pr-2">{index + 1}</td>
+          {cost.turns.map((turn) => (
+            <tr key={`${turn.promptId}:${turn.model ?? ""}`}>
+              <td className="py-1 pr-2">
+                {numbers.get(turn.promptId)}
+                {/* A turn can call more than one model (Claude Code's background model): each row names its own. */}
+                {several && (
+                  <span className="block max-w-28 truncate text-muted-foreground" title={turn.model ?? undefined}>
+                    {turn.model ?? "Model not reported"}
+                  </span>
+                )}
+              </td>
               <td className="py-1 pr-2 text-right">{tokens(turn.inputTokens)}</td>
               <td className="py-1 pr-2 text-right">{tokens(turn.cachedTokens)}</td>
               <td className="py-1 pr-2 text-right">{tokens(turn.outputTokens)}</td>

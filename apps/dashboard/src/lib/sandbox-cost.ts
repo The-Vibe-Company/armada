@@ -1,6 +1,7 @@
 import {
   type CredentialKind,
   costBasis,
+  type Harness,
   type SandboxCost,
   type SandboxUsage,
   sandboxCost,
@@ -46,8 +47,8 @@ export function usageFromRow(row: UsageColumns): SandboxUsage {
 }
 
 /** A sandbox's cost from its row and the kind of account it ran on (null when the viewer cannot read it). */
-export function costOfRow(row: UsageColumns, kind: CredentialKind | null): SandboxCost {
-  return sandboxCost(usageFromRow(row), costBasis(kind));
+export function costOfRow(row: UsageColumns & { harness: Harness }, kind: CredentialKind | null): SandboxCost {
+  return sandboxCost(usageFromRow(row), row.harness, costBasis(kind));
 }
 
 const USD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
@@ -67,7 +68,7 @@ export function formatTokens(tokens: number): string {
 
 export type CostFigure =
   | { kind: "none"; text: "No usage recorded yet" }
-  | { kind: "unknown"; text: "Price unknown" }
+  | { kind: "unknown"; text: "Price unknown" | "Tokens not reported" }
   | { kind: "priced"; text: string; partial: boolean };
 
 /**
@@ -76,7 +77,11 @@ export type CostFigure =
  */
 export function costFigure(cost: SandboxCost): CostFigure {
   if (cost.turns.length === 0) return { kind: "none", text: "No usage recorded yet" };
-  if (cost.usd === null) return { kind: "unknown", text: "Price unknown" };
+  if (cost.usd === null)
+    return {
+      kind: "unknown",
+      text: cost.turns.some((turn) => turn.unknown === "price") ? "Price unknown" : "Tokens not reported",
+    };
   return { kind: "priced", text: formatUsd(cost.usd), partial: cost.unpricedTurns > 0 };
 }
 

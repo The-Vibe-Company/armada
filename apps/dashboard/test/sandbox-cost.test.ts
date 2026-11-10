@@ -28,20 +28,29 @@ describe("sandbox usage from its row", () => {
 
 describe("cost figure", () => {
   test("no usage, an unpriced model and a priced one each read as such", () => {
-    expect(costFigure(costOfRow({}, null))).toEqual({ kind: "none", text: "No usage recorded yet" });
+    expect(costFigure(costOfRow({ harness: "claude" }, null))).toEqual({ kind: "none", text: "No usage recorded yet" });
     const unknown = { promptId: "a", model: "mystery", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-    expect(costFigure(costOfRow({ usage_turns: turns([unknown]) }, null)).kind).toBe("unknown");
+    expect(costFigure(costOfRow({ harness: "claude", usage_turns: turns([unknown]) }, null)).kind).toBe("unknown");
     const priced = { promptId: "b", model: "gpt-6.1-sol", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0 };
-    expect(costFigure(costOfRow({ usage_turns: turns([priced, unknown]) }, "codex_auth"))).toEqual({
+    expect(costFigure(costOfRow({ harness: "codex", usage_turns: turns([priced, unknown]) }, "codex_auth"))).toEqual({
       kind: "priced",
       text: "$2.00",
       partial: true,
     });
   });
 
-  test("a subscription's figure is API-equivalent, an API key's estimated", () => {
-    expect(costOfRow({}, "claude_oauth").label).toBe("API-equivalent cost");
-    expect(costOfRow({}, "anthropic").label).toBe("Estimated cost");
+  test("tokens the harness did not report are said to be missing, not unpriced", () => {
+    const missing = { promptId: "c", model: "gpt-6.1-sol", inputTokens: null, outputTokens: null, cachedTokens: null };
+    expect(costFigure(costOfRow({ harness: "codex", usage_turns: turns([missing]) }, null))).toEqual({
+      kind: "unknown",
+      text: "Tokens not reported",
+    });
+  });
+
+  test("a subscription's or an unreadable account's figure is API-equivalent, an API key's estimated", () => {
+    expect(costOfRow({ harness: "claude" }, "claude_oauth").label).toBe("API-equivalent cost");
+    expect(costOfRow({ harness: "claude" }, null).label).toBe("API-equivalent cost");
+    expect(costOfRow({ harness: "claude" }, "anthropic").label).toBe("Estimated cost");
   });
 
   test("dollars to the cent, and a fraction of a cent is never shown as zero", () => {

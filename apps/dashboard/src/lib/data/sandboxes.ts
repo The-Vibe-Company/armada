@@ -73,7 +73,7 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
 
 /**
  * The kind of each readable account among `ids`, by id. Row level security returns an org account to its members and a
- * personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is "estimated".
+ * personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is "API-equivalent".
  */
 export async function credentialKinds(supabase: Supabase, ids: readonly (string | null)[]) {
   const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
@@ -98,7 +98,7 @@ export async function listSandboxCosts(
   if (ids.length === 0) return costs;
   const { data, error } = await supabase
     .from("sandboxes")
-    .select("id,credential_id,usage_turns,usage_runtime_seconds,usage_running_since")
+    .select("id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since")
     .in("id", ids);
   if (error) throw new Error(error.message);
   const kinds = await credentialKinds(
