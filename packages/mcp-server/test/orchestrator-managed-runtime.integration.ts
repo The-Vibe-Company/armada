@@ -130,7 +130,8 @@ test("trusted removed-owner stop scrubs before checkpoint, persists dispatch, an
   try {
     await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.p.org, f.p.owner]);
     await expect(f.store.read(f.p.owner, f.p.org, f.machine.orchestratorId)).rejects.toThrow("not_found");
-    const first = await runtime.stop(f.machine, "owner_removed", stop.operation.id);
+    // First stop discovers the native generation; failure must publish that same binding.
+    const first = await runtime.stop({ ...f.machine, physicalGeneration: null }, "owner_removed", stop.operation.id);
     expect(first.state).toBe("uncertain");
     expect(first.continuity).toBe("unverified");
     expect(calls).toEqual(["quiesce", "scrub", "checkpoint"]);
@@ -277,13 +278,8 @@ test.each(["native", "unknown", "lost", "unconfirmed"] as const)(
         expect(records.find((record) => record.component === "owner")).toMatchObject({
           action: "stop",
           outcome: mode === "lost" ? "failed" : "uncertain",
-          stage: mode === "unknown" ? "stop_dispatch" : "stop_validation",
-          reason:
-            mode === "unknown"
-              ? "runtime_conflict"
-              : mode === "lost"
-                ? "native_continuity_lost"
-                : "native_stop_unconfirmed",
+          stage: "stop_validation",
+          reason: mode === "lost" ? "native_continuity_lost" : "native_stop_unconfirmed",
           operationId: result.id,
           orchestratorId: f.machine.orchestratorId,
           sandboxId: f.machine.sandboxId,

@@ -250,6 +250,7 @@ export function createManagedOrchestratorRuntime(options: {
             );
             if (boundNative.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
             machine = { ...machine, physicalGeneration: native.physicalGeneration! };
+            value = uncertain(machine, operationId);
             await tx.query(`update public.orchestrator_operations set runtime_result=$2::jsonb where id=$1`, [
               operationId,
               JSON.stringify(uncertain(machine, operationId)),
