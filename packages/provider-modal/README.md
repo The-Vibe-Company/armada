@@ -377,36 +377,32 @@ restore clears and refreshes this baseline. Metadata is nonsensitive server SQL 
 not an auth/cache file or log. A missing legacy/populated baseline is NOT reconstructed
 after admission; snapshot fails closed and retains source.
 
-Checkpoint preparation preserves PID1, the scrub exec's verified ancestor chain,
-and exact pre-admission root control identities. Root control children may also
-survive when they trace through a root-only chain to one of those controls and
-remain in that control's session. PID1 is never a descendant-trust anchor: unknown
-orphans and detached/adopted root writers do not become platform controls merely
-by reparenting. Verified kernel threads are outside the userspace writer set.
-Exact provider flock/runuser executable paths and argv forms may span their exec session;
-raw argv is inspected only in memory and is never logged. This exception cannot
-cross a user ancestor or authorize arbitrary same-named executables.
+Checkpoint preparation preserves PID1, the scrub exec's verified ancestors, root
+kernel tasks and exact pre-admission PID/start control identities. Bootstrap can
+introduce additional root platform/launcher processes, so the production adapter
+seals that control set once after authenticated health and before publishing
+active. The health responder PID is explicitly excluded: the private Runner still
+owns the journal and must terminate. Positive managed cwd/FD links also veto a
+control exception.
 
-The private Armada Runner is different from its launcher: it retains the journal
-and can write managed state, so it must terminate after its checkpoint barrier.
-Harnesses, owned SSH processes, all additional user processes and unclassified
-root writers also remain in scope. A positive cwd/FD link into managed state
-vetoes a control-child exemption. Unreadable metadata is not itself a writer;
-opaque platform controls rely on their verified pre-admission provenance, not
-on an assertion that inspection proved them incapable of any filesystem write.
+Current ancestry or session membership is never proof of birth ownership. A root
+orphan adopted by a platform subreaper remains a writer if it was not recorded
+before admission. No arbitrary root child, orphan or same-named executable gains
+trust. Pending baselines become sealed with a valid health PID or legacy without
+one; sealed/legacy/old baselines can never be rebuilt after admission. This uses
+optional registry JSON and an additive private health PID, not a schema migration.
 
 Pidfds anchor signals when supported; denied/unsupported pidfds fall back to
 immediate PID/start revalidation in the SDK-selected physical sandbox. No PID1
-namespace link is required. Sweeps freeze/kill managed writers and repeat until
-no positive owned survivor remains. Unknown survivors still refuse the snapshot.
-Their diagnostics include closed UID, ancestor/PID1 booleans, exe/comm match
-classes, control/ownership role, state, managed-state evidence and bounded count
-(4096 means at least 4096). They never include PID, raw comm/exe/cmdline, paths or
-environment. Inspection denial reports only its primitive and errno class.
+namespace link is required. Freeze/kill sweeps target managed writers. Unknown
+survivors still refuse with closed UID, ancestor/PID1 booleans, exe/comm match
+classes, ownership role, state, managed-state evidence and bounded count (4096
+means at least 4096). Inspection denial exposes only primitive/errno class. Raw
+names, argv, paths and environment are never logged.
 
 Only after quiescence are SSH credentials removed and, for golden purpose,
-managed history unlinked. FD/cwd checks remain defense-in-depth; the lifecycle
-lease, sealed runtime admission and ownership scope prevent new managed work.
+managed history unlinked. Opaque platform controls rely on verified pre-admission
+provenance, not a claim that denied inspection proves an absence of writes.
 Management credentials never enter the VM.
 
 `captureProcessBaseline` and `quiesceSandboxProcesses` are production helpers, using

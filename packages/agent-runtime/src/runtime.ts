@@ -414,7 +414,7 @@ export class Runner {
         this.resumingNative = false;
       }
     }
-    if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier };
+    if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier, pid: process.pid };
     if (r.op === "getPrompt") {
       const p = this.journal.get(r.promptId);
       if (!p) throw Error("not_found");

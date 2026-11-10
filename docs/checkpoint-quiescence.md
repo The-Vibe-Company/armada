@@ -5,21 +5,17 @@
 Legacy recovery was fixed in #755 and is confirmed stopped in production. This
 follow-up changes no recovery or database behavior.
 
-The remaining `privileged_writer / unproven` failure exposed a scope bug: every
-new root process was treated as an Armada writer. Platform controls and their same-session,
-root-only descendants may legitimately survive. PID1, the scrub's own ancestors,
-pre-admission control identities, verified kernel threads and exact Armada
-launcher helpers are classified separately. User ancestry, a different session,
-a known Runner/harness, or positive managed-state FD/cwd evidence prevents a
-new root process from inheriting a platform-child exemption. Unknown root
-orphans remain writers, not a blanket root allowlist.
+Bootstrap introduces root control/launcher processes after the original baseline
+capture. The adapter now seals exact root PID/start identities once after trusted
+bootstrap health, before active publication or user admission. The authenticated
+health responder PID is excluded even if UID/inspection is ambiguous: the private
+Runner owns the journal and must terminate. Positive managed-state FD/cwd evidence
+also vetoes a control exemption.
 
-The private Runner still owns the journal and must terminate after its barrier;
-only its non-writing flock/runuser launcher helpers are control exceptions.
-A persistent root exec-service fixture reproduces the exact production label on
-main; the repaired checkpoint succeeds while its harmless root child remains.
-The same test refuses an unkillable root managed-state writer and a detached root
-writer. Both native and fallback signal modes are exercised with actual seccomp.
+There is no general descendant, session or root-UID exemption. Real root orphans
+adopted by `PR_SET_CHILD_SUBREAPER` cannot gain trust through a new parent. Once
+admitted, a baseline can never be recaptured; legacy health without a PID grants
+no extra control trust. Unknown post-admission root processes still refuse.
 
 Survivor logs include closed `processUidClass`, `processIsAncestor`, `processIsPid1`,
 `processCommClass`, `processExeClass`, `processRole`, `processStateClass`,
@@ -31,9 +27,11 @@ still refuse; these fields distinguish it from recognized platform control work.
 
 ## Deployment prerequisites
 
-Deploy the new server artifact through the normal coordinator-owned procedure.
-No migration, golden rebuild, credential change or production SQL edit is needed.
-The agent runtime/image requirements are unchanged. No deployment was performed
+Deploy the updated server and rebuilt runtime artifact through the normal
+coordinator-owned procedure. Fresh launches receive the public runtime overlay;
+no migration, golden rebuild, credential change or production SQL edit is needed.
+Existing admitted parents never acquire a reconstructed control set. Old checkpoint
+images whose health lacks a PID retain conservative legacy scope. No deployment was performed
 while developing this repair.
 
 ## Operator commands after deployment
@@ -97,12 +95,13 @@ sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/te
 bun test packages/mcp-server/test/orchestrator-create-recovery.test.ts
 ```
 
-The real Linux fixture starts the flock/runuser launcher, native Codex and two
-initialized stdio MCP servers. A root control service starts before baseline
-capture and spawns a persistent root child afterwards. Seccomp makes signals to
-that child succeed without killing it, reproducing `privileged_writer/unproven`
-on main. The fixed ownership scope preserves the root control child while
-checkpointing and terminating actual managed processes. Additional cases prove
-root children with managed-state FDs and detached/root-session writers still
-refuse, with the closed diagnostic traits. PID1 namespace access is denied;
-pidfd-denied and numeric-kill-denied modes independently prove both signal paths.
+The real Linux fixture starts a root subreaper service before capture and adds a
+root control child during trusted bootstrap. It seals exact identities before
+admission, then starts cleanup against a real native Codex/two-MCP process tree.
+Seccomp makes control signals succeed without terminating it; the exact old
+`privileged_writer/unproven` refusal is reproduced before this repair. Both native
+and fallback modes retain the known control child while terminating managed work.
+A real same-session orphan is reparented to the service using
+`PR_SET_CHILD_SUBREAPER` and must remain a writer. An exact control which later
+opens managed state must also refuse. The fixture verifies the service exists in
+the initial baseline and checks actual kernel reparenting, not a direct-child proxy.

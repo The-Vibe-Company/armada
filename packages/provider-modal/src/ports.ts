@@ -48,6 +48,8 @@ export interface ProcessBaseline {
   generation: number;
   namespace: { pid: string; mount: string };
   processes: { pid: number; start: string }[];
+  admissionState?: "pending" | "sealed" | "legacy";
+  managedRunnerPid?: number;
 }
 
 import type { ModalOrchestratorCheckpointRecord } from "./orchestrator-checkpoint.ts";
@@ -167,6 +169,8 @@ export interface RunnerDistribution {
   prepareFreshMachine?(sandbox: Sandbox, machine: Machine): Promise<void>;
   /** Mandatory for privileged build images: capture before first user/runner/init work. */
   captureProcessBaseline?(sandbox: Sandbox, machine: Machine): Promise<ProcessBaseline>;
+  /** Seal exact trusted controls after bootstrap health, before the first user admission. */
+  sealProcessBaseline?(sandbox: Sandbox, machine: Machine, managedRunnerPid: number): Promise<ProcessBaseline>;
   /** Install only the trusted current public runtime on eligible fresh machines,
    * before capturing the control-process baseline. Never touches native history. */
   prepareRuntime?(sandbox: Sandbox, machine: Machine): Promise<void>;

@@ -2820,25 +2820,78 @@ test("receipt-bound removed-owner cleanup can drain only its exact Modal machine
   }
 });
 
-test("boot runtime preparation precedes baseline, fresh cleanup, Runner start and readiness", async () => {
-  const f = fixture();
-  f.distribution.prepareRuntime = async () => {
-    f.log.push("runtime-overlay");
-  };
-  f.distribution.captureProcessBaseline = async (_sb, row) => {
-    f.log.push("baseline");
-    return {
-      version: 1,
-      physicalId: row.physicalId!,
-      generation: row.generation,
-      namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
-      processes: [{ pid: 1, start: "1" }],
+test.each([
+  ["pending", 123, true, "sealed"],
+  ["pending", undefined, true, "legacy"],
+  ["pending", 0, true, "legacy"],
+  ["pending", 1.5, true, "legacy"],
+  ["pending", 123, false, "legacy"],
+  ["sealed", 123, true, "sealed"],
+  ["legacy", 123, true, "legacy"],
+  [undefined, 123, true, undefined],
+] as const)(
+  "boot seals only pending baselines before admission (%s, pid %s, hook %s)",
+  async (initial, pid, hook, expected) => {
+    const f = fixture();
+    f.distribution.prepareRuntime = async () => {
+      f.log.push("runtime-overlay");
     };
-  };
-  const result = await f.provider.createGolden({ name: `ordered-boot-${crypto.randomUUID()}` });
-  expect(result.state).toBe("ready");
-  expect(f.log).toEqual(["runtime-overlay", "baseline", "fresh-1", "start-1", "health"]);
-});
+    f.distribution.captureProcessBaseline = async (_sb, row) => {
+      f.log.push("baseline");
+      return {
+        version: 1,
+        physicalId: row.physicalId!,
+        generation: row.generation,
+        namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
+        processes: [{ pid: 1, start: "1" }],
+        ...(initial === undefined ? {} : { admissionState: initial }),
+      };
+    };
+    f.onRpc(async (row, op) =>
+      op === "health" ? { generation: String(row.generation), ready: true, pid } : undefined,
+    );
+    if (hook)
+      f.distribution.sealProcessBaseline = async (_sb, row, managedRunnerPid) => {
+        f.log.push("seal-baseline");
+        expect(managedRunnerPid).toBe(123);
+        expect(await f.store.get(row.info.id)).toMatchObject({
+          phase: "booting",
+          processBaseline: { admissionState: "pending" },
+        });
+        if (!row.processBaseline) throw Error("Missing pre-admission baseline");
+        return { ...row.processBaseline, admissionState: "sealed", managedRunnerPid };
+      };
+    // Observe the durable pre-admission row, not just the final in-memory baseline.
+    const lease = f.store.lease.bind(f.store);
+    f.store.lease = (id, work) =>
+      lease(id, (row, save) =>
+        work(row, async (next) => {
+          if (next.phase === "active") {
+            const persisted = await f.store.get(next.info.id);
+            expect(persisted.phase).toBe("booting");
+            expect(persisted.processBaseline?.admissionState).toBe(expected);
+            f.log.push("publish-active");
+          }
+          await save(next);
+        }),
+      );
+    const result = await f.provider.createGolden({ name: `ordered-boot-${crypto.randomUUID()}` });
+    expect(result.state).toBe("ready");
+    const seals = initial === "pending" && pid === 123 && hook;
+    expect(f.log).toEqual([
+      "runtime-overlay",
+      "baseline",
+      "fresh-1",
+      "start-1",
+      "health",
+      ...(seals ? ["seal-baseline"] : []),
+      "publish-active",
+    ]);
+    const persisted = await f.store.get(result.id);
+    expect(persisted.processBaseline?.admissionState).toBe(expected);
+    expect(persisted.processBaseline?.managedRunnerPid).toBe(seals ? 123 : undefined);
+  },
+);
 
 test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as const)(
   "boot stage %s preserves the normalized error and durable booting receipt",

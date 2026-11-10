@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Sandbox } from "modal";
 import type { Machine } from "../src/ports.ts";
-import { captureProcessBaseline, quiesceSandboxProcesses } from "../src/process-scope.ts";
+import { captureProcessBaseline, quiesceSandboxProcesses, sealProcessBaseline } from "../src/process-scope.ts";
 import { prepareFilesystemSnapshot } from "../src/snapshot.ts";
 
 const bun = process.execPath;
@@ -47,7 +47,8 @@ if (process.argv.includes("--parent")) {
     if (value.id) pending.get(value.id)?.(value);
     if (value.method === "mcpServer/startupStatus/updated" && value.params.status === "ready") {
       ready.add(value.params.name);
-      if (ready.size === 2) process.stdout.write(`${JSON.stringify({ ready: true, codex: child.pid })}\n`);
+      if (ready.size === 2)
+        process.stdout.write(`${JSON.stringify({ ready: true, codex: child.pid, runner: process.pid })}\n`);
     }
   });
   const rpc = (method: string, params: unknown): Promise<RpcResponse> =>
@@ -71,23 +72,54 @@ if (process.argv.includes("--parent")) {
   // root child is not an Armada writer and may ignore in-sandbox signals.
   const platform = Bun.spawn(
     [
+      "setpriv",
+      "--bounding-set=-sys_ptrace,-net_raw",
       bun,
       "-e",
-      `import {createInterface} from 'node:readline';
-const children=new Map();createInterface({input:process.stdin}).on('line',async line=>{const request=JSON.parse(line);let child;
-if(request.kill){child=children.get(request.kill);child.kill('SIGKILL');await child.exited;console.log(JSON.stringify({pid:request.kill}));return;}
-if(request.writer){child=Bun.spawn(['setpriv','--bounding-set=-sys_ptrace,-net_raw',process.execPath,'-e',"import {openSync} from 'node:fs';const fd=openSync("+JSON.stringify(request.writer)+",'w');console.log('ready');setInterval(()=>{},1000)"],{stdin:'ignore',stdout:'pipe',stderr:'ignore'});await child.stdout.getReader().read();}
-else child=Bun.spawn(request.session?['setsid','/bin/sleep','600']:['/bin/sleep','600'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});
-children.set(child.pid,child);console.log(JSON.stringify({pid:child.pid}));});`,
+      `
+import {createInterface} from 'node:readline';
+import {openSync} from 'node:fs';
+import {dlopen,FFIType} from 'bun:ffi';
+const libc=dlopen('libc.so.6',{prctl:{args:[FFIType.i32,FFIType.u64,FFIType.u64,FFIType.u64,FFIType.u64],returns:FFIType.i32}});
+if(libc.symbols.prctl(36,1,0,0,0)!==0)throw Error('subreaper_unavailable');
+const descriptors=[];
+createInterface({input:process.stdin}).on('line',async line=>{const request=JSON.parse(line);
+if(request.kill){process.kill(request.kill,'SIGKILL');console.log(JSON.stringify({pid:request.kill}));return;}
+if(request.writer){descriptors.push(openSync(request.writer,'w'));console.log(JSON.stringify({pid:process.pid}));return;}
+if(request.adopted){
+ const code="const p=Bun.spawn(['/bin/sleep','600'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});p.unref();console.log(p.pid);process.exit(0);";
+ const parent=Bun.spawn([process.execPath,'-e',code],{stdin:'ignore',stdout:'pipe',stderr:'ignore'});
+ const pid=Number((await new Response(parent.stdout).text()).trim());await parent.exited;
+ console.log(JSON.stringify({pid}));return;
+}
+const child=Bun.spawn(['/bin/sleep','600'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});
+console.log(JSON.stringify({pid:child.pid}));});
+console.log(JSON.stringify({ready:true}));
+  `,
     ],
     { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { PATH: process.env.PATH, HOME: fixtureHome } },
   );
-  const platformReader = platform.stdout.getReader();
-  async function platformChild(writer?: string, session = false, kill?: number): Promise<number> {
-    platform.stdin.write(JSON.stringify({ writer, session, kill }) + "\n");
-    const chunk = await platformReader.read();
-    if (chunk.done) throw Error("Platform control fixture exited");
-    return JSON.parse(new TextDecoder().decode(chunk.value)).pid;
+  const platformReader = platform.stdout.getReader(),
+    platformDecoder = new TextDecoder();
+  let platformBuffer = "";
+  async function platformFrame(): Promise<{ pid?: number; ready?: boolean }> {
+    while (!platformBuffer.includes("\n")) {
+      const chunk = await platformReader.read();
+      if (chunk.done) throw Error("Platform control fixture exited");
+      platformBuffer += platformDecoder.decode(chunk.value, { stream: true });
+      if (platformBuffer.length > 4096) throw Error("Invalid control fixture frame");
+    }
+    const end = platformBuffer.indexOf("\n"),
+      line = platformBuffer.slice(0, end);
+    platformBuffer = platformBuffer.slice(end + 1);
+    return JSON.parse(line);
+  }
+  if ((await platformFrame()).ready !== true) throw Error("Platform service not ready before baseline");
+  async function platformChild(writer?: string, adopted = false, kill?: number): Promise<number> {
+    platform.stdin.write(JSON.stringify({ writer, adopted, kill }) + "\n");
+    const result = await platformFrame();
+    if (!Number.isSafeInteger(result.pid) || !result.pid) throw Error("Invalid platform child identity");
+    return result.pid;
   }
   let controlPid = 0,
     writerPid = 0;
@@ -172,6 +204,8 @@ execvp(argv[1],argv+1);return 126;}`);
   } as unknown as Sandbox;
   const machine = { physicalId: "fixture", generation: 1, phase: "booting" } as Machine;
   machine.processBaseline = await captureProcessBaseline(sdk, machine);
+  if (!machine.processBaseline.processes.some((row) => row.pid === platform.pid))
+    throw Error("Platform service missing before initial capture");
   controlPid = await platformChild();
   await compilePolicy();
   const lock = join(mkdtempSync(join(tmpdir(), "checkpoint-launcher-")), "runtime.lock");
@@ -195,7 +229,16 @@ execvp(argv[1],argv+1);return 126;}`);
       frame += decoder.decode(chunk.value, { stream: true });
       if (frame.length > 4096) throw Error("Invalid startup frame");
     }
-    if (JSON.parse(frame.slice(0, frame.indexOf("\n"))).ready !== true) throw Error("Both real MCP servers must start");
+    const ready = JSON.parse(frame.slice(0, frame.indexOf("\n")));
+    if (ready.ready !== true || !Number.isSafeInteger(ready.runner)) throw Error("Both real MCP servers must start");
+    machine.processBaseline = await sealProcessBaseline(sdk, machine, ready.runner);
+    machine.phase = "active";
+    try {
+      await sealProcessBaseline(sdk, machine, ready.runner);
+      throw Error("Controls recaptured after admission");
+    } catch (error) {
+      if ((error as { code?: string }).code !== "conflict") throw error;
+    }
   } finally {
     clearTimeout(deadline);
   }
@@ -229,7 +272,7 @@ execvp(argv[1],argv+1);return 126;}`);
   await prepareFilesystemSnapshot(sdk, { ...machine, golden: false });
   if (denyPidfd && !lastInspectionOutput.includes("pidfd_open_ENOSYS"))
     throw Error("Real pidfd denial was not observed");
-  await parent.exited;
+  // Bootstrap control helpers may remain stopped after their managed child exits.
   const live = (await import("node:fs"))
     .readdirSync("/proc")
     .filter((pid) => /^\d+$/.test(pid))
@@ -242,17 +285,23 @@ execvp(argv[1],argv+1);return 126;}`);
         return false;
       }
     });
-  if (live.some((pid) => ![String(platform.pid), String(controlPid)].includes(pid)))
+  if (live.some((pid) => !machine.processBaseline!.processes.some((control) => String(control.pid) === pid)))
     throw Error("Managed process survived quiescence");
   if (!live.includes(String(platform.pid)) || !live.includes(String(controlPid)))
     throw Error("Platform control processes must survive checkpoint");
-  // A detached/adopted root writer must not acquire platform trust merely by
-  // having a root control parent (as when that parent is a subreaper).
+  // A real same-session root orphan must not gain control trust when a Linux
+  // PR_SET_CHILD_SUBREAPER adopts it after its intermediate parent exits.
   writerPid = await platformChild(undefined, true);
+  const raw = readFileSync(`/proc/${writerPid}/stat`, "utf8"),
+    parts = raw.slice(raw.lastIndexOf(")") + 2).split(" ");
+  const serviceRaw = readFileSync(`/proc/${platform.pid}/stat`, "utf8"),
+    serviceParts = serviceRaw.slice(serviceRaw.lastIndexOf(")") + 2).split(" ");
+  if (Number(parts[1]) !== platform.pid || parts[3] !== serviceParts[3])
+    throw Error("Actual same-session subreaper adoption not established");
   await compilePolicy();
   try {
     await prepareFilesystemSnapshot(sdk, { ...machine, golden: false });
-    throw Error("New-session root writer was exempted");
+    throw Error("Adopted root writer was exempted");
   } catch (error) {
     const details = (error as { details?: Record<string, unknown> }).details;
     if (
@@ -264,7 +313,7 @@ execvp(argv[1],argv+1);return 126;}`);
       throw error;
   }
   await platformChild(undefined, false, writerPid);
-  // The same provenance is NOT permission to retain a root writer with a managed FD.
+  // Even an exact baseline control must not retain a managed-state FD.
   const { mkdirSync } = await import("node:fs");
   mkdirSync(join(fixtureHome, ".armada-runtime"), { recursive: true });
   writerPid = await platformChild(join(fixtureHome, ".armada-runtime", "positive-writer"));
@@ -278,7 +327,7 @@ execvp(argv[1],argv+1);return 126;}`);
       details?.processCategory !== "runtime_or_mcp" ||
       details.processFailure !== "unproven" ||
       details.processUidClass !== "root" ||
-      details.processRole !== "platform_control_child" ||
+      details.processRole !== "baseline_control" ||
       details.processManagedState !== "managed" ||
       details.processSurvivorCount !== 1 ||
       details.processIsAncestor !== false ||
