@@ -39,7 +39,10 @@ exact packages; runner SHA-256 is computed from the rebuilt bundle, not a static
 checksum to hand-edit. The server must be rebuilt with that artifact.
 
 The shared golden recipe upgrades an older preinstalled Claude executable to
-2.1.322; it no longer accepts any preinstalled version. Modal's base image is
+2.1.322 at `/usr/local/bin/claude` using `sudo -n npm install --global --prefix /usr/local`;
+it verifies that absolute executable and fails the build on a mismatch. A newer
+image version is deliberately downgraded to the exact validated pin, rather than
+shadowed by a different PATH installation. Modal's base image is
 already pinned to it. Repo-specific setup/init commands can still override it:
 remove/update any old Claude install in your saved config or setup script.
 

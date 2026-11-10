@@ -451,7 +451,9 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     '  if [ -n "$pw_pin" ]; then bunx --bun --package "@playwright/test@$pw_pin" playwright install --with-deps chromium; else bunx playwright install --with-deps chromium; fi',
     "fi",
     "armada_phase=harness",
-    'if [ "$(claude --version 2>/dev/null || true)" != "2.1.322 (Claude Code)" ]; then npm install --global @anthropic-ai/claude-code@2.1.322; fi',
+    // Exact pin, even for a newer image binary: avoid unvalidated protocol drift.
+    'if [ "$(/usr/local/bin/claude --version 2>/dev/null || true)" != "2.1.322 (Claude Code)" ]; then sudo -n npm install --global --prefix /usr/local @anthropic-ai/claude-code@2.1.322; fi',
+    '[ "$(/usr/local/bin/claude --version)" = "2.1.322 (Claude Code)" ] || { printf "%s\\n" "Claude Code at /usr/local/bin/claude does not match the managed pin." >&2; exit 96; }',
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
   ].join("\n");
 }
