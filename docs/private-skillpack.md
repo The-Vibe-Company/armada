@@ -19,10 +19,15 @@ Do not install a private package into an already hostile sandbox.
 
 ## Configure and install
 
-Create a Skillpack key scoped **only to `skills:read`**. Armada refuses broader
-or unknown scopes before installing. Native CLI presently does not enforce its
-`--confirm-secrets` flag; scope restriction is the actual security fence. Human
-login keys default to broad capabilities and must not be used here.
+Armada accepts any valid Skillpack key with the read permission needed for the
+install, including broader keys. We recommend a read-only (`skills:read`) key,
+but do not require it. Invalid, expired or revoked keys still fail authentication;
+a key without access to the requested skill fails the install.
+
+A compromised or prompt-injected sandbox that reads the key during the install
+window can do whatever that key allows on Skillpack, not only read skills.
+Native CLI presently does not enforce its `--confirm-secrets` flag; a broader
+key can also authorize secret projection. Use only trusted skills and sandboxes.
 
 Use `armada creds set skillpack --file <private-file>` or pipe the value on
 stdin. Add `--org <organization>` for an org default (admin only). Your own
@@ -51,9 +56,8 @@ no `auth login`, profile write, argv secret or provider command journal is used.
 The freshly authorized SSH key is removed under the shared `authorized_keys`
 lock **before** the installer runs, including on refused/missing-skill paths;
 unrelated keys and file metadata are preserved. Golden create/update installs the trusted native CLI automatically; the base
-image must supply Node, Bash and `flock`. Private secret
-projection is denied by the required read-only capability set: skills requiring
-secret projection fail at the API authorization boundary, before projection.
+image must supply Node, Bash and `flock`. A read-only key limits authority during the install window; broader keys do not
+provide that capability fence.
 
 Defaults, version resolution, custom origins and secret-bearing skill packages
 are outside this first credential/install slice. No live credential or production
@@ -190,13 +194,14 @@ for cmd in $(boat history "$BOAT_ID" --mode commands --limit 100 --json | jq -r 
 done | python3 -c "$SCAN" "$PATTERN"
 ```
 
-**Broad-key refusal:** replace the personal key using
+**Broad-key success:** replace the personal key using
 `armada creds set skillpack --file "$SKILLPACK_BROAD_FILE"`, repeat create with a
-new name/idempotency key on each provider and poll detail until `blocked`.
-Expected: `.orchestrator.blockedReason` **and** the create operation's `.errorCode`
-are `skillpack_credential_refused`, `.orchestrator.skillReceipt` is null, and
-there is no conversation/first prompt. Run the same absence/key/journal checks
-on this parent's audit alias. Restore the read-only key from its private file.
+new name/idempotency key on smoke-modal and smoke-boat using
+`--skill ship-pr-dev@1.6.1`, and poll until ready. Expect a non-null skill receipt
+and verify that the agent can read the installed skill. Run the same
+absence/key/journal checks on each parent's audit alias. Restore the preferred
+read-only key from its private file. Repeat with an invalid, expired or revoked
+key: expect `skillpack_credential_refused` and no receipt/first turn.
 Also repeat with a known nonexistent private slug: expect
 `skillpack_skill_unavailable` and no receipt/first turn. No key is ever an argv
 value, output value, fixture or log.
@@ -216,13 +221,13 @@ A pre-Skillpack golden is not upgraded automatically: rebuild it with
 Before snapshotting, run `command -v skillpack node bash flock` and
 `skillpack --version` as the guest user. Do not use `auth login` in a golden or
 snapshot a credential. Check private access using a disposable sandbox and a
-command-local, stdin-supplied `skills:read`-only key; never print auth status or
+command-local, stdin-supplied Skillpack key; never print auth status or
 raw install output into a shared log.
 
 Coordinator staging evidence confirmed the #897 cause: `smoke-modal` was built
 before private skills support and `skillpack` was absent from the SSH user's PATH.
 Node v22.23.4, Bash and `flock` were present. Authentication was never reached;
-key scope remains unverified. This now returns `skillpack_cli_unavailable` at
+key authentication remains unverified. This now returns `skillpack_cli_unavailable` at
 `skills_auth`, directing the owner to rebuild the golden. The failed operation
 settles as `failed`; the parent becomes `stopped` only after confirmed cleanup.
 
@@ -233,12 +238,11 @@ receipt and server diagnostics use the same codes):
 | --- | --- |
 | `skillpack_credential_missing` | Store a personal or org Skillpack credential. |
 | `skillpack_credential_refused` | Replace an expired/revoked key; check workspace membership. |
-| `skillpack_scope_refused` | Replace the key with one scoped **only** to `skills:read`. |
 | `skillpack_download_unavailable` | The last golden build could not download Skillpack. Allow GitHub release HTTPS egress, then rebuild; repeating offline builds will not help. |
 | `skillpack_cli_unavailable` | Rebuild the golden with the trusted native CLI executable on PATH; check its permissions/version. |
 | `skillpack_auth_unavailable` | Check registry connectivity and CLI/API compatibility during auth status. |
 | `skillpack_protocol_invalid` | Update the trusted native CLI/API; auth status did not return the supported workspace contract. |
-| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's workspace access; secret-projecting skills are not supported. |
+| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's read permission/workspace access. |
 | `skillpack_install_conflict` | Inspect project lock/install state in a disposable sandbox; rebuild a clean golden. |
 | `skillpack_request_rejected` | Check the requested version/tool and update CLI/API compatibility. |
 | `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
@@ -317,8 +321,7 @@ non-secret custom setup with `--setup <local-script>` during update.
 
 Then rerun the original `orchestrator create` with a fresh name/idempotency key,
 the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key must
-be scoped **only** to `skills:read`; broad keys now return
-`skillpack_scope_refused`. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
+have access to read the skill; broader keys are also accepted. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
 
 The public sandbox-launch path now reports the same closed missing-CLI reason
@@ -431,4 +434,4 @@ requested to confirm this exact cause is only
 `stat -c '%n %a %U %G' /run /etc/ssh` on a disposable worker fork. The local
 reproducer establishes this failure mode, not the still-unreported staging mode.
 A successful live private Skillpack receipt still requires the coordinator's
-post-deployment rerun and an appropriate `skills:read`-only key.
+post-deployment rerun and a valid Skillpack key (read-only recommended).

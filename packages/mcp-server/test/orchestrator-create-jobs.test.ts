@@ -311,7 +311,7 @@ test.each(["refused", "succeeded"])("requested skill readiness stays creating un
   const f = await fixture(async () => {
     installing.resolve();
     await release.promise;
-    throw new core.PrivateSkillError("skillpack_scope_refused", "auth");
+    throw new core.PrivateSkillError("skillpack_credential_refused", "auth");
   });
   const originalGet = f.provider.provider.get;
   f.provider.provider.get = async (id) => ({ ...(await originalGet(id)), physicalGeneration: "1" });
@@ -365,7 +365,7 @@ test.each(["refused", "succeeded"])("requested skill readiness stays creating un
     );
     expect(final.orchestrator.state).toBe(outcome === "refused" ? "stopped" : "ready");
     expect(final.orchestrator.skillReceipt).toEqual(outcome === "refused" ? null : catalogReceipt);
-    if (outcome === "refused") expect(final.orchestrator.blockedReason).toBe("skillpack_scope_refused");
+    if (outcome === "refused") expect(final.orchestrator.blockedReason).toBe("skillpack_credential_refused");
   } finally {
     f.gate.resolve();
     release.resolve();

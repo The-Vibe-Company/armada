@@ -11,7 +11,6 @@ export const PRIVATE_SKILL_FAILURES = [
   "skillpack_process_failed",
   "skillpack_install_nonzero",
   "skillpack_install_state_invalid",
-  "skillpack_scope_refused",
   "skillpack_registry_unavailable",
   "skillpack_cli_unavailable",
   "skillpack_download_unavailable",
@@ -90,8 +89,6 @@ try{
  execution(status);
  if(status.status!==0)fail((status.status===3||status.status===7)?'skillpack_credential_refused':status.status===2?'skillpack_cli_unavailable':'skillpack_auth_unavailable');
  let s;try{s=JSON.parse(status.stdout);}catch{fail('skillpack_protocol_invalid');}const workspace=s?.workspace?.id;
- // Native CLI currently projects secrets without enforcing --confirm-secrets. Require a capability fence.
- if(!Array.isArray(s?.token?.scopes)||s.token.scopes.length!==1||s.token.scopes[0]!=='skills:read')fail('skillpack_scope_refused');
  if(typeof workspace!=='string'||!(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/).test(workspace))fail('skillpack_protocol_invalid');
  stage='install';
  const result=run(['install',${JSON.stringify(slug)},'--version',${JSON.stringify(version)},'--scope','project','--project',${JSON.stringify(input.projectDir)},'--tools',${JSON.stringify(tool)},'--pin','--yes',...base]);
