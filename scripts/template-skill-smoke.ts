@@ -196,7 +196,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
         if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
           record.requestId = result.requestId;
-        record.uncertain = result?.state !== "succeeded" && result?.state !== "failed";
+        record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
         if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
         if (
           !record.sandboxId ||

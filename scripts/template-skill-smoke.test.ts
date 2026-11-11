@@ -33,7 +33,8 @@ type Fault =
   | "lost_template"
   | "lost_variable"
   | "cleanup"
-  | "uncertain_launch";
+  | "uncertain_launch"
+  | "missing_handle";
 function fixture(
   options: { key?: "user" | "org" | "absent"; fault?: Fault; splitAnswer?: boolean; refusalReason?: string } = {},
 ) {
@@ -120,7 +121,7 @@ function fixture(
               }
             : {
                 state: "succeeded",
-                id: `sandbox-${template.id}`,
+                ...(fault === "missing_handle" ? {} : { id: `sandbox-${template.id}` }),
                 provider: selected.provider,
                 promptId: `prompt-${template.id}`,
                 manifest: { skillReceipts: fault === "missing_receipt" || !pin ? [] : [receipt(pin)] },
@@ -296,7 +297,14 @@ test("template smoke fails closed on wrong answers, non-final/non-assistant evid
 });
 
 test("lost metadata receipts reconcile by unique run name; lost compute is never retried and cleanup failures do not strand other metadata", async () => {
-  for (const fault of ["lost_variable", "lost_template", "lost_launch", "cleanup", "uncertain_launch"] as const) {
+  for (const fault of [
+    "lost_variable",
+    "lost_template",
+    "lost_launch",
+    "cleanup",
+    "uncertain_launch",
+    "missing_handle",
+  ] as const) {
     const fake = fixture({ fault, key: "absent" });
     expect(await runTemplateSkillCase(selected, fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "templates/launch").length).toBeLessThanOrEqual(1);
@@ -305,7 +313,7 @@ test("lost metadata receipts reconcile by unique run name; lost compute is never
     const summary = fake.lines.find((line) => line.step === "template_cleanup_summary");
     expect(summary).toBeDefined();
     if (fault === "cleanup") expect(summary?.leftoverSandboxIds).toEqual(["sandbox-template-1"]);
-    if (fault === "lost_launch" || fault === "uncertain_launch") {
+    if (fault === "lost_launch" || fault === "uncertain_launch" || fault === "missing_handle") {
       const launch = fake.calls.find((call) => call.path === "templates/launch")!;
       expect(summary?.uncertainLaunches).toContainEqual(
         expect.objectContaining({
