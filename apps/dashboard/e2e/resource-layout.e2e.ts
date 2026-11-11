@@ -9,13 +9,20 @@ for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
       await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
       await signIn(page, "alice@example.com", "/environments");
-      for (const route of ["environments", "templates", "tools", "variables"]) {
+      for (const [route, label] of [
+        ["environments", "Environments"],
+        ["templates", "Templates"],
+        ["tools", "Tools"],
+        ["variables", "Variables and secrets"],
+      ] as const) {
         await page.goto(`/${route}`);
-        const select = page.locator("[data-select-item]").first();
-        const list = select.locator("xpath=ancestor::ul");
+        // App Router may retain hidden route trees. Measure and operate on the accessible current list only.
+        const list = page.getByRole("list", { name: label, exact: true });
+        await expect(list).toBeVisible();
+        const select = list.locator("[data-select-item]").first();
         const before = await list.boundingBox();
         await select.click();
-        const panel = page.locator("#resource-panel");
+        const panel = page.locator("#resource-panel").filter({ visible: true });
         await expect(panel).toBeVisible();
         const after = await list.boundingBox();
         expect(after?.width).toBe(before?.width);
