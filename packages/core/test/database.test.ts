@@ -276,6 +276,11 @@ describe("database", () => {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
           continue;
         }
+        if (id === "sandboxes.application_secret_tainted") {
+          // Exposure metadata is a boolean, never a plaintext secret payload.
+          expect(column.data_type).toBe("boolean");
+          continue;
+        }
         if (id === "application_secret_uploads.secret_expires_at") {
           expect(column.data_type).toBe("timestamp with time zone");
           continue;
