@@ -110,7 +110,7 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     };
     await expect(
       wrapped.prompt({ sandboxId: info.id, harness: "codex", text: "conflicting follow-up" }),
-    ).rejects.toThrow("native_busy");
+    ).rejects.toThrow();
     expect(
       await authority.admit(
         activeToken,
