@@ -208,7 +208,16 @@ export async function launchOrchestratorParent(input: {
   });
   await launchSandbox(
     routed,
-    { ...input.stores, sandboxes, credentials },
+    {
+      ...input.stores,
+      sandboxes,
+      credentials,
+      // Binding validation and persistence remain ordinary launch policy. Native
+      // preparation runs once through the operation-bound backend after launch
+      // publication, before installing authority. Do not pass the launch proxy's
+      // SQL callbacks into the lifecycle's serialized native I/O transaction.
+      ...(input.stores.connections ? { connections: { ...input.stores.connections, prepare: async () => {} } } : {}),
+    },
     actor,
     {
       ...orchestratorParentLaunchRequest(identity.configuration, request),
