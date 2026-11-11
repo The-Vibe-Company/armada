@@ -149,7 +149,7 @@ are retained after cleanup. Agent-task failure does not affect launch-failure au
 ## Deployment order
 
 Apply `20261111150000_routine_scheduler.sql` after slice 1's
-`20261111140000_routines.sql`, through the coordinator's approved migration process,
+`20261111140500_routines.sql`, through the coordinator's approved migration process,
 **before** starting this scheduler-enabled server version. The new columns and
 history tables are required at startup; no new environment variables are needed.
 Existing routines remain paused after migration and require explicit enabling.
