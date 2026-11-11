@@ -21,8 +21,10 @@ armada launch my-golden --agent codex --credential-id ACCOUNT_ID \
 The parent is private, including from a shared golden, and remains visible through
 ordinary sandbox APIs. Use ordinary status/logs/send/stop with its sandbox ID.
 Sending a follow-up to a retained stopped sandbox uses existing conversation
-resume. No synthetic resume prompt, orchestrator identity, or dashboard/iPhone
-launch form is introduced.
+resume. No synthetic resume prompt or orchestrator identity is introduced. In the
+dashboard launch dialog, Advanced → Armada access is off by default and requires
+a usable named Codex account. It explicitly limits access to three owned children;
+switching to Claude clears it. iPhone launch forms are unchanged.
 
 ## Access and safety
 

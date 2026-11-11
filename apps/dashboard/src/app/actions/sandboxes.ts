@@ -131,6 +131,11 @@ export async function interruptSandbox(_previous: ActionResult | null, data: For
 }
 
 export async function launchFromGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  if (
+    data.getAll("armada_access").length > 1 ||
+    (data.get("armada_access") !== null && data.get("armada_access") !== "on")
+  )
+    return fail("That request is not valid.");
   const parsed = launchArgs({
     golden: formString(data, "golden"),
     provider: formString(data, "provider"),
@@ -139,6 +144,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     prompt: formString(data, "prompt"),
     repo: formString(data, "repo"),
     size: formString(data, "size"),
+    armadaAccess: formString(data, "armada_access"),
     ...modelFields(data),
   });
   if (!parsed.ok) return fail(parsed.error);
@@ -182,6 +188,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!repository.ok) return fail(repository.error);
   const account = await accountChoice(parsed.args.harness, formString(data, "credential"));
   if (!account.ok) return fail(account.error);
+  if (parsed.args.armadaAccess && !account.id) return fail("Armada access requires an explicit named Codex account.");
 
   let id: string;
   try {
