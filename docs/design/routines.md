@@ -41,7 +41,9 @@ closed, value-free diagnostic codes/messages, never raw provider errors.
 
 Persist `enabled/paused/deleted`, `next_due_at`, configuration generation,
 consecutive failures and last outcome. Serialize admission per routine in SQL;
-lock/check current membership, state and configuration before committing a firing.
+lock/check current routine state and configuration before committing an occurrence.
+Owner authorization is checked before dispatch and again at provider admission;
+refusals remain durable failed attempts rather than disappearing from history.
 The occurrence identity is `(routine_id, scheduled_due_at)` with a unique durable
 row. Store the owner, pinned revision, prompt/config snapshot and launch request
 key in that row before any provider call. Submit that same key through the existing
@@ -53,7 +55,9 @@ Before launch, inspect the previous nonterminal run. A sandbox still running
 (including a completed prompt in a live machine) or an uncertain launch means
 **skip**, never queue or overlap. Record `previous_run_alive` or
 `previous_run_uncertain` visibly. Schedule advancement is committed with the
-occurrence decision. After downtime, consider at most one due occurrence, then
+occurrence decision. A final lease/state fence runs after the template claim is
+durable and immediately before provider fork, so an expired preflight caller
+cannot launch after a replacement worker settles its occurrence. After downtime, consider at most one due occurrence, then
 advance to the first future interval; record missed intervals as an aggregate,
 not a catch-up queue. Scheduler timestamps use database time, not replica clocks.
 
@@ -120,7 +124,8 @@ and resets consecutive failures. Updating an enabled definition restarts its int
 previous admitted occurrences retain their original configuration. Pausing/deleting
 clears the next due time, but already admitted runs may finish. `history` accepts
 `{org,id}` and returns the latest 100 decisions, newest first, including for a
-soft-deleted routine. History never returns the private launch input snapshot,
+soft-deleted routine. It includes the durable template request ID and a separate
+initial-prompt task state; launch success is not agent-task success. History never returns the private launch input snapshot,
 manifest or provider errors. Sandbox links are returned only to the actual sandbox
 owner with current org access; other readers receive no sandbox link.
 
@@ -133,3 +138,10 @@ visible as uncertain and blocks overlap until reconciled; operators must inspect
 the existing sandbox/claim rather than force a replacement. Run history and
 idempotency records are retained on routine deletion. No new environment variables
 or external scheduler service are required.
+
+A bounded observer polls only the original prompt ID recorded by the template claim,
+not the latest conversation turn. It persists the closed states running, finished,
+failed, interrupted or unknown, separately from launch admission status. Provider
+messages are never stored or exposed as reasons. Unavailable access, a removed sandbox,
+or failed observation yields unknown, not invented success/failure; terminal observations
+are retained after cleanup. Agent-task failure does not affect launch-failure auto-pause.
