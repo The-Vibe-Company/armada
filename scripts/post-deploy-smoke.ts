@@ -419,8 +419,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           scratchBranch: scratch,
         }),
       );
+    const preservationStartedAt = io.now();
+    let preservationLaunchAttempted = false;
+    let verifiedRecoveryId: string | undefined;
     let sandboxId: string | undefined;
     let commit: string | undefined;
+    const preservationMarker = crypto.randomUUID();
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
@@ -459,6 +463,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     try {
       await step("launch", async () => {
+        preservationLaunchAttempted = true;
         const result = await sandbox<{ sandbox: { id: string; provider: string }; promptId?: string }>(
           "launch",
           {
@@ -614,7 +619,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           const result = await sandbox<{ exitCode: number; timedOut: boolean; stdout: string }>("exec", {
             id: sandboxId,
             cwd: item.repo,
-            command: `${git} -c user.name=Armada-Smoke -c user.email=smoke@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false commit --allow-empty -m armada-preservation-smoke >/dev/null && ${git} rev-parse HEAD`,
+            command: `${git} -c user.name=Armada-Smoke -c user.email=smoke@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false commit --allow-empty -m ${quote(`armada-preservation-smoke-${preservationMarker}`)} >/dev/null && ${git} rev-parse HEAD`,
             timeout_seconds: 60,
           });
           if (result?.exitCode !== 0 || result.timedOut !== false || !/^[a-f0-9]{40}\n?$/.test(result.stdout))
@@ -622,21 +627,60 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           commit = result.stdout.trim();
         });
       if (!github) await step("stop", stopSandbox);
-      if (preservation)
+      if (preservation) {
+        // Recovery is a read-only operation, but do not reuse the earlier stop
+        // receipt if verification fails or a regression wakes the worker.
+        stopped = false;
+        stopRequested = false;
+        let verifiedArchive: string | undefined;
+        const note = preservationNote;
         await step(dirty ? "preservation_archive" : "preservation_clean_stop", async () => {
           const result = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
           if (!dirty) {
-            if (preservationNote || result.archive !== null) fail("preservation_failed");
+            if (note || result.archive !== null) fail("preservation_failed");
           } else {
             if (
               !commit ||
               typeof result.archive !== "string" ||
-              !preservationNote?.startsWith("unpushed work preserved at work_recovery:")
+              !note?.startsWith("unpushed work preserved at work_recovery:")
             )
               fail("preservation_failed");
             await verifyRecovery(result.archive, item.repo, commit);
+            verifiedArchive = result.archive;
           }
         });
+        if (dirty) {
+          await step("preservation_recovery_handle", async () => {
+            const parts = note?.slice("unpushed work preserved at work_recovery:".length).split("/");
+            if (
+              parts?.length !== 2 ||
+              parts[0]?.toLowerCase() !== sandboxId?.toLowerCase() ||
+              !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(parts[1] ?? "")
+            )
+              fail("preservation_failed");
+            verifiedRecoveryId = parts[1];
+            const explicit = await sandbox<{ archive: string | null }>("recovery", {
+              id: sandboxId,
+              recovery_id: parts[1],
+            });
+            if (!verifiedArchive || explicit.archive !== verifiedArchive) fail("preservation_failed");
+          });
+        }
+        await step("preservation_recovery_read_only", async () => {
+          if (dirty) {
+            const repeated = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
+            if (repeated.archive !== verifiedArchive) fail("preservation_failed");
+          }
+          const after = await sandbox<{ status: string; providerState: string; preservationNote?: string | null }>(
+            "status",
+            { id: sandboxId },
+          );
+          if (after.status !== "stopped" || after.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
+            fail("provider_not_stopped");
+          stopped = true;
+          if (dirty ? after.preservationNote !== note : !!after.preservationNote) fail("preservation_failed");
+        });
+      }
     } catch {
       passed = false;
     } finally {
@@ -679,6 +723,21 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
+    if (preservation)
+      io.out(
+        JSON.stringify({
+          case: index,
+          step: "preservation_cleanup_summary",
+          pass: !!sandboxId && stopped,
+          phase: dirty ? "archive" : "clean",
+          leftoverSandboxIds: sandboxId && !stopped ? [sandboxId] : [],
+          launchOutcomeUnknown: preservationLaunchAttempted && !sandboxId,
+          recoveryId: verifiedRecoveryId ?? null,
+          org: item.org,
+          golden: item.golden,
+          startedAt: new Date(preservationStartedAt).toISOString(),
+        }),
+      );
     if (!orchestrator || dirty) continue;
     let orchestratorId: string | undefined;
     let orchestratorStopped = false;
