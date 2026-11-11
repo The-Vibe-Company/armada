@@ -99,6 +99,49 @@ test("every story command shows its words apart, as copied, with no overflow, at
   }
 });
 
+test("a refused command copy explains recovery and a retry copies the visible command", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/landing");
+  // Deny only the first browser write; the retry must reach the real clipboard.
+  await page.evaluate(() => {
+    const writeText = navigator.clipboard.writeText.bind(navigator.clipboard);
+    let refused = false;
+    navigator.clipboard.writeText = (text) => {
+      if (!refused) {
+        refused = true;
+        return Promise.reject(new DOMException("Clipboard permission denied", "NotAllowedError"));
+      }
+      return writeText(text);
+    };
+  });
+  const command = "npm install -g @the-vibe-company/armada";
+  const button = page.locator(".lp-copy").first();
+  await expect(button).toHaveAccessibleName(`Copy: ${command}`);
+  await button.click();
+  await expect(button.getByRole("status")).toHaveText(
+    "Could not copy. Select the command to copy it manually, or try again.",
+  );
+  await expect(button).toHaveAccessibleName(`Copy: ${command}`);
+  const visibleCommand = button.locator(".lp-copy-command");
+  await expect(visibleCommand).toBeVisible();
+  await expect(visibleCommand).toHaveText(`$${command}`);
+  await expect(visibleCommand).not.toHaveCSS("user-select", "none");
+  const selection = await visibleCommand.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return selection?.toString();
+  });
+  expect(selection).toBe(command);
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await button.click();
+  await expect(button).toHaveAccessibleName(`Copied: ${command}`);
+  await expect(button.getByRole("status")).toHaveCount(0);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(command);
+});
+
 test("a signed-in member's / is the dashboard, not the landing", async ({ page }) => {
   await signIn(page, "alice@example.com", "/sandboxes");
   const front = await page.request.get("/", { maxRedirects: 0 });
