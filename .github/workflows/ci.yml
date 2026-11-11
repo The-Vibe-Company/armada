@@ -106,7 +106,7 @@ jobs:
       - run: bun scripts/prepare-runtime.ts
       - run: bun scripts/golden-os-image.ts
       - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts
+      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 
