@@ -651,8 +651,13 @@ export function createModelAuthOwnership(
     },
     /** Called at the provider's actual pre-resume/restore boundary, not a racy preflight. */
     async beforeResume(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
-      const result = await sql.query<{ id: string; owner_id: string; org_id: string }>(
-        `select s.id,s.owner_id,s.org_id from public.sandboxes s
+      const result = await sql.query<{
+        id: string;
+        owner_id: string;
+        org_id: string;
+        application_secret_tainted: boolean;
+      }>(
+        `select s.id,s.owner_id,s.org_id,s.application_secret_tainted from public.sandboxes s
          where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2
          and s.org_id=$3::uuid and s.deleted_at is null
          and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
@@ -664,6 +669,13 @@ export function createModelAuthOwnership(
       const row = result.rows[0];
       // No sandbox row means a golden builder, which never receives model auth.
       if (row) {
+        if (row.application_secret_tainted)
+          throw new ProviderError({
+            provider: provider.id,
+            code: "unavailable",
+            message: "Application-secret exposed sandboxes cannot resume or restore retained disks.",
+            retryable: false,
+          });
         try {
           await this.assertSandbox({ userId: row.owner_id, orgId: row.org_id, role: "member" }, row.id, true);
         } catch (error) {

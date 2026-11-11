@@ -74,3 +74,25 @@ routes are not publisher isolation. Deletion does not erase delivered/provider o
 backup copies; upstream rotation is required after exposure. Retained redaction
 copies require the design's disclosed 30-day bound and approved backup policy.
 Existing model credentials are separately managed. Readable values are not secrets.
+
+## First gate implementation and rollout boundary
+
+The first gate adds `20261111120000_application_secret_taint.sql`. The service-only
+`application_secret_tainted` flag is irreversible. Setting it removes existing
+online recovery rows; a database trigger refuses subsequent recovery writes.
+Preservation checks the durable marker before contacting compute. Recovery reads
+join the sandbox marker, and the existing physical-resume hooks refuse retained
+secret-tainted disks. There is no hydration endpoint and no client can set taint.
+
+This is **not yet a concurrency-safe secret admission protocol**: a collector or
+resume already in flight must be fenced by the later shared lifecycle lease
+before any hydration can be enabled. Snapshot provenance, owner-only access,
+redaction, revocation cleanup and provider evidence remain separate unimplemented
+gates. Do not test hydration against this first gate alone.
+
+Apply the migration before deploying matching server code; old servers must not
+serve tainted machines. Dropping the column loses permanent exposure history and
+is not a safe rollback. Disable affected workloads and retain taint tombstones
+before any rollback/restore. The migration deletes online recovery ciphertext
+for tainted machines, not backups or provider disks/events; no erasure claim is
+made for those stores. This PR applies no migration and deploys nothing.

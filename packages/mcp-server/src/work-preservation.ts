@@ -141,8 +141,8 @@ async function captureAndStore(
   };
   try {
     const stop = (
-      await sql.query<{ stop_token: string | null; complete: boolean }>(
-        `select case when stop_requested_at is null then null else stop_generation::text end as stop_token,
+      await sql.query<{ stop_token: string | null; complete: boolean; application_secret_tainted: boolean }>(
+        `select application_secret_tainted, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
         (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
        from public.sandboxes where id=$1::uuid`,
         [id],
@@ -155,6 +155,15 @@ async function captureAndStore(
     // create a stop generation, and their operation journal publishes stopped
     // directly (no ordinary lifecycle recapture). These one-off calls stay uncached.
     progress.stopToken = stop.stop_token;
+    if (stop.application_secret_tainted) {
+      await writeNote(
+        sql,
+        id,
+        "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse. Push work before stopping; resume and recovery are unavailable.",
+        stop.stop_token,
+      );
+      return;
+    }
     if (stop.complete) {
       observed("capture_reused");
       return;
@@ -290,7 +299,7 @@ async function captureAndStore(
 export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {
   const row = (
     await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> }>(
-      "select archive_enc from public.sandbox_work_recovery where sandbox_id=$1::uuid and ($2::uuid is null or id=$2::uuid) order by created_at desc limit 1",
+      "select r.archive_enc from public.sandbox_work_recovery r join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1::uuid and not s.application_secret_tainted and ($2::uuid is null or r.id=$2::uuid) order by r.created_at desc limit 1",
       [id, recoveryId ?? null],
     )
   ).rows[0];

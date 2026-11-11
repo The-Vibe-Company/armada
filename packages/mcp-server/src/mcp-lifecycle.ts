@@ -293,8 +293,8 @@ export function createMcpLifecycle(options: {
         ).rows[0];
         if (!member) throw Error("No authorized Armada sandbox for this resume.");
         const sandbox = (
-          await tx.query<{ id: string; owner_id: string }>(
-            `select id,owner_id from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
+          await tx.query<{ id: string; owner_id: string; application_secret_tainted: boolean }>(
+            `select id,owner_id,application_secret_tainted from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
           and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
             [provider.id, providerSandboxId, caller.orgId, caller.userId],
           )
@@ -304,6 +304,8 @@ export function createMcpLifecycle(options: {
           !canAccessSandboxInterior({ ownerId: sandbox.owner_id }, { userId: caller.userId, currentRole: member.role })
         )
           throw Error("No authorized Armada sandbox for this resume.");
+        if (sandbox.application_secret_tainted)
+          throw Error("Application-secret exposed sandboxes cannot resume or restore retained disks.");
         await authorizePersonalBindings(tx, sandbox.id, caller.userId);
         // Serialize a FRESH physical observation with fencing and config publication.
         // A caller's earlier stopped sample can predate another replica's completed

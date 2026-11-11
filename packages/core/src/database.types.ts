@@ -2834,6 +2834,7 @@ export type Database = {
           skills: Json;
           stop_generation: number;
           preservation_stop_generation: number | null;
+          application_secret_tainted: boolean;
         };
         Insert: {
           id?: string;
@@ -2886,6 +2887,7 @@ export type Database = {
           skills?: Json;
           stop_generation?: number;
           preservation_stop_generation?: number | null;
+          application_secret_tainted?: boolean;
         };
         Update: {
           id?: string;
@@ -2938,6 +2940,7 @@ export type Database = {
           skills?: Json;
           stop_generation?: number;
           preservation_stop_generation?: number | null;
+          application_secret_tainted?: boolean;
         };
         Relationships: [
           {
