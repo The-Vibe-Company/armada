@@ -295,6 +295,22 @@ function fixture(
     },
   };
 }
+test.each(["foreign-source", "deleted"] as const)("history refuses an invalid machine (%s)", async (invalid) => {
+  const f = fixture();
+  const row = await runningFork(f);
+  await f.store.lease(row.id, async (record, save) => {
+    if (invalid === "deleted") record.phase = "deleted";
+    else {
+      if (!record.sourceImage) throw new Error("Fixture must record its source image");
+      record.sourceImage.scopeKey = "foreign";
+    }
+    await save(record);
+  });
+  await expect(f.provider.events({ sandboxId: row.id })).rejects.toMatchObject({
+    code: invalid === "deleted" ? "not_found" : "forbidden",
+  });
+});
+
 test("detail verifies the App once per read and still rejects a changed binding", async () => {
   const f = fixture();
   const row = await runningFork(f);

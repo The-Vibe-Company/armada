@@ -16,7 +16,9 @@ Python 3.14.6, public internet, golden smoke-modal, Modal × Codex, 20 samples.
   history, although their response is always settled. On Modal that adds an App
   lookup, machine read, another App lookup and live container polling. Avoid this
   entire status path for non-follow reads. Follow reads retain fresh state and
-  prompt completion checks; event authorization and pagination are unchanged.
+  prompt completion checks. Source/management authority and deleted-machine
+  checks now run on the event path’s existing machine read; membership and
+  pagination are unchanged, with no extra query for these guards.
 - Active Modal detail validated the immutable App binding in get(), then again
   in physical(). Retain the first verification, source authority check, missing
   physical-ID refusal and live exit poll; remove only the repeated App lookup.

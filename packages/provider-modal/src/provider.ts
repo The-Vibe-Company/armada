@@ -1274,7 +1274,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       r.signal?.throwIfAborted();
       await bound();
       r.signal?.throwIfAborted();
-      await store.get(r.sandboxId);
+      const row = await store.get(r.sandboxId);
+      // History is readable without live compute, but still belongs to this
+      // immutable source/management authority and must not be a deleted machine.
+      assertMachineSource(row);
+      if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
       r.signal?.throwIfAborted();
       const page = await store.events(r);
       r.signal?.throwIfAborted();
