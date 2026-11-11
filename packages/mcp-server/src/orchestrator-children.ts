@@ -145,7 +145,7 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
       }
       const parent = (
         await tx.query<{ lifecycle_generation: string; parent_epoch: string; max_active_children: number | null }>(
-          `select s.lifecycle_generation,o.authority_epoch as parent_epoch,l.max_active_children from public.orchestrators o
+          `select case when o.kind='sandbox' then o.generation else s.lifecycle_generation end as lifecycle_generation,o.authority_epoch as parent_epoch,l.max_active_children from public.armada_access_parents o
            join public.sandboxes s on s.id=o.sandbox_id
            left join public.orchestrator_lifecycle l on l.orchestrator_id=o.id where o.id=$1`,
           [principal.orchestratorId],
@@ -291,8 +291,8 @@ export function createOrchestratorChildren(sql: Sql, authority: ChildAuthority, 
       } else await executor.stop(operation);
       const completed = await sql.query(
         `update public.orchestrator_child_operations c set state='succeeded',error_code=null
-        from public.orchestrators o,public.sandboxes s where c.id=$1 and o.id=c.orchestrator_id
-        and s.id=o.sandbox_id and s.lifecycle_generation=c.parent_generation and o.state='ready' and c.state in ('pending','uncertain') returning c.id`,
+        from public.armada_access_parents o,public.sandboxes s where c.id=$1 and o.id=c.orchestrator_id
+        and s.id=o.sandbox_id and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.state='ready' and c.state in ('pending','uncertain') returning c.id`,
         [row.id],
       );
       if (!completed.rows.length) {

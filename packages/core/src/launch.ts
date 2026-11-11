@@ -159,6 +159,8 @@ export interface LaunchOptions extends GoldenLimits {
   beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
   /** Trusted server-only narrowing for managed orchestrator parents. Not a public launch field. */
   privateParent?: true;
+  /** Trusted narrowing for ordinary sandboxes with owner-scoped access. Keeps normal TTL policy. */
+  privateVisibility?: true;
   /** For tests. */
   newId?: () => string;
 }
@@ -239,7 +241,7 @@ export async function launchSandbox(
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
-  const visibility = options.privateParent ? "private" : golden.visibility;
+  const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];
