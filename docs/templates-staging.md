@@ -170,3 +170,35 @@ registered provider ID and provider ownership labels before cleanup. Do not dele
 request rows or invent a new key as a recovery action while the old outcome is
 unknown. Successfully returned results are durably replayed unchanged; no new
 variable value, account, snapshot or prompt is substituted on retry.
+
+## Template skill pins (issue #1007, first API slice)
+
+A revision's `definition.skills` accepts up to 20 distinct exact public
+`org/slug@version` or private `slug@version` pins, using the normal launch
+validator and installer. Duplicate slugs (including public/private collisions)
+are refused; floating versions are not accepted. Private pins resolve the
+launching actor's Skillpack key with the existing user-over-org policy, not the
+template author's key. Publication does not verify registry access.
+
+The immutable admission manifest freezes the requested pins in
+`definition.skills`. On success, the durable result's `manifest.skillReceipts`
+adds the verified installed receipts (also stored on the sandbox). The admission
+row's `manifest` is deliberately not rewritten. Same-key replay returns the
+completed evidence without reinstalling. Older completed results need not have
+this additive field. Failed/ambiguous requests do not claim installation success;
+closed Skillpack refusal reasons are returned without provider output. Existing
+conservative reconciliation semantics still apply after allocation.
+
+Coordinator-only staging checks, on **Boat and Modal**:
+- Publish a revision with one accessible public and one private pin; launch,
+  compare both completed receipts with sandbox receipts and frozen requested pins.
+- Replay the same key after a server restart: identical evidence, no new install.
+- With no personal or org Skillpack key, launch a private pin: expect
+  `skillpack_credential_missing`, no prompt, and normal failed-launch cleanup.
+- Try an inaccessible public pin: expect `skillpack_skill_unavailable`, no guest
+  output in the response and no prompt.
+
+No staging credentials are available to the worker. No migration is required.
+Next slices: personal/org/environment defaults with documented precedence and
+one-launch opt-out; CLI; dashboard Skills, template and environment forms. This
+slice does not introduce defaults, opt-out or orchestrator dependencies.

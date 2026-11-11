@@ -11,6 +11,7 @@ import {
   createTemplateService,
   type LaunchTemplate,
   launchSandbox,
+  PrivateSkillError,
   type Sql,
   type TemplateRuntime,
 } from "@armada/core/server";
@@ -812,3 +813,97 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+// Contract: installation evidence survives request replay, without mutating the
+// admission manifest. Physical transports are covered by the install owners.
+test("template skills retain verified receipts and closed refusals without replaying installs", async () => {
+  const f = await fixture();
+  try {
+    const skills = ["example/review@1.0.0", "notes@2.0.0"];
+    const checksum = `sha256:${"a".repeat(64)}`;
+    const publicId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const privateReceipt = {
+      workspaceId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      reference: skills[1]!,
+      version: "2.0.0",
+      skillId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      checksum,
+      origin: "https://skillpack.app/v1",
+    };
+    const exec = f.provider.exec;
+    f.provider.exec = async (r) => {
+      const result = await exec(r);
+      if (!result.detached && r.command.includes("skillpack install"))
+        result.stdout = JSON.stringify({
+          lockfileVersion: 3,
+          workspaces: {
+            "catalog:example": {
+              apiUrl: "https://skillpack.app/v1",
+              skills: {
+                review: {
+                  version: "1.0.0",
+                  catalogReference: "example/review",
+                  pinned: "1.0.0",
+                  skillId: publicId,
+                  checksum,
+                  targets: [{ tool: "codex", version: "1.0.0", packageChecksum: checksum }],
+                },
+              },
+            },
+          },
+        });
+      return result;
+    };
+    let installs = 0;
+    f.runtime.stores.credentials.installPrivateSkill = async () => {
+      installs++;
+      return privateReceipt;
+    };
+    const t = (await f.create(undefined, undefined, { ...f.definition, skills })).item as LaunchTemplate;
+    const result = await f.launch(t.id);
+    expect(result.state).toBe("succeeded");
+    expect(result.manifest).toMatchObject({
+      definition: { skills },
+      skillReceipts: [
+        { reference: skills[0], version: "1.0.0", skillId: publicId, checksum, origin: "https://skillpack.app/v1" },
+        privateReceipt,
+      ],
+    });
+    const stored = (await f.db.query<{ skills: unknown }>("select skills from sandboxes where id=$1", [result.id]))
+      .rows[0]!;
+    expect(stored.skills).toEqual((result.manifest as { skillReceipts: unknown }).skillReceipts);
+    const admitted = (await f.db.query<{ manifest: unknown }>("select manifest from template_launch_requests"))
+      .rows[0]!;
+    expect(admitted.manifest).not.toHaveProperty("skillReceipts");
+    expect(await f.launch(t.id)).toEqual(result);
+    expect(installs).toBe(1);
+    expect(f.boat.forks).toHaveLength(1);
+
+    f.runtime.stores.credentials.installPrivateSkill = async () => {
+      throw new PrivateSkillError("skillpack_credential_missing");
+    };
+    const refused = await f.launch(t.id, "missing-key");
+    expect(refused.reason).toBe("skillpack_credential_missing");
+    expect(f.boat.prompts).toHaveLength(1);
+    expect(await f.launch(t.id, "missing-key")).toEqual(refused);
+    expect(f.boat.forks).toHaveLength(2);
+
+    f.provider.exec = async (r) =>
+      r.command.includes("skillpack install")
+        ? {
+            detached: false,
+            exitCode: 7,
+            stdout: "untrusted guest output",
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+          }
+        : exec(r);
+    const unavailable = await f.launch(t.id, "public-unavailable");
+    expect(unavailable.reason).toBe("skillpack_skill_unavailable");
+    expect(JSON.stringify(unavailable)).not.toContain("untrusted guest output");
+    expect(f.boat.prompts).toHaveLength(1);
+  } finally {
+    await f.db.close();
+  }
+});
