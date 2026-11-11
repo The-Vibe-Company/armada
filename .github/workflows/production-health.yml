@@ -28,6 +28,17 @@ jobs:
           ref: main
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
+      - name: Read expected version from successful production deployment
+        if: github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEPLOYMENT_SHA: ${{ github.event.deployment.sha }}
+        run: |
+          [[ "$DEPLOYMENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]] || { echo "::error::Deployment SHA missing"; exit 1; }
+          version="$(gh api "repos/$GH_REPO/contents/packages/core/package.json?ref=$DEPLOYMENT_SHA" --jq .content | base64 --decode | jq -er .version)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$ ]] || { echo "::error::Deployment version invalid"; exit 1; }
+          echo "ARMADA_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
       - name: Probe public production server (no staging or credentials)
         env:
           ARMADA_PRODUCTION_ORIGIN: ${{ vars.ARMADA_PRODUCTION_ORIGIN || 'https://armada-mcp-production.up.railway.app' }}

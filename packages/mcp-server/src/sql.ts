@@ -45,8 +45,8 @@ export function sqlOver(driver: SqlDriver): Sql {
 }
 
 /** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
-export function bunSql(url: string): Sql & { close(): Promise<void> } {
-  const client = new Bun.SQL(url, { max: 3, connectionTimeout: 5, idleTimeout: 30 });
+export function bunSql(url: string, max = 3): Sql & { close(): Promise<void> } {
+  const client = new Bun.SQL(url, { max, connectionTimeout: 5, idleTimeout: 30 });
   // Never starve durable pre-refresh claims behind owner transactions in the main pool.
   const autonomous = new Bun.SQL(url, { max: 1, connectionTimeout: 5, idleTimeout: 30 });
   return {

@@ -16,7 +16,16 @@ test("boot survives admission pressure with capped backoff and redacted diagnost
     async () => {
       const states = ["EMAXCONNSESSION", "08000", "08003", "08006", "57P01", "53300", "57P03", "EMAXCONNSESSION"];
       const state = states[attempts++];
-      if (state) throw Object.assign(new Error("secret connection string"), { errno: state });
+      if (state)
+        throw Object.assign(
+          new Error(
+            state === "EMAXCONNSESSION" ? "(EMAXCONNSESSION) secret connection string" : "secret connection string",
+          ),
+          {
+            code: "ERR_POSTGRES_SERVER_ERROR",
+            errno: state === "EMAXCONNSESSION" ? "XX000" : state,
+          },
+        );
     },
     (line) => logs.push(line),
   );
@@ -27,7 +36,10 @@ test("boot survives admission pressure with capped backoff and redacted diagnost
 
 test("boot fails promptly on permanent SQL errors and stops retrying after its deadline", async () => {
   const log = () => {};
-  const permanent = Object.assign(new Error("invalid auth"), { errno: "28P01" });
+  const permanent = Object.assign(new Error("unrelated internal error"), {
+    code: "ERR_POSTGRES_SERVER_ERROR",
+    errno: "XX000",
+  });
   await expect(
     retryDatabaseBoot(async () => {
       throw permanent;
@@ -39,7 +51,7 @@ test("boot fails promptly on permanent SQL errors and stops retrying after its d
     now += 120_000;
   }) as typeof Bun.sleep);
   let attempts = 0;
-  const full = { code: "EMAXCONNSESSION" };
+  const full = { code: "ERR_POSTGRES_SERVER_ERROR", errno: "XX000", message: "(EMAXCONN) max clients reached" };
   await expect(
     retryDatabaseBoot(async () => {
       attempts++;

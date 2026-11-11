@@ -19,4 +19,8 @@ test("production probe rejects downtime, redirects, unrelated 200 pages, and mis
   request.mockResolvedValueOnce(Response.json({ ok: true, version: "2.0.0" }));
   await checkProductionHealth("https://production.example");
   expect(request.mock.calls.at(-1)?.[0].toString()).toBe("https://production.example/healthz");
+  request.mockResolvedValueOnce(Response.json({ ok: true, version: "2.0.0" }));
+  await expect(checkProductionHealth("https://production.example", "2.1.0")).rejects.toThrow("version");
+  request.mockResolvedValueOnce(Response.json({ ok: true, version: "2.1.0" }));
+  await checkProductionHealth("https://production.example", "2.1.0");
 });

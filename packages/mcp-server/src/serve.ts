@@ -78,7 +78,7 @@ export async function startServer(
     config.development,
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
-  const sql = bunSql(config.databaseUrl);
+  const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, (tx, id) =>
     createHistoricalSandboxProviderResolver(providers)(tx, id),
   );

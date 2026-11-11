@@ -23,6 +23,7 @@ export interface ServerConfig {
   encryptionKey: string;
   /** Privileged Postgres connection (the Supabase `postgres` role), shared with the control API. */
   databaseUrl: string;
+  databasePoolMax: number;
 }
 
 export const DEFAULT_DASHBOARD_URL = "https://armada.thevibecompany.co";
@@ -70,6 +71,15 @@ export function checkEncryptionKey(base64Key: string): void {
   if (length !== KEY_BYTES) throw new Error(`ARMADA_ENCRYPTION_KEY must be ${KEY_BYTES} bytes in base64.`);
 }
 
+/** Main pool only; one additional autonomous connection is budgeted separately. */
+export function databasePoolMax(value: string | undefined): number {
+  if (value === undefined) return 3;
+  if (!/^[0-9]+$/.test(value.trim())) throw new Error("ARMADA_DATABASE_POOL_MAX must be an integer >= 2.");
+  const max = Number(value);
+  if (!Number.isSafeInteger(max) || max < 2) throw new Error("ARMADA_DATABASE_POOL_MAX must be an integer >= 2.");
+  return max;
+}
+
 /** Reads and checks the server's environment. Messages name a variable, never its value. */
 export function configFromEnv(env: Record<string, string | undefined>): ServerConfig {
   const missing = REQUIRED.filter((name) => !env[name]?.trim());
@@ -114,5 +124,6 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     development,
     encryptionKey: value("ARMADA_ENCRYPTION_KEY"),
     databaseUrl: value("ARMADA_DATABASE_URL"),
+    databasePoolMax: databasePoolMax(env.ARMADA_DATABASE_POOL_MAX),
   };
 }

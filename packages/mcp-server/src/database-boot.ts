@@ -9,22 +9,28 @@ export async function retryDatabaseBoot(initialize: () => Promise<void>, log: (l
       await initialize();
       return;
     } catch (error) {
-      const fields = error as { code?: unknown; errno?: unknown };
-      const retryable = [fields?.code, fields?.errno].some((code) =>
-        [
-          "EMAXCONNSESSION",
-          "53300",
-          "08000",
-          "08003",
-          "08006",
-          "57P01",
-          "57P03",
-          "ERR_POSTGRES_CONNECTION_REFUSED",
-          "ERR_POSTGRES_CONNECTION_FAILED",
-          "ERR_POSTGRES_CONNECTION_CLOSED",
-          "ERR_POSTGRES_CONNECTION_TIMEOUT",
-        ].includes(String(code)),
-      );
+      const fields = error as { code?: unknown; errno?: unknown; message?: unknown };
+      const supavisorAdmission =
+        fields?.code === "ERR_POSTGRES_SERVER_ERROR" &&
+        fields.errno === "XX000" &&
+        typeof fields.message === "string" &&
+        /^\((EMAXCONNSESSION|EMAXCONN)\)/.test(fields.message);
+      const retryable =
+        supavisorAdmission ||
+        [fields?.code, fields?.errno].some((code) =>
+          [
+            "53300",
+            "08000",
+            "08003",
+            "08006",
+            "57P01",
+            "57P03",
+            "ERR_POSTGRES_CONNECTION_REFUSED",
+            "ERR_POSTGRES_CONNECTION_FAILED",
+            "ERR_POSTGRES_CONNECTION_CLOSED",
+            "ERR_POSTGRES_CONNECTION_TIMEOUT",
+          ].includes(String(code)),
+        );
       if (!retryable || Date.now() + delay >= deadline) throw error;
       // Fixed text only: driver messages may contain connection credentials.
       log("armada-server: database admission unavailable; retrying boot");
