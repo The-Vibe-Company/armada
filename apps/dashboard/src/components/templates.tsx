@@ -353,7 +353,7 @@ function TemplateForm({
               ? `Several ${HARNESS_LABELS[harness]} accounts are available. Set a default in `
               : `No usable ${HARNESS_LABELS[harness]} account is available to you in this organization. Add or reconnect one in `}
             <Link className="underline" href={HARNESS_PATH}>
-              Build &gt; Harness
+              Start with &gt; Harness
             </Link>
             {accountSelection === "ambiguous" ? "." : " or choose another agent."} You can save this template, but
             launching it requires {accountSelection === "ambiguous" ? "an unambiguous account selection" : "an account"}

@@ -24,11 +24,14 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
-          // Both revisions may already use a status live region; capture the visible refusal, not a historical role.
-          const notice = page.getByText("The Armada server is not configured: subscriptions cannot be managed here.", {
-            exact: true,
-          });
+          // Candidate evidence requires status semantics; baseline evidence supports either revision.
+          const currentNotice = page.getByRole("status").filter({ hasText: "The Armada server is not configured" });
+          const notice =
+            phase === "before"
+              ? currentNotice.or(page.getByRole("alert").filter({ hasText: "The Armada server is not configured" }))
+              : currentNotice;
           await expect(notice).toBeVisible();
+          await expect(notice).toHaveText("The Armada server is not configured: subscriptions cannot be managed here.");
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.screenshot({
             path: join(output, `${phase}-harness-unconfigured-${width}-${theme}.png`),

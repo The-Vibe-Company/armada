@@ -46,7 +46,7 @@ import {
   type Visibility,
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import { apiFailureCode } from "./api-failure.ts";
@@ -57,9 +57,7 @@ import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import { callOrchestrator, orchestratorFailureCode } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
-import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -318,6 +316,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
+  // Intercept only the retired public names while installing the SDK's own dispatch
+  // handler. They are not registered/discoverable tools; all other calls keep SDK
+  // validation and dispatch. The private delegated sandbox gateway is separate.
+  const retiredTools = new Set(
+    [
+      "capabilities",
+      "create",
+      "list",
+      "detail",
+      "events",
+      "message",
+      "steer",
+      "stop",
+      "resume",
+      "recover",
+      "reconcile",
+      "connections_list",
+      "connections_add",
+      "connections_remove",
+    ].map((action) => `orchestrator_${action}`),
+  );
+  const setRequestHandler = server.server.setRequestHandler.bind(server.server);
+  server.server.setRequestHandler = (schema, handler) => {
+    setRequestHandler(schema, (request, extra) => {
+      const call = CallToolRequestSchema.safeParse(request);
+      if (call.success && retiredTools.has(call.data.params.name)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text: "Orchestrator tools have been removed. Launch an ordinary sandbox with --armada-access instead; see docs/sandbox-armada-access.md (#1002).",
+            },
+          ],
+        };
+      }
+      return handler(request, extra);
+    });
+  };
   const { caller, data } = context;
   const orgIds = caller.orgs.map((org) => org.orgId);
 
@@ -580,69 +617,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         },
       );
     }
-  }
-
-  for (const action of [
-    "capabilities",
-    "create",
-    "list",
-    "detail",
-    "events",
-    "message",
-    "steer",
-    "stop",
-    "resume",
-    "recover",
-    "reconcile",
-    "connections_list",
-    "connections_add",
-    "connections_remove",
-  ]) {
-    server.registerTool(
-      `orchestrator_${action}`,
-      {
-        description: "Owner-private persistent orchestrator operation. Unverified native backends remain disabled.",
-        inputSchema: { args: z.record(z.string(), z.unknown()), idempotencyKey: z.string().optional() },
-        outputSchema: z.object({ version: z.literal(1) }).passthrough(),
-      },
-      async ({ args, idempotencyKey }) => {
-        try {
-          const result = await callOrchestrator(
-            context.orchestrators,
-            context.caller,
-            action,
-            args,
-            idempotencyKey,
-            context.orchestratorPairs,
-          );
-          return {
-            structuredContent: result as Record<string, unknown>,
-            content: [{ type: "text" as const, text: JSON.stringify(result) }],
-          };
-        } catch (error) {
-          const code = orchestratorFailureCode(error);
-          return {
-            isError: true,
-            content: [
-              { type: "text" as const, text: code },
-              { type: "text" as const, text: `error code: ${code}` },
-              ...(error instanceof OrchestratorRuntimeError && error.admission
-                ? [
-                    {
-                      type: "text" as const,
-                      text: JSON.stringify({
-                        code,
-                        admission: error.admission,
-                        ...(error.operation ? { operation: error.operation } : {}),
-                      }),
-                    },
-                  ]
-                : []),
-            ],
-          };
-        }
-      },
-    );
   }
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {

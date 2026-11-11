@@ -36,7 +36,9 @@ for (const mobile of [false, true]) {
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 720 });
     await signIn(page, "alice@example.com", "/templates");
     const nav = page.getByRole("navigation", { name: "Main" });
+    if (mobile) await page.getByRole("button", { name: /Navigation/ }).click();
     await expect(nav.getByRole("link", { name: /Templates/ })).toHaveAttribute("aria-current", "page");
+    if (mobile) await page.keyboard.press("Escape");
     // What needs the viewer first, then what is ready; Bob's personal template is not Alice's to see.
     await expect(page.getByRole("list", { name: "Templates" }).locator(":scope > li")).toHaveText([
       /Modal quick fix/,
@@ -104,7 +106,7 @@ test("a missing agent account warns before publication and choosing a usable age
   const dialog = page.getByRole("dialog", { name: "New template" });
   const warning = dialog.getByRole("status");
   await expect(warning).toContainText("No usable Claude Code account is available to you in this organization.");
-  await expect(warning.getByRole("link", { name: "Build > Harness" })).toHaveAttribute("href", "/harness");
+  await expect(warning.getByRole("link", { name: "Start with > Harness" })).toHaveAttribute("href", "/harness");
   await dialog.getByRole("radio", { name: "Codex" }).check();
   await expect(warning).toHaveCount(0);
   await dialog.getByRole("radio", { name: "Claude Code" }).check();
