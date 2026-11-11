@@ -167,6 +167,20 @@ test("an admin creates an org template from org resources only; it is published 
 });
 
 test("a new revision starts from the current one; the old revision stays and the warning clears", async ({ page }) => {
+  await fetch(`${MOCK}/__test/accounts`, {
+    method: "POST",
+    body: JSON.stringify({
+      user: [],
+      org: [1, 2].map((number) => ({
+        id: `00000000-0000-4000-8000-00000000079${number}`,
+        kind: "openai",
+        name: `Codex ${number}`,
+        version: 1,
+        status: "active",
+        updatedAt: "2026-11-11T00:00:00.000Z",
+      })),
+    }),
+  });
   await signIn(page, "alice@example.com", "/templates");
   const shown = await panel(page, "Modal quick fix");
   await expect(shown.locator("[data-template-problems]")).toContainText("APP_REGION changed since this revision");
@@ -177,6 +191,19 @@ test("a new revision starts from the current one; the old revision stays and the
   await expect(dialog.getByLabel("Environment")).toHaveValue("00000000-0000-4000-8000-000000000026");
   await expect(dialog.getByRole("radio", { name: "Codex" })).toBeChecked();
   await expect(dialog.getByLabel("Reasoning effort")).toHaveValue("high");
+  const accountWarning = dialog.getByRole("status");
+  const keepAccount = dialog.getByRole("checkbox", { name: /Keep its pinned model account/ });
+  // The implicit default is irrelevant while this revision keeps its explicit account.
+  await expect(accountWarning).toHaveCount(0);
+  await keepAccount.uncheck();
+  await expect(accountWarning).toContainText("Several Codex accounts are available. Set a default");
+  await keepAccount.check();
+  await expect(accountWarning).toHaveCount(0);
+  // Changing harness drops the pin; publishing that revision must warn just like creating it.
+  await dialog.getByRole("radio", { name: "Claude Code" }).check();
+  await expect(accountWarning).toContainText("No usable Claude Code account is available");
+  await dialog.getByRole("radio", { name: "Codex" }).check();
+  await expect(accountWarning).toHaveCount(0);
   await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
   await expect(dialog.getByRole("checkbox", { name: /APP_REGION/ })).toBeChecked();
   await expect(dialog.locator('[data-pick="variables"]')).toContainText("as DEPLOY_REGION, FALLBACK_REGION");
@@ -185,6 +212,7 @@ test("a new revision starts from the current one; the old revision stays and the
   await expect(dialog.getByRole("alert")).toContainText("Untick “Keep its pinned model account”");
   await dialog.getByRole("button", { name: "Back" }).click();
   await dialog.getByRole("checkbox", { name: /Keep its pinned model account/ }).uncheck();
+  await expect(accountWarning).toContainText("Several Codex accounts are available. Set a default");
   await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
   await dialog.getByRole("button", { name: "Publish revision 2" }).click();
   await expect(dialog).toBeHidden();

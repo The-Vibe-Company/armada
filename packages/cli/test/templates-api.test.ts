@@ -180,6 +180,8 @@ test("template failures use closed actionable diagnostics without echoing untrus
     ["Template launch refused: environment_snapshot_unavailable.", "snapshot"],
     ["Template launch refused: connection_version_changed.", "grant changed"],
     ["Template launch refused: model_account_unavailable.", "Add one in Build > Harness"],
+    ["Template launch refused: model_account_ambiguous.", "Set a default"],
+    ["Template launch refused: model_account_refused.", "expired, revoked, changed or incompatible"],
     ["Template launch refused: model_account_version_changed.", "account version changed"],
     ["Template launch refused: model_account_incompatible.", "incompatible"],
     ["untrusted provider text: do-not-echo", "Template"],

@@ -350,7 +350,7 @@ export function createTemplateService(sql: Sql) {
       } catch (error) {
         const reason = refusalReason(error);
         // Closed reason only: never log credential errors, request bodies or readable values.
-        if (reason) console.warn("armada: template launch refused", { reason });
+        if (reason) console.warn("armada: template launch refused", { reason, templateId: id(input.id), orgId: org });
         throw error;
       }
     }
@@ -441,6 +441,8 @@ export function createTemplateService(sql: Sql) {
         // infrastructure and authorization failures intact rather than hiding them as account problems.
         if (error instanceof VaultError && error.code === "missing_credential")
           unavailable("model_account_unavailable");
+        if (error instanceof VaultError && error.code === "conflict") unavailable("model_account_ambiguous");
+        if (error instanceof VaultError && error.code === "credential_refused") unavailable("model_account_refused");
         throw error;
       });
     if (!credentials.binding) unavailable("model_account_unavailable");

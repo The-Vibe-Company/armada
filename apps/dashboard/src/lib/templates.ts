@@ -334,6 +334,10 @@ const LAUNCH_REASONS: Record<string, string> = {
   connection_version_changed: "A tool it uses was reconnected while launching. Try again.",
   model_account_unavailable:
     "No usable model account is available for this agent in this organization. Add one in Build > Harness or choose another agent.",
+  model_account_ambiguous:
+    "Several model accounts can run this agent. Set a default in Build > Harness or publish a revision with an explicit account binding.",
+  model_account_refused:
+    "The selected model account is expired, revoked, changed or incompatible. Reconnect it in Build > Harness or publish a revision with a usable account binding.",
   model_account_version_changed: "Its model account changed. Try again.",
   model_account_incompatible: "Its model account cannot run this agent.",
   template_revision_changed: "A new revision was published while launching. Try again.",
