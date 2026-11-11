@@ -149,7 +149,7 @@ export function SandboxChat(props: Props) {
     if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
     setHasMore(page.hasMore);
     return { more: page.hasMore, active: isActiveStatus(next) || refreshNeeded };
-  }, [sandboxId, router, startRefresh]);
+  }, [sandboxId, router]);
 
   /** Read until drained, inactive and rendered metadata is acknowledged. One loop at a time. */
   const tick = useCallback(async () => {
