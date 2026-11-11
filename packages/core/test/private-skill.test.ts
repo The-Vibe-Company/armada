@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -32,9 +41,17 @@ test.each([
   "unsafe lock",
 ])("private installer %s", (mode) => {
   const root = mkdtempSync(join(tmpdir(), "private-skill-"));
+  const bin = join(root, "bin");
   const originalKeys = "# unrelated authorization\nssh-ed25519 AAAA existing\n";
   const homes = [root, join(root, ".root")];
   try {
+    mkdirSync(bin);
+    // Resolve only the tools this fixture needs; never inherit installed provider CLIs.
+    for (const name of ["node", "bash", "flock", "id"]) {
+      const executable = Bun.which(name);
+      if (!executable) throw new Error(`Private installer fixture requires ${name}`);
+      symlinkSync(executable, join(bin, name));
+    }
     for (const home of homes) {
       mkdirSync(join(home, ".ssh"), { recursive: true });
       writeFileSync(join(home, ".ssh/authorized_keys"), originalKeys, { mode: 0o600 });
@@ -63,9 +80,9 @@ fs.mkdirSync(root+'/.companion',{recursive:true});
 fs.writeFileSync(root+'/.companion/skills.lock.json',JSON.stringify({lockfileVersion:2,workspaces:{'11111111-1111-4111-8111-111111111111':{apiUrl:'https://skillpack.app/v1',skills:{notes:{version:process.env.MODE==='wrong receipt'?'2.0.0':'1.0.0',pinned:'1.0.0',skillId:'22222222-2222-4222-8222-222222222222',checksum,targets:[{tool:'codex',version:'1.0.0',packageChecksum:checksum}]}}}}}));
 process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process.env.SKILLPACK_API_KEY);
 `;
-    for (const name of ["ssh", "ssh-keygen", "skillpack"]) writeFileSync(join(root, name), fake, { mode: 0o755 });
+    for (const name of ["ssh", "ssh-keygen", "skillpack"]) writeFileSync(join(bin, name), fake, { mode: 0o755 });
     if (mode === "missing executable")
-      writeFileSync(join(root, "skillpack"), "#!/nonexistent/skillpack-interpreter\n", { mode: 0o755 });
+      writeFileSync(join(bin, "skillpack"), "#!/nonexistent/skillpack-interpreter\n", { mode: 0o755 });
     const entry = join(import.meta.dir, "../src/private-skill.ts");
     const launchEntry = join(import.meta.dir, "../src/launch.ts");
     const script = `import {launchSandbox} from ${JSON.stringify(launchEntry)}; import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; if(process.env.LAUNCH==='1'){
@@ -80,7 +97,8 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       env: {
         ...process.env,
         HOME: root,
-        PATH: `${root}:${process.env.PATH}`,
+        // Fake SSH rewrites the guest-local fallback to root/.local/bin as well.
+        PATH: bin,
         MODE: mode.startsWith("launch ") ? mode.slice(7) : mode,
         LAUNCH: mode.startsWith("launch ") ? "1" : "0",
       },
@@ -137,6 +155,7 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       else expect(contents).toBe(originalKeys);
     }
     for (const path of readdirSync(root, { recursive: true })) {
+      if (lstatSync(join(root, String(path))).isSymbolicLink()) continue;
       try {
         expect(readFileSync(join(root, String(path)), "utf8")).not.toContain("cmp_pat_" + "a".repeat(48));
       } catch (error) {
