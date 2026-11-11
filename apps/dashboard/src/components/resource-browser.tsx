@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * The skeleton every Build page shares (#808): the readiness strip on top, one dense list (a row per item, its
- * state and its one expected action), and a detail panel on the right for everything rare (a sheet on a phone). A
+ * state and its one expected action), and full-width details above the list for everything rare (a sheet on a phone). A
  * page's create flow is a `CreateDialog` passed as `actions` (#896, #898), never this panel. The page renders
  * each row's cells and panel on the server; this component only chooses which panel shows.
  *
@@ -145,7 +145,7 @@ export function ResourceBrowser({
   const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
   const sheet = selected !== null && !wide;
   const panelRef = useRef<HTMLElement>(null);
-  // As a sheet, the panel is a modal dialog that keeps Tab inside; beside the list, a plain landmark.
+  // As a sheet, the panel is a modal dialog that keeps Tab inside; above the list, a plain landmark.
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel || !sheet) return;
@@ -166,12 +166,7 @@ export function ResourceBrowser({
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
-      <div
-        className={cn(
-          "grid items-start gap-4",
-          selected !== null && "lg:grid-cols-[minmax(0,1fr)_minmax(22rem,26rem)] xl:grid-cols-[minmax(0,1fr)_28rem]",
-        )}
-      >
+      <div className="grid items-start gap-4">
         <div className="@container min-w-0 space-y-3" inert={sheet}>
           {rows.length >= FILTER_FROM && (
             <div className="relative max-w-sm">
@@ -212,7 +207,7 @@ export function ResourceBrowser({
           ref={panelRef}
           aria-labelledby="resource-panel-title"
           hidden={selected === null}
-          className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:sticky lg:top-6 lg:z-auto lg:max-h-[calc(100dvh-3rem)] lg:rounded-xl lg:bg-card lg:shadow-xs"
+          className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
         >
           <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
             <div className="min-w-0 space-y-0.5">
