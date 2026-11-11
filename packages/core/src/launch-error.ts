@@ -1,4 +1,5 @@
 import type { HelperRefusal } from "./helper.ts";
+import type { PrivateSkillError, PrivateSkillFailure } from "./private-skill.ts";
 export const LAUNCH_INITIALIZATION_STAGES = [
   "initialization_bind",
   "initialization_ready",
@@ -42,19 +43,29 @@ export class LaunchError extends Error {
   /** Armada's id of the sandbox that was recorded before the failure, when there was one. */
   readonly sandboxId: string | undefined;
   readonly safeReason: LaunchFailureReason | undefined;
-  readonly reason: HelperRefusal["reason"] | undefined;
+  readonly reason: HelperRefusal["reason"] | PrivateSkillFailure | undefined;
+  readonly stage: PrivateSkillError["stage"] | undefined;
+  readonly skillFailure: { reason: PrivateSkillFailure; stage: PrivateSkillError["stage"] } | undefined;
   readonly action: HelperRefusal["action"] | undefined;
 
   constructor(
     code: LaunchErrorCode,
     message: string,
-    options?: { cause?: unknown; sandboxId?: string; safeReason?: LaunchFailureReason; helperRefusal?: HelperRefusal },
+    options?: {
+      cause?: unknown;
+      sandboxId?: string;
+      safeReason?: LaunchFailureReason;
+      helperRefusal?: HelperRefusal;
+      skillFailure?: { reason: PrivateSkillFailure; stage: PrivateSkillError["stage"] };
+    },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.sandboxId = options?.sandboxId;
     this.safeReason = options?.safeReason;
-    this.reason = options?.helperRefusal?.reason;
+    this.reason = options?.skillFailure?.reason ?? options?.helperRefusal?.reason;
+    this.stage = options?.skillFailure?.stage;
+    this.skillFailure = options?.skillFailure;
     this.action = options?.helperRefusal?.action;
   }
 }

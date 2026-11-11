@@ -10,10 +10,11 @@ import {
   type LaunchCredentialResolver,
   resolveCredentials,
   resolveGitHubAccess,
+  resolveSkillpackCredential,
   toHarnessCredentials,
 } from "@armada/core";
 
-import { sshHydrateAuthState, sshHydrateGitHubToken, VaultError } from "@armada/core/server";
+import { PrivateSkillError, sshHydrateAuthState, sshHydrateGitHubToken, VaultError } from "@armada/core/server";
 import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
@@ -41,6 +42,17 @@ export function launchCredentials(
   ownership?: ModelAuthOwnership,
 ): LaunchCredentialResolver {
   return {
+    async skillpackKey(actor) {
+      try {
+        return (await resolveSkillpackCredential(reader, encryptionKey, actor))?.key ?? null;
+      } catch (error) {
+        throw new PrivateSkillError(
+          error instanceof VaultError && error.code === "credential_refused"
+            ? "skillpack_credential_refused"
+            : "skillpack_credential_unreadable",
+        );
+      }
+    },
     async refreshGitHub(actor, provider, sandboxId) {
       if (!github) throw new VaultError("unavailable", "GitHub authorization is not configured.");
       const repaired = await refreshLegacyGitHub(

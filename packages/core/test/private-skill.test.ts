@@ -8,6 +8,9 @@ import { join } from "node:path";
 // Fake SSH maps the provider's guest home to a temporary home, never the CI host's /home/user.
 test.each([
   "ok",
+  "launch ok",
+  "launch refused",
+  "launch missing key",
   "refused",
   "broad key",
   "missing",
@@ -41,7 +44,7 @@ test.each([
 const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');
 const kind=path.basename(process.argv[1]);
 if(kind==='ssh-keygen'){const target=process.argv[process.argv.indexOf('-f')+1];fs.writeFileSync(target,'fake key');fs.writeFileSync(target+'.pub','ssh-ed25519 AAAA fake');process.exit(0);}
-if(kind==='ssh'){const input=fs.readFileSync(0,'utf8').replaceAll("'/home/user'",JSON.stringify(process.env.HOME)).replaceAll("/root",process.env.HOME+"/.root");const r=cp.spawnSync('bash',['-c','bash -c '+process.argv.at(-1)],{input,encoding:'utf8'});process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??1);}
+if(kind==='ssh'){const input=fs.readFileSync(0,'utf8').replaceAll("'/home/user'",JSON.stringify(process.env.HOME)).replaceAll("/home/user",process.env.HOME).replaceAll("/root",process.env.HOME+"/.root");const r=cp.spawnSync('bash',['-c','bash -c '+process.argv.at(-1)],{input,encoding:'utf8'});process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??1);}
 if(!process.env.SKILLPACK_API_KEY||process.env.ARMADA_GIT_TOKEN)process.exit(9);
 if(process.env.MODE==='cli unavailable')process.exit(2);
 if(process.env.MODE==='auth unavailable')process.exit(8);
@@ -63,17 +66,30 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
     if (mode === "missing executable")
       writeFileSync(join(root, "skillpack"), "#!/nonexistent/skillpack-interpreter\n", { mode: 0o755 });
     const entry = join(import.meta.dir, "../src/private-skill.ts");
-    const script = `import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:process.env.MODE==='bad reference'?'not-a-pin':'notes@1.0.0',harness:'codex',key:process.env.MODE==='unreadable key'?'invalid':key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
+    const launchEntry = join(import.meta.dir, "../src/launch.ts");
+    const script = `import {launchSandbox} from ${JSON.stringify(launchEntry)}; import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; if(process.env.LAUNCH==='1'){
+ let stored=[],prompted=false;const now=new Date().toISOString();
+ Object.assign(provider,{id:'boat',harnesses:['codex'],capabilities:{codex:{reasoningEffort:true}},fork:async()=>({id:'fake',state:'ready',expiresAt:new Date(Date.now()+86400000)}),get:async()=>({id:'fake',state:'ready',expiresAt:new Date(Date.now()+86400000)}),exec:async()=>({detached:false,exitCode:0,stdout:'',stderr:'',timedOut:false,truncated:false}),prompt:async()=>{prompted=true;if(stored.length!==1)throw Error('receipt_not_persisted');return {promptId:'p',conversationId:'c',status:'queued'};},stop:async()=>{},delete:async()=>({status:'deleted'})});
+ const golden={id:'golden',orgId:'org',ownerId:'owner',name:'web',visibility:'org',provider:'boat',providerSnapshotId:'snapshot',config:{repos:[{url:'https://github.com/example/repo.git',branch:'main',dir:'repo'}],init:[]}};
+ const stores={goldens:{findByName:async()=>[golden]},sandboxes:{insert:async input=>({...input,createdAt:now,conversationIds:[]}),update:async()=>{},recordSkills:async(_id,receipts)=>{stored=receipts;}},credentials:{resolve:async()=>({env:{OPENAI_API_KEY:'synthetic-model-key'},github:{status:'not_connected'}}),skillpackKey:async()=>process.env.MODE==='missing key'?null:key}};
+ try{const result=await launchSandbox(provider,stores,{userId:'owner',orgId:'org',role:'member'},{golden:'web',harness:'codex',skills:['notes@1.0.0'],prompt:'start'});console.log(JSON.stringify({receipt:result.sandbox.skills[0],prompted}));}catch(e){console.log(JSON.stringify({reason:e.reason,stage:e.stage,prompted}));}
+}else try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:process.env.MODE==='bad reference'?'not-a-pin':'notes@1.0.0',harness:'codex',key:process.env.MODE==='unreadable key'?'invalid':key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
-      env: { ...process.env, HOME: root, PATH: `${root}:${process.env.PATH}`, MODE: mode },
+      env: {
+        ...process.env,
+        HOME: root,
+        PATH: `${root}:${process.env.PATH}`,
+        MODE: mode.startsWith("launch ") ? mode.slice(7) : mode,
+        LAUNCH: mode.startsWith("launch ") ? "1" : "0",
+      },
     });
     expect(result.exitCode).toBe(0);
     const stdout = result.stdout.toString(),
       stderr = result.stderr.toString();
     expect(stdout + stderr).not.toContain("cmp_pat_" + "a".repeat(48));
     const value = JSON.parse(stdout);
-    if (mode === "ok" || mode === "broad key")
-      expect(value).toEqual({
+    if (mode === "ok" || mode === "broad key" || mode === "launch ok")
+      expect(mode === "launch ok" ? value.receipt : value).toEqual({
         reference: "notes@1.0.0",
         version: "1.0.0",
         skillId: "22222222-2222-4222-8222-222222222222",
@@ -85,6 +101,8 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       expect(value.reason).toBe(
         {
           refused: "skillpack_credential_refused",
+          "launch refused": "skillpack_credential_refused",
+          "launch missing key": "skillpack_credential_missing",
           expired: "skillpack_credential_refused",
           revoked: "skillpack_credential_refused",
           missing: "skillpack_skill_unavailable",
@@ -103,6 +121,11 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
           "unsafe lock": "skillpack_ssh_key_cleanup_failed",
         }[mode],
       );
+    if (mode === "launch ok") expect(value.prompted).toBe(true);
+    if (mode === "launch refused" || mode === "launch missing key") {
+      expect(value.prompted).toBe(false);
+      expect(value.stage).toBe(mode === "launch refused" ? "auth" : "credential");
+    }
     for (const home of homes) {
       const contents = readFileSync(join(home, ".ssh/authorized_keys"), "utf8");
       if (mode === "unsafe lock") expect(contents).toStartWith(originalKeys);
