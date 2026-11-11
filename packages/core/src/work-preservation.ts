@@ -134,7 +134,7 @@ export async function preserveWork(
     execStage = stage;
     try {
       signal.throwIfAborted();
-      return await provider.exec({ ...request, signal });
+      return await provider.exec({ ...request, signal, preservationStage: stage });
     } catch (error) {
       throw new CaptureError("exec_failed", { stage, ...workPreservationError(error) });
     }

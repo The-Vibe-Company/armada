@@ -335,7 +335,7 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async preserveWork(id, provider, providerId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        return preserveBeforeStop(sql, provider, id, providerId);
+        return preserveBeforeStop(sql, provider, id, providerId, "user_stop");
       },
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

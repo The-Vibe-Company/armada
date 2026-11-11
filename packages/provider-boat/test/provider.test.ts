@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ProviderError } from "@armada/core";
 import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
@@ -840,40 +840,65 @@ test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Bo
 // The SDK boundary owns refusal classification/retry safety. Capture must finish
 // before stop, and a 409 refusal is safe to retry unlike an ambiguous 502.
 test("capture waits through Boat startup and not-ready after quiescence before stop", async () => {
-  const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
-  const boat = fakeBoat(
-    { body: { ok: true, conversations: [] } },
-    { body: { ok: true, sandbox: sandbox({ state: "provisioning" }) } },
-    ready,
-    errorBody(409, "sandbox_not_ready", "Not ready", { retryable: false }),
-    ready,
-    {
-      body: {
-        ok: true,
-        type: "command.finished",
-        success: true,
-        exitCode: 0,
-        stdout: '{"status":"clean"}',
-        stderr: "",
-        timedOut: false,
+  const log = spyOn(console, "info").mockImplementation(() => {});
+  try {
+    const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
+    const boat = fakeBoat(
+      { body: { ok: true, conversations: [] } },
+      { body: { ok: true, sandbox: sandbox({ state: "provisioning" }) } },
+      ready,
+      errorBody(409, "sandbox_not_ready", "Not ready", { retryable: false }),
+      { body: { ok: true, sandbox: sandbox({ state: "idle" }) } },
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: '{"status":"clean"}',
+          stderr: "",
+          timedOut: false,
+        },
       },
-    },
-    { body: { ok: true } },
-  );
-  if (!boat.provider.quiesce) throw new Error("Missing quiescence");
-  await boat.provider.quiesce({ sandboxId: ID });
-  expect(await preserveWork(boat.provider, ID)).toEqual({ status: "clean" });
-  await boat.provider.stop({ sandboxId: ID });
-  expect(boat.sleeps).toEqual([1000, 1000]);
-  expect(boat.requests.map(({ method, path }) => [method, path.split("/").at(-1)])).toEqual([
-    ["GET", "conversations"],
-    ["GET", ID],
-    ["GET", ID],
-    ["POST", "commands"],
-    ["GET", ID],
-    ["POST", "commands"],
-    ["POST", "stop"],
-  ]);
+      { body: { ok: true } },
+    );
+    if (!boat.provider.quiesce) throw new Error("Missing quiescence");
+    await boat.provider.quiesce({ sandboxId: ID });
+    expect(await preserveWork(boat.provider, ID)).toEqual({ status: "clean" });
+    await boat.provider.stop({ sandboxId: ID });
+    expect(boat.sleeps).toEqual([1000, 1000]);
+    expect(boat.requests.map(({ method, path }) => [method, path.split("/").at(-1)])).toEqual([
+      ["GET", "conversations"],
+      ["GET", ID],
+      ["GET", ID],
+      ["POST", "commands"],
+      ["GET", ID],
+      ["POST", "commands"],
+      ["POST", "stop"],
+    ]);
+    const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(events.find((e) => e.operation === "quiesce")?.phase).toBe("idle_no_interrupt");
+    expect(
+      events
+        .filter((e) => e.event === "boat_preservation_exec" && e.source === "state_guard")
+        .map((e) => [e.stage, e.providerState, e.decision]),
+    ).toEqual([
+      ["collect_exec", "provisioning", "wait_starting"],
+      ["collect_exec", "ready", "command"],
+      ["collect_exec", "idle", "command"],
+    ]);
+    expect(events.find((e) => e.decision === "refused_not_ready")).toMatchObject({
+      source: "command_api",
+      providerStatus: 409,
+      retryScheduled: true,
+    });
+    expect(events.findIndex((e) => e.operation === "stop" && e.phase === "api_dispatch")).toBeGreaterThan(
+      events.findIndex((e) => e.decision === "response_received"),
+    );
+    expect(events.some((e) => e.operation === "resume" || e.operation === "interrupt")).toBe(false);
+  } finally {
+    log.mockRestore();
+  }
 });
 
 test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat execution safely", async (outcome) => {
@@ -916,3 +941,44 @@ test("capture cancellation during a readiness wait cannot admit a later command"
   ).rejects.toBeDefined();
   expect(paths).toEqual([`/api/v1/sandboxes/${ID}`, `/api/v1/sandboxes/${ID}/commands`]);
 });
+
+// Preserve enough evidence to distinguish Armada admission from Boat rejection,
+// without exposing error bodies, labels, output, or new free-form state values.
+test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
+  "capture observations identify %s without waking or stopping compute",
+  async (state) => {
+    const log = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const reads = state === "archived" ? 1 : 5;
+      const boat = fakeBoat(
+        ...Array.from({ length: reads }, () => ({
+          body: { ok: true, sandbox: sandbox({ state, error: "PRIVATE_ERROR", labels: { secret: "PRIVATE_LABEL" } }) },
+        })),
+      );
+      await expect(
+        boat.provider.exec({
+          sandboxId: ID,
+          command: "PRIVATE_COMMAND",
+          onlyIfRunning: true,
+          preservationStage: "collect_exec",
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready", status: undefined });
+      const observations = log.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((e) => e.source === "state_guard");
+      expect(observations).toHaveLength(reads);
+      expect(observations.map((e) => e.attempt)).toEqual(Array.from({ length: reads }, (_, i) => i + 1));
+      expect(observations.at(-1)).toMatchObject({
+        stage: "collect_exec",
+        providerState: state === "PRIVATE_STATE" ? "unrecognized" : state,
+        stateMappingKnown: state === "provisioning" || state === "archived",
+        normalizedState: state === "archived" ? "stopped" : "starting",
+        decision: state === "archived" ? "refuse_terminal" : "startup_budget_exhausted",
+      });
+      expect(boat.requests.every((r) => r.method === "GET")).toBe(true);
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE");
+    } finally {
+      log.mockRestore();
+    }
+  },
+);

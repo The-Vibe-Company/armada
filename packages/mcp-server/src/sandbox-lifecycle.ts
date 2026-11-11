@@ -1,7 +1,7 @@
 import { type Provider, ProviderError, type Sql } from "@armada/core/server";
 
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
-import { preserveBeforeStop } from "./work-preservation.ts";
+import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
@@ -91,7 +91,11 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
               (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: row.provider_sandbox_id }),
             );
           signal?.throwIfAborted();
-          if ((await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {})) === "pending")
+          if (
+            (await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id, "lifecycle_stop").catch(
+              () => {},
+            )) === "pending"
+          )
             throw new ProviderError({
               provider: provider.id,
               code: "sandbox_not_ready",
@@ -99,6 +103,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
               message: "Interruption is pending; retry stop after turns settle.",
             });
           signal?.throwIfAborted();
+          recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () => provider.stop({ sandboxId: row.provider_sandbox_id }));
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         }

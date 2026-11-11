@@ -393,6 +393,8 @@ export interface ExecRequest {
   signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
   onlyIfRunning?: boolean;
+  /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
+  preservationStage?: "collect_exec" | "chunk_exec";
   sandboxId: string;
   command: string;
   cwd?: string;

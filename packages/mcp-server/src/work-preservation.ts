@@ -15,12 +15,23 @@ function failureNote(reason: string): string {
   return `unpushed work could not be preserved (${reason}). Resume the sandbox and push or copy any local work before stopping again.`;
 }
 
+type StopSource = "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
+/** Mark dispatch at the caller, separately from Boat's beforeStop hook/API boundary. */
+export function recordStopDispatch(sandboxId: string, providerSandboxId: string, source: StopSource): void {
+  try {
+    console.info(JSON.stringify({ event: "sandbox_stop_dispatch", sandboxId, providerSandboxId, source }));
+  } catch {
+    /* Diagnostics only. */
+  }
+}
+
 /** Never return command output or SDK errors: archives may contain credentials. */
 export async function preserveBeforeStop(
   sql: Sql,
   provider: Provider,
   id: string,
   providerId: string,
+  source: StopSource = "unspecified",
 ): Promise<"pending" | void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
@@ -28,7 +39,7 @@ export async function preserveBeforeStop(
   const progress = { stage: "observe" };
   try {
     return await Promise.race([
-      captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal),
+      captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal, source),
       new Promise<"pending" | void>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
@@ -70,26 +81,54 @@ async function captureAndStore(
   expired: () => boolean,
   progress: { stage: string },
   signal: AbortSignal,
+  source: StopSource,
 ): Promise<"pending" | void> {
   let reason = "failed";
   let stage = "observe";
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
   let note: string;
+  const observed = (phase: string, state?: string) => {
+    try {
+      console.info(
+        JSON.stringify({
+          event: "work_preservation_stage",
+          sandboxId: id,
+          providerSandboxId: providerId,
+          phase,
+          source,
+          ...(state
+            ? {
+                state: ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"].includes(state)
+                  ? state
+                  : "unrecognized",
+              }
+            : {}),
+        }),
+      );
+    } catch {
+      /* Logging cannot change stop ordering. */
+    }
+  };
   try {
     // Exec may implicitly resume retained compute. Never activate a machine known stopped.
     const current = await provider.get(providerId);
     if (expired()) return;
+    observed("observed", current.state);
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
     // Native runtimes acknowledge interrupt only after active turns settle.
     // The stop activity lease prevents new Armada turns during capture.
     stage = progress.stage = "quiesce";
     reason = "failed";
+    observed("quiesce_started");
     await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
     if (expired()) return;
+    observed("quiesce_finished");
     stage = progress.stage = "capture";
     reason = "failed";
+    observed("capture_started");
     const result = await preserveWork(provider, providerId, signal);
     if (expired()) return;
+    observed(`capture_${result.status}`);
     if (result.status === "preserved") {
       stage = progress.stage = "storage";
       reason = "failed";
