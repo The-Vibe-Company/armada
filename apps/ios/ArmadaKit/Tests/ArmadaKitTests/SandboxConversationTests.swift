@@ -189,3 +189,24 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
         #expect((read.prompt?.resendHint != nil) == (reason != "future_reason"))
     }
 }
+
+// A response lost during background termination must not make the next app instance send again.
+// This uses the same secure-session storage across two independent client lifetimes.
+@Test func anInterruptedSandboxSendCannotBeRepeatedAfterRelaunch() async throws {
+    let storage = MemoryStorage()
+    let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)])
+    let first = try ArmadaClient(transport: transport, storage: storage)
+    try await first.verifyEmail(email: "person@example.test", code: "123456")
+    try await first.selectOrganization("org-a")
+    await #expect(throws: ArmadaError.unavailable) {
+        _ = try await first.sendSandboxPrompt(id: sandboxID, text: "Keep this prompt")
+    }
+
+    let afterRelaunch = ScriptedTransport([])
+    let restored = try ArmadaClient(transport: afterRelaunch, storage: storage)
+    try await restored.restore()
+    await #expect(throws: ArmadaError.conflict) {
+        _ = try await restored.sendSandboxPrompt(id: sandboxID, text: "Do not send another prompt")
+    }
+    #expect(await afterRelaunch.requests.isEmpty)
+}
