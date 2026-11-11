@@ -219,7 +219,8 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         cache?.remove(key)
     }
 
-    /// One read toward the newest event. Returns whether newer events remain to read at once.
+    /// One read toward the newest event. Returns whether another immediate read is needed
+    /// for newer events or to revalidate a contested response without skipping its frontier.
     private func step<Failure: Error>(
         _ fetch: (_ read: ConversationRead) async throws(Failure) -> ConversationPage<Event>,
         show: Show
@@ -249,6 +250,10 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         // Pagination may have changed the window without advancing the live frontier.
         let incoming = revision == startedAt ? page.events
             : Self.uncontested(page.events, since: beforeEvents, current: snapshot.events)
+        // An older page may contain only intermediate content. Never commit a frontier while
+        // suppressing a conflicting live body: revalidate the whole page from the same cursor.
+        // If that read fails, the existing frontier still permits a later retry of the update.
+        guard incoming.count == page.events.count else { return true }
         revision += 1
         newestRevision += 1
         let changed = EventStream.merge(incoming, into: &snapshot.events)
@@ -273,7 +278,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         let known = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return incoming.filter { event in
             guard let existing = known[event.id] else { return true }
-            return previous[event.id] == existing
+            return event == existing || previous[event.id] == existing
         }
     }
 

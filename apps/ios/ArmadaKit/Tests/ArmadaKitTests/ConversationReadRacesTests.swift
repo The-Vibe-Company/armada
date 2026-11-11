@@ -54,6 +54,7 @@ private final class SuspendedPage {
 @Test func paginationAndLiveReadsPreserveBothContestedAndUncontestedUpdates() async throws {
     let cases: [(olderFirst: Bool, firstBody: String?, secondBody: String, expected: String)] = [
         (true, "fresh-older", "stale-forward", "fresh-older"),
+        (true, "same", "same", "same"),
         (true, nil, "fresh-forward", "fresh-forward"),
         (false, "fresh-forward", "stale-older", "fresh-forward"),
         (false, nil, "fresh-older", "fresh-older"),
@@ -71,10 +72,14 @@ private final class SuspendedPage {
             }, show: { _ in })
         }
         for await _ in olderGate.started { break }
+        var liveReads = 0
         let live = Task {
             try await loader.catchUp({ (read: ConversationRead) async throws(Stop) -> ConversationPage<Entry> in
                 #expect(read == .newer("c0"))
-                return await liveGate.response()
+                liveReads += 1
+                if liveReads == 1 { return await liveGate.response() }
+                // The server revalidates a contested page from the uncommitted frontier.
+                return ConversationPage(events: [Entry(id: "e", body: sample.expected), Entry(id: "new")], cursor: "c1", hasMore: false)
             }, show: { _ in })
         }
         for await _ in liveGate.started { break }
@@ -93,6 +98,8 @@ private final class SuspendedPage {
         }
         #expect(loader.snapshot.events == [Entry(id: "old"), Entry(id: "e", body: sample.expected), Entry(id: "new")])
         #expect(loader.snapshot.cursor == "c1")
+        let contested = sample.olderFirst && sample.firstBody != nil && sample.firstBody != sample.secondBody
+        #expect(liveReads == (contested ? 2 : 1))
         #expect(loader.snapshot.olderCursor == "o0")
         #expect(!loader.isLoadingOlder)
     }
@@ -155,4 +162,49 @@ private final class SuspendedPage {
     try await pending.value
     #expect(loader.snapshot.events == original)
     #expect(cache.snapshot(for: "k")?.cursor == "c0")
+}
+
+@MainActor
+@Test func aContestedLiveUpdateIsRevalidatedBeforeItsCursorIsCommitted() async throws {
+    for validationFails in [false, true] {
+        let cache = ConversationCache<Entry>()
+        cache.store(ConversationSnapshot(events: [Entry(id: "e", body: "before")], cursor: "c0", olderCursor: "o1", hasOlder: true), for: "k")
+        let loader = ConversationLoader<Entry>(key: "k", cache: cache)
+        let gate = SuspendedPage()
+        var reads: [ConversationRead] = []
+        let live = Task {
+            try await loader.catchUp({ (read: ConversationRead) async throws(Stop) -> ConversationPage<Entry> in
+                reads.append(read)
+                if reads.count == 1 { return await gate.response() }
+                #expect(loader.snapshot.cursor == "c0")
+                #expect(cache.snapshot(for: "k")?.cursor == "c0")
+                #expect(loader.snapshot.events == [Entry(id: "old"), Entry(id: "e", body: "intermediate")])
+                if validationFails { throw Stop() }
+                return ConversationPage(events: [Entry(id: "e", body: "final"), Entry(id: "new")], cursor: "c1", hasMore: false)
+            }, show: { _ in })
+        }
+        for await _ in gate.started { break }
+        try await loader.loadOlder({ _ throws(Stop) in
+            ConversationPage(events: [Entry(id: "old"), Entry(id: "e", body: "intermediate")], cursor: "ignored", hasMore: false)
+        }, show: { _ in })
+        gate.release?.resume(returning: ConversationPage(events: [Entry(id: "e", body: "final"), Entry(id: "new")], cursor: "c1", hasMore: false))
+        if validationFails {
+            await #expect(throws: Stop()) { try await live.value }
+            #expect(loader.snapshot.cursor == "c0")
+            #expect(cache.snapshot(for: "k")?.events == [Entry(id: "old"), Entry(id: "e", body: "intermediate")])
+            // Recovery must still request the final update, not start after the skipped cursor.
+            try await loader.catchUp({ (read: ConversationRead) throws(Stop) -> ConversationPage<Entry> in
+                reads.append(read)
+                #expect(read == .newer("c0"))
+                return ConversationPage(events: [Entry(id: "e", body: "final"), Entry(id: "new")], cursor: "c1", hasMore: false)
+            }, show: { _ in })
+        } else {
+            try await live.value
+        }
+        #expect(reads == Array(repeating: .newer("c0"), count: validationFails ? 3 : 2))
+        #expect(loader.snapshot.events == [Entry(id: "old"), Entry(id: "e", body: "final"), Entry(id: "new")])
+        #expect(loader.snapshot.cursor == "c1")
+        #expect(cache.snapshot(for: "k")?.events == loader.snapshot.events)
+        #expect(cache.snapshot(for: "k")?.cursor == "c1")
+    }
 }
