@@ -498,7 +498,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         description:
           operation === "launch"
             ? "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides."
-            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account and readable variable versions. No secrets.",
+            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account, readable variable versions and secret IDs/versions. Secret values are never accepted; secret-bound launch delivery is not available yet.",
         inputSchema: templateInputs[operation],
         outputSchema: z.object({}).passthrough(),
       },
