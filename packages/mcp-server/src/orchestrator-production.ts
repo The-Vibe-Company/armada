@@ -17,6 +17,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
+import { isPrivateModelEvent } from "./model-usage.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import {
   createOrchestratorBackendResolver,
@@ -114,7 +115,7 @@ export function createProductionOrchestrators(input: {
         `select s.* from public.sandboxes s join public.orchestrator_children c on c.sandbox_id=s.id
        join public.members m on m.org_id=c.org_id and m.user_id=c.owner_id
        where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and c.owner_id=s.owner_id and c.org_id=s.org_id
-       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+       and not exists(select 1 from public.armada_access_parents o where o.sandbox_id=s.id)`,
         [sandboxId, ownerId, orgId],
       )
     ).rows[0];
@@ -162,8 +163,14 @@ export function createProductionOrchestrators(input: {
       });
     },
     async read(id, ownerId, orgId) {
-      const { saved } = await child(id, ownerId, orgId);
-      return saved;
+      const { saved, provider } = await child(id, ownerId, orgId);
+      const events = await provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 });
+      return {
+        ...saved,
+        events: events.events.filter((event) => !isPrivateModelEvent(event)),
+        cursor: events.cursor ?? null,
+        hasMore: events.hasMore,
+      };
     },
     async message(operation, text) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
