@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.22.0](https://github.com/The-Vibe-Company/armada/compare/v2.21.0...v2.22.0) (2026-11-11)
+
+
+### Features
+
+* **routines:** schedule owner-scoped template launches ([#1014](https://github.com/The-Vibe-Company/armada/issues/1014)) ([0cea355](https://github.com/The-Vibe-Company/armada/commit/0cea355ab3b73d81b9e6d82f7bf6af20ec3cc636))
+
+
+### Bug Fixes
+
+* **dashboard:** keep Sandbox toolbar sort paired at every width ([#1018](https://github.com/The-Vibe-Company/armada/issues/1018)) ([72a16ce](https://github.com/The-Vibe-Company/armada/commit/72a16ce152c58627203c85b86452dfc4463703bf))
+* **ios:** preserve server explanations in sandbox and auth failures ([#1021](https://github.com/The-Vibe-Company/armada/issues/1021)) ([3a6166d](https://github.com/The-Vibe-Company/armada/commit/3a6166dcb931d2b392bd3454815c03931b6d6148))
+* **models:** refuse unhonoured Claude Fable selection on Boat ([#866](https://github.com/The-Vibe-Company/armada/issues/866)) ([f469e46](https://github.com/The-Vibe-Company/armada/commit/f469e462b3bb89c80474138bd32aadceb9bd782d))
+* **test:** isolate Git credential tests from managed host credentials ([#1024](https://github.com/The-Vibe-Company/armada/issues/1024)) ([fc6b3ed](https://github.com/The-Vibe-Company/armada/commit/fc6b3ed652b761ea6fdfbe647e5ddaa960f7b866))
+
 ## [2.21.0](https://github.com/The-Vibe-Company/armada/compare/v2.20.0...v2.21.0) (2026-11-11)
 
 
