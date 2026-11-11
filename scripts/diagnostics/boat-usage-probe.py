@@ -35,7 +35,7 @@ def source(arg):
     except Exception: raise ValueError() from None
 
 def ancestry(pid):
-    usage=digest=False
+    usage=digest=encoding=False
     complete=False;unknown=False
     for _ in range(16):
         try:
@@ -49,11 +49,12 @@ def ancestry(pid):
                     code=source(args[position+1])
                     usage|=b'usage["capture"]' in code
                     digest|=b'usage["prompt_digest"]' in code
+                    encoding|=b'usage["INPUT_ENCODING"]' in code
             pid=int(read('/proc/%d/stat'%pid).rsplit(b')',1)[1].split()[1])
             if pid<=1:
                 complete=not unknown;break
         except Exception: break
-    return {'usageBridge':usage,'digestCapture':digest,'inspectionComplete':complete}
+    return {'usageBridge':usage,'digestCapture':digest,'boatInputEncoding':encoding,'inspectionComplete':complete}
 
 out={'probeUid':os.getuid(),'native':[],'stateReadable':False,'processReadFailures':0,
      'nativeCount':0,'nativeSummariesTruncated':False}
@@ -103,6 +104,8 @@ try:
     out['pending']='pending.json' in names
     if out['pending']:
         pending=json.loads(read(root+'/pending.json',65536))
+        out['pendingHasWireDigest']=isinstance(pending.get('wireDigest'),str) and bool(re.fullmatch(r'[a-f0-9]{64}',pending['wireDigest']))
+        out['pendingInputEncodingKnown']=pending.get('inputEncoding')=='boat-user-envelope-v1'
         out['pendingExpired']=isinstance(pending.get('at'),(int,float)) and time.time()-pending['at']>90
 except Exception: out['stateReadFailed']=True
 try:
@@ -115,6 +118,7 @@ try:
         if not valid or b'def fresh_mcp(' not in code: raise ValueError()
         out['installedUsageBridge']=valid and b'usage["capture"]' in code
         out['installedDigestCapture']=valid and b'usage["prompt_digest"]' in code
+        out['installedBoatInputEncoding']=valid and b'usage["INPUT_ENCODING"]' in code
     else: out['installedWrapperFormatUnknown']=True
 except Exception: out['installedWrapperReadFailed']=True
 print(json.dumps(out,sort_keys=True))

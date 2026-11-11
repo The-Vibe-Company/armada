@@ -46,7 +46,42 @@ native/session identifiers, native paths, records, or credential values. Return 
   not raw native errors. Detailed reasons collected before stopping are retained.
   The probe can run on current staging before this API change is deployed.
 
+## Confirmed admission mismatch and repair
+
+The staging probe on #977 found an instrumented native process and an unclaimed,
+unexpired ticket: no native session, turn or completion had been attached. This
+localizes the failure before file-flush collection. Inspection of the installed
+Boat agent-server driver found its actual Codex `turn/start` shape: optional
+`skill` references followed by one text item wrapped in
+`<important-instructions-from-user>` (newline after the opening tag). The old
+reader accepted only one unwrapped text item and compared its digest with the
+raw Armada prompt. Those bytes cannot match the real driver input.
+
+Admission now sends the digest of that exact wire envelope, never the prompt
+itself. The native bridge accepts the driver's skill references and compares the
+entire framed text, not a guessed substring. Unsupported resume context,
+multiple text items, images and ambiguous compound instruction blocks remain
+unknown rather than claiming another turn. Raw-prompt quarantine identities are
+preserved across upgrades; old admissions cannot be reinterpreted under the new
+codec. New admissions omit the legacy digest key so an already-running old
+bridge also cannot steal a new ticket by comparing a framed hash with raw text. A deterministic regression drives real admission, the installed bridge,
+native RPC notifications, a rollout file and collection with this driver shape.
+It failed before the fix with `native_input_unmatched` and now returns 42 input /
+7 output tokens. This is a synthetic protocol regression derived from the
+installed driver, **not** a claim that staging has already passed the repair.
+
+No environment flag or golden rebuild is required. After the coordinator
+releases this server change, validate on a **fresh staging Boat × Codex sandbox**
+so the native process starts with the updated bridge. An already running Python
+bridge retains its old code even if the executable has been replaced. On the
+updated probe, `installedBoatInputEncoding` and live `boatInputEncoding` identify
+the new bridge; an unclaimed new admission also has `pendingHasWireDigest` and
+`pendingInputEncodingKnown`. All are booleans: no prompt digests are exported.
+Run one turn, capture detail and the probe before stopping, and check non-zero
+reported tokens in detail and the dashboard. If still unknown, return the API's
+`unavailableReason` and new probe JSON on #977 rather than guessing a flush delay.
+
 No `cost` field in detail is expected: pricing is a dashboard-only estimate/API
 equivalent at versioned list prices, not a server price or an invoice. This PR
-adds observability, not a guessed golden rebuild or a fix for an unverified
-staging cause. No migrations or deployment are performed by this work.
+repairs the driver/admission mismatch and adds observability. No migrations or
+deployment are performed by this work.

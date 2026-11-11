@@ -14,7 +14,16 @@ test("diagnostic probe exports only metadata and does not mutate guest state", (
     const path = join(root, `${ticket}.json`);
     const original = JSON.stringify({ session: marker, turn: marker, terminal: true, final: [{ private: marker }] });
     writeFileSync(path, original);
-    writeFileSync(join(root, "pending.json"), JSON.stringify({ ticket, at: 0, digest: marker }));
+    writeFileSync(
+      join(root, "pending.json"),
+      JSON.stringify({
+        ticket,
+        at: 0,
+        digest: marker,
+        wireDigest: "a".repeat(64),
+        inputEncoding: "boat-user-envelope-v1",
+      }),
+    );
     writeFileSync(join(root, "prompt-private-id.json"), JSON.stringify({ ticket }));
     const result = Bun.spawnSync(["python3", "-I", resolve("scripts/diagnostics/boat-usage-probe.py")], {
       env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" },
@@ -25,9 +34,12 @@ test("diagnostic probe exports only metadata and does not mutate guest state", (
     expect(text).not.toContain(marker);
     expect(text).not.toContain(ticket);
     expect(text).not.toContain(home);
+    expect(text).not.toContain("a".repeat(64));
     expect(JSON.parse(text)).toMatchObject({
       stateReadable: true,
       pendingExpired: true,
+      pendingHasWireDigest: true,
+      pendingInputEncodingKnown: true,
       mappings: 1,
       ticketCount: 1,
       tickets: [

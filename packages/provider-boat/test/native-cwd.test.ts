@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Provider, sshNativeAuthAdmission } from "@armada/core/server";
 import { nativeCwdCommand, nativeCwdInstallScript } from "../src/native-cwd.ts";
+import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "../src/native-usage.ts";
 
 /** Exercise the production privilege boundary without elevating owned temporary fixtures. */
 function installFixture(root: string, command: string) {
@@ -671,5 +672,110 @@ test("Codex boot abort before initialize still answers the later first request",
   } finally {
     child?.kill("SIGKILL");
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// Compatibility fixture derived from the installed Boat agent-server driver:
+// skill items precede one text item, whose text has this exact user envelope.
+// This is synthetic protocol data, not a captured transcript or a model turn.
+test("Boat-framed Codex input reaches admitted native usage through the real bridge", async () => {
+  const home = mkdtempSync(join(tmpdir(), "boat-framed-usage-"));
+  const path = join(home, "codex");
+  const env = { HOME: home, PATH: "/usr/bin:/bin" };
+  const text = "Reply with the single word OK";
+  try {
+    writeFileSync(
+      `${path}.armada-original`,
+      `#!/usr/bin/python3 -I
+import json,os,sys
+session='12345678-1234-1234-1234-123456789012'
+turn='native-turn'
+for line in sys.stdin:
+    m=json.loads(line);method=m.get('method')
+    if method=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+    elif method=='thread/start': print(json.dumps({'id':m['id'],'result':{'thread':{'id':session}}}),flush=True)
+    elif method=='turn/start':
+        print(json.dumps({'method':'turn/started','params':{'threadId':session,'turn':{'id':turn}}}),flush=True)
+        root=os.path.expanduser('~/.codex/sessions');os.makedirs(root)
+        rows=[{'type':'session_meta','payload':{'id':session}},
+          {'type':'event_msg','payload':{'type':'task_started','turn_id':turn}},
+          {'type':'turn_context','payload':{'model':'gpt-6.1-sol'}},
+          {'type':'event_msg','payload':{'type':'token_count','info':{'total_token_usage':{'input_tokens':42,'output_tokens':7,'cached_input_tokens':0,'cache_write_input_tokens':0,'reasoning_output_tokens':0}}}},
+          {'type':'event_msg','payload':{'type':'task_complete','turn_id':turn}}]
+        with open(root+'/rollout-'+session+'.jsonl','w') as f:
+            for row in rows: f.write(json.dumps(row)+'\\n')
+        print(json.dumps({'id':m['id'],'result':{'turn':{'id':turn}}}),flush=True)
+        print(json.dumps({'method':'turn/completed','params':{'threadId':session,'turn':{'id':turn,'status':'completed'}}}),flush=True)
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(path, `#!/bin/sh\n${nativeCwdCommand(path, "codex", home)}\n`, { mode: 0o700 });
+    const provider = {
+      exec: async (request: { command: string; onlyIfRunning?: boolean }) => {
+        expect(request.onlyIfRunning).toBe(true);
+        expect(request.command).not.toContain(text);
+        const result = Bun.spawnSync(["/bin/sh", "-c", request.command], { env, cwd: home, timeout: 5000 });
+        return {
+          exitCode: result.exitCode,
+          stdout: result.stdout.toString(),
+          stderr: result.stderr.toString(),
+          detached: false,
+          timedOut: false,
+          truncated: false,
+        };
+      },
+    } as unknown as Provider;
+    const ticket = await admitNativeUsage(provider, "sandbox", text);
+    if (!ticket) throw new Error("Usage was not admitted");
+    await bindNativeUsage(provider, "sandbox", ticket, "prompt");
+    const input = [
+      { type: "skill", name: "fixture", path: "/fixture/SKILL.md" },
+      {
+        type: "text",
+        text: `<important-instructions-from-user>\n${text}</important-instructions-from-user>`,
+        text_elements: [],
+      },
+    ];
+    const driver = `import json,subprocess,sys
+p=subprocess.Popen([sys.argv[1],'app-server'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+def rpc(i,method,params):
+    p.stdin.write(json.dumps({'id':i,'method':method,'params':params})+'\\n');p.stdin.flush()
+    while True:
+        line=p.stdout.readline()
+        if not line: raise RuntimeError('fixture native exited')
+        m=json.loads(line)
+        if m.get('id')==i: return m['result']
+try:
+    rpc(1,'initialize',{})
+    session=rpc(2,'thread/start',{})['thread']['id']
+    rpc(3,'turn/start',{'threadId':session,'input':json.loads(sys.argv[2])})
+    while True:
+        line=p.stdout.readline()
+        if not line: raise RuntimeError('fixture native exited before terminal')
+        if json.loads(line).get('method')=='turn/completed': break
+    p.stdin.close();assert p.wait(timeout=5)==0
+finally:
+    if p.poll() is None: p.kill()
+`;
+    const result = Bun.spawnSync(["python3", "-I", "-c", driver, path, JSON.stringify(input)], {
+      env,
+      cwd: home,
+      timeout: 10000,
+    });
+    expect(result.exitCode).toBe(0);
+    const rows = await collectNativeUsage(provider, "sandbox", "prompt");
+    expect(rows).toEqual([
+      {
+        promptId: "prompt",
+        model: "gpt-6.1-sol",
+        inputTokens: 42,
+        outputTokens: 7,
+        cachedTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+      },
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
