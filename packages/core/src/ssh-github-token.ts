@@ -22,7 +22,7 @@ export async function sshHydrateGitHubToken(
     await sshStdinCheckout(
       provider,
       { sandboxId, token: JSON.stringify({ token, expiresAt: expiry }), script: BOOTSTRAP, timeoutMs: 60_000 },
-      deps,
+      { ...deps, githubHydration: true },
     );
   } catch (error) {
     if (error instanceof GitHubHydrationError) throw error;

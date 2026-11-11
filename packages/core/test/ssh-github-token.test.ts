@@ -3,8 +3,9 @@ import { type ChildProcess, type spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { rm } from "node:fs/promises";
 import { GitHubHydrationError } from "../src/api-failure.ts";
+import { GoldenError } from "../src/golden-config.ts";
 import type { Provider } from "../src/provider.ts";
-import type { SshExecDeps } from "../src/ssh-executor.ts";
+import { type SshExecDeps, sshStdinCheckout } from "../src/ssh-executor.ts";
 import { GITHUB_TOKEN_CLIENT, GITHUB_TOKEN_INSTALLER, sshHydrateGitHubToken } from "../src/ssh-github-token.ts";
 
 // Authoring gate: own the validation, private transport, and executable Python security/lifecycle
@@ -422,6 +423,31 @@ test("SSH hydration accepts only closed phase records, correlates logs and retur
       ]);
       expect(JSON.stringify(events)).not.toContain("arbitrary-secret");
     }
+  } finally {
+    log.mockRestore();
+  }
+});
+
+// Shared SSH callers must retain their own error protocol even when guest output resembles repair output.
+test("normal SSH ignores GitHub repair markers and retains the golden failure phase and safe reason", async () => {
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  const transport = diagnosticTransport("ARMADA_BUILD_FAILURE skillpack 98\nARMADA_GITHUB_FAILURE directories\n", 1);
+  try {
+    let failure: unknown;
+    try {
+      await sshStdinCheckout(
+        diagnosticProvider,
+        { sandboxId: "bx-build", token: "synthetic", script: "build" },
+        transport.deps,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(GoldenError);
+    expect(failure).toMatchObject({ code: "build_failed", safeReason: "skillpack_integrity_failed" });
+    expect(log.mock.calls).toEqual([
+      [JSON.stringify({ event: "golden_ssh_failed", phase: "skillpack", code: "exit_98" })],
+    ]);
   } finally {
     log.mockRestore();
   }

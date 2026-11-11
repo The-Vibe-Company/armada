@@ -29,6 +29,8 @@ export class PrivateSshError extends Error {
   }
 }
 export interface SshExecDeps {
+  /** Opt in only for the private GitHub repair installer, never generic guest output. */
+  githubHydration?: boolean;
   onWarning?: (warning: GoldenBuildWarning) => void;
   mkdtemp?: typeof mkdtemp;
   rm?: typeof rm;
@@ -331,6 +333,7 @@ async function sshExchange(
       deps.onWarning,
       privateTransport,
       input.sandboxId,
+      deps.githubHydration === true,
     );
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
@@ -372,6 +375,7 @@ function command(
   onWarning?: (warning: GoldenBuildWarning) => void,
   privateTransport = false,
   sandboxId?: string,
+  githubHydration = false,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -445,10 +449,11 @@ function command(
           phase = match[1]!;
           exitCode = match[2];
         }
-        const github =
-          /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
-            line,
-          );
+        const github = githubHydration
+          ? /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
+              line,
+            )
+          : null;
         if (github) hydrationPhase = githubHydrationPhase(github[1]);
         const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
         if (warning)
