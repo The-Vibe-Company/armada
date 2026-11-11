@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type AgentEvent, reportedTurnUsage } from "@armada/core";
+import { type AgentEvent, reportedTurnUsage, usageUnavailableReason } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage, readStatus } from "../src/turns.ts";
 import { database, fakeBoat } from "./support.ts";
@@ -178,6 +178,42 @@ test("native collection persists retry-safe rows and preserves measurements when
     const unknownModel = { ...row, model: null, inputTokens: 7 };
     await store.recordUsage!(id, { turnCount: 2, turns: [unknownModel] });
     expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    // A stale diagnostic writer must not attach an unavailable reason to
+    // concurrently retained numeric observations, including unknown-model rows.
+    await store.recordUsage!(id, {
+      turnCount: 2,
+      turns: [
+        {
+          ...unknownModel,
+          inputTokens: null,
+          outputTokens: null,
+          cachedTokens: null,
+          unavailableReason: usageUnavailableReason("reader_unavailable"),
+        },
+      ],
+    });
+    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    const diagnostic = {
+      promptId: "diagnostic",
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null,
+    };
+    await store.recordUsage!(id, {
+      turnCount: 3,
+      turns: [{ ...diagnostic, unavailableReason: usageUnavailableReason("native_start_unobserved") }],
+    });
+    // These writers sampled before the useful reason was committed. Last writer
+    // wins must not turn stop/missing telemetry into loss of the original stage.
+    await store.recordUsage!(id, {
+      turnCount: 3,
+      turns: [{ ...diagnostic, unavailableReason: usageUnavailableReason("compute_inactive") }],
+    });
+    await store.recordUsage!(id, { turnCount: 3, turns: [diagnostic] });
+    expect(
+      (await store.get(id))?.usage?.turns.find((row) => row.promptId === "diagnostic")?.unavailableReason?.code,
+    ).toBe("native_start_unobserved");
   } finally {
     await db.close();
   }

@@ -31,6 +31,7 @@ import {
   createGoldenAdoption,
   createOrg,
   createRoutineService,
+  createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
   createSqlVaultStore,
@@ -76,6 +77,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  type SkillDefaultsService,
   scanGoldenSandbox,
   setCredential,
   setMemberRole,
@@ -113,6 +115,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { RequestTiming } from "./request-timing.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -126,8 +129,12 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
+  timing?: RequestTiming;
+  storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
+  skillDefaults?: SkillDefaultsService;
   routines?: RoutineService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
@@ -240,10 +247,13 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
+  const timing = new RequestTiming();
+  options = { ...options, timing };
   try {
-    const caller = await authenticatedCaller(request, options);
+    const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
-      (route.startsWith("templates/") ||
+      (route.startsWith("skills/defaults/") ||
+        route.startsWith("templates/") ||
         route.startsWith("routines/") ||
         route.startsWith("variables/") ||
         route.startsWith("secrets/")) &&
@@ -252,7 +262,8 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("templates/") ||
+      : route.startsWith("skills/defaults/") ||
+          route.startsWith("templates/") ||
           route.startsWith("routines/") ||
           route.startsWith("variables/") ||
           route.startsWith("secrets/")
@@ -283,7 +294,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           : invitationAction === "accept"
             ? await options.invitations.accept(caller, body.token)
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
-    } else result = await dispatch(deletion ? "sandbox/delete" : route, caller, body, options);
+    } else
+      result = await timing.measure("dispatch", () =>
+        dispatch(deletion ? "sandbox/delete" : route, caller, body, options),
+      );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
@@ -293,7 +307,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         "jobId" in result
           ? 202
           : 200,
-      headers: { "cache-control": "no-store" },
+      headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
     const failureCode = apiFailureCode(error);
@@ -652,36 +666,19 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("skills/defaults/")) {
+    if (!options.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
+    return options.skillDefaults.command(caller, route.slice("skills/defaults/".length), body);
+  }
   if (route.startsWith("routines/")) {
     if (!options.routines) throw new VaultError("unavailable", "Routines unavailable.");
     return options.routines.command(caller, route.slice(9), body);
   }
   if (route.startsWith("templates/")) {
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-    const stores = options.data?.(caller);
-    return options.templates.command(
-      caller,
-      route.slice(10),
-      body,
-      stores
-        ? {
-            stores: {
-              goldens: stores.goldens,
-              sandboxes: stores.sandboxes,
-              credentials: launchCredentials(
-                options.store,
-                options.encryptionKey,
-                options.github ? { ...options.github, store: options.store } : undefined,
-                options.modelAuth,
-              ),
-              ...(options.connections ? { connections: options.connections } : {}),
-            },
-            provider: (golden) => providerForGolden(options, caller, golden),
-            ...(options.launch ? { options: options.launch } : {}),
-          }
-        : undefined,
-    );
+    return options.templates.command(caller, route.slice(10), body, templateRuntime(options, caller));
   }
+
   if (route.startsWith("variables/") || route.startsWith("secrets/")) {
     if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
     if (!/^(variables|secrets)\/[a-z]+$/.test(route))
@@ -796,10 +793,19 @@ async function dispatch(
         caller: scopedCaller,
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
+        measure: (phase, work) => measured(options, phase, work),
+        ...(options.storedProviderFor
+          ? {
+              storedProvider: (target: ProviderTarget) =>
+                measured(options, "stored_provider", () => options.storedProviderFor!(target, scopedCaller)),
+            }
+          : {}),
         provider: (target) =>
-          options.providers
-            ? options.providers.resolve(target, scopedCaller)
-            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+          measured(options, "provider", () =>
+            options.providers
+              ? options.providers.resolve(target, scopedCaller)
+              : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+          ),
         deletionProvider: (sandbox) =>
           options.providers
             ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
@@ -1199,6 +1205,14 @@ async function connectGoldenRoute(options: ControlOptions, caller: Caller, body:
   return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
 }
 
+async function measured<T>(
+  options: ControlOptions,
+  phase: import("./request-timing.ts").TimingPhase,
+  work: () => Promise<T>,
+): Promise<T> {
+  return options.timing ? options.timing.measure(phase, work) : work();
+}
+
 async function readLogs(
   options: ControlOptions,
   caller: Caller,
@@ -1212,7 +1226,7 @@ async function readLogs(
   olderCursor?: string;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
-  const target = await options.logs(caller, id);
+  const target = await measured(options, "logs_target", () => options.logs!(caller, id));
   if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")
     throw new VaultError("invalid", "Invalid event direction.");
   for (const key of ["limit", "maxBytes"])
@@ -1230,15 +1244,17 @@ async function readLogs(
   let hasMore = false;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await target.provider.events({
-      sandboxId: target.providerSandboxId,
-      ...(cursor ? { cursor } : {}),
-      ...(backward ? { direction: "backward" as const } : {}),
-      ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
-      ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
-      ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
-      ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
-    });
+    const page = await measured(options, "events", () =>
+      target.provider.events({
+        sandboxId: target.providerSandboxId,
+        ...(cursor ? { cursor } : {}),
+        ...(backward ? { direction: "backward" as const } : {}),
+        ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+        ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
+        ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
+        ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
+      }),
+    );
     olderCursor = page.olderCursor;
     events.push(...page.events);
     hasMore = page.hasMore;
@@ -1251,12 +1267,14 @@ async function readLogs(
   }
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
-  const info = follow ? await target.provider.get(target.providerSandboxId) : null;
+  const info = follow ? await measured(options, "state", () => target.provider.get(target.providerSandboxId)) : null;
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
     follow && latest && info?.state !== "stopped" && info?.state !== "failed"
-      ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
+      ? await measured(options, "prompt", () =>
+          target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
+        )
       : null;
   return {
     ...(olderCursor ? { olderCursor } : {}),
@@ -1325,6 +1343,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
   const result = await launchSandbox(
     provider,
     {
+      ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
       goldens: data.goldens,
       sandboxes: data.sandboxes,
       ...(options.connections ? { connections: options.connections } : {}),
@@ -1348,6 +1367,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
       ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
       ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
@@ -1396,6 +1416,27 @@ async function launchActor(
   const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
   if (!member) throw new VaultError("not_found", "You are not a member of an org.");
   return { userId: caller.userId, orgId: member.orgId, role: member.role };
+}
+
+/** One launch path for interactive templates and unattended owner-scoped routines. */
+export function templateRuntime(options: ControlOptions, caller: Caller) {
+  const stores = options.data?.(caller);
+  if (!stores) return undefined;
+  return {
+    stores: {
+      goldens: stores.goldens,
+      sandboxes: stores.sandboxes,
+      credentials: launchCredentials(
+        options.store,
+        options.encryptionKey,
+        options.github ? { ...options.github, store: options.store } : undefined,
+        options.modelAuth,
+      ),
+      ...(options.connections ? { connections: options.connections } : {}),
+    },
+    provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
+    ...(options.launch ? { options: options.launch } : {}),
+  };
 }
 
 async function providerForGolden(options: ControlOptions, caller: Caller, golden: GoldenRecord): Promise<Provider> {
@@ -1624,6 +1665,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     templates,
+    skillDefaults: createSkillDefaultsService(sql),
     routines: createRoutineService(sql),
     applicationVault: createApplicationVault(sql, encryptionKey),
     mcp: { registry },
@@ -1638,6 +1680,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),
     providers,
+    storedProviderFor: async (target, caller) => (await modalIntegration()).storedProviderFor(target, caller),
     data: createSqlData(sql),
     providerMetadata: createProviderMetadata({ sql, vault: store, encryptionKey, providerFor }),
     goldenTarget: async (target, caller) =>

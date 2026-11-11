@@ -187,6 +187,16 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.length > 0;
     },
+    async latestPrompt(sandboxId, promptId) {
+      await get(sandboxId);
+      const result = await sql.query<{ event: Extract<AgentEvent, { kind: "prompt" }> }>(
+        `select event from public.modal_events where scope=$1 and sandbox_id=$2
+         and event->>'kind'='prompt' and event->>'promptId'=$3
+         order by cursor desc limit 1`,
+        [key, sandboxId, promptId],
+      );
+      return result.rows[0]?.event ?? null;
+    },
     async events(input): Promise<EventPage> {
       await get(input.sandboxId);
       const { limit, backward } = eventPageOptions(input, "modal");

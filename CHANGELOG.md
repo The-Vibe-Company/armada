@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.22.0](https://github.com/The-Vibe-Company/armada/compare/v2.21.0...v2.22.0) (2026-11-11)
+
+
+### Features
+
+* **routines:** schedule owner-scoped template launches ([#1014](https://github.com/The-Vibe-Company/armada/issues/1014)) ([0cea355](https://github.com/The-Vibe-Company/armada/commit/0cea355ab3b73d81b9e6d82f7bf6af20ec3cc636))
+
+
+### Bug Fixes
+
+* **dashboard:** keep Sandbox toolbar sort paired at every width ([#1018](https://github.com/The-Vibe-Company/armada/issues/1018)) ([72a16ce](https://github.com/The-Vibe-Company/armada/commit/72a16ce152c58627203c85b86452dfc4463703bf))
+* **ios:** preserve server explanations in sandbox and auth failures ([#1021](https://github.com/The-Vibe-Company/armada/issues/1021)) ([3a6166d](https://github.com/The-Vibe-Company/armada/commit/3a6166dcb931d2b392bd3454815c03931b6d6148))
+* **models:** refuse unhonoured Claude Fable selection on Boat ([#866](https://github.com/The-Vibe-Company/armada/issues/866)) ([f469e46](https://github.com/The-Vibe-Company/armada/commit/f469e462b3bb89c80474138bd32aadceb9bd782d))
+* **test:** isolate Git credential tests from managed host credentials ([#1024](https://github.com/The-Vibe-Company/armada/issues/1024)) ([fc6b3ed](https://github.com/The-Vibe-Company/armada/commit/fc6b3ed652b761ea6fdfbe647e5ddaa960f7b866))
+
+## [2.21.0](https://github.com/The-Vibe-Company/armada/compare/v2.20.0...v2.21.0) (2026-11-11)
+
+
+### Features
+
+* **cli:** recommend public skills without network checks ([#988](https://github.com/The-Vibe-Company/armada/issues/988)) ([c910fcb](https://github.com/The-Vibe-Company/armada/commit/c910fcb6bf8ff96f683d1cd119b97b684a84c11d))
+* **routines:** add paused routine configuration API ([#1011](https://github.com/The-Vibe-Company/armada/issues/1011)) ([4a0a330](https://github.com/The-Vibe-Company/armada/commit/4a0a33096bee87b9cd74412dc8191997f76a2d43))
+* **sandbox:** accept private Skillpack launch pins ([#999](https://github.com/The-Vibe-Company/armada/issues/999)) ([c655b89](https://github.com/The-Vibe-Company/armada/commit/c655b894fd095fad7a94b9eae917d90d69843e79))
+* **sandbox:** opt into scoped Armada access ([#1002](https://github.com/The-Vibe-Company/armada/issues/1002)) ([63c3a94](https://github.com/The-Vibe-Company/armada/commit/63c3a943176f45a503231804f6e2ef1eba5c8d0f))
+* **skill:** document the Armada sandbox CLI with drift checks ([#1003](https://github.com/The-Vibe-Company/armada/issues/1003)) ([b0893fb](https://github.com/The-Vibe-Company/armada/commit/b0893fb2fced1327f399999bd98f26cf46661317))
+* **skillpack:** expose connection readiness and propose one-click consent ([#1012](https://github.com/The-Vibe-Company/armada/issues/1012)) ([8278b6e](https://github.com/The-Vibe-Company/armada/commit/8278b6e0c8a27f09b608f3f53c0c98521f78c91f))
+* **templates:** retain skill installation evidence ([#1009](https://github.com/The-Vibe-Company/armada/issues/1009)) ([51cdf91](https://github.com/The-Vibe-Company/armada/commit/51cdf91cc022b4b30b78b0cf48a6c78f66d79f18))
+
+
+### Bug Fixes
+
+* **ci:** pre-bake Dashboard e2e system dependencies ([#998](https://github.com/The-Vibe-Company/armada/issues/998)) ([8fbaca8](https://github.com/The-Vibe-Company/armada/commit/8fbaca8cfefc0c18e7e2525541121c726742f04f))
+* **cli:** drain log backlogs without polling delays ([#981](https://github.com/The-Vibe-Company/armada/issues/981)) ([5cde1ae](https://github.com/The-Vibe-Company/armada/commit/5cde1ae4f38c02e56186ae79eb4ed60189486530))
+* **cli:** explain sandbox failures with safe recovery guidance ([#996](https://github.com/The-Vibe-Company/armada/issues/996)) ([8582f05](https://github.com/The-Vibe-Company/armada/commit/8582f058b7f4cead3a3c7e97c1e6ca054b78a92f))
+* **dashboard:** rebuild Sandboxes filters and responsive design ([#1010](https://github.com/The-Vibe-Company/armada/issues/1010)) ([a7c8a71](https://github.com/The-Vibe-Company/armada/commit/a7c8a711eb9de429e6b75316aa70cad5fbfed302))
+* **dashboard:** standardize Build controls and detail layout ([#1004](https://github.com/The-Vibe-Company/armada/issues/1004)) ([fd5028c](https://github.com/The-Vibe-Company/armada/commit/fd5028c4f33834b45ef6f2468e2a05bae43b97ec))
+* **deploy:** allow Railway time to drain admitted work ([#990](https://github.com/The-Vibe-Company/armada/issues/990)) ([3871c72](https://github.com/The-Vibe-Company/armada/commit/3871c72cb6480244d22073e386823479fc156089))
+* **ios:** explain sandbox launch credential failures ([#974](https://github.com/The-Vibe-Company/armada/issues/974)) ([64c7fd0](https://github.com/The-Vibe-Company/armada/commit/64c7fd0e6c36744b921a61b680531e521f033c45))
+* **ios:** preserve unconfirmed sandbox sends across relaunch ([#992](https://github.com/The-Vibe-Company/armada/issues/992)) ([9a5d060](https://github.com/The-Vibe-Company/armada/commit/9a5d060d0e07266be2d184909d531a967ab64d92))
+* **runtime:** detect unstartable Boat harnesses and explain startup failures ([#967](https://github.com/The-Vibe-Company/armada/issues/967)) ([1d6fd31](https://github.com/The-Vibe-Company/armada/commit/1d6fd31164c5512c447abb132ac4932e842f758a))
+* **sandbox:** converge Boat stops without replaying lifecycle work ([#995](https://github.com/The-Vibe-Company/armada/issues/995)) ([cffe544](https://github.com/The-Vibe-Company/armada/commit/cffe54441b2b7eed66586a83e34849ec812e1519))
+* **server:** drain admitted requests on process termination ([#975](https://github.com/The-Vibe-Company/armada/issues/975)) ([b234d3e](https://github.com/The-Vibe-Company/armada/commit/b234d3effc900b5b618db7ec95d35fc5294ed44c))
+* **server:** report database unavailability in runtime readiness ([#991](https://github.com/The-Vibe-Company/armada/issues/991)) ([6bb9416](https://github.com/The-Vibe-Company/armada/commit/6bb9416d5feb9f91aa6c3b4f1bacf03e50c1ed4e))
+* **templates:** preserve launch receipts across publication failures ([#1000](https://github.com/The-Vibe-Company/armada/issues/1000)) ([03b287d](https://github.com/The-Vibe-Company/armada/commit/03b287d593fa943eea9693eb2a6968283beac25c))
+* **usage:** restore session token display and cache-write costs ([#927](https://github.com/The-Vibe-Company/armada/issues/927)) ([07ff101](https://github.com/The-Vibe-Company/armada/commit/07ff1015a7680c1db31a30068ef730ddf33a3f66))
+
+
+### Performance Improvements
+
+* **dashboard:** avoid quadratic legacy chat chunk accumulation ([#982](https://github.com/The-Vibe-Company/armada/issues/982)) ([45583b8](https://github.com/The-Vibe-Company/armada/commit/45583b812e66342ca307569c75adc78f1fae7208))
+* remove redundant provider work from sandbox reads ([#1013](https://github.com/The-Vibe-Company/armada/issues/1013)) ([22a901f](https://github.com/The-Vibe-Company/armada/commit/22a901f8eed66d770e26936dd0334b0f77bf778d))
+
 ## [2.20.0](https://github.com/The-Vibe-Company/armada/compare/v2.19.0...v2.20.0) (2026-11-11)
 
 

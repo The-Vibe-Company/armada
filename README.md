@@ -129,6 +129,10 @@ Extend an accessible running or idle sandbox as its owner or an org admin. The n
 
 `armada --help` lists every command. Without flags, Claude Code runs `claude-opus-5-5` and Codex `gpt-6.1-sol`, both at `medium` effort.
 
+### Claude Fable 5.2
+
+Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is known not to honour that selection and rejects it with a readable `model_selection_mismatch` explanation. Modal forwards custom model IDs to Claude Code, but Fable execution has not been re-verified with an entitled account. Defaults remain unchanged; no substitution is permitted. See [provider evidence and production checks](docs/fable-provider-check.md).
+
 ## Bring your MCP servers
 
 Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. A personal connection attaches to private sandboxes; an admin shares one with the whole organization with `--scope org`.

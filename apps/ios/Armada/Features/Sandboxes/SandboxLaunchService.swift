@@ -19,15 +19,16 @@ extension ArmadaKitServices: SandboxLauncher {
             return try await client.launchCatalog()
         } catch {
             if error is CancellationError { throw .offline }
-            switch error as? ArmadaError {
-            case .signedOut?: throw .signedOut
-            case .forbidden?: throw .noAccess
+            let failure: ServiceFailure = switch ArmadaServerFailure.underlying(error) {
+            case .signedOut?: .signedOut
+            case .forbidden?: .noAccess
             case .http(404)?, .http(405)?, .http(501)?:
-                throw .unavailable("This Armada server can't launch sandboxes from the app yet. Launch from the dashboard or the CLI.")
-            case .unavailable?, .http(429)?: throw .offline
-            case .invalidResponse?: throw .rejected("Armada returned launch options this app version doesn't understand.")
-            default: throw .rejected("The launch options could not be read.")
+                .unavailable("This Armada server can't launch sandboxes from the app yet. Launch from the dashboard or the CLI.")
+            case .unavailable?, .http(429)?: .offline
+            case .invalidResponse?: .rejected("Armada returned launch options this app version doesn't understand.")
+            default: .rejected("The launch options could not be read.")
             }
+            throw ArmadaKitServices.explained(failure, by: error)
         }
     }
 

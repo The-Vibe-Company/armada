@@ -27,7 +27,12 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  personal_skill_defaults: "PersonalSkillDefaultsRow",
+  org_skill_defaults: "OrgSkillDefaultsRow",
+  golden_skill_defaults: "GoldenSkillDefaultsRow",
   routines: "RoutineRow",
+  routine_runs: "RoutineRunRow",
+  routine_run_inputs: "RoutineRunInputRow",
   launch_templates: "LaunchTemplateRow",
   launch_template_revisions: "LaunchTemplateRevisionRow",
   template_launch_requests: "TemplateLaunchRequestRow",

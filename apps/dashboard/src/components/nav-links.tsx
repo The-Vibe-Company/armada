@@ -3,7 +3,6 @@
 import {
   BoxesIcon,
   CameraIcon,
-  GaugeIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
   PackageIcon,
@@ -28,7 +27,6 @@ const GROUPS = [
   {
     label: "Run",
     links: [
-      { href: "/fleet", label: "Fleet", hint: "Every agent and what needs you", icon: GaugeIcon },
       { href: "/sandboxes", label: "Sandboxes", short: "Boxes", hint: "Running agents and logs", icon: BoxesIcon },
     ],
   },

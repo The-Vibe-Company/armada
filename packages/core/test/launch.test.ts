@@ -713,6 +713,8 @@ exit 1
       { harness: "claude", ttlSeconds: 1.5 },
       { harness: "claude", prompt: "   " },
       { harness: "claude", reasoningEffort: "ultra" },
+      { harness: "claude", model: "claude-fable-5-2", reasoningEffort: "ultra" },
+      { harness: "claude", model: "unknown model!" },
       { harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" },
       { harness: "codex", model: "gpt 6; rm -rf /" },
     ]) {
@@ -723,17 +725,18 @@ exit 1
     expect([noSnapshot, none, world].flatMap((entry) => entry.forks)).toEqual([]);
   });
 
-  test("an explicit model and effort reach the prompt and the record as given, never substituted", async () => {
+  test.each([
+    { harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" },
+    { harness: "claude", model: "claude-fable-5-2", reasoningEffort: "high" },
+  ] as const)("an explicit model and effort reach the prompt and record unchanged: %j", async (choice) => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, {
       golden: "web",
-      harness: "codex",
       prompt: "Go",
-      model: "gpt-7-preview",
-      reasoningEffort: "ultra",
+      ...choice,
     });
-    expect(world.prompts[0]).toMatchObject({ harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" });
-    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "gpt-7-preview", reasoningEffort: "ultra" });
+    expect(world.prompts[0]).toMatchObject(choice);
+    expect(world.rows.get(result.sandbox.id)).toMatchObject(choice);
   });
 
   test("a provider that cannot set a reasoning effort is refused before the fork", async () => {
@@ -1214,4 +1217,46 @@ test("helper admission preserves legacy launches and refuses missing, stale or u
       expect(world.forks).toEqual([]);
     }
   }
+});
+
+test("plain launches merge default layers before installation; opt-out keeps explicit pins", async () => {
+  const installed: string[] = [];
+  const world = setup({ golden: golden("org") });
+  let resolutions = 0;
+  world.stores.skillDefaults = {
+    resolve: async () => {
+      resolutions++;
+      return { environment: ["notes@1.0.0", "environment@1.0.0"], org: ["notes@2.0.0"], personal: ["notes@3.0.0"] };
+    },
+  };
+  world.stores.sandboxes.recordSkills = async () => {};
+  world.stores.credentials.installPrivateSkill = async (_provider, input) => {
+    installed.push(input.reference);
+    return {
+      reference: input.reference,
+      version: input.reference.split("@")[1]!,
+      skillId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      workspaceId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      checksum: `sha256:${"a".repeat(64)}`,
+      origin: "https://skillpack.app/v1",
+    };
+  };
+  await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "codex" });
+  expect(installed).toEqual(["notes@3.0.0", "environment@1.0.0"]);
+  installed.length = 0;
+  await launchSandbox(world.provider, world.stores, owner, {
+    golden: "web",
+    harness: "codex",
+    skills: ["notes@4.0.0"],
+    skipSkillDefaults: true,
+  });
+  expect(installed).toEqual(["notes@4.0.0"]);
+  expect(resolutions).toBe(1);
+  await expect(
+    launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "codex",
+      skipSkillDefaults: "yes" as never,
+    }),
+  ).rejects.toMatchObject({ code: "invalid_request" });
 });

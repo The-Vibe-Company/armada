@@ -13,7 +13,9 @@ import {
   type SandboxUsage,
   type TaskOutcome,
   type TurnModelEvidence,
+  type TurnTokenUsage,
   turnModelEvidence,
+  usageUnavailableReason,
 } from "@armada/core";
 import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
@@ -71,6 +73,11 @@ export interface StatusReport {
   settled: boolean;
 }
 
+const hasReportedCounters = (row: TurnTokenUsage) =>
+  [row.inputTokens, row.outputTokens, row.cachedTokens, row.cacheWriteTokens, row.reasoningTokens].some(
+    (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+  );
+
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
@@ -80,7 +87,7 @@ export async function readStatus(
   provider: Provider | null,
   store: ServerSandboxStore,
   sandbox: SandboxView,
-  options: { promptId?: string; now: Date },
+  options: { promptId?: string; now: Date; stored?: boolean },
 ): Promise<StatusReport> {
   // Registration is not readiness. Only the launch owner (or lifecycle recovery
   // after its lease expires) may publish completion; status must remain readable.
@@ -163,7 +170,7 @@ export async function readStatus(
           complete,
         });
         // Unknown observations can be retried; telemetry persistence cannot change the outcome.
-        if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+        if (!options.stored && recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
           try {
             await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
               ...evidence,
@@ -192,7 +199,7 @@ export async function readStatus(
     };
   }
 
-  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
+  if (!options.stored && store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
     await collectSandboxUsage(provider, store, sandbox, prompt?.promptId);
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
@@ -205,6 +212,9 @@ export async function readStatus(
       : (next === "stopped" || next === "stopping") && sandbox.statusReason === "expired"
         ? "expired"
         : null;
+  // Stored projections never acquire activity/lifecycle leases or publish over a
+  // concurrent admission. The existing lifecycle worker refreshes physical state.
+  if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,
@@ -272,8 +282,19 @@ function report(
   expiresAt: Date | null,
 ): StatusReport {
   const machineDown = status === "stopped" || status === "deleted" || (status === "failed" && !sandbox.stopRequestedAt);
+  const collectionFenced = machineDown || status === "stopping" || sandbox.stopRequestedAt != null;
   return {
-    usage: sandbox.usage ?? null,
+    usage:
+      sandbox.usage && sandbox.provider === "boat" && collectionFenced
+        ? {
+            ...sandbox.usage,
+            turns: sandbox.usage.turns.map((row) =>
+              hasReportedCounters(row) || row.unavailableReason
+                ? row
+                : { ...row, unavailableReason: usageUnavailableReason("compute_inactive") },
+            ),
+          }
+        : (sandbox.usage ?? null),
     taskOutcome: sandbox.taskOutcome ?? null,
     id: sandbox.id,
     golden: sandbox.golden,
@@ -410,7 +431,12 @@ export async function collectSandboxUsage(
             harness: sandbox.harness,
           });
           for (const row of native) {
-            if (row.promptId === promptId) rows.set(JSON.stringify([row.promptId, row.model]), row);
+            if (row.promptId !== promptId) continue;
+            const prior = [...rows.values()].filter((known) => known.promptId === promptId);
+            if (row.unavailableReason && prior.some(hasReportedCounters)) continue;
+            if (row.unavailableReason?.code === "compute_inactive" && prior.some((known) => known.unavailableReason))
+              continue;
+            rows.set(JSON.stringify([row.promptId, row.model]), row);
           }
         } catch {
           /* A missing native file must not erase an earlier observation. */
@@ -427,7 +453,9 @@ export async function collectSandboxUsage(
         cachedTokens: null,
       });
     }
-    const measuredPrompts = new Set([...rows.values()].filter((row) => row.model !== null).map((row) => row.promptId));
+    const measuredPrompts = new Set(
+      [...rows.values()].filter((row) => row.model !== null && hasReportedCounters(row)).map((row) => row.promptId),
+    );
     for (const [key, row] of rows) {
       if (
         row.model === null &&

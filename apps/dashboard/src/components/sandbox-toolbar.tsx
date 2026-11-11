@@ -56,16 +56,16 @@ export function SandboxToolbar({
     });
   }
   return (
-    <section aria-label="Filters" aria-busy={pending} className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
+    <section aria-label="Filters" aria-busy={pending} className="@container space-y-3">
+      <div className="grid min-w-0 gap-3 @min-[36rem]:grid-cols-[minmax(0,1fr)_auto] @min-[36rem]:items-center">
         <form
-          className="flex w-full items-center gap-2 sm:w-auto"
+          className="flex min-w-0 items-center gap-2 @min-[36rem]:max-w-md"
           onSubmit={(event) => {
             event.preventDefault();
             navigate({ ...current, q: query.trim(), page: 1 });
           }}
         >
-          <div className="relative min-w-0 flex-1 sm:w-72">
+          <div className="relative min-w-0 flex-1">
             <SearchIcon
               aria-hidden
               className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
@@ -82,6 +82,21 @@ export function SandboxToolbar({
             Search
           </Button>
         </form>
+        <div className="flex min-w-0 items-center gap-3 @min-[36rem]:w-64">
+          <span className="shrink-0 text-sm text-muted-foreground">Sort by</span>
+          <NativeSelect
+            aria-label="Sort sandboxes"
+            value={current.sort}
+            onChange={(event) => navigate({ ...current, sort: event.target.value as SandboxFilters["sort"], page: 1 })}
+          >
+            <option value="attention">Needs attention first</option>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name A–Z</option>
+          </NativeSelect>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         {FACETS.map((key) => (
           <Popover key={key}>
             <PopoverTrigger asChild>
@@ -122,24 +137,17 @@ export function SandboxToolbar({
             </PopoverContent>
           </Popover>
         ))}
-        <div className="sm:ml-auto">
-          <NativeSelect
-            aria-label="Sort sandboxes"
-            value={current.sort}
-            onChange={(event) => navigate({ ...current, sort: event.target.value as SandboxFilters["sort"], page: 1 })}
-          >
-            <option value="attention">Needs attention first</option>
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="name">Name A–Z</option>
-          </NativeSelect>
-        </div>
       </div>
       {hasSandboxFilters(current) && (
         <section className="flex flex-wrap items-center gap-2" aria-label="Active filters">
           {current.q && (
-            <Button size="sm" variant="secondary" onClick={() => navigate({ ...current, q: "", page: 1 })}>
-              Search: {current.q}
+            <Button
+              size="sm"
+              variant="secondary"
+              className="max-w-full min-w-0"
+              onClick={() => navigate({ ...current, q: "", page: 1 })}
+            >
+              <span className="truncate">Search: {current.q}</span>
               <XIcon />
             </Button>
           )}
@@ -149,10 +157,13 @@ export function SandboxToolbar({
                 key={`${key}:${value}`}
                 size="sm"
                 variant="secondary"
+                className="max-w-full min-w-0"
                 aria-label={`Remove ${LABELS[key]}: ${options[key].find((item) => item.value === value)?.label ?? value}`}
                 onClick={() => toggle(key, value)}
               >
-                {LABELS[key]}: {options[key].find((item) => item.value === value)?.label ?? value}
+                <span className="truncate">
+                  {LABELS[key]}: {options[key].find((item) => item.value === value)?.label ?? value}
+                </span>
                 <XIcon />
               </Button>
             )),

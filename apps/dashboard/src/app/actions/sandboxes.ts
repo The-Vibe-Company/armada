@@ -60,7 +60,7 @@ export async function stopSandbox(_previous: ActionResult | null, data: FormData
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
-  revalidatePath("/fleet");
+  revalidatePath("/sandboxes");
   return done("Stop requested. The machine is removed and the disk is kept.");
 }
 
@@ -84,7 +84,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
-  revalidatePath("/fleet");
+  revalidatePath("/sandboxes");
   return done("Sent.");
 }
 

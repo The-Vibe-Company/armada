@@ -5,6 +5,8 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 const PUBLIC_POST_PATHS = new Set(["auth/refresh", "auth/exchange", "auth/email/start", "auth/email/verify"]);
 const PRIVATE_POST_PATHS = new Set([
+  "skills/defaults/get",
+  "skills/defaults/set",
   "templates/create",
   "templates/list",
   "templates/get",
@@ -223,6 +225,9 @@ export async function forwardControl(
   const headers = new Headers();
   const contentType = response.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
+  // Preserve the configured Armada upstream's fixed, numeric phase timings.
+  const serverTiming = response.headers.get("server-timing");
+  if (serverTiming) headers.set("server-timing", serverTiming);
   headers.set("cache-control", "no-store");
   return new Response(response.body, { status: response.status, headers });
 }

@@ -488,6 +488,13 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       await sshReadableVariables(provider, sandboxId, harness, variables);
     },
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
+      // Boat accepted Fable but selected Sonnet before the first main API request (#1019).
+      // Refuse before resume/bootstrap/dispatch, including later turns; never substitute.
+      if (request.harness === "claude" && request.model === "claude-fable-5-2") {
+        throw invalidRequest(
+          "Claude Fable 5.2 is unavailable on Boat: the selected model was not honoured (model_selection_mismatch). Use another model or provider.",
+        );
+      }
       let resumed = false;
       const workflow = AbortSignal.timeout(90_000);
       const signal = request.signal ? AbortSignal.any([workflow, request.signal]) : workflow;
@@ -570,7 +577,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async collectTurnUsage(request) {
-      return collectNativeUsage(provider, request.sandboxId, request.promptId);
+      return collectNativeUsage(provider, request.sandboxId, request.promptId, request.harness);
     },
 
     async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {

@@ -428,6 +428,14 @@ describe("agent turns", () => {
     ]);
   });
 
+  test("Boat refuses known unhonoured Fable selection before any provider work", async () => {
+    const boat = fakeBoat();
+    await expect(
+      boat.provider.prompt({ sandboxId: ID, harness: "claude", model: "claude-fable-5-2", text: "Go" }),
+    ).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("model_selection_mismatch") });
+    expect(boat.requests).toHaveLength(0);
+  });
+
   test("an empty prompt is refused before any request", async () => {
     const boat = fakeBoat();
     await expect(boat.provider.prompt({ sandboxId: ID, harness: "claude", text: "  " })).rejects.toMatchObject({

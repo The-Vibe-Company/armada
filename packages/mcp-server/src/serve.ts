@@ -3,16 +3,21 @@ import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
   createApplicationVault,
   createGoldenAdoption,
+  createRoutineScheduler,
+  createRoutineService,
+  createSkillDefaultsService,
   createSqlVaultStore,
   createTemplateService,
   GoldenBuildJobs,
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
+  promptOutcome,
+  VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
-import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
+import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
@@ -37,6 +42,7 @@ import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
+import { startRoutineWorker } from "./routine-worker.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -208,6 +214,8 @@ export async function startServer(
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
     templates,
+    skillDefaults: createSkillDefaultsService(sql),
+    routines: createRoutineService(sql),
     applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
@@ -233,12 +241,15 @@ export async function startServer(
     goldenTarget: modal.goldenTarget,
     goldenBuilds,
     goldenAdoption,
+    storedProviderFor: modal.storedProviderFor,
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await providers.resolve(sandbox, caller),
+        provider: await (sandbox.provider === "modal"
+          ? modal.storedProviderFor(sandbox, caller)
+          : providers.resolve(sandbox, caller)),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
@@ -293,6 +304,7 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
     templates,
+    skillDefaults: createSkillDefaultsService(sql),
     ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,
@@ -303,6 +315,7 @@ export async function startServer(
     providerFor,
     providerMetadata,
     modalProviderFor,
+    storedProviderFor: modal.storedProviderFor,
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
@@ -390,7 +403,73 @@ export async function startServer(
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
       ? startInvitationWorker(control.invitations)
       : undefined;
-  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done]).then(() => {});
+  const routineScheduler = createRoutineScheduler(sql, {
+    observe: async (actor, turn) => {
+      const orgId = actor.orgs[0]?.orgId;
+      const member = (
+        await sql.query<{ role: "admin" | "member" }>(
+          "select role from public.members where org_id=$1 and user_id=$2",
+          [orgId, actor.userId],
+        )
+      ).rows[0];
+      if (!member) return "unknown";
+      const caller = { userId: actor.userId, orgs: [{ orgId: orgId!, role: member.role }], via: "service" as const };
+      const sandbox = await data(caller).sandboxes.get(turn.sandboxId);
+      if (!sandbox || sandbox.status === "deleted") return "unknown";
+      const provider = await providers.resolve(sandbox, caller);
+      const result = await promptOutcome(provider, {
+        sandboxId: sandbox.providerSandboxId,
+        promptId: turn.promptId,
+        ...(turn.conversationId ? { conversationId: turn.conversationId } : {}),
+      });
+      // Never persist a provider message or a later turn's state in routine history.
+      return result.state;
+    },
+    launch: async (actor, input, admission) => {
+      // Re-read the persisted execution owner's role, never impersonate the editing admin.
+      const orgId = input.org as string;
+      const member = (
+        await sql.query<{ role: "admin" | "member" }>(
+          "select role from public.members where org_id=$1 and user_id=$2",
+          [orgId, actor.userId],
+        )
+      ).rows[0];
+      if (!member) throw new Error("Routine owner unavailable.");
+      const caller = { userId: actor.userId, orgs: [{ orgId, role: member.role }], via: "service" as const };
+      const runtime = templateRuntime(control, caller);
+      if (!runtime) throw new VaultError("unavailable", "Routine launch runtime unavailable.");
+      const authorize = async () => {
+        const grant = (
+          await sql.query(
+            `select m.user_id from public.routine_runs run
+          join public.routines r on r.id=run.routine_id
+          join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
+          where run.request_key=$1 and run.owner_id=$2 and run.org_id=$3
+          and (r.scope='personal' or m.role='admin')`,
+            [input.requestKey, actor.userId, orgId],
+          )
+        ).rows[0];
+        if (!grant) throw new VaultError("forbidden", "Routine owner authorization changed.");
+      };
+      return templates.command(caller, "launch", input, {
+        ...runtime,
+        options: {
+          ...runtime.options,
+          beforeFork: async (id) => {
+            await authorize();
+            await runtime.options?.beforeFork?.(id);
+            await admission.beforeFork();
+          },
+          beforeStart: async (provider, sandbox) => {
+            await authorize();
+            await runtime.options?.beforeStart?.(provider, sandbox);
+          },
+        },
+      });
+    },
+  });
+  const routineWorker = startRoutineWorker(routineScheduler, options.logError);
+  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done]).then(() => {});
   const stop = server.stop.bind(server);
   let shutdown: Promise<void> | undefined;
   server.stop = (closeActiveConnections?: boolean) => {
@@ -401,6 +480,7 @@ export async function startServer(
     draining = true;
     workers.stop();
     invitationWorker?.stop();
+    routineWorker.stop();
     // Requests may still use the gateway and SQL while finishing a launch.
     // Drain handlers and POST response streams; idle GET SSE needs
     // MCP close to finish. SQL stays alive until the native HTTP drain completes.

@@ -13,53 +13,51 @@ async function fixture() {
   const temp = await realpath(await mkdtemp(join(tmpdir(), "skill-test-")));
   temps.push(temp);
   const source = join(temp, "source");
-  for (const name of ["armada-manager", "ship-pr-dev", "review-code-dev", "capture-learning-tools"]) {
+  for (const name of ["armada"]) {
     const dir = join(source, ".agents/skills", name);
-    await mkdir(join(dir, "scripts"), { recursive: true });
+    await mkdir(join(dir, "references"), { recursive: true });
     await writeFile(join(dir, "SKILL.md"), `---\nname: ${name}\n---\n`);
-    await writeFile(join(dir, "scripts/helper.py"), "print('helper')");
+    await writeFile(join(dir, "references/setup.md"), "setup reference");
   }
   return { temp, source, target: join(temp, "target") };
 }
 
-test("installs whole dependency packages into both discovery roots and preserves unrelated configuration", async () => {
+test("installs the complete tool-knowledge package into both discovery roots and preserves unrelated configuration", async () => {
   const { source, target } = await fixture();
   await mkdir(join(target, ".claude/skills/unrelated"), { recursive: true });
   await writeFile(join(target, ".claude/settings.json"), "{}");
   const installed = await copySkillPackages(source, target);
-  expect(installed).toHaveLength(8);
+  expect(installed).toHaveLength(2);
   for (const root of [".agents", ".claude"]) {
-    expect(await readFile(join(target, root, "skills/review-code-dev/scripts/helper.py"), "utf8")).toBe(
-      "print('helper')",
-    );
+    expect(await readFile(join(target, root, "skills/armada/references/setup.md"), "utf8")).toBe("setup reference");
   }
   expect(await readFile(join(target, ".claude/settings.json"), "utf8")).toBe("{}");
 });
 
 test("preflights all destinations before writing and refuses customized skills and symlink parents", async () => {
   const { source, target, temp } = await fixture();
-  const custom = join(target, ".claude/skills/capture-learning-tools");
+  const custom = join(target, ".claude/skills/armada");
   await mkdir(custom, { recursive: true });
   await writeFile(join(custom, "SKILL.md"), "custom");
   await expect(copySkillPackages(source, target)).rejects.toThrow("Destination already exists");
   expect(await readFile(join(custom, "SKILL.md"), "utf8")).toBe("custom");
-  expect(await Bun.file(join(target, ".agents/skills/armada-manager/SKILL.md")).exists()).toBe(false);
+  expect(await Bun.file(join(target, ".agents/skills/armada/SKILL.md")).exists()).toBe(false);
   await rm(target, { recursive: true });
   await mkdir(target);
   await symlink(temp, join(target, ".agents"));
   await expect(copySkillPackages(source, target)).rejects.toThrow("symlinks refused");
 });
 
-test("missing dependencies and source symlinks fail closed before copying", async () => {
+test("missing source package and source symlinks fail closed before copying", async () => {
   const { source, target, temp } = await fixture();
-  const dep = join(source, ".agents/skills/capture-learning-tools");
+  const dep = join(source, ".agents/skills/armada");
   await rm(dep, { recursive: true });
   await expect(copySkillPackages(source, target)).rejects.toThrow();
   await mkdir(dep);
   await writeFile(join(dep, "SKILL.md"), "---\n---");
   await symlink(temp, join(dep, "outside"));
   await expect(copySkillPackages(source, target)).rejects.toThrow("symlink");
-  expect(await Bun.file(join(target, ".agents/skills/armada-manager/SKILL.md")).exists()).toBe(false);
+  expect(await Bun.file(join(target, ".agents/skills/armada/SKILL.md")).exists()).toBe(false);
 });
 
 test("CLI requires explicit scope and consent, rejects unknown options and invalid revisions without authentication", async () => {
@@ -164,8 +162,8 @@ test("CLI fetches one pinned Git source and reports its actual commit and both i
   expect(await child.exited).toBe(0);
   expect(output).toContain(`https://github.com/The-Vibe-Company/armada/tree/${commit}/.agents/skills`);
   for (const root of [".agents", ".claude"]) {
-    const destination = join(target, root, "skills/armada-manager");
+    const destination = join(target, root, "skills/armada");
     expect(output).toContain(`Installed: ${destination}`);
-    expect(await readFile(join(destination, "SKILL.md"), "utf8")).toContain("name: armada-manager");
+    expect(await readFile(join(destination, "SKILL.md"), "utf8")).toContain("name: armada");
   }
 });

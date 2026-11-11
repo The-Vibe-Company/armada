@@ -38,6 +38,7 @@ export interface ComposedModalOptions
     ModalProviderOptions,
     "scope" | "appName" | "client" | "tokenId" | "tokenSecret" | "managementAuthority" | "beforeResume" | "beforePrompt"
   > {
+  storedReads?: boolean;
   /** Immutable golden visibility/binding, with userId set to the authenticated caller. */
   sourceScope?: Scope;
   resolveManagementCredentials?(authority: ModalManagementAuthority): Promise<ResolvedModalManagementCredentials>;
@@ -98,12 +99,14 @@ async function composeModalProvider(options: ComposedModalOptions) {
   if (ingestUrl.protocol !== "https:" || ingestUrl.username || ingestUrl.password || ingestUrl.search || ingestUrl.hash)
     throw refusal("invalid_request", "Public ingest URL must use HTTPS.");
   const client = modalConnection(connection);
-  const app = await client.apps.fromName(options.appName, {
-    environment: sourceScope.binding.environment,
-    createIfMissing: false,
-  });
-  if (app.appId !== sourceScope.binding.appId)
-    throw refusal("forbidden", "Modal App does not match immutable source binding.");
+  if (!options.storedReads) {
+    const app = await client.apps.fromName(options.appName, {
+      environment: sourceScope.binding.environment,
+      createIfMissing: false,
+    });
+    if (app.appId !== sourceScope.binding.appId)
+      throw refusal("forbidden", "Modal App does not match immutable source binding.");
+  }
   const store = createSqlModalStore(options.sql, options.scope);
   const sourceStore =
     scopeKey(sourceScope) === scopeKey(options.scope) ? store : createSqlModalStore(options.sql, sourceScope);

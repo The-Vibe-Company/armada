@@ -318,6 +318,8 @@ describe("tools", () => {
         "launch_sized_v1",
         "list",
         "logs",
+        "skill_defaults_get",
+        "skill_defaults_set",
         "template_create",
         "template_list",
         "template_get",
@@ -832,6 +834,37 @@ describe("tools", () => {
         modelSelectionReason: "model_selection_unverified",
       });
     }
+    // Stored status must not collect native usage or publish a stale lifecycle observation.
+    const writes: string[] = [];
+    const observedStore = {
+      ...store,
+      update: async () => {
+        writes.push("lifecycle");
+        throw new Error("Stored reads must not publish lifecycle state");
+      },
+      recordUsage: async () => {
+        writes.push("usage");
+        throw new Error("Stored reads must not collect usage");
+      },
+      recordTurnModelEvidence: async () => {
+        writes.push("telemetry");
+        throw new Error("Stored reads must not publish telemetry");
+      },
+    };
+    const stored = await readStatus(
+      {
+        ...boat.provider,
+        collectTurnUsage: async () => {
+          throw new Error("No live native usage");
+        },
+      },
+      observedStore,
+      { ...saved, status: "running" },
+      { now: new Date(), stored: true },
+    );
+    expect(stored.status).toBe("ready");
+    expect(stored.prompt?.state).toBe("finished");
+    expect(writes).toEqual([]);
     // Modal appends terminal prompt transitions; they are not the start of a turn.
     const modalEvents = boat.sandbox("bx_1").events;
     modalEvents.push({

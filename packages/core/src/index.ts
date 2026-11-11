@@ -256,7 +256,7 @@ export {
   resourceInterval,
   type VmResourceReading,
 } from "./resource-observation.ts";
-export type { Routine } from "./routines.ts";
+export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
 export {
   type CleanupResult,
   cleanupSandboxes,
@@ -311,6 +311,10 @@ export {
   sumSandboxUsage,
   type TokenUsageTotals,
   type TurnTokenUsage,
+  USAGE_UNAVAILABLE_CODES,
+  type UsageUnavailableCode,
+  type UsageUnavailableReason,
+  usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";

@@ -28,6 +28,8 @@ final class NewSandboxModel {
     private(set) var catalog: ArmadaKit.SandboxLaunchCatalog?
     private(set) var launching = false
     private(set) var outcome: Outcome?
+    private(set) var outcomeExplanation: String?
+    private(set) var loadIssue: String?
     /// Set once a launch opened a sandbox: the list then starts a fresh form next time.
     private(set) var didLaunch = false
     var draft: ArmadaKit.SandboxLaunchDraft?
@@ -55,13 +57,16 @@ final class NewSandboxModel {
             catalog = loaded
             // A reload (after a golden was built elsewhere) keeps what the person already chose.
             if draft == nil { draft = ArmadaKit.SandboxLaunchDraft(catalog: loaded) }
+            loadIssue = nil
             phase = .ready
         } catch {
-            switch error {
+            switch error.category {
             case .signedOut: onSignedOut()
-            case .unavailable(let reason): phase = .unavailable(reason)
+            case .unavailable: phase = .unavailable(error.message)
             // A background reload keeps the form it already shows.
-            default: if catalog == nil { phase = .failed(error.message) }
+            default:
+                if catalog == nil { phase = .failed(error.message) }
+                else { loadIssue = error.message }
             }
         }
     }
@@ -69,6 +74,7 @@ final class NewSandboxModel {
     /// The only place a launch is sent. Returns the new sandbox, or nil with `outcome` explaining why.
     func launch() async -> SandboxSummary? {
         guard let launcher, let catalog, let draft, !launching else { return nil }
+        outcomeExplanation = nil
         let request: ArmadaKit.SandboxLaunchRequest
         switch draft.request(catalog: catalog) {
         case .failure(let problem):
@@ -89,6 +95,12 @@ final class NewSandboxModel {
             case .signedOut: onSignedOut()
             case .refused(let refusal): outcome = .refused(refusal)
             case .failedAfterStart(let refusal): outcome = .failedAfterStart(refusal)
+            case .unconfirmedWithReason(let reason):
+                outcome = .unconfirmed
+                outcomeExplanation = reason
+            case .notSentWithReason(let reason):
+                outcome = .notSent
+                outcomeExplanation = reason
             case .unconfirmed: outcome = .unconfirmed
             case .notSent: outcome = .notSent
             }
@@ -97,7 +109,7 @@ final class NewSandboxModel {
     }
 
     /// Leaving for the list closes the explanation; the fields stay for the next opening.
-    func acknowledgeOutcome() { outcome = nil }
+    func acknowledgeOutcome() { outcome = nil; outcomeExplanation = nil }
 }
 
 /// New sandbox, from the Sandboxes tab: a golden the person can launch (with its provider), the
@@ -156,6 +168,7 @@ struct NewSandboxView: View {
 
     private func form(_ catalog: ArmadaKit.SandboxLaunchCatalog) -> some View {
         Form {
+            if let issue = model.loadIssue { InlineBanner(text: issue, style: .error) }
             outcomeSection
             Group {
                 goldenSection(catalog)
@@ -181,6 +194,9 @@ struct NewSandboxView: View {
             }
         } else if let outcome = model.outcome {
             Section {
+                if let explanation = model.outcomeExplanation {
+                    InlineBanner(text: explanation, style: .error)
+                }
                 switch outcome {
                 case .problem(let message):
                     Text(message)

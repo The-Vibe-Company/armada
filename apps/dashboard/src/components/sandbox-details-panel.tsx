@@ -1,8 +1,9 @@
 "use client";
 
 import { ChevronDownIcon } from "lucide-react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
 /**
@@ -11,11 +12,9 @@ import { cn } from "@/lib/utils";
  */
 export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
-  const id = useId();
   const section = useRef<HTMLElement>(null);
 
-  function toggle() {
-    const next = !open;
+  function toggle(next: boolean) {
     setOpen(next);
     // On a small screen the details take the history's place; where the page cannot fit (a fallback), bring them into view.
     if (next && window.matchMedia("(max-width: 63.98rem)").matches) {
@@ -27,26 +26,22 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   }
 
   return (
-    <section ref={section} aria-label="Details" data-fit="side" className="min-w-0">
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="w-full justify-between lg:hidden"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={toggle}
-      >
-        Details
-        <ChevronDownIcon className={cn("transition-transform", open && "rotate-180")} aria-hidden="true" />
-      </Button>
-      <div
-        id={id}
-        data-fit="side-content"
-        className={cn("space-y-6 max-lg:mt-3", open ? "block" : "hidden", "lg:block")}
-      >
-        {children}
-      </div>
-    </section>
+    <Collapsible open={open} onOpenChange={toggle} asChild>
+      <section ref={section} aria-label="Details" data-fit="side" className="min-w-0">
+        <CollapsibleTrigger asChild>
+          <Button type="button" variant="outline" size="sm" className="w-full justify-between lg:hidden">
+            Details
+            <ChevronDownIcon className={cn("transition-transform", open && "rotate-180")} aria-hidden="true" />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent
+          forceMount
+          data-fit="side-content"
+          className="space-y-6 max-lg:mt-3 data-[state=closed]:hidden lg:data-[state=closed]:block"
+        >
+          {children}
+        </CollapsibleContent>
+      </section>
+    </Collapsible>
   );
 }

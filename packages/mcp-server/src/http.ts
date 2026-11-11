@@ -41,6 +41,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
   orchestratorPairs?: readonly OrchestratorPair[];
@@ -94,6 +95,7 @@ export interface HandlerOptions {
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
   templates?: import("@armada/core/server").TemplateService;
+  skillDefaults?: import("@armada/core/server").SkillDefaultsService;
   applicationVault?: import("@armada/core/server").ApplicationVault;
   connections?: LaunchStores["connections"];
   /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
@@ -160,6 +162,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
         ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
@@ -174,6 +177,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           ? {
               providerMetadata: (selection) => options.providerMetadata!(selection, caller),
             }
+          : {}),
+        ...(options.storedProviderFor
+          ? { storedProvider: (target: ProviderTarget) => options.storedProviderFor!(target, caller) }
           : {}),
         provider: (target) => providerRegistry(options).resolve(target, caller),
         deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),

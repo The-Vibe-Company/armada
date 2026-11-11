@@ -134,7 +134,8 @@ final class AppModel {
         } catch ArmadaError.secureStorage {
             notice = "Signed out, but this device's secure storage reported an error."
         } catch {
-            notice = "Signed out on this device. Armada could not confirm the sign-out remotely."
+            notice = "Signed out on this device. " + ((error as? ArmadaServerFailure)?.explanation
+                ?? "Armada could not confirm the sign-out remotely.")
         }
         resetSessionState()
         signInNotice = notice
@@ -162,9 +163,9 @@ final class AppModel {
         } catch ArmadaError.signedOut {
             sessionEnded()
             return nil
-        } catch ArmadaError.forbidden {
+        } catch let error where ArmadaServerFailure.underlying(error) == .forbidden {
             await loadOrganizations(client: client)
-            return "You are no longer a member of \(choice.name)."
+            return (error as? ArmadaServerFailure)?.explanation ?? "You are no longer a member of \(choice.name)."
         } catch {
             return Self.message(for: error)
         }
@@ -219,6 +220,7 @@ final class AppModel {
 
     /// Concise, safe text: ArmadaKit's own descriptions, never a response body or transport error.
     private static func message(for error: Error) -> String {
+        if let server = error as? ArmadaServerFailure { return server.explanation }
         if let armada = error as? ArmadaError, let description = armada.errorDescription { return description }
         return "Something went wrong. Try again."
     }

@@ -1,4 +1,10 @@
-import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import {
+  GitHubHydrationError,
+  goldenForSettings,
+  MACHINE_SIZES,
+  parseMachineSizePolicy,
+  USAGE_UNAVAILABLE_CODES,
+} from "@armada/core";
 import {
   type ApplicationVault,
   assertGoldenMutation,
@@ -32,6 +38,7 @@ import {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStatus,
+  type SkillDefaultsService,
   scanGoldenSandbox,
   snapshotGolden,
   type TemplateService,
@@ -67,7 +74,10 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  measure?: import("./request-timing.ts").RequestTiming["measure"];
+  storedProvider?(target: ProviderTarget): Promise<Provider>;
   templates?: TemplateService;
+  skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
@@ -209,6 +219,7 @@ const sandboxUsage = z
         cachedTokens: z.number().nullable(),
         cacheWriteTokens: z.number().nullable().optional(),
         reasoningTokens: z.number().nullable().optional(),
+        unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
       }),
     ),
   })
@@ -433,6 +444,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       skills: z.array(z.string()).max(20).optional(),
     })
     .strict();
+  for (const operation of ["get", "set"] as const) {
+    server.registerTool(
+      `skill_defaults_${operation}`,
+      {
+        description:
+          "Read or replace exact personal, org or golden default skill pins. Org and shared golden writes require admin. Empty skills clears defaults.",
+        inputSchema: z
+          .object({
+            org: z.string().uuid(),
+            scope: z.enum(["personal", "org", "golden"]),
+            goldenId: z.string().uuid().optional(),
+            ...(operation === "set" ? { skills: z.array(z.string()).max(20) } : {}),
+          })
+          .strict(),
+        outputSchema: z.object({ skills: z.array(z.string()) }),
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          if (!context.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
+          const result = await context.skillDefaults.command(caller, operation, args);
+          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: error instanceof VaultError ? error.message : "Skill defaults unavailable.",
+              },
+              {
+                type: "text" as const,
+                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
+              },
+            ],
+          };
+        }
+      },
+    );
+  }
   const templateInputs = {
     create: z
       .object({
@@ -467,6 +517,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         ttlSeconds: z.number().int().positive().optional(),
         size: z.enum(MACHINE_SIZES).optional(),
         repo: z.string().optional(),
+        skills: z.array(z.string()).max(20).optional(),
+        skipSkillDefaults: z.boolean().optional(),
       })
       .strict(),
   };
@@ -582,8 +634,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       provider: await context.provider(found),
     };
   };
-  const statusOf = async (sandboxId: string, promptId: string | undefined): Promise<StatusReport> => {
-    const found = await visible(sandboxId);
+  const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
+  const statusOf = async (sandboxId: string, promptId: string | undefined, stored = false): Promise<StatusReport> => {
+    const found = await measure("sandbox_read", () => visible(sandboxId));
+    const useStored = stored && found.provider === "modal" && context.storedProvider !== undefined;
     const provider =
       found.status === "deleted" ||
       found.status === "starting" ||
@@ -592,11 +646,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       isInterruptedLaunch(found) ||
       (found.status === "failed" && found.stoppedAt !== null)
         ? null
-        : await context.provider(found);
-    return readStatus(provider, data.sandboxes, found, {
-      ...(promptId ? { promptId } : {}),
-      now: context.now(),
-    });
+        : useStored
+          ? await context.storedProvider!(found)
+          : await context.provider(found);
+    return measure("state", () =>
+      readStatus(provider, data.sandboxes, found, {
+        stored: useStored,
+        ...(promptId ? { promptId } : {}),
+        now: context.now(),
+      }),
+    );
   };
 
   tool(
@@ -904,6 +963,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
+          skipSkillDefaults: z.boolean().optional(),
           helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
           connections: z.array(z.string().uuid()).max(100).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
@@ -981,6 +1041,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         const result = await launchSandbox(
           provider,
           {
+            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
             goldens: data.goldens,
             sandboxes: data.sandboxes,
             credentials: context.launchCredentials,
@@ -995,6 +1056,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
             ...(args.skills === undefined ? {} : { skills: args.skills }),
             ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),
@@ -1130,14 +1192,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Sandbox status",
       description:
-        "Where a sandbox and its latest turn are, read fresh from boat.dev and recorded. prompt.state is " +
+        "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
         "running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
         "the reason. settled is true when the agent is not working.",
       input: { id, prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest.") },
       output: status,
       readOnly: true,
     },
-    (args) => statusOf(args.id, args.prompt_id),
+    (args) => statusOf(args.id, args.prompt_id, true),
   );
 
   tool(
@@ -1192,7 +1254,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       readOnly: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id, true);
+      const found = await visible(args.id);
+      if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
+      const provider =
+        found.provider === "modal" && context.storedProvider
+          ? await context.storedProvider(found)
+          : await context.provider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
@@ -1269,15 +1336,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const { sandbox: found, provider } = await live(args.id);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
       if (found.credentialId)
-        await context.launchCredentials.resolve(
-          { userId: caller.userId, orgId: found.orgId, role: "member" },
-          found.harness,
-          found.credentialId,
-          found.credentialVersion ?? undefined,
+        await measure("send_credentials", () =>
+          context.launchCredentials.resolve(
+            { userId: caller.userId, orgId: found.orgId, role: "member" },
+            found.harness,
+            found.credentialId ?? undefined,
+            found.credentialVersion ?? undefined,
+          ),
         );
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
-      const machine = await provider.get(found.providerSandboxId);
+      const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
       if (machine.state === "stopped" && found.stoppedAt === null) {
         await data.sandboxes.update(found.id, {
           status: "stopped",
@@ -1285,10 +1354,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
         });
       }
-      await context.launchCredentials.assertTurn?.(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        found.id,
-        machine.state === "stopped",
+      await measure("send_turn_auth", async () =>
+        context.launchCredentials.assertTurn?.(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.id,
+          machine.state === "stopped",
+        ),
       );
       let acknowledged = false;
       return sandboxActivity(
@@ -1301,16 +1372,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
         },
         async (signal) => {
-          const receipt = await provider
-            .prompt({
-              sandboxId: found.providerSandboxId,
-              harness: found.harness,
-              text: args.prompt,
-              signal,
-              ...(conversation ? { conversationId: conversation } : {}),
-              ...(choice ?? {}),
-            })
-            .catch(unknownMutationOutcome);
+          const receipt = await measure("send_submit", () =>
+            provider
+              .prompt({
+                sandboxId: found.providerSandboxId,
+                harness: found.harness,
+                text: args.prompt,
+                signal,
+                ...(conversation ? { conversationId: conversation } : {}),
+                ...(choice ?? {}),
+              })
+              .catch(unknownMutationOutcome),
+          );
           acknowledged = true;
           try {
             await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
