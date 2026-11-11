@@ -200,12 +200,12 @@ extension ArmadaClient {
                 let detail = try await orchestratorDetail(id: receipt.orchestratorId)
                 let settled = try absorb(detail, into: operationID)
                 if let settled, settled.state == .failed {
-                    return .failed(OrchestratorExplanation.text(for: settled.errorCode ?? "create_failed"))
+                    return .failed(OrchestratorExplanation.text(for: settled.errorCode ?? detail.orchestrator.blockedReason ?? "create_failed"))
                 }
                 let progress = OrchestratorCreateProgress(detail: detail)
                 if case .failed = progress { return progress }
                 // Ready only once its own receipt, when the detail lists it, is no longer open.
-                if progress == .ready, settled?.state != .pending, settled?.state != .uncertain { return .ready }
+                if progress == .ready, settled?.state == .succeeded { return .ready }
                 failures = 0
                 delay = OrchestratorPolling.detailDelay(state: detail.orchestrator.state.rawValue,
                                                         hasOpenOperation: true, consecutiveFailures: 0)

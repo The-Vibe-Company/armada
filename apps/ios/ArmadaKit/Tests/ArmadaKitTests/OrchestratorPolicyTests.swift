@@ -216,9 +216,14 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     #expect(!lost.canMessage && lost.composerNote?.contains("lost") == true)
     let future = OrchestratorControls(state: "hibernating", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(future.phase == .unknown("hibernating") && !future.canMessage && !future.canStop)
+    let futureReceipt = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil,
+        revision: 3, operations: [("message", "future_state", 3, nil)], agentWorking: true)
+    #expect(!futureReceipt.canMessage && !futureReceipt.canStop && futureReceipt.open?.uncertain == true)
 }
 
 @Test func createProgressSettlesOnlyOnTheServersReceipt() {
+    #expect(OrchestratorCreateProgress(state: "future_state", operations: [("create", "succeeded", nil)], blockedReason: nil) == .creating)
+    #expect(OrchestratorCreateProgress(state: "ready", operations: [("create", "future_state", nil)], blockedReason: nil) == .creating)
     #expect(OrchestratorCreateProgress(state: "creating", operations: [("create", "pending", nil)], blockedReason: nil) == .creating)
     #expect(OrchestratorCreateProgress(state: "ready", operations: [("create", "uncertain", nil)], blockedReason: nil) == .creating)
     #expect(OrchestratorCreateProgress(state: "ready", operations: [("create", "succeeded", nil)], blockedReason: nil) == .ready)
@@ -473,6 +478,13 @@ private actor Sleeps {
     #expect(!refused.canRecover && refused.composerNote == "Creation failed. " + reason)
     #expect(OrchestratorCreateProgress(state: "blocked", operations: [("create", "failed", "provider_payment_required")],
                                        blockedReason: "provider_payment_required") == .failed(reason))
+    let preallocation = OrchestratorControls(state: "stopped", continuity: "not_started",
+        blockedReason: "provider_payment_required", revision: 1,
+        operations: [("create", "failed", 1, nil)], agentWorking: false)
+    #expect(preallocation.composerNote == "Creation failed. " + reason)
+    #expect(!preallocation.canRecover && !preallocation.canStop && !preallocation.canResume)
+    #expect(OrchestratorCreateProgress(state: "stopped", operations: [("create", "failed", nil)],
+        blockedReason: "provider_payment_required") == .failed(reason))
     // A create whose machine was stopped after it failed says why it failed, not only that it stopped.
     let stopped = OrchestratorControls(state: "stopped", continuity: "not_started", blockedReason: nil, revision: 1,
                                        operations: [("create", "failed", 1, "skillpack_install_nonzero")], agentWorking: false)
