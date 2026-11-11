@@ -1,5 +1,5 @@
-import { readBoundedText } from "@armada/auth";
 import { createHash, createHmac } from "node:crypto";
+import { readBoundedText } from "@armada/auth";
 import {
   decryptSecret,
   encryptSecret,

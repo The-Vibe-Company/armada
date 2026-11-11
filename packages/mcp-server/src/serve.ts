@@ -380,16 +380,19 @@ export async function startServer(
     void pending.finally(() => requests.delete(pending)).catch(() => {});
     return pending;
   };
-  const server = Object.assign(Bun.serve({
-    port: config.port,
-    hostname: "0.0.0.0",
-    // Keep Bun's 128 MiB ingress budget explicit: MCP prompts/tool arguments have no
-    // smaller aggregate cap. Control JSON (128 KiB) and broker (1 KiB) are bounded per route.
-    maxRequestBodySize: 128 * 1024 * 1024,
-    fetch,
-  }), {
-    workerDone: Promise.resolve(),
-  });
+  const server = Object.assign(
+    Bun.serve({
+      port: config.port,
+      hostname: "0.0.0.0",
+      // Keep Bun's 128 MiB ingress budget explicit: MCP prompts/tool arguments have no
+      // smaller aggregate cap. Control JSON (128 KiB) and broker (1 KiB) are bounded per route.
+      maxRequestBodySize: 128 * 1024 * 1024,
+      fetch,
+    }),
+    {
+      workerDone: Promise.resolve(),
+    },
+  );
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
   const workers = startServerWorkers(
     goldenBuilds,
