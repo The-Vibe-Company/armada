@@ -332,6 +332,8 @@ describe("tools", () => {
         "orchestrator_resume",
         "orchestrator_recover",
         "orchestrator_reconcile",
+        "skill_defaults_get",
+        "skill_defaults_set",
         "template_create",
         "template_list",
         "template_get",
