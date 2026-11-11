@@ -358,6 +358,13 @@ function command(
           phase = match[1]!;
           exitCode = match[2];
         }
+        const github =
+          /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
+            line,
+          );
+        if (github) {
+          console.error(JSON.stringify({ event: "github_hydration_failed", phase: github[1] }));
+        }
         const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
         if (warning)
           onWarning?.(

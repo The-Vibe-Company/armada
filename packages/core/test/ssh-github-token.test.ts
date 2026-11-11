@@ -244,12 +244,14 @@ def lstat(path):
     seen.append(path)
     if path==p.get('target'):
         if p['violation']=='symlink': return info(stat.S_IFLNK|0o777)
-        if path=='/usr/local/lib': return info(stat.S_IFDIR|0o755,2000)
+        if path=='/usr/lib': return info(stat.S_IFDIR|0o755,2000)
         return info(stat.S_IFREG|(0o600 if path.endswith('token.json') else 0o755),2000)
+    # Boat intentionally gives the sandbox user ownership of /usr/local.
+    if path in ['/usr/local','/usr/local/bin','/usr/local/lib']: return info(stat.S_IFDIR|0o755,1000)
     if path=='/home/user': return info(stat.S_IFDIR|0o755,1000)
     if path=='/usr/bin/git': return info(stat.S_IFREG|0o755)
     if path=='/run/armada-github/token.json': return info(stat.S_IFREG|0o600,1000)
-    if path in ['/run','/usr','/usr/bin','/usr/local','/usr/local/bin','/usr/local/lib','/run/armada-github','/home']:
+    if path in ['/run','/usr','/usr/bin','/usr/lib','/run/armada-github','/home']:
         return info(stat.S_IFDIR|0o755)
     raise FileNotFoundError()
 def begin(*args,**kwargs):
@@ -268,7 +270,7 @@ with ExitStack() as stack:
       ('os.chmod',lambda *args: None),('fcntl.flock',flock),
       ('time.monotonic',lambda: clock[0]),('time.sleep',sleep),
       ('tempfile.mkstemp',begin),('os.rename',mutation),('os.replace',mutation),
-      ('time.time',lambda: 100),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
+      ('time.time',lambda: 100),('sys.stderr',io.StringIO()),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
         stack.enter_context(patch(target,value))
     try: exec(compile(p['script'],'installer','exec'),{'__name__':'__main__'})
     except InstallationStarted: result['action']='install'
@@ -278,14 +280,13 @@ print(json.dumps(result))
 `;
 
 test("installer refuses symlink and non-root-owned code paths before replacing any executable", () => {
-  // Positive control proves safe metadata reaches the real first atomic write.
+  // Positive control uses Boat ownership (/usr/local is user-owned), reaching the first atomic write.
   expect(python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER }).action).toBe("install");
   for (const target of [
-    "/usr/local/lib",
+    "/usr/lib",
     "/usr/bin/git",
     "/usr/bin/git.armada-original",
-    "/usr/local/bin/git",
-    "/usr/local/lib/armada-github-legacy.py",
+    "/usr/lib/armada-github-legacy.py",
     "/run/armada-github/token.json",
   ]) {
     for (const violation of ["symlink", "ownership"]) {

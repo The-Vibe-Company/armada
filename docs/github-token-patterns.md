@@ -181,3 +181,25 @@ repairs running legacy Boat workers through private stdin plus an ephemeral file
 also repairs legacy Boat credentials before each authorized next prompt; an
 already-running turn can still need the explicit command. Neither is instant
 fan-out or a replacement for an on-demand runtime after proof.
+
+### Legacy Boat repair filesystem check (#923)
+
+Boat images intentionally make `/usr/local`, `/usr/local/bin` and `/usr/local/lib`
+user-owned. The legacy installer must not trust code there or require those
+parents to be root-owned. It now keeps its Python client in `/usr/lib` and wraps
+`/usr/bin/git` and `/usr/bin/gh`, leaving `/usr/local` ownership unchanged.
+The stdin-only SSH transport, pinned host key, `sudo -n`, root ownership checks,
+and owner-only `/run/armada-github/token.json` remain required.
+
+On failure, server logs emit `github_hydration_failed` with a closed phase
+(`privilege`, `payload`, `directories`, `lock`, `executables`, `install`,
+`token_write`, `sudo` or `bootstrap`); SSH connectivity failures retain the
+sanitized `golden_ssh_failed` record. No exception text or credential is relayed.
+CLI and MCP report the fixed `github_hydration_failed` help text.
+
+Production check after deployment (not performed by this PR): on an owner's
+resumed legacy Boat sandbox with expired inherited GitHub auth, run
+`armada github refresh <sandbox> --json`, then verify `gh api user` identifies
+that owner and an authenticated Git fetch works. Repeat refresh to check
+idempotence; after resume, refresh again to recreate ephemeral `/run` state.
+Do not print token files or credential environment variables.

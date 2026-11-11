@@ -1,5 +1,6 @@
 /** Closed failure categories shared by HTTP, MCP and API consumers. Legacy `unavailable` is not emitted. */
 export const API_FAILURE_STATUS = {
+  github_hydration_failed: 503,
   extension_not_found: 404,
   extension_not_allowed: 403,
   extension_state: 409,
@@ -11,6 +12,8 @@ export const API_FAILURE_STATUS = {
 } as const;
 export type ApiFailureCode = keyof typeof API_FAILURE_STATUS;
 export const API_FAILURE_HELP: Record<ApiFailureCode, string> = {
+  github_hydration_failed:
+    "GitHub repair could not install private credentials. Ask an administrator to check the github_hydration_failed phase in server logs (SSH, sudo, filesystem or token write), then retry refresh.",
   extension_not_found: "Sandbox not found or not accessible.",
   extension_not_allowed: "You are not allowed to extend this sandbox.",
   extension_state: "Sandbox cannot be extended in this state or to this deadline. Refresh status.",
@@ -21,3 +24,10 @@ export const API_FAILURE_HELP: Record<ApiFailureCode, string> = {
   dependency_unavailable: "An Armada server dependency is unavailable. Try again later.",
   outcome_unknown: "The operation outcome is unknown. Check its status before retrying; it may already have started.",
 };
+
+/** Fixed-message failure from the private legacy repair; never carries guest diagnostics. */
+export class GitHubHydrationError extends Error {
+  constructor() {
+    super(API_FAILURE_HELP.github_hydration_failed);
+  }
+}
