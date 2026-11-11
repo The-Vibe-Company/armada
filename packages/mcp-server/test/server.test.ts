@@ -318,20 +318,6 @@ describe("tools", () => {
         "launch_sized_v1",
         "list",
         "logs",
-        "orchestrator_capabilities",
-        "orchestrator_connections_list",
-        "orchestrator_connections_add",
-        "orchestrator_connections_remove",
-        "orchestrator_create",
-        "orchestrator_list",
-        "orchestrator_detail",
-        "orchestrator_events",
-        "orchestrator_message",
-        "orchestrator_steer",
-        "orchestrator_stop",
-        "orchestrator_resume",
-        "orchestrator_recover",
-        "orchestrator_reconcile",
         "template_create",
         "template_list",
         "template_get",
@@ -1621,20 +1607,24 @@ describe("tools", () => {
   });
 });
 
-test("authenticated MCP forwards the configured shared orchestrator runtime rather than a disabled copy", async () => {
-  const seen: string[] = [];
+test("cached retired MCP tool calls return removal guidance without dispatching the runtime", async () => {
+  let called = false;
   const runtime = {
-    list: async (caller: { userId: string }, orgId: string) => {
-      seen.push(caller.userId, orgId);
-      return { version: 1, items: [], cursor: null };
+    list: async () => {
+      called = true;
+      throw new Error("retired runtime must not dispatch");
     },
   } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
   const s = await start({ orchestrators: runtime });
   const mcp = await s.client(await s.token(s.people.owner));
   const result = await mcp.callTool({ name: "orchestrator_list", arguments: { args: { orgId: s.people.org } } });
-  expect(result.isError).not.toBe(true);
-  expect(result.structuredContent).toEqual({ version: 1, items: [], cursor: null });
-  expect(seen).toEqual([s.people.owner, s.people.org]);
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain("removed");
+  expect(JSON.stringify(result.content)).toContain("--armada-access");
+  expect(JSON.stringify(result.content)).toContain("#1002");
+  expect(called).toBe(false);
+  expect((await mcp.listTools()).tools.some((tool) => tool.name.startsWith("orchestrator_"))).toBe(false);
+  expect((await call(mcp, "list")).isError).not.toBe(true);
 });
 
 // Token resolution in these fixtures must not leak audit records to stdout.

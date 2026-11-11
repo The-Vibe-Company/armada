@@ -26,25 +26,13 @@ Use the existing Boat golden **two-repos-prod-test**, its ID from
 `armada golden list --org ORG --json`, and an authorized named account for the
 selected harness. Keep the ordinary server/database/encryption configuration and
 already-deployed foundation/runtime/lifecycle schema. No new migration is needed.
-After deployment, the operator (not this implementation session) runs, with the
-owner's `ARMADA_TOKEN` already in the environment:
+The CLI-only postflight smoke and public orchestrator command were retired in
+step 3 of #984. Do not run the historical CLI create/send/stop/resume procedure.
+Use [ordinary sandbox scoped Armada access](sandbox-armada-access.md), delivered
+in #1002, for new work. Backend/native/HTTP conformance and cleanup remain
+separately gated; this removal does not stop existing orchestrators or release
+their compute.
 
-```sh
-armada orchestrator capabilities --json
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://APPROVED_ORIGIN \
-  ORG BOAT_GOLDEN_ID boat claude CLAUDE_MODEL CLAUDE_ACCOUNT [REPO]
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://APPROVED_ORIGIN \
-  ORG BOAT_GOLDEN_ID boat codex CODEX_MODEL CODEX_ACCOUNT [REPO]
-```
-
-Each smoke creates a new owned disposable parent, sends a prompt, reads cursor
-events, stops, resumes with no text, checks stable identity and **unverified**
-continuity, then stops again. Retain original operation keys/receipts on failure;
-never blindly rerun an uncertain mutation. Operator cleanup targets only these
-new fixtures. For rollback stop those parents while the runtime is available,
-remove the Boat pairs from the setting and restart; keep logical history.
 Authority revocation, delegation, ownership, idempotency and generation fences
 remain mandatory. Best-effort is not a claim of verified harness restoration.
 
@@ -105,24 +93,10 @@ The coordinator—not the implementation session—runs postflight against produ
 with the owner's account immediately after enabling. No separate nonproduction
 origin exists or is required by this approved procedure. Use a **new owned**
 Modal × Codex orchestrator, never an existing user's fixture or old Modal App.
-With `ARMADA_TOKEN` already exported on the operator host:
-
-```sh
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://approved-production-origin.example \
-  ORG MODAL_GOLDEN modal codex MODEL CODEX_ACCOUNT [REPO]
-```
-
-`ARMADA_BIN` optionally selects the installed CLI. The script sets `ARMADA_URL`
-from the explicit origin and checks the selected pair before allocation. It runs
-create → send a trivial prompt → cursor events until native completion → stop →
-no-text resume → stop, requiring stable sandbox/conversation and native continuity,
-and prints a JSON pass/fail receipt. Keep that receipt and the exact original
-idempotency keys after failure; **do not blindly rerun** an uncertain mutation.
-Compute may remain running. The script does not auto-delete. The coordinator owns
-cleanup/deletion of this new disposable provider resource after final stop;
-delete only the new fixture resource, not the shared App or golden. Logical
-identity and history are not deleted by rollback.
+The CLI-only `scripts/orchestrator-smoke.ts` runner and its public command
+were retired in step 3 of #984. They are no longer an executable postflight.
+The native/HTTP service and rollback/compute-release retirement remain gated on
+coordinator authorization; this client removal is not that authorization.
 
 The full native matrix below remains the operator's evidence checklist, including
 private grant ACK/scrub, generation fencing, long turns and log redaction. A short
