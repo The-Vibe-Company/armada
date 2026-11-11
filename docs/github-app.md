@@ -18,7 +18,7 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 
 ## Limits to know
 
-- The token in a sandbox lasts 8 hours. A sandbox that outlives it keeps its git identity but pushes start failing: launch a new sandbox for a fresh token.
+- Static sandbox tokens share the owner connection: GitHub advertises eight hours from issuance, but rotation or revocation can invalidate them earlier. Launch does not reset that clock. See [Early rotation investigation](#early-rotation-investigation-952) for repair and automatic-refresh guidance.
 - `gh` must exist in the golden. Add an init command that installs the GitHub CLI. Without it git works as the user and `gh` does not (the launch says so).
 - The App acts only on repositories where it is installed and the person has access. Install it on each org or account whose repositories sandboxes push to.
 - Disconnect in Settings deletes Armada's row. To invalidate tokens already issued, also revoke the authorization in GitHub (Settings, Applications, Authorized GitHub Apps).
@@ -98,12 +98,14 @@ overlap budget in [Production readiness](production-readiness.md#connection-resi
 
 ## Early rotation investigation (#952)
 
+GitHub [documents eight-hour expiry and invalidation of the old access token on refresh](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens).
 The resolver does **not** assume eight hours: it stores GitHub's returned
 `expires_in` as an absolute access expiry. Eight hours (28,800 seconds) is the
 normal configured lifetime, not a guarantee that an injected token will remain
-usable for eight hours after launch. Launch admission requires **more than one
-hour remaining**, not a newly minted token. Other callers use the five-minute
-refresh margin; legacy explicit repair/next-prompt hydration uses zero.
+usable for eight hours after launch. Launch admission and Modal restore require **more than one
+hour remaining**, not a newly minted token. Golden creation, account-status
+reads and managed-runtime brokering use the five-minute refresh margin;
+legacy explicit repair/next-prompt hydration uses zero.
 
 All resolver callers share one owner connection: launch, golden creation,
 account-status reads (dashboard/mobile/CLI through the account API), managed
