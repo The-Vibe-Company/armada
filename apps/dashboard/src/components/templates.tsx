@@ -257,7 +257,7 @@ function TemplateForm({
 
       <div hidden={step !== 1} className="space-y-4" data-template-step="1">
         <h3 data-step-heading tabIndex={-1} className="sr-only">
-          Step 1 of 2: environment and agent
+          Step 1 of 2: basics
         </h3>
         {!editing && (
           <div className="space-y-2">
