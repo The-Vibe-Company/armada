@@ -1,4 +1,4 @@
-import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
   assertGoldenMutation,
   connectGolden,
@@ -1714,6 +1714,9 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   }
   return {
     isError: true,
+    ...(error instanceof GitHubHydrationError
+      ? { structuredContent: { error: { code, message, details: error.details } } }
+      : {}),
     content: [
       { type: "text", text: message },
       { type: "text", text: `error code: ${code}` },

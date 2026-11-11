@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { type ChildProcess, type spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { rm } from "node:fs/promises";
+import { GitHubHydrationError } from "../src/api-failure.ts";
 import type { Provider } from "../src/provider.ts";
 import type { SshExecDeps } from "../src/ssh-executor.ts";
 import { GITHUB_TOKEN_CLIENT, GITHUB_TOKEN_INSTALLER, sshHydrateGitHubToken } from "../src/ssh-github-token.ts";
@@ -237,7 +238,7 @@ from unittest.mock import patch
 from contextlib import ExitStack
 p=json.load(sys.stdin)
 class InstallationStarted(BaseException): pass
-seen=[];mutations=[];result={};clock=[0.0];attempts=[0];writes=[0]
+seen=[];mutations=[];result={};err=io.StringIO();clock=[0.0];attempts=[0];writes=[0]
 def info(mode,uid=0):
     return SimpleNamespace(st_mode=mode,st_uid=uid,st_gid=uid,st_nlink=1,st_size=1024)
 def lstat(path):
@@ -256,6 +257,7 @@ def lstat(path):
     raise FileNotFoundError()
 def begin(*args,**kwargs):
     writes[0]+=1
+    if p.get('fail_write'): raise OSError('synthetic-secret-detail')
     raise InstallationStarted()
 def flock(*args):
     attempts[0]+=1
@@ -270,12 +272,12 @@ with ExitStack() as stack:
       ('os.chmod',lambda *args: None),('fcntl.flock',flock),
       ('time.monotonic',lambda: clock[0]),('time.sleep',sleep),
       ('tempfile.mkstemp',begin),('os.rename',mutation),('os.replace',mutation),
-      ('time.time',lambda: 100),('sys.stderr',io.StringIO()),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
+      ('time.time',lambda: 100),('sys.stderr',err),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
         stack.enter_context(patch(target,value))
     try: exec(compile(p['script'],'installer','exec'),{'__name__':'__main__'})
     except InstallationStarted: result['action']='install'
     except SystemExit as error: result.update(action='exit',code=error.code)
-result.update(seen=seen,mutations=mutations,writes=writes[0],attempts=attempts[0],elapsed=clock[0])
+result.update(stderr=err.getvalue(),seen=seen,mutations=mutations,writes=writes[0],attempts=attempts[0],elapsed=clock[0])
 print(json.dumps(result))
 `;
 
@@ -315,4 +317,112 @@ test("installer waits through transient lock contention but fails at its deadlin
   expect(timedOut.writes).toBe(0);
   expect(timedOut.mutations).toEqual([]);
   expect(timedOut.seen).not.toContain("/home");
+});
+
+// The executable artifact owns the diagnostic contract: raw exception text must never escape.
+test("installer reports the failed directory check or atomic install as a closed phase", () => {
+  for (const [input, phase] of [
+    [{ target: "/usr/lib", violation: "ownership" }, "directories"],
+    [{ fail_write: true }, "install"],
+  ] as const) {
+    const result = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, ...input });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(`ARMADA_GITHUB_FAILURE ${phase}\n`);
+  }
+});
+
+function diagnosticTransport(stderr = "", code = 0) {
+  let input = "";
+  const deps: SshExecDeps = {
+    mkdtemp: (async () => "/tmp/armada-fixture") as unknown as NonNullable<SshExecDeps["mkdtemp"]>,
+    chmod: async () => {},
+    writeFile: async () => {},
+    rm: async () => {},
+    readPublicKey: async () => "ssh-ed25519 PUBLIC",
+    spawn: ((file: string) => {
+      const child = new EventEmitter() as ChildProcess;
+      const errors = new EventEmitter();
+      Object.assign(child, {
+        stderr: errors,
+        stdin: {
+          end: (value: string) => {
+            if (file === "ssh") input = value;
+            queueMicrotask(() => {
+              if (file === "ssh") errors.emit("data", Buffer.from(stderr));
+              child.emit("close", file === "ssh" ? code : 0);
+            });
+          },
+        },
+      });
+      return child;
+    }) as typeof spawn,
+  };
+  return { deps, input: () => input };
+}
+const diagnosticProvider = {
+  id: "boat",
+  sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }),
+} as unknown as Provider;
+
+// Execute the actual bootstrap from SSH stdin; only the child process boundary is substituted.
+test("bootstrap relays an exact installer phase and maps all other child stderr to sudo", async () => {
+  const transport = diagnosticTransport();
+  await sshHydrateGitHubToken(
+    diagnosticProvider,
+    "bx-diagnostic",
+    "synthetic",
+    new Date(Date.now() + 60_000),
+    transport.deps,
+  );
+  const script = transport.input().split("<<'ARMADA_GITHUB_TOKEN'\n")[1]?.split("\nARMADA_GITHUB_TOKEN")[0];
+  expect(script).toBeDefined();
+  const harness = `import sys,json,io,os,subprocess
+from unittest.mock import patch
+from types import SimpleNamespace
+p=json.load(sys.stdin);err=io.StringIO();code=None
+with patch.dict(os.environ,{'ARMADA_GIT_TOKEN':'synthetic'},clear=True), patch('os.getuid',lambda:1000), patch('subprocess.run',lambda *a,**k:SimpleNamespace(returncode=1,stderr=p['stderr'].encode())), patch('sys.stderr',err):
+    try: exec(compile(p['script'],'bootstrap','exec'),{})
+    except SystemExit as e: code=e.code
+print(json.dumps({'code':code,'stderr':err.getvalue()}))
+`;
+  for (const [stderr, phase] of [
+    ["ARMADA_GITHUB_FAILURE directories\n", "directories"],
+    ["ARMADA_GITHUB_FAILURE synthetic-secret\n", "sudo"],
+    ["sudo: synthetic-secret\n", "sudo"],
+    ["ARMADA_GITHUB_FAILURE install\nextra-secret\n", "sudo"],
+  ]) {
+    const result = python(harness, { script, stderr });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(`ARMADA_GITHUB_FAILURE ${phase}\n`);
+  }
+});
+
+test("SSH hydration accepts only closed phase records, correlates logs and returns safe details", async () => {
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const [stderr, phase] of [
+      ["ARMADA_GITHUB_FAILURE directories\n", "directories"],
+      ["ARMADA_GITHUB_FAILURE arbitrary-secret\n", "ssh"],
+      ["arbitrary-secret\n", "ssh"],
+    ]) {
+      log.mockClear();
+      const transport = diagnosticTransport(stderr, 1);
+      await expect(
+        sshHydrateGitHubToken(
+          diagnosticProvider,
+          "bx-diagnostic",
+          "synthetic",
+          new Date(Date.now() + 60_000),
+          transport.deps,
+        ),
+      ).rejects.toMatchObject({ details: { phase }, message: new GitHubHydrationError().message });
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events.filter((value) => value.event === "github_hydration_failed")).toEqual([
+        { event: "github_hydration_failed", sandboxId: "bx-diagnostic", phase },
+      ]);
+      expect(JSON.stringify(events)).not.toContain("arbitrary-secret");
+    }
+  } finally {
+    log.mockRestore();
+  }
 });

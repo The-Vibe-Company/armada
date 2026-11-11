@@ -1,8 +1,9 @@
-import { API_FAILURE_STATUS, type ApiFailureCode } from "@armada/core";
+import { API_FAILURE_STATUS, type ApiFailureCode, type GitHubHydrationPhase, githubHydrationPhase } from "@armada/core";
 export class ToolApiError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly details?: { phase: GitHubHydrationPhase },
   ) {
     super(message);
   }
@@ -45,7 +46,11 @@ export async function callSharedTool(context: ToolContext, name: string, args: R
         (item) => item.type === "text" && item.text?.startsWith("error code: "),
       );
       const code = marker?.text?.slice("error code: ".length) ?? "internal";
-      throw new ToolApiError(code, block?.text ?? "Operation failed.");
+      // Error details cross the MCP transport only through this closed, secret-free field.
+      const structured = result.structuredContent as { error?: { details?: { phase?: unknown } } } | undefined;
+      const phase =
+        code === "github_hydration_failed" ? githubHydrationPhase(structured?.error?.details?.phase) : undefined;
+      throw new ToolApiError(code, block?.text ?? "Operation failed.", phase ? { phase } : undefined);
     }
     return result.structuredContent;
   } finally {

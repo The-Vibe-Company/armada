@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
@@ -292,6 +293,7 @@ async function sshExchange(
       capture,
       timeoutMs,
       deps.onWarning,
+      input.sandboxId,
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -318,6 +320,7 @@ function command(
   capture = false,
   timeoutMs = capture ? 30_000 : 600_000,
   onWarning?: (warning: GoldenBuildWarning) => void,
+  sandboxId?: string,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -326,6 +329,7 @@ function command(
     const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", capture ? "pipe" : "ignore", "pipe"] });
     let pending = "";
     let phase = "ssh";
+    let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let timedOut = false;
     const output: Buffer[] = [];
@@ -362,9 +366,7 @@ function command(
           /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
             line,
           );
-        if (github) {
-          console.error(JSON.stringify({ event: "github_hydration_failed", phase: github[1] }));
-        }
+        if (github) hydrationPhase = githubHydrationPhase(github[1]);
         const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
         if (warning)
           onWarning?.(
@@ -396,6 +398,11 @@ function command(
       else {
         const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
         if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
+        if (hydrationPhase) {
+          console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: hydrationPhase }));
+          reject(new GitHubHydrationError(hydrationPhase));
+          return;
+        }
         reject(
           new GoldenError(
             "build_failed",

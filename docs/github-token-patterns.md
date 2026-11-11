@@ -195,7 +195,10 @@ On failure, server logs emit `github_hydration_failed` with a closed phase
 (`privilege`, `payload`, `directories`, `lock`, `executables`, `install`,
 `token_write`, `sudo` or `bootstrap`); SSH connectivity failures retain the
 sanitized `golden_ssh_failed` record. No exception text or credential is relayed.
-CLI and MCP report the fixed `github_hydration_failed` help text.
+Each hydration failure log includes `sandboxId` for correlation. HTTP and MCP report
+`github_hydration_failed` with fixed help and closed `error.details.phase`; the CLI
+shows the allowlisted phase directly to the owner. Unknown transport failures use
+`ssh`. Arbitrary guest stderr and non-allowlisted phase values are never exposed.
 
 Production check after deployment (not performed by this PR): on an owner's
 resumed legacy Boat sandbox with expired inherited GitHub auth, run

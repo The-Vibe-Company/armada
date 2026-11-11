@@ -16,6 +16,7 @@ import {
 } from "@armada/auth";
 import {
   API_FAILURE_STATUS,
+  GitHubHydrationError,
   goldenForSettings,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
@@ -275,6 +276,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           error: {
             code: failureCode,
             message: error instanceof Error ? error.message : failureCode,
+            ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
             ...(error instanceof ProviderError && error.details?.keepSource === true
               ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
               : {}),
@@ -287,7 +289,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
       return fail(status, error.code, error.action);
     }
-    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
+    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message, error.details);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
@@ -1393,8 +1395,11 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(status: number, code: string, message: string): Response {
-  return Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store" } });
+function fail(status: number, code: string, message: string, details?: ToolApiError["details"]): Response {
+  return Response.json(
+    { error: { code, message, ...(details ? { details } : {}) } },
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /**

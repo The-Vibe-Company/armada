@@ -24,7 +24,9 @@ export async function sshHydrateGitHubToken(
       { sandboxId, token: JSON.stringify({ token, expiresAt: expiry }), script: BOOTSTRAP, timeoutMs: 60_000 },
       deps,
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof GitHubHydrationError) throw error;
+    console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: "ssh" }));
     throw new GitHubHydrationError();
   }
 }
