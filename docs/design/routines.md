@@ -5,10 +5,10 @@ It is not an orchestrator, workflow engine, or privileged service identity.
 
 ## Delivery slices
 
-1. **This PR:** configuration API, pinned template references, paused-only storage,
+1. **Slice 1 (#1011):** configuration API, pinned template references, paused-only storage,
    read isolation and authorization. No timer, launch, or enabling endpoint is
    shipped. The API is a foundation, not completion of #1006.
-2. Server scheduler, durable run history/claims, pause/resume and cost guards.
+2. **This PR:** server scheduler, durable run history/claims, pause/resume and cost guards.
 3. API-only `armada routine …` commands.
 4. Dashboard Run > Routines using CreateDialog; optional read-only iPhone last.
 
@@ -37,7 +37,7 @@ Org admins see routine configuration, but not another actor's launch manifests
 or private runtime contents. History exposes only authorized sandbox links and
 closed, value-free diagnostic codes/messages, never raw provider errors.
 
-## Scheduler contract (next PR, not implemented here)
+## Scheduler contract
 
 Persist `enabled/paused/deleted`, `next_due_at`, configuration generation,
 consecutive failures and last outcome. Serialize admission per routine in SQL;
@@ -79,17 +79,16 @@ Do not persist secrets, readable manifests, raw errors or provider output here.
 No cron expressions, timezone/calendar scheduling, triggers/webhooks, chaining,
 automatic PR management, orchestration, or catch-up storms.
 
-## Configuration API (this PR)
+## Configuration and lifecycle API
 
 Authenticated control API POST routes under `/api/v1/routines/`:
-`create`, `list`, `get`, `update`, `delete`. The session determines owner; `org` is an explicit org UUID and must be in the
+`create`, `list`, `get`, `update`, `delete`, `enable`, `pause`, `history`. The session determines owner; `org` is an explicit org UUID and must be in the
 caller’s current memberships. Clients cannot supply owner. IDs are UUIDs. Create accepts name, scope,
 templateId, templateRevision, prompt, intervalHours, ttlSeconds and maxRunsPerDay
 plus org (creation may omit the three limits to use defaults). Get uses `{org, id}`; delete uses `{org, id, expectedVersion}`.
 Update replaces all mutable configuration fields and requires org, id and
 expectedVersion; list uses `{org}`. Mutations increment version and stale
-versions are refused to prevent lost updates. Owner and scope cannot be changed. Enable/resume and unknown
-fields are rejected. Updates validate the complete resulting configuration.
+versions are refused to prevent lost updates. Owner and scope cannot be changed. Unknown fields are rejected. Updates validate the complete resulting configuration.
 User JWTs have SELECT-only RLS access; all writes pass server authorization.
 
 ## Coordinator staging checks
@@ -100,9 +99,9 @@ After the coordinator applies the included migration to staging:
 - Exercise create/list/get/update/delete as owner, another member, another-org
   user, and org admin. Confirm private rows stay private and JWT writes fail.
 - Confirm cross-org/private template references, missing revisions, unknown
-  fields and enabling requests fail; no configured routine launches anything.
+  fields fail. Paused routines never launch; enable explicitly to begin scheduling.
 
-After scheduler slice 2, on **Modal×Codex and Boat×Codex**:
+On **Modal×Codex and Boat×Codex**:
 
 - Configure the one-hour minimum and observe two normal sandbox launches with
   the exact prompt and pinned template revision; stop the first before the second.
@@ -112,3 +111,25 @@ After scheduler slice 2, on **Modal×Codex and Boat×Codex**:
 - Simulate downtime: at most one immediate occurrence, no catch-up storm.
 - Revoke owner access/credentials; verify refusal, sanitized reason and automatic
   pause after three failures. Exercise daily cap and TTL cleanup.
+
+## Slice 2 operations and recovery
+
+`enable` and `pause` accept `{org,id,expectedVersion}` and increment the version.
+Enabling starts the first interval **one interval from database now**, not immediately,
+and resets consecutive failures. Updating an enabled definition restarts its interval;
+previous admitted occurrences retain their original configuration. Pausing/deleting
+clears the next due time, but already admitted runs may finish. `history` accepts
+`{org,id}` and returns the latest 100 decisions, newest first, including for a
+soft-deleted routine. History never returns the private launch input snapshot,
+manifest or provider errors. Sandbox links are returned only to the actual sandbox
+owner with current org access; other readers receive no sandbox link.
+
+The server has a dedicated tracked scheduler loop, independent of golden builds
+and sandbox cleanup. Every replica may run it: SQL row locks, durable occurrence
+keys and template launch claims provide correctness, not singleton process state.
+Transient SQL failures leave durable records for a later tick. A launch already
+uncertain at the provider boundary is **not retried with a new claim**. It remains
+visible as uncertain and blocks overlap until reconciled; operators must inspect
+the existing sandbox/claim rather than force a replacement. Run history and
+idempotency records are retained on routine deletion. No new environment variables
+or external scheduler service are required.
