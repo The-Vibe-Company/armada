@@ -155,7 +155,8 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
   });
   await page.getByRole("link", { name: "Allow" }).click();
   await expect(page).toHaveURL(/\/tools\?connection=[0-9a-f-]{36}&oauth=returned$/);
-  const notice = page.locator('[data-oauth-return="connected"]');
+  // Ignore React streaming staging nodes; assert the notice rendered to the user.
+  const notice = page.locator('[data-oauth-return="connected"]').filter({ visible: true });
   await expect(notice).toContainText("Acme Tracker is connected");
   await expect(notice).toContainText("Signed in as service@oauth.test");
   await expect(card(page, "Acme Tracker")).toContainText("OAuth");
@@ -182,23 +183,31 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
   // The same code again (a replayed or reloaded callback) is refused and nothing of it is shown.
   await page.goto(callbackUrl.pathname + callbackUrl.search);
   await expect(page).toHaveURL(/\/tools\?oauth=failed$/);
-  await expect(page.locator('[data-oauth-return="failed"]')).toContainText("Sign-in could not be completed");
+  await expect(page.locator('[data-oauth-return="failed"]').filter({ visible: true })).toContainText(
+    "Sign-in could not be completed",
+  );
   await expect(page.locator("body")).not.toContainText(String(relayed?.body.code));
 
   // Declining at the server comes back as a cancelled sign-in, without the provider's own text.
   await card(page, "Acme Sentry").getByRole("button", { name: "Reconnect" }).click();
   await page.getByRole("link", { name: "Deny" }).click();
   await expect(page).toHaveURL(/\/tools\?oauth=denied$/);
-  await expect(page.locator('[data-oauth-return="failed"]')).toContainText("Sign-in was cancelled");
+  await expect(page.locator('[data-oauth-return="failed"]').filter({ visible: true })).toContainText(
+    "Sign-in was cancelled",
+  );
   await expect(page.locator("body")).not.toContainText("The user said no");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "test-results/oauth-denied-mobile.png" });
   await page.setViewportSize({ width: 1280, height: 720 });
   // A crafted return link cannot claim success: the page rereads the real status.
   await page.goto(`/tools?connection=${ALICE_LINEAR.replace("61", "99")}&oauth=returned`);
-  await expect(page.locator('[data-oauth-return="failed"]')).toContainText("could not be found");
+  await expect(page.locator('[data-oauth-return="failed"]').filter({ visible: true })).toContainText(
+    "could not be found",
+  );
   await page.goto(`/tools?connection=00000000-0000-4000-8000-000000000063&oauth=returned`);
-  await expect(page.locator('[data-oauth-return="failed"]')).toContainText("Acme Sentry is not connected");
+  await expect(page.locator('[data-oauth-return="failed"]').filter({ visible: true })).toContainText(
+    "Acme Sentry is not connected",
+  );
 
   dialog = await openAdd(page);
   await expect(dialog.getByLabel("Name")).toHaveValue("");
@@ -509,7 +518,9 @@ test("a catalog service adds a second named account through its sign-in, and Sla
 
   await expect(page.getByRole("heading", { name: "Authorize Armada for Work Linear" })).toBeVisible();
   await page.getByRole("link", { name: "Allow" }).click();
-  await expect(page.locator('[data-oauth-return="connected"]')).toContainText("Work Linear is connected");
+  await expect(page.locator('[data-oauth-return="connected"]').filter({ visible: true })).toContainText(
+    "Work Linear is connected",
+  );
   // Two accounts of one service are two connections: each keeps its own nickname and its verified account.
   await expect(card(page, "Work Linear")).toContainText("Signed in as service@oauth.test");
   await expect(card(page, "Alice Linear")).toContainText("Signed in as alice@linear.test");

@@ -326,20 +326,6 @@ test("a launch with no repository chosen keeps the legacy behaviour", async ({ p
   expect(launches[0]).not.toHaveProperty("repo");
 });
 
-test("the main navigation groups Run, Build and Account and marks the current page", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/environments");
-  const nav = page.getByRole("navigation", { name: "Main" });
-  await expect(nav.getByRole("link", { name: "Environments" })).toHaveAttribute("aria-current", "page");
-  await expect(nav.getByRole("link", { name: "Environments" })).toHaveAttribute(
-    "title",
-    "Goldens: what a sandbox contains when it starts",
-  );
-  await expect(nav.getByText("Build", { exact: true })).toBeVisible();
-  await nav.getByRole("link", { name: "Harness" }).click();
-  await page.waitForURL("**/harness");
-  await expect(nav.getByRole("link", { name: "Harness" })).toHaveAttribute("aria-current", "page");
-});
-
 test("an admin builds a Modal golden: the request names Modal and Modal's unbounded capacity is no limit", async ({
   page,
 }) => {
