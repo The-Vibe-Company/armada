@@ -665,7 +665,9 @@ describe("control API", () => {
       const headers = {
         authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
       };
-      expect((await call("/api/v1/nope", { method: "POST", headers }))?.status).toBe(404);
+      const unknown = await call("/api/v1/nope", { method: "POST", headers });
+      expect(unknown?.status).toBe(404);
+      expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{" }))?.status).toBe(400);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
       expect((await call("/api/v1/org/list", { method: "POST", headers }))?.status).toBe(200);

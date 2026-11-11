@@ -232,6 +232,7 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
       },
     );
     expect(blocked.status).toBe(404);
+    expect(await blocked.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
   }
   expect(forwarded).toBe(0);
 });
