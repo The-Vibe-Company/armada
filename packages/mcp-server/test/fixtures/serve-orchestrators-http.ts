@@ -40,8 +40,12 @@ const fake = fakeModalRuntime({
 });
 const effects = fake.effects;
 mock.module("modal", () => ({ ModalClient: fake.Client }));
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 // Actual serve, control, authentication, factory, authority, stores and native adapter.
 const { startServer } = await import("../../src/serve.ts");
 const { LifecycleRuntimeStore } = await import("../../src/orchestrator-lifecycle-integration.ts");
