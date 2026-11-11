@@ -17,7 +17,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   createTemplate,
   deleteTemplate,
@@ -108,6 +108,25 @@ export function NoSecretsNote({ className }: { className?: string }) {
   );
 }
 
+/**
+ * React resets a form after its action returns. A refused publish or launch must keep every choice, including the
+ * controlled ones (the model, the machine size) that listen for that reset: the reset is cancelled before any of
+ * them hears it, so a retry sends exactly what the person saw.
+ */
+function useKeepOnReset(root: RefObject<HTMLFormElement | null>) {
+  useEffect(() => {
+    const form = root.current;
+    if (!form) return;
+    const keep = (event: Event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    // Capture listeners on the target run before the fields' own (bubble) listeners.
+    form.addEventListener("reset", keep, true);
+    return () => form.removeEventListener("reset", keep, true);
+  }, [root]);
+}
+
 /** The form's starting point: a revision being edited, or nothing for a new template. */
 type Editing = { id: string; name: string; scope: TemplateScope; revision: number; definition: TemplateDefinition };
 
@@ -181,13 +200,7 @@ function TemplateForm({
   useEffect(() => {
     if (state?.ok) onDone(state.message);
   }, [state, onDone]);
-  // A failure keeps every choice: React's reset after the action would put the fields back to their defaults.
-  useEffect(() => {
-    const form = root.current;
-    const keep = (event: Event) => event.preventDefault();
-    form?.addEventListener("reset", keep);
-    return () => form?.removeEventListener("reset", keep);
-  }, []);
+  useKeepOnReset(root);
   // A step change moves focus to the new step, so a keyboard or screen reader user lands where the form went.
   const first = useRef(true);
   useEffect(() => {
@@ -207,6 +220,8 @@ function TemplateForm({
 
   function next() {
     if (!name.trim()) return setProblem("Name the template.");
+    const otherModel = root.current?.querySelector<HTMLInputElement>('input[name="other_model"]');
+    if (otherModel && !otherModel.value.trim()) return setProblem("Enter the model id.");
     if (!chosen) return setProblem("Choose an environment.");
     if (!chosen.ready) return setProblem(`${chosen.name} has no snapshot yet: snapshot it first.`);
     if (goldenProblem) return setProblem(goldenProblem);
@@ -215,7 +230,18 @@ function TemplateForm({
   }
 
   return (
-    <form ref={root} action={formAction} className="space-y-4" data-template-form>
+    <form
+      ref={root}
+      action={formAction}
+      className="space-y-4"
+      data-template-form
+      // Enter in a step-1 field goes to the next step; only step 2 publishes.
+      onSubmit={(event) => {
+        if (step === 2) return;
+        event.preventDefault();
+        next();
+      }}
+    >
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="scope" value={scope} />
       {editing && (
@@ -226,6 +252,8 @@ function TemplateForm({
         </>
       )}
       <Steps step={step} />
+      {/* A refusal stays in view whichever step is shown. */}
+      <ResultLine result={state} />
 
       <div hidden={step !== 1} className="space-y-4" data-template-step="1">
         <h3 data-step-heading tabIndex={-1} className="sr-only">
@@ -386,7 +414,6 @@ function TemplateForm({
           hint="Each value is copied into the sandbox at launch, under its own name. Publishing uses its current version."
         />
         <NoSecretsNote />
-        <ResultLine result={state} />
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button type="button" variant="ghost" onClick={() => setStep(1)}>
             <ArrowLeftIcon /> Back
@@ -562,7 +589,7 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
  * project, the machine size and how long it runs can change. One request key per opening: a retry after a lost
  * answer returns that launch instead of starting another, and a definite refusal takes a fresh key.
  */
-export function TemplateLaunchForm({ target, picker }: { target: TemplateLaunchTarget; picker?: ReactNode }) {
+export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget }) {
   const id = useId();
   const [requestKey, setRequestKey] = useState(newRequestKey);
   const run = useCallback(async (previous: TemplateLaunchResult | null, data: FormData) => {
@@ -573,22 +600,18 @@ export function TemplateLaunchForm({ target, picker }: { target: TemplateLaunchT
   const [state, formAction] = useActionState(run, null);
   const [project, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
   const root = useRef<HTMLFormElement>(null);
+  useKeepOnReset(root);
   useEffect(() => {
     const form = root.current;
     if (!form) return;
-    const keep = (event: Event) => event.preventDefault();
     const shortcut = (event: KeyboardEvent) => {
       if (!isSubmitShortcut(event)) return;
       event.preventDefault();
       const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
       if (button && !button.disabled) form.requestSubmit(button);
     };
-    form.addEventListener("reset", keep);
     form.addEventListener("keydown", shortcut);
-    return () => {
-      form.removeEventListener("reset", keep);
-      form.removeEventListener("keydown", shortcut);
-    };
+    return () => form.removeEventListener("keydown", shortcut);
   }, []);
   const ttl = ttlOptions(target.definition.provider);
 
@@ -599,7 +622,6 @@ export function TemplateLaunchForm({ target, picker }: { target: TemplateLaunchT
       <input type="hidden" name="revision" value={target.revision} />
       <input type="hidden" name="request_key" value={requestKey} />
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
-        {picker}
         <Preset target={target} />
         <div className="space-y-2">
           <Label htmlFor={`${id}-prompt`}>Task</Label>

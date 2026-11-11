@@ -91,7 +91,19 @@ export async function publishTemplate(_previous: ActionResult | null, data: Form
     // The scope never changes: the revision is checked against the template's own.
     const parsed = await request(data, formString(data, "scope"));
     if (!parsed.ok) return fail(parsed.error);
-    const { item } = await templates.publish({ org, ...current, definition: parsed.value.definition });
+    // A publication replaces the whole definition: what this form does not show (skill pins, a pinned model
+    // account, set over the API) carries over from the revision it starts from. An account pinned for another
+    // agent cannot run the new one, so it is dropped with the agent change.
+    const { revision: previous } = await templates.get({ org, id: current.id, revision: current.expectedRevision });
+    const kept = previous.definition;
+    const definition = {
+      ...parsed.value.definition,
+      ...(kept.skills.length ? { skills: kept.skills } : {}),
+      ...(kept.modelAccount && kept.harness === parsed.value.definition.harness
+        ? { modelAccount: kept.modelAccount }
+        : {}),
+    };
+    const { item } = await templates.publish({ org, ...current, definition });
     return done(`${item.name}: revision ${item.currentRevision} is published.`);
   }, data);
 }
@@ -151,7 +163,13 @@ export async function launchFromTemplate(
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     // No status: the request may have reached the server (a timeout, a dropped connection). Keep the key.
-    if (error.status === undefined || error.status >= 500 || error.message.startsWith("Request key"))
+    // An unreadable success answer is not a refusal either: the sandbox may have started.
+    if (
+      error.status === undefined ||
+      error.status < 300 ||
+      error.status >= 500 ||
+      error.message.startsWith("Request key")
+    )
       return { ...fail(error.code ? templateFailure(error.status, error.message) : error.message), pending: true };
     return fail(error.code ? templateFailure(error.status, error.message) : error.message);
   }

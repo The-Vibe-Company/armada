@@ -197,6 +197,8 @@ describe("template launch", () => {
     expect(templateFailure(409, "Request key already used with a different request.")).toContain(
       "still being confirmed",
     );
+    expect(templateFailure(409, "Template name or request key already exists.")).toContain("name already exists");
+    expect(templateFailure(403, "Template access denied.")).toContain("no longer have access");
     expect(templateFailure(403, "Template administrator permission required.")).toBe(
       "Only an admin changes organization templates.",
     );

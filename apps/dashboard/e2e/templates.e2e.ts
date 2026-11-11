@@ -240,3 +240,46 @@ test("the environment's launch dialog offers its templates; choosing one presele
   const launch = (await mockState()).templateCalls.find((call) => call.route === "templates/launch");
   expect(launch?.body).toMatchObject({ id: "00000000-0000-4000-8000-000000000090", revision: 2 });
 });
+
+test("Enter on the first step goes to the next one; a taken name is refused in words, choices kept", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/templates");
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New template" });
+  await dialog.getByLabel("Name").fill("Modal quick fix");
+  await dialog.getByLabel("Environment").selectOption({ label: "modal-golden on Modal" });
+  await dialog.getByLabel("Model").selectOption("claude-sonnet-5-5");
+  await dialog.getByLabel("Name").press("Enter");
+  await expect(dialog.getByRole("heading", { name: /Step 2 of 2/ })).toBeFocused();
+  expect((await mockState()).templateCalls.filter((call) => call.route === "templates/create")).toHaveLength(0);
+  await dialog.getByRole("button", { name: "Publish template" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(/A template with this name already exists/);
+  // The refusal kept every choice: back on step 1, the model is still the one chosen.
+  await dialog.getByRole("button", { name: "Back" }).click();
+  await expect(dialog.getByLabel("Model")).toHaveValue("claude-sonnet-5-5");
+});
+
+test("a retry after an unknown outcome sends the same size, and no launch manifest reaches the page", async ({
+  page,
+}) => {
+  expect(
+    (await fetch(`${MOCK}/__test/reset`, { method: "POST", body: JSON.stringify({ sizePolicies: true }) })).ok,
+  ).toBe(true);
+  await signIn(page, "alice@example.com", "/templates");
+  await row(page, "Backend with docs").getByRole("button", { name: "Launch from Backend with docs" }).click();
+  const dialog = page.getByRole("dialog", { name: "Launch Backend with docs" });
+  await dialog.getByLabel("Machine size").selectOption("xlarge");
+  await outcome({ state: "reconciling", reason: "allocation_or_start_unknown" });
+  await dialog.getByRole("button", { name: /Launch/ }).click();
+  await expect(dialog.getByRole("alert")).toContainText("could not confirm");
+  await expect(dialog.getByLabel("Machine size")).toHaveValue("xlarge");
+  await dialog.getByRole("button", { name: /Launch/ }).click();
+  const launchCalls = async () => (await mockState()).templateCalls.filter((call) => call.route === "templates/launch");
+  await expect.poll(async () => (await launchCalls()).length).toBe(2);
+  const [first, second] = await launchCalls();
+  expect(first?.body.size).toBe("xlarge");
+  expect(second?.body).toEqual(first?.body);
+  await expect(dialog.getByRole("alert")).toContainText("could not confirm");
+  expect(await page.content()).not.toContain("manifest-canary-5e1d");
+});

@@ -1285,9 +1285,19 @@ function templateRoute(route: string, body: Row, request: Request): Response {
   const invalid = () => controlFail(400, "invalid", "Invalid template request.");
   const fields = allowed[operation];
   if (!fields || Object.keys(body).some((key) => !fields.includes(key))) return invalid();
-  if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Application vault access denied.");
+  if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Template access denied.");
   const visible = (row: Row) =>
     row.orgId === body.org && row.status === "active" && (row.scope === "org" || row.ownerId === userId);
+  // The `launch_templates_name` unique index: one active name per org and scope (per owner when personal).
+  const nameTaken = (name: unknown, scope: unknown) =>
+    state.templates.some(
+      (row) =>
+        row.orgId === body.org &&
+        row.status === "active" &&
+        row.scope === scope &&
+        row.name === name &&
+        (scope === "org" || row.ownerId === userId),
+    );
   const revisionOf = (row: Row, revision = row.currentRevision) =>
     state.templateRevisions.find((r) => r.templateId === row.id && r.revision === revision);
   const dto = (r: Row) => ({ id: r.id, revision: r.revision, definition: r.definition });
@@ -1346,6 +1356,8 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       return controlFail(403, "forbidden", "Template administrator permission required.");
     const def = definition(body.scope, body.definition);
     if (def instanceof Response) return def;
+    if (nameTaken(body.name, body.scope))
+      return controlFail(409, "conflict", "Template name or request key already exists.");
     const row: Row = {
       ...templateRow(id(++sequence), body.scope, userId, body.name, 1),
       orgId: body.org,
@@ -1365,7 +1377,8 @@ function templateRoute(route: string, body: Row, request: Request): Response {
     return json({ item: row, revision: dto(revision) });
   }
   if (operation === "launch") {
-    const key = `${userId}:${body.requestKey}`;
+    // Keys are scoped to the actor and the org.
+    const key = `${body.org}:${userId}:${body.requestKey}`;
     const digest = JSON.stringify(body);
     const previous = state.templateRequests.get(key);
     if (previous) {
@@ -1406,6 +1419,8 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       state.sandboxes.unshift(launched);
       result = { requestId: crypto.randomUUID(), state: "succeeded", id: launched.id, status: launched.status };
     }
+    // The server answers its frozen manifest, readable values included: the dashboard must never pass it on.
+    result.manifest = { version: 1, templateId: row.id, variables: { APP_REGION: "manifest-canary-5e1d" } };
     state.templateRequests.set(key, { digest, result });
     return json(result);
   }

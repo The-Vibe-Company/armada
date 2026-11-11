@@ -33,6 +33,8 @@ export type TemplateDefinition = {
   connections: string[];
   variables: TemplateVariableBinding[];
   skills: string[];
+  /** A pinned model account (set over the API); absent, each launch resolves the launcher's own. */
+  modelAccount?: { id: string; version: number };
 };
 
 export type TemplateRevision = { id: string; revision: number; definition: TemplateDefinition };
@@ -97,6 +99,9 @@ export function parseRevision(value: unknown): TemplateRevision | null {
     variables.push({ key: binding.key, variableId: binding.variableId, version: binding.version });
   }
   const skills = Array.isArray(d.skills) ? d.skills.filter((skill): skill is string => typeof skill === "string") : [];
+  const account = isRecord(d.modelAccount) ? d.modelAccount : null;
+  const modelAccount =
+    account && isId(account.id) && isCount(account.version) ? { id: account.id, version: account.version } : undefined;
   return {
     id: value.id,
     revision: value.revision,
@@ -109,6 +114,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
       connections: [...d.connections],
       variables,
       skills,
+      ...(modelAccount ? { modelAccount } : {}),
     },
   };
 }
@@ -318,15 +324,19 @@ export function templateFailure(status: number | undefined, message: string): st
     case 400:
       return "The server refused this template. Check the environment, tools and variables, then try again.";
     case 403:
-      return "Only an admin changes organization templates.";
+      return message === "Template administrator permission required."
+        ? "Only an admin changes organization templates."
+        : "You no longer have access to templates in this organization. Refresh the page.";
     case 404:
       return "This template no longer exists. Refresh the page.";
     case 409:
-      return message === "Request key already used with a different request."
-        ? "This launch is still being confirmed. Close the dialog and check Sandboxes before launching again."
-        : "Someone published a newer revision since this page loaded. Refresh and try again.";
+      if (message === "Request key already used with a different request.")
+        return "This launch is still being confirmed. Close the dialog and check Sandboxes before launching again.";
+      if (message === "Template name or request key already exists.")
+        return "A template with this name already exists for the same people. Choose another name.";
+      return "Someone published a newer revision since this page loaded. Refresh and try again.";
     case 503:
-      return "Templates are not available on this Armada server yet.";
+      return "Templates are not available on this Armada server right now.";
     default:
       return message;
   }
