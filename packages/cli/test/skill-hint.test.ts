@@ -89,3 +89,28 @@ sys.exit(p.wait())
   await writeFile(join(state, "armada"), "not a directory");
   expect(cli(["--version"])).not.toContain("silence:");
 });
+
+test("unavailable working directory never breaks a completed command, including quiet paths", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-hint-cwd-"));
+  temps.push(directory);
+  const module = new URL("../src/skill-hint.ts", import.meta.url).href;
+  const child = Bun.spawnSync(
+    [
+      process.execPath,
+      "--eval",
+      `
+      const { printSkillHint } = await import(${JSON.stringify(module)});
+      const { rmdirSync } = await import("node:fs");
+      process.chdir(${JSON.stringify(directory)});
+      rmdirSync(${JSON.stringify(directory)});
+      for (const args of [[], ["--json"]]) {
+        printSkillHint(args, 0, { stdout: true, stderr: true });
+        printSkillHint(args, 0, { stdout: false, stderr: false });
+      }
+      `,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+});

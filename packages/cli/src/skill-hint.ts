@@ -11,8 +11,8 @@ export function printSkillHint(
   exitCode: number,
   terminal: { stdout: boolean; stderr: boolean },
   env: NodeJS.ProcessEnv = process.env,
-  cwd = process.cwd(),
-  home = homedir(),
+  cwd?: string,
+  home?: string,
 ): void {
   if (
     exitCode !== 0 ||
@@ -24,6 +24,8 @@ export function printSkillHint(
   )
     return;
   try {
+    cwd ??= process.cwd();
+    home ??= homedir();
     // Agent discovery includes ancestor projects and user roots. Bound the ancestor walk.
     const bases = new Set([home]);
     let current = resolve(cwd);
