@@ -173,6 +173,10 @@ public enum OrchestratorPolling {
 /// `errorCode`s, `blockedReason`s and disabled-pair reasons. An unknown code still gets a sentence,
 /// with the code kept only as a reference after it.
 public enum OrchestratorExplanation {
+    /// A stable server code (`credential_refused`): lowercase words joined by underscores, bounded.
+    static func isClosedCode(_ code: String) -> Bool {
+        (1...64).contains(code.utf8.count) && code.utf8.allSatisfy { (97...122).contains($0) || $0 == 95 }
+    }
     public static func text(for code: String) -> String {
         if let known = known[code] { return known }
         if code.hasPrefix("skillpack_") {

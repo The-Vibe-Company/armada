@@ -478,3 +478,51 @@ private actor Sleeps {
                                        operations: [("create", "failed", 1, "skillpack_install_nonzero")], agentWorking: false)
     #expect(stopped.composerNote == "Creation failed. " + OrchestratorExplanation.text(for: "skillpack_install_nonzero"))
 }
+
+// #941: a structured create refusal keeps the server's closed reason up to the person: the 2.19
+// envelope `{"error":{"code","message"}}` with 422 `credential_refused` is explained in words, and a
+// first attempt refused so is recorded as never admitted (like `invalid_request`), so it can be dismissed.
+// An unknown outcome (503 `outcome_unknown`) stays uncertain: nothing is claimed about admission.
+@Test func aStructuredCreateRefusalKeepsTheServersReasonAndIsNotAdmitted() async throws {
+    let enabled = #"{"version":1,"enabled":true,"reason":null}"#
+    let (client, _, _) = try await signedIn([
+        (200, enabled),
+        (422, #"{"error":{"code":"credential_refused","message":"credential_refused"}}"#),
+        (200, enabled),
+        (503, #"{"error":{"code":"outcome_unknown","message":"outcome_unknown","admission":"unknown"}}"#),
+    ])
+    let (catalog, _) = try await catalog()
+    var draft = catalog.initialDraft()
+    catalog.adopt(golden: try #require(catalog.goldens.first { $0.id == "g-modal" }), into: &draft)
+    draft.name = "Release"
+    let refused = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    do {
+        _ = try await client.submitOrchestratorOperation(refused.id)
+        Issue.record("The refusal must be thrown")
+    } catch let error as ArmadaError {
+        #expect(error == .refused(code: "credential_refused"))
+        #expect(error.localizedDescription == OrchestratorExplanation.text(for: "credential_refused"))
+        #expect(!error.localizedDescription.contains("_"))
+    }
+    let saved = try #require(await client.pendingOperations.first { $0.id == refused.id })
+    #expect(saved.rejectedBeforeAdmission && saved.canDiscard)
+    try await client.discardOrchestratorOperation(refused.id)
+
+    let unknown = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    await #expect(throws: ArmadaError.unavailable) { _ = try await client.submitOrchestratorOperation(unknown.id) }
+    let open = try #require(await client.pendingOperations.first { $0.id == unknown.id })
+    #expect(open.state == .uncertain && !open.canDiscard)
+}
+
+// #941: production 2.19 starts a new orchestrator's events with a `connections` event, then its
+// create receipt. Exact shape of the 2.19 server's first backward page.
+@Test func aNewOrchestratorsFirstEventsDecodeInTheProductionShape() async throws {
+    let page = #"{"version":1,"events":[{"kind":"connections","connections":[],"id":"3","orchestratorId":"9ae5c175-e0dd-47fc-b920-5321190108db","at":"2026-11-11T07:56:35.925Z","revision":1},{"kind":"operation","operation":{"id":"a1659104-d958-43d6-97fb-d270d4fd9401","kind":"create","state":"succeeded","version":1,"revision":1,"errorCode":null,"orchestratorId":"9ae5c175-e0dd-47fc-b920-5321190108db"},"id":"4","orchestratorId":"9ae5c175-e0dd-47fc-b920-5321190108db","at":"2026-11-11T07:56:35.925Z","revision":1}],"cursor":"after-4","olderCursor":"after-3","hasMore":false}"#
+    let (client, _, _) = try await signedIn([(200, page)])
+    let read = try await client.orchestratorEvents(id: "9ae5c175-e0dd-47fc-b920-5321190108db", backward: true)
+    #expect(read.events.map(\.id) == ["3", "4"] && read.cursor == "after-4" && read.olderCursor == "after-3")
+    guard case .unknown(let kind, _) = read.events[0].body else { Issue.record("connections event"); return }
+    #expect(kind == "connections")
+    guard case .operation(let create) = read.events[1].body else { Issue.record("create receipt"); return }
+    #expect(create.kind == .create && create.state == .succeeded && create.revision == 1)
+}

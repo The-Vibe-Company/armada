@@ -35,6 +35,13 @@ public struct PendingOrchestratorOperation: Codable, Sendable, Identifiable {
     }
 }
 
+extension ArmadaError {
+    /// A structured 4xx refusal from the orchestrator handler. The server answers one only before its
+    /// create or mutation reservation commits (an unknown outcome is `outcome_unknown`, a 503), so a
+    /// first attempt refused this way was never admitted, exactly like `invalid_request`.
+    var isStructuredRefusal: Bool { if case .refused = self { true } else { false } }
+}
+
 extension ArmadaClient {
     /// Actual delivered handler reports enabled:false/native_conformance_required.
     /// Route absent/unsupported means unavailable; never allocate a legacy sandbox.
@@ -122,7 +129,7 @@ extension ArmadaClient {
                   pending.orchestratorId == nil || receipt.orchestratorId == pending.orchestratorId else { throw ArmadaError.invalidResponse }
             try update(pending.updating(state: receipt.state, receipt: receipt))
             return pendingOperations.first(where: { $0.id == operationID })?.receipt ?? receipt
-        } catch let error as ArmadaError where error == .invalidRequest {
+        } catch let error as ArmadaError where error == .invalidRequest || error.isStructuredRefusal {
             if let receipt = terminalReceipt(operationID) { return receipt }
             // The actual handler's structured invalid_request response is pre-effect rejection.
             // Preserve any concurrent terminal receipt; otherwise allow explicit discard.
