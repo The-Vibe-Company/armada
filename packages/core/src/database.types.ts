@@ -2778,6 +2778,82 @@ export type Database = {
           },
         ];
       };
+      routines: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          interval_hours: number;
+          max_runs_per_day: number;
+          ttl_seconds: number;
+          status: string;
+          version: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          interval_hours: number;
+          max_runs_per_day: number;
+          ttl_seconds: number;
+          status?: string;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          template_id?: string;
+          template_revision?: number;
+          prompt?: string;
+          interval_hours?: number;
+          max_runs_per_day?: number;
+          ttl_seconds?: number;
+          status?: string;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "routines_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routines_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routines_template_id_template_revision_fkey";
+            columns: ["template_id", "template_revision"];
+            isOneToOne: false;
+            referencedRelation: "launch_template_revisions";
+            referencedColumns: ["template_id", "revision"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -3236,6 +3312,7 @@ export type OrganizationInvitationRow = Database["public"]["Tables"]["organizati
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
+export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
