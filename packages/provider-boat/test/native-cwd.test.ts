@@ -631,3 +631,35 @@ ${failure === "abort" ? "os.kill(os.getpid(), signal.SIGABRT)" : "sys.exit(1)"}
     }
   },
 );
+
+test("Codex boot abort before initialize still answers the later first request", async () => {
+  const base = mkdtempSync(join(tmpdir(), "armada-codex-early-boot-"));
+  const path = join(base, "codex");
+  const native = join(base, "native");
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    writeFileSync(native, "#!/usr/bin/python3\nimport os, signal\nos.kill(os.getpid(), signal.SIGABRT)\n", {
+      mode: 0o755,
+    });
+    symlinkSync(native, path);
+    expect(installProtocolFixture(path, base).status).toBe(0);
+    child = spawn(path, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
+    const { createInterface } = await import("node:readline");
+    const stderr = createInterface({ input: child.stderr! })[Symbol.asyncIterator]();
+    const stdout = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+    // This diagnosis is emitted only AFTER child.wait: no request can reach native.
+    expect((await stderr.next()).value).toContain("The agent runtime could not start");
+    child.stdin!.end(JSON.stringify({ id: "late-init", method: "initialize", params: {} }) + "\n");
+    const reply = await stdout.next();
+    expect(reply.done).toBe(false);
+    expect(JSON.parse(reply.value!)).toEqual({
+      id: "late-init",
+      error: { code: -32603, message: "The agent runtime could not start in this sandbox. Relaunch in a new sandbox." },
+    });
+    const code = await new Promise<number | null>((resolve) => child!.once("exit", resolve));
+    expect(code).toBe(1);
+  } finally {
+    child?.kill("SIGKILL");
+    rmSync(base, { recursive: true, force: true });
+  }
+});
