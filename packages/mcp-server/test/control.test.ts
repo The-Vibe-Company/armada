@@ -1684,3 +1684,77 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
     });
   });
 });
+
+for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as const) {
+  test(`ordinary private launch returns closed Skillpack ${scenario} failure without starting a harness`, async () => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("Private launch", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+        await encryptSecret("synthetic-provider-key", KEY),
+        org.id,
+      ]);
+      await db.query(
+        "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','model',$2)",
+        [STAN, await encryptSecret("synthetic-model-key", KEY)],
+      );
+      if (scenario !== "missing") {
+        await db.query(
+          "insert into credentials(scope,owner_id,kind,name,value_enc) values('org',$1,'skillpack','org skills',$2)",
+          [org.id, await encryptSecret("cmp_pat_" + "a".repeat(48), KEY)],
+        );
+        await db.query(
+          "insert into credentials(scope,owner_id,kind,name,value_enc,status) values('user',$1,'skillpack','own skills',$2,$3)",
+          [
+            STAN,
+            scenario === "unreadable-personal"
+              ? new Uint8Array([1, 2, 3])
+              : await encryptSecret("cmp_pat_" + "b".repeat(48), KEY),
+            scenario === "revoked-personal" ? "revoked" : "active",
+          ],
+        );
+      }
+      await db.query(
+        "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'private-launch','org','snapshot',$3::jsonb)",
+        [
+          org.id,
+          STAN,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const fake = fakeBoat();
+      options.providerFor = () => fake.provider;
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            golden: "private-launch",
+            harness: "codex",
+            skills: ["notes@1.0.0"],
+            prompt: "start",
+          }),
+        }),
+        options,
+      );
+      const failure = await response!.json();
+      expect(response!.status).toBeGreaterThanOrEqual(400);
+      expect(failure).toMatchObject({
+        error: {
+          details: {
+            reason:
+              scenario === "missing"
+                ? "skillpack_credential_missing"
+                : scenario === "revoked-personal"
+                  ? "skillpack_credential_refused"
+                  : "skillpack_credential_unreadable",
+            stage: "credential",
+          },
+        },
+      });
+      expect(fake.prompts).toHaveLength(0);
+      expect(JSON.stringify(failure)).not.toContain("cmp_pat_");
+    });
+  });
+}
