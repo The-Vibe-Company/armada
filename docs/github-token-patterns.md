@@ -183,3 +183,28 @@ also offers best-effort legacy Boat preparation before the next prompt only with
 verifies a real Boat image). The explicit command stays strict; an already-running
 turn can still need it. Neither is instant
 fan-out or a replacement for an on-demand runtime after proof.
+
+### Legacy Boat repair filesystem check (#923)
+
+Boat images intentionally make `/usr/local`, `/usr/local/bin` and `/usr/local/lib`
+user-owned. The legacy installer must not trust code there or require those
+parents to be root-owned. It now keeps its Python client in `/usr/lib` and wraps
+`/usr/bin/git` and `/usr/bin/gh`, leaving `/usr/local` ownership unchanged.
+The stdin-only SSH transport, pinned host key, `sudo -n`, root ownership checks,
+and owner-only `/run/armada-github/token.json` remain required.
+
+On failure, server logs emit `github_hydration_failed` with a closed phase
+(`privilege`, `payload`, `directories`, `lock`, `executables`, `install`,
+`token_write`, `sudo` or `bootstrap`); SSH connectivity failures retain the
+sanitized `golden_ssh_failed` record. No exception text or credential is relayed.
+Each hydration failure log includes `sandboxId` for correlation. HTTP and MCP report
+`github_hydration_failed` with fixed help and closed `error.details.phase`; the CLI
+shows the allowlisted phase directly to the owner. Unknown transport failures use
+`ssh`. Arbitrary guest stderr and non-allowlisted phase values are never exposed.
+
+Production check after deployment (not performed by this PR): on an owner's
+resumed legacy Boat sandbox with expired inherited GitHub auth, run
+`armada github refresh <sandbox> --json`, then verify `gh api user` identifies
+that owner and an authenticated Git fetch works. Repeat refresh to check
+idempotence; after resume, refresh again to recreate ephemeral `/run` state.
+Do not print token files or credential environment variables.

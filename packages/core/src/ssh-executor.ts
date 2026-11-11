@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
@@ -28,6 +29,8 @@ export class PrivateSshError extends Error {
   }
 }
 export interface SshExecDeps {
+  /** Opt in only for the private GitHub repair installer, never generic guest output. */
+  githubHydration?: boolean;
   onWarning?: (warning: GoldenBuildWarning) => void;
   mkdtemp?: typeof mkdtemp;
   rm?: typeof rm;
@@ -329,6 +332,8 @@ async function sshExchange(
       timeoutMs,
       deps.onWarning,
       privateTransport,
+      input.sandboxId,
+      deps.githubHydration === true,
     );
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
@@ -369,6 +374,8 @@ function command(
   timeoutMs = capture ? 30_000 : 600_000,
   onWarning?: (warning: GoldenBuildWarning) => void,
   privateTransport = false,
+  sandboxId?: string,
+  githubHydration = false,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -377,6 +384,7 @@ function command(
     const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", capture ? "pipe" : "ignore", "pipe"] });
     let pending = "";
     let phase = "ssh";
+    let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let timedOut = false;
     let privateReason: (typeof PRIVATE_SSH_FAILURES)[number] | undefined;
@@ -441,6 +449,12 @@ function command(
           phase = match[1]!;
           exitCode = match[2];
         }
+        const github = githubHydration
+          ? /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
+              line,
+            )
+          : null;
+        if (github) hydrationPhase = githubHydrationPhase(github[1]);
         const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
         if (warning)
           onWarning?.(
@@ -489,6 +503,11 @@ function command(
         }
         const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
         if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
+        if (hydrationPhase) {
+          console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: hydrationPhase }));
+          reject(new GitHubHydrationError(hydrationPhase));
+          return;
+        }
         reject(
           new GoldenError(
             "build_failed",

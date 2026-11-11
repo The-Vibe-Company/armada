@@ -2,6 +2,7 @@ import { AuthError } from "@armada/auth";
 import {
   API_FAILURE_HELP,
   type ApiFailureCode,
+  githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
 } from "@armada/core";
@@ -29,6 +30,7 @@ export class ArmadaApiError extends AuthError {
     readonly serverCode: string,
     readonly status: number,
     message: string,
+    readonly details?: Readonly<{ phase: string }>,
   ) {
     super(message, status === 400 ? "usage" : status === 409 || status === 403 ? "conflict" : "unavailable");
   }
@@ -132,8 +134,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           response.status,
           `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
         );
-      if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode))
-        throw new ArmadaApiError(failureCode, response.status, API_FAILURE_HELP[failureCode as ApiFailureCode]);
+      if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode)) {
+        const phase =
+          failureCode === "github_hydration_failed"
+            ? githubHydrationPhase((payload as { error?: { details?: { phase?: unknown } } }).error?.details?.phase)
+            : undefined;
+        throw new ArmadaApiError(
+          failureCode,
+          response.status,
+          API_FAILURE_HELP[failureCode as ApiFailureCode] + (phase ? ` Failing phase: ${phase}.` : ""),
+          phase ? { phase } : undefined,
+        );
+      }
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.
