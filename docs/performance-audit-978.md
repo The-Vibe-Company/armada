@@ -18,6 +18,13 @@ DOM rendering, transport or the owner's reported ~10 seconds on the phone.
 Existing chat projection tests own ordering, turn isolation and final-snapshot
 supersession; no timing assertions are added to CI.
 
+## Scope exclusion
+
+Per the owner decision on #978 (2026-11-11), orchestrators are out of scope:
+do not audit, test, polish or change their implementation, dashboard or iPhone
+screens. A separate ticket owns feature removal. All backlog items below apply
+only to non-orchestrator paths.
+
 ## Audit / measurement backlog
 
 These are code-inspection leads, not measured bottleneck claims. Do not rank
@@ -27,7 +34,6 @@ provider waits against CPU numbers until staging traces exist.
 | --- | --- |
 | Launch, Boat/Modal × Claude/Codex | Trace `packages/core/src/launch.ts` phases: authorization, credentials, fork, init, MCP, beforeStart, prompt admission; report time-to-ready and first output separately. Requires staging accounts/goldens and explicit resource budget. |
 | Stop/resume | Measure provider restore and first new prompt separately, preserving conversation/disk identity. Inspect provider adapters and `mcp-lifecycle.ts`. |
-| Orchestrator create | Trace `packages/mcp-server/src/orchestrator*` admission, bootstrap and first output; no resources created in this PR. |
 | API routes | Inventory dispatchers in `control.ts`, `http.ts` and dashboard `app/api/**/route.ts`, plus iOS control client callsites. Record per route/method p50/p95, bytes, SQL round trips under a fixed staging dataset and caller visibility. Never infer SQL counts from HTTP timing. No staging route census completed here. |
 | Dashboard load/navigation | Capture authenticated staging browser waterfalls, first paint blockers, build bundle sizes and repeated fetches for each page. No browser/network performance claim in this slice. |
 | CLI | Benchmark compiled binary and source separately: version/help, list/detail/logs and mutations with fixed staging fixtures. Separate startup from server latency. No CLI optimization claim here. |
@@ -41,7 +47,7 @@ provider waits against CPU numbers until staging traces exist.
    disposable fixtures. Establish the biggest user-visible wait.
 2. Conversation-open transport/render optimization selected from those traces;
    preserve pagination, ordering and cursor contracts.
-3. Launch/resume/orchestrator critical-path optimization selected from phase data.
+3. Launch/resume critical-path optimization selected from phase data.
 4. CLI startup and per-command polish, then dashboard waterfalls/bundles,
    prioritized using the same measurements.
 
