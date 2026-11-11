@@ -356,3 +356,37 @@ extra base64 response data at the existing2MiB raw archive ceiling); the clean
 worker adds one status read. Expect seconds of API/storage traffic under the
 existing35+5-minute shared deadline. Git's bounded private temporary object store
 and finally cleanup are unchanged. No live staging receipt is implied by tests.
+
+### Default skill pins (#969, night slice)
+
+`--default-skills` deliberately requires `--work-preservation`: it reuses that
+clean/dirty worker pair and its cleanup inventory, adding no allocation or model
+turn. Both staging entrypoints include the flag. Every case requires its existing
+org/golden UUIDs; canonical casing is used.
+
+Before any compute, named `default_skills_golden`, `default_skills_org` and
+`default_skills_personal` reads fetch the shipped defaults API. The client derives
+golden < org < personal precedence by skill slug independently of the server's
+merge helper. No defaults are changed: concurrent settings edits can intentionally
+fail the probe rather than overwrite someone else's configuration.
+
+The clean launch omits both explicit skills and opt-out, then
+`default_skills_receipts` requires exactly the effective pins in both the launch
+and persisted status receipts, including matching versions, IDs, checksums and
+registry origin. Its returned golden ID must match the queried environment.
+The dirty worker supplies `skipSkillDefaults: true` and no explicit pins;
+`default_skills_opt_out_receipts` requires empty receipt arrays. This still runs
+normal work preservation/recovery checks.
+
+If all defaults are empty, empty receipt evidence is still checked, but delivery
+steps emit explicit `no_default_pins_configured` SKIPs instead of claiming a
+non-empty install/opt-out proof. Configure real defaults through the existing
+settings API/UI when pins are available; no dummy catalogue pin is required.
+Nonempty defaults must be installable, including a working key for private pins:
+broken configured defaults fail rather than skip. Explicit template-pin probes
+opt out of defaults so their separate receipt checks remain isolated.
+
+Cost: three read-only policy calls per pair and two status reads, plus only the
+installs already implied by normal defaults. No policy rows, writes, new secrets,
+migrations or extra workers. Model/registry latency stays inside the shared
+35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.

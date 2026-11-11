@@ -108,6 +108,7 @@ function fixture(
         expect(String(input.prompt)).toContain(variable.name);
         expect(String(input.prompt)).not.toContain(variable.value);
         expect(input).not.toHaveProperty("repo");
+        expect(input.skipSkillDefaults).toBe(true);
         if (fault === "lost_launch") throw new Error("secret lost compute receipt");
         output =
           (fault === "key_refused" && pin === selected.privateSkill) || fault === "uncertain_launch"
