@@ -119,10 +119,32 @@ test("local capture recovers commits and staged, unstaged and untracked work wit
   expect((await run(["git", "rev-parse", "HEAD"], repo)).trim()).toBe(head);
 });
 
+test("dirty-work risk survives a subsequent HEAD lookup failure", async () => {
+  const { home, repo, provider } = await fixture();
+  await writeFile(join(repo, "tracked"), "dirty work\n");
+  const realGit = Bun.which("git");
+  if (!realGit) throw new Error("Missing Git");
+  const git = join(home, ".collector-bin", "git");
+  await rm(git);
+  await writeFile(
+    git,
+    `#!/bin/sh
+case " $* " in *" rev-parse --verify HEAD "*) kill -TERM $$;; esac
+exec ${realGit} "$@"
+`,
+    { mode: 0o755 },
+  );
+  expect(await preserveWork(provider, "sandbox")).toEqual({
+    status: "failed",
+    reason: "collector_failed",
+    workAtRisk: true,
+  });
+});
+
 test("oversized work returns a closed failure instead of a partial success", async () => {
   const { repo, provider } = await fixture();
   await writeFile(join(repo, "large"), Buffer.alloc(2 * 1024 * 1024 + 1));
-  expect(await preserveWork(provider, "sandbox")).toEqual({ status: "failed", reason: "size_limit" });
+  expect(await preserveWork(provider, "sandbox")).toEqual({ status: "failed", reason: "size_limit", workAtRisk: true });
 });
 
 test("an unresponsive provider is bounded and late output cannot become success", async () => {
@@ -226,6 +248,7 @@ test("archives larger than the runtime stdout cap are recovered through bounded 
   expect(refusedChunks).toEqual({
     status: "failed",
     reason: "exec_failed",
+    workAtRisk: true,
     diagnostic: {
       stage: "chunk_exec",
       errorClass: "provider_unavailable",
@@ -268,7 +291,11 @@ test("a concurrent write during bundling fails closed rather than authenticating
       };
     },
   };
-  expect(await preserveWork(raced, "sandbox")).toEqual({ status: "failed", reason: "collector_failed" });
+  expect(await preserveWork(raced, "sandbox")).toEqual({
+    status: "failed",
+    reason: "collector_failed",
+    workAtRisk: true,
+  });
   expect(await readFile(join(repo, "tracked"), "utf8")).toBe("changed during capture\n");
 });
 
@@ -282,7 +309,11 @@ test("an unresolved conflict index fails closed because patches cannot restore i
   await run(["git", "commit", "-qam", "main"], repo);
   const merge = Bun.spawn(["git", "merge", "side"], { cwd: repo, stdout: "ignore", stderr: "ignore" });
   expect(await merge.exited).toBe(1);
-  expect(await preserveWork(provider, "sandbox")).toEqual({ status: "failed", reason: "collector_failed" });
+  expect(await preserveWork(provider, "sandbox")).toEqual({
+    status: "failed",
+    reason: "collector_failed",
+    workAtRisk: true,
+  });
 });
 
 test("collector failures are closed and provider output never becomes a reason", async () => {

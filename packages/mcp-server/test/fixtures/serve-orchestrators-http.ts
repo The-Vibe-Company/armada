@@ -738,7 +738,7 @@ try {
     assert.equal(row.status, "stopped");
     assert.equal(
       row.preservation_note,
-      `unpushed work could not be preserved (${reason === "unavailable" ? "exec_failed" : reason}). Resume the sandbox and push or copy any local work before stopping again.`,
+      `could not check for unpushed work (${reason === "unavailable" ? "collect_exec_failed" : reason === "timeout" ? "collect_exec_timeout" : `capture_${reason}`}). If this sandbox had local work, resume it and push or copy it before stopping again.`,
     );
     const physical = (
       await sql.query<{ physical_id: string }>(

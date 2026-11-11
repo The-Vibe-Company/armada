@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, mutateCredentialAccount, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
@@ -1295,6 +1295,46 @@ describe("tools", () => {
       });
     },
   );
+
+  test("a clean fully-pushed stop leaves no preservation note", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    expect((await call(mcp, "stop", { id: launched.data.id })).data.status).toBe("stopped");
+    const row = (
+      await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [
+        launched.data.id,
+      ])
+    ).rows[0];
+    expect(row?.preservation_note).toBeNull();
+  });
+
+  test("user-stop trace places capture before physical dispatch", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const log = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await call(mcp, "stop", { id: launched.data.id });
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events.filter((e) => e.event === "work_preservation_stage").map((e) => e.phase)).toEqual([
+        "observed",
+        "quiesce_started",
+        "quiesce_finished",
+        "capture_started",
+        "capture_clean",
+      ]);
+      expect(events.at(-1)).toMatchObject({
+        event: "sandbox_stop_dispatch",
+        source: "user_stop",
+        sandboxId: launched.data.id,
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
 
   test("stop without a provider timestamp retains observed compute time", async () => {
     const { token, client, people, boat, db, clock } = await start();

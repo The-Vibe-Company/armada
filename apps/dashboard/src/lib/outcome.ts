@@ -98,9 +98,11 @@ export function recoveryCommand(sandboxId: string): string {
 export type PreservationView =
   | { kind: "preserved"; text: string; command: string | null }
   | { kind: "failed"; text: string; reason: string }
+  | { kind: "unknown"; text: string; reason: string }
   | { kind: "other"; text: string };
 
 const PRESERVED = /^unpushed work preserved at work_recovery:[0-9a-f-]+\/[0-9a-f-]+$/i;
+const UNKNOWN_PRESERVATION = /^could not check for unpushed work \(([a-z0-9_]+)\)(?:\. .+)?$/;
 const NOT_PRESERVED = /^unpushed work could not be preserved \(([a-z0-9_]+)\)(?:\. .+)?$/;
 
 /**
@@ -121,6 +123,8 @@ export function preservationView(
       text: "Unpushed work preserved",
       command: canRecover ? recoveryCommand(sandboxId) : null,
     };
+  const unknown = UNKNOWN_PRESERVATION.exec(note.trim());
+  if (unknown?.[1]) return { kind: "unknown", text: note.trim().replace(/^could/, "Could"), reason: unknown[1] };
   const failed = NOT_PRESERVED.exec(note.trim());
   if (failed?.[1]) return { kind: "failed", text: note.trim().replace(/^unpushed/, "Unpushed"), reason: failed[1] };
   return { kind: "other", text: note.trim() };

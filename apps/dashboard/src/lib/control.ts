@@ -18,6 +18,7 @@ import {
   parsePreview,
   type RecipientPreview,
 } from "./invitations.ts";
+import { parseVaultItem, type VaultItem, type VaultKind, type VaultScope } from "./variables.ts";
 
 /**
  * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
@@ -410,3 +411,57 @@ export function createInvitationControl(options: ArmadaApiOptions) {
     },
   };
 }
+
+/**
+ * Variables and write-only application secrets (#921's control API, #935's page): `variables/*` and `secrets/*`,
+ * POST with the viewer's bearer. Every answer is parsed to metadata only; `readVariable` is the one call that
+ * returns a value, and only for a readable variable. There is no secret read: the server has no such route.
+ */
+export function createVaultControl(options: ArmadaApiOptions) {
+  const post = (kind: VaultKind, operation: string, body: object) =>
+    controlPost(options, `/api/v1/${kind === "variable" ? "variables" : "secrets"}/${operation}`, body, FEATURE);
+
+  async function item(kind: VaultKind, operation: string, body: object): Promise<VaultItem> {
+    const parsed = parseVaultItem(kind, (await post(kind, operation, body)).item);
+    if (!parsed) throw new ControlError("The Armada server sent an unexpected answer.");
+    return parsed;
+  }
+
+  async function list(kind: VaultKind, org: string): Promise<VaultItem[]> {
+    const payload = await post(kind, "list", { org });
+    if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no list.");
+    return payload.items
+      .map((row: unknown) => parseVaultItem(kind, row))
+      .filter((row): row is VaultItem => row?.orgId === org);
+  }
+
+  return {
+    /** Both kinds of the org the viewer may see: their own personal items and the org's. */
+    async list(org: string): Promise<VaultItem[]> {
+      const [variables, secrets] = await Promise.all([list("variable", org), list("secret", org)]);
+      return [...variables, ...secrets];
+    },
+    async readVariable(target: { org: string; id: string }): Promise<string> {
+      const payload = await post("variable", "read", target);
+      if (typeof payload.value !== "string") throw new ControlError("The Armada server sent no value.");
+      return payload.value;
+    },
+    create: (kind: VaultKind, request: { org: string; scope: VaultScope; name: string; value: string }) =>
+      item(kind, "set", request),
+    updateVariable: (request: { org: string; id: string; expectedVersion: number; name?: string; value?: string }) =>
+      item("variable", "update", request),
+    /** Replaces a secret's value; the old one is gone for good. */
+    rotateSecret: (request: { org: string; id: string; expectedVersion: number; value: string }) =>
+      item("secret", "rotate", request),
+    revoke: (kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) =>
+      item(kind, "revoke", target),
+    /** Answers the deleted item's tombstone: its name and final version, no value. */
+    async delete(kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) {
+      const parsed = parseVaultItem(kind, (await post(kind, "delete", target)).item, { tombstone: true });
+      if (!parsed) throw new ControlError("The Armada server sent an unexpected answer.");
+      return parsed;
+    },
+  };
+}
+
+const FEATURE = "variables and secrets";

@@ -32,7 +32,7 @@ import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-nativ
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { preserveBeforeStop } from "./work-preservation.ts";
+import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** Real production composition. Modal Codex retains its native checkpoint lane;
  * Boat is explicitly best-effort ordinary archival/activation. Deployment intent
@@ -217,8 +217,9 @@ export function createProductionOrchestrators(input: {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       await sandboxActivity(stores.sandboxes, saved, { stopRequested: true }, async () => {
         if (
-          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId).catch(() => {})) ===
-          "pending"
+          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop").catch(
+            () => {},
+          )) === "pending"
         )
           throw new ProviderError({
             provider: provider.id,
@@ -226,6 +227,7 @@ export function createProductionOrchestrators(input: {
             retryable: true,
             message: "Interruption is pending; retry stop after turns settle.",
           });
+        recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
         await provider.stop({ sandboxId: saved.providerSandboxId });
         return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
       });

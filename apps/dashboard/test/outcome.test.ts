@@ -116,6 +116,16 @@ describe("preservationView", () => {
     expect(preservationView("something else", "stopped", ID, true)).toEqual({ kind: "other", text: "something else" });
   });
 
+  test("unknown work is informational, not a confirmed preservation failure", () => {
+    const note =
+      "could not check for unpushed work (collect_exec_not_ready). If this sandbox had local work, resume it and push or copy it before stopping again.";
+    expect(preservationView(note, "stopped", ID, true)).toEqual({
+      kind: "unknown",
+      reason: "collect_exec_not_ready",
+      text: note.replace(/^could/, "Could"),
+    });
+  });
+
   test("only an ended sandbox with a note shows one; stopping a failed sandbox keeps it failed", () => {
     expect(preservationView(preserved, "failed", ID, true)).toMatchObject({ kind: "preserved" });
     expect(preservationView(preserved, "running", ID, true)).toBeNull();

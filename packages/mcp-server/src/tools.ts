@@ -58,6 +58,7 @@ import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -1723,6 +1724,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;
           try {
+            recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);
