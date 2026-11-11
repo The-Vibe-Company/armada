@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 HOUR, POLL, GRACE = 3600, 10, 120
@@ -79,12 +79,22 @@ class Api:
         self.opener = build_opener(NoRedirect())
 
     def call(self, route, **body):
-        remaining = self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise CheckFailure("Bounded staging-check deadline exceeded.")
         request = Request(self.origin + "/api/v1/" + route,
                           data=json.dumps(dict(body, org=self.org)).encode(),
                           headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
+        return self._request(request)
+
+    def delete_sandbox(self, sandbox_id):
+        # The public dashboard admits DELETE here, not the backend-only POST alias.
+        query = urlencode({"org": self.org})
+        request = Request(self.origin + "/api/v1/sandboxes/" + identifier(sandbox_id) + "?" + query,
+                          method="DELETE", headers={"Authorization": "Bearer " + self.token})
+        return self._request(request)
+
+    def _request(self, request):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise CheckFailure("Bounded staging-check deadline exceeded.")
         # Socket timeouts alone reset during trickling responses. A POSIX timer also
         # bounds the entire request, including DNS/headers/body, on macOS and Linux.
         old_handler = signal.getsignal(signal.SIGALRM)
@@ -168,7 +178,7 @@ class Scenario:
             try:
                 # Delete is idempotent even after a lost successful acknowledgement.
                 # Stop is NOT: the server rejects stop on an already deleted resource.
-                result = self.api.call("sandbox/delete", id=sandbox_id)
+                result = self.api.delete_sandbox(sandbox_id)
                 if result.get("status") == "deleted":
                     self.deleted.add(sandbox_id)
                     return

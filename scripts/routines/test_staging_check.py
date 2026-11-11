@@ -33,6 +33,11 @@ class FakeApi:
         self.definition = {"goldenId": SOURCE, "provider": "boat", "harness": "codex", "model": "test-model",
                            "reasoningEffort": "low", "connections": [], "variables": [], "skills": [], "goldenBinding": None}
 
+    def delete_sandbox(self, sandbox_id):
+        if sandbox_id != SANDBOX:
+            raise AssertionError("unexpected sandbox cleanup target")
+        return self.call("DELETE sandboxes/" + sandbox_id)
+
     def call(self, route, **body):
         if self.clock.now >= self.deadline:
             raise check.CheckFailure("deadline exceeded")
@@ -84,11 +89,11 @@ class FakeApi:
         if route == "sandbox/stop":
             self.compute_stopped = True
             return {"id": body["id"], "status": "stopped"}
-        if route == "sandbox/delete":
+        if route == "DELETE sandboxes/" + SANDBOX:
             if not self.compute_stopped:
                 raise check.ApiFailure(409)
             self.compute_deleted_at = self.clock.now
-            return {"id": body["id"], "status": "deleted"}
+            return {"id": SANDBOX, "status": "deleted"}
         raise AssertionError("unexpected protocol route")
 
 
@@ -192,7 +197,7 @@ class CoordinatorTests(unittest.TestCase):
         def lost_ack(route, **body):
             if route == "sandbox/stop" and committed:
                 raise check.ApiFailure(409)  # Real stop rejects an already deleted sandbox.
-            if route == "sandbox/delete" and not committed:
+            if route == "DELETE sandboxes/" + SANDBOX and not committed:
                 original(route, **body)
                 committed.append(True)
                 raise check.ApiFailure()
