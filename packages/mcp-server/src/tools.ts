@@ -1532,7 +1532,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;
           try {
-            await collectSandboxUsage(provider, data.sandboxes, found);
+            if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
