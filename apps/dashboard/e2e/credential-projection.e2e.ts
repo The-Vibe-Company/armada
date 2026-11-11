@@ -14,7 +14,14 @@ test("credentials reads enforce column grants even when no rows match", async ({
   // The migration-backed permission owner is core/test/database.test.ts:
   // authenticated users may read metadata, never credentials.value_enc.
   for (const filter of ["", "&id=eq.00000000-0000-4000-8000-999999999999"]) {
-    for (const selection of ["", "&select=*", "&select=id,*", "&select=value_enc", "&select=id,value_enc"]) {
+    for (const selection of [
+      "",
+      "&select=",
+      "&select=*",
+      "&select=id,*",
+      "&select=value_enc",
+      "&select=id,value_enc",
+    ]) {
       const response = await request.get(`${MOCK}/rest/v1/credentials?${selection}${filter}`, { headers });
       expect(response.status(), `${selection || "absent select"}${filter}`).toBe(401);
       expect(await response.json()).toMatchObject({

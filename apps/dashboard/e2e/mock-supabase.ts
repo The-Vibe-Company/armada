@@ -687,7 +687,7 @@ async function rest(request: Request, url: URL): Promise<Response> {
     // Column grants apply to the query, even when filtering or paging returns no rows.
     if (table === "credentials") {
       const columns = select?.split(",").map((column) => column.trim());
-      if (!columns || columns.includes("*") || columns.includes("value_enc")) {
+      if (!select || !columns || columns.includes("*") || columns.includes("value_enc")) {
         return pgError({ status: 401, code: "42501", message: "permission denied for table credentials" });
       }
     }
