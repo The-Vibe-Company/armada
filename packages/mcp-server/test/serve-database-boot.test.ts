@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 
+// Fresh checkout prerequisite: bun scripts/prepare-runtime.ts (see AGENTS.md);
+// CI instead builds and validates the native agent runtime before server tests.
 // Isolate Bun.SQL/clock mocks while exercising actual startServer composition and HTTP readiness.
 test("startServer retries real Supavisor admission errors before serving and closes both pools on exhaustion", async () => {
   const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "fixtures/serve-database-boot.ts")], {

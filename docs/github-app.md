@@ -71,12 +71,23 @@ Nothing secret is printed or logged. Tokens are masked in command output (`gh[po
 ## Reconnect cache deployment (#585)
 
 Apply `20261110110100_github_reconnect_cache.sql` after the existing migrations,
-then deploy the server update that publishes profiles on the refresh transaction.
-Drain older server replicas before treating the concurrency fence as fully active:
-they publish profiles outside that transaction. No dashboard or CLI rollout is
-required. The RPC signature and encrypted-only column grants are unchanged.
+then deploy the current server. Drain older server replicas before relying on
+the current concurrency safeguards. No dashboard or CLI rollout is required.
+The RPC signature and encrypted-only column grants are unchanged.
 
-Reconnect now takes the refresh advisory lock and clears both cached access-token
-columns in the same transaction that replaces the identity and refresh token.
-A refresh already holding the lock finishes before reconnect saves the new grant;
-subsequent launches resolve that new grant, never the previous account's cache.
+Reconnect atomically clears both cached access-token columns while replacing
+the identity and refresh token. Although the reconnect RPC still takes its
+advisory lock, server refresh no longer holds that lock or a pooled transaction
+during GitHub HTTP. A per-process owner queue orders local refresh callers;
+across replicas, a durable consumed-token fence prevents replay, and token
+compare-and-swap guards rotation and profile publication. Validation re-reads
+the connection before returning a token.
+
+Reconnect can therefore finish while an older refresh is in flight. If that
+refresh observes the changed grant during publication or validation, it returns
+retryable `unavailable` rather than overwriting the new identity or handing out
+the old account's token. A caller that loses the consume fence re-reads once
+and returns retryable `unavailable`, without asking the person to reconnect:
+the other replica may still be finishing a successful rotation. No automatic
+retry reuses consumed refresh material. See the connection-residence and
+overlap budget in [Production readiness](production-readiness.md#connection-residence-during-github-operations).

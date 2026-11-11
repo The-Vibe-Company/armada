@@ -382,12 +382,21 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
           "The stored GitHub connection could not be decrypted. Reconnect GitHub in the dashboard under Settings.",
       };
     }
-    if (!(await store.consumeGitHubRefresh(userId, connection.refreshTokenEnc)))
+    if (!(await store.consumeGitHubRefresh(userId, connection.refreshTokenEnc))) {
+      // Another replica may have claimed this token and already published its successor.
+      // Re-read once, but never replay the consumed token or require reconnect for contention.
+      const current = await store.getGitHubConnection(userId);
+      const changed =
+        current &&
+        (current.refreshTokenEnc.length !== connection.refreshTokenEnc.length ||
+          !current.refreshTokenEnc.every((byte, index) => byte === connection.refreshTokenEnc[index]));
       return {
         status: "unavailable",
-        message:
-          "The GitHub refresh outcome is uncertain. Reconnect GitHub in Settings; the previous refresh will not be replayed.",
+        message: changed
+          ? "The GitHub connection was updated by another request. Retry shortly with the current connection."
+          : "A GitHub refresh may still be in progress or its outcome is uncertain. Retry shortly; the previous refresh will not be replayed.",
       };
+    }
     let tokens: GitHubTokenSet;
     try {
       tokens = await refreshGitHubToken(deps.app, refreshToken, request);
