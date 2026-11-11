@@ -969,3 +969,74 @@ test("template admission freezes merged defaults and explicit overrides; opt-out
     await f.db.close();
   }
 });
+
+// Publication owns reference authorization; no raw secret fixture is needed at this boundary.
+test("secret bindings are immutable value-free references and cannot silently launch without delivery", async () => {
+  const f = await fixture();
+  try {
+    // Deliberately opaque ciphertext, not an encrypted secret or a plaintext fixture.
+    const secretId = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, crypto.getRandomValues(new Uint8Array(40))],
+      )
+    ).rows[0]!.id;
+    const binding = { key: "APP_TOKEN", secretId, version: 1 };
+    const def = { ...f.definition, variables: [], secrets: [binding] };
+    const created = await f.create(f.people.owner, "personal", def);
+    const templateId = (created.item as LaunchTemplate).id;
+    const read = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId });
+    expect((read.revision as { definition: unknown }).definition).toEqual({
+      ...def,
+      goldenBinding: null,
+      skills: [],
+    });
+    for (const user of [f.people.member, f.people.admin]) {
+      await expect(f.create(user, "personal", def)).rejects.toThrow("secret_unavailable");
+    }
+    await expect(f.create(f.people.admin, "org", def)).rejects.toThrow("secret_unavailable");
+    for (const secrets of [
+      [binding, binding],
+      [{ ...binding, key: "OPENAI_API_KEY" }],
+      [{ ...binding, value: "not-accepted" }],
+      [{ ...binding, version: 0 }],
+    ]) {
+      await expect(f.create(f.people.owner, "personal", { ...def, secrets })).rejects.toMatchObject({
+        code: "invalid",
+      });
+    }
+    await expect(
+      f.create(f.people.owner, "personal", {
+        ...f.definition,
+        secrets: [{ ...binding, key: "APP_REGION" }],
+      }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    await expect(f.launch(templateId)).rejects.toThrow("secret_delivery_unavailable");
+    expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(0);
+    expect(f.boat.forks).toHaveLength(0);
+    await f.db.query("update application_secrets set version=2 where id=$1", [secretId]);
+    await expect(f.create(f.people.owner, "personal", def)).rejects.toThrow("secret_version_changed");
+    await f.db.query("update application_secrets set scope='org' where id=$1", [secretId]);
+    const updated = { ...def, secrets: [{ ...binding, version: 2 }] };
+    await f.create(f.people.admin, "org", updated);
+    const published = await f.service.command(f.actor(), "publish", {
+      org: f.people.org,
+      id: templateId,
+      expectedRevision: 1,
+      definition: updated,
+    });
+    expect((published.item as LaunchTemplate).currentRevision).toBe(2);
+    const old = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId, revision: 1 });
+    expect((old.revision as { definition: { secrets: unknown } }).definition.secrets).toEqual([binding]);
+    for (const change of [
+      "expires_at=now()-interval '1 minute'",
+      "expires_at=null,status='revoked',value_enc=null",
+      "status='deleted'",
+    ]) {
+      await f.db.query(`update application_secrets set ${change} where id=$1`, [secretId]);
+      await expect(f.create(f.people.owner, "personal", updated)).rejects.toThrow("secret_unavailable");
+    }
+  } finally {
+    await f.db.close();
+  }
+});
