@@ -401,3 +401,34 @@ If Node/flock is absent, those prerequisite checks necessarily run before home-k
 cleanup. Boat can retain that ephemeral public authorization until owner cleanup;
 Modal authorizations expire in 15 minutes. The server still deletes its ephemeral
 private key. Do not interpret a prerequisite refusal as successful key cleanup.
+
+## Modal worker SSH authentication through a private /run (#914)
+
+OpenSSH reads `AuthorizedKeysFile` as the target login user, not as its root
+listener. A root-owned authorization file beneath `/run` can therefore work for
+golden builders (`root`) and refuse worker logins (`user`) if `/run` is private
+(mode `0700`). The prior OS test used a traversable Docker `/run` and missed this
+boundary. The new provider-owned OS regression runs both parent modes, both
+trusted roles, fresh keys against the running daemon and a refused wrong-role
+login. The old implementation fails the private-parent worker case with
+`skillpack_ssh_authentication_failed` while the normal-parent/root controls work.
+
+Modal SSH preparation now retains its root-managed expiring authorization store
+and adds a fixed `AuthorizedKeysCommand /bin/cat /run/armada-ssh/authorized_keys`
+with `AuthorizedKeysCommandUser root` as the standard OpenSSH fallback. This
+executes only a fixed read-only program with a fixed path; no user/key/request
+argument or shell interpolation is used. It does **not** make the worker's SSH
+session root, change `AllowUsers`, permit passwords/forwarding, disable pinning,
+make `/run` traversable or give the worker write access to authorization. The
+same store remains covered by existing pre-snapshot SSH scrubbing and 15-minute
+key expiry. A second authorization is read by the existing daemon at each auth
+attempt, rather than depending on daemon startup having seen that key.
+
+No golden rebuild or migration is required: the server generates this config for
+new worker SSH daemons. Recreate the failed private parent after the server
+upgrade; its failed allocation was already disposed. The staging-specific field
+requested to confirm this exact cause is only
+`stat -c '%n %a %U %G' /run /etc/ssh` on a disposable worker fork. The local
+reproducer establishes this failure mode, not the still-unreported staging mode.
+A successful live private Skillpack receipt still requires the coordinator's
+post-deployment rerun and an appropriate `skills:read`-only key.

@@ -1,3 +1,4 @@
+import { GitHubHydrationError } from "./api-failure.ts";
 import type { Provider } from "./provider.ts";
 import { type SshExecDeps, sshStdinCheckout } from "./ssh-executor.ts";
 
@@ -21,13 +22,16 @@ export async function sshHydrateGitHubToken(
     await sshStdinCheckout(
       provider,
       { sandboxId, token: JSON.stringify({ token, expiresAt: expiry }), script: BOOTSTRAP, timeoutMs: 60_000 },
-      deps,
+      { ...deps, githubHydration: true },
     );
-  } catch {
-    throw Error("Private GitHub token hydration failed.");
+  } catch (error) {
+    if (error instanceof GitHubHydrationError) throw error;
+    console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: "ssh" }));
+    throw new GitHubHydrationError();
   }
 }
 
+// Boat owns /usr/local as user; keep trusted code under root-owned /usr/lib instead.
 // Root-owned code, with only the ephemeral owner-private file holding credential bytes.
 export const GITHUB_TOKEN_CLIENT = `import os,sys,json,stat,time
 TOKEN_UID=__TOKEN_UID__
@@ -77,7 +81,7 @@ try:
         count=int(env.get('GIT_CONFIG_COUNT','0'))
         if not 0<=count<=1024: raise ValueError()
         # Reset stale global credential helpers only for github.com, without changing HOME.
-        for key,value in [('credential.https://github.com.helper',''),('credential.https://github.com.helper','!/usr/bin/python3 -I /usr/local/lib/armada-github-legacy.py credential')]:
+        for key,value in [('credential.https://github.com.helper',''),('credential.https://github.com.helper','!/usr/bin/python3 -I /usr/lib/armada-github-legacy.py credential')]:
             env['GIT_CONFIG_KEY_'+str(count)]=key;env['GIT_CONFIG_VALUE_'+str(count)]=value;count+=1
         env['GIT_CONFIG_COUNT']=str(count)
     os.execve(executable,[executable]+sys.argv[2:],env)
@@ -118,16 +122,20 @@ def atomic(path,data,mode,uid=0,gid=0):
     finally:
         try: os.unlink(tmp)
         except FileNotFoundError: pass
+phase='privilege'
 try:
     if os.getuid()!=0: raise ValueError()
+    phase='payload'
     raw=sys.stdin.buffer.read(32769)
     if len(raw)>32768: raise ValueError()
     value=json.loads(raw);token=value['token'];expiry=value['expiresAt']
     if not isinstance(token,str) or not 1<=len(token)<=16384 or any(ord(c)<33 or ord(c)>126 for c in token): raise ValueError()
     if not isinstance(expiry,(int,float)) or not time.time()*1000<expiry<float('inf'): raise ValueError()
-    for path in ['/run','/usr','/usr/bin','/usr/local','/usr/local/bin','/usr/local/lib']: directory(path)
+    phase='directories'
+    for path in ['/run','/usr','/usr/bin','/usr/lib']: directory(path)
     directory('/run/armada-github',True)
     os.chmod('/run/armada-github',0o755)
+    phase='lock'
     lock='/run/armada-github/install.lock'
     regular(lock,True)
     fd=os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
@@ -141,6 +149,7 @@ try:
             if remaining<=0: raise
             time.sleep(min(0.05,remaining))
     # The lock remains open until process exit, including every atomic replacement.
+    phase='executables'
     directory('/home')
     owner=os.lstat('/home/user')
     if not stat.S_ISDIR(owner.st_mode): raise ValueError()
@@ -148,27 +157,28 @@ try:
     for tool in ['git','gh']:
         path='/usr/bin/'+tool;saved=path+'.armada-original'
         current=regular(path,True);original=regular(saved,True)
-        regular('/usr/local/bin/'+tool,True)
         if not current and not original:
             if tool=='git': raise ValueError()
             continue
         if not (original or current).st_mode&0o111: raise ValueError()
         present.append((tool,path,saved,original))
-    regular('/usr/local/lib/armada-github-legacy.py',True)
+    regular('/usr/lib/armada-github-legacy.py',True)
     # Refuse symlink token targets even though atomic replacement would not follow them.
     target='/run/armada-github/token.json'
     try:
         st=os.lstat(target)
         if not stat.S_ISREG(st.st_mode) or st.st_nlink!=1 or st.st_uid!=owner.st_uid or stat.S_IMODE(st.st_mode)!=0o600: raise ValueError()
     except FileNotFoundError: pass
-    atomic('/usr/local/lib/armada-github-legacy.py',CLIENT.replace('__TOKEN_UID__',str(owner.st_uid)),0o755)
+    phase='install'
+    atomic('/usr/lib/armada-github-legacy.py',CLIENT.replace('__TOKEN_UID__',str(owner.st_uid)),0o755)
     for tool,path,saved,original in present:
         if original is None: os.rename(path,saved)
-        wrapper='#!/bin/sh\\nexec /usr/bin/python3 -I /usr/local/lib/armada-github-legacy.py '+tool+' "$@"\\n'
+        wrapper='#!/bin/sh\\nexec /usr/bin/python3 -I /usr/lib/armada-github-legacy.py '+tool+' "$@"\\n'
         atomic(path,wrapper,0o755)
-        atomic('/usr/local/bin/'+tool,wrapper,0o755)
+    phase='token_write'
     atomic(target,json.dumps(value),0o600,owner.st_uid,owner.st_gid)
 except Exception:
+    sys.stderr.write('ARMADA_GITHUB_FAILURE '+phase+'\\n')
     sys.exit(1)
 `;
 
@@ -198,9 +208,14 @@ try:
     payload=os.environ.pop('ARMADA_GIT_TOKEN')
     command=['/usr/bin/python3','-I','-c',${JSON.stringify(GITHUB_TOKEN_INSTALLER)}]
     if os.getuid()!=0: command=['/usr/bin/sudo','-n']+command
-    result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/user'},timeout=45)
+    result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/user'},timeout=45)
+    if result.returncode!=0:
+        allowed=['privilege','payload','directories','lock','executables','install','token_write']
+        reason=next((v for v in allowed if result.stderr==('ARMADA_GITHUB_FAILURE '+v+'\\n').encode()),'sudo')
+        sys.stderr.write('ARMADA_GITHUB_FAILURE '+reason+'\\n')
     sys.exit(0 if result.returncode==0 else 1)
 except Exception:
+    sys.stderr.write('ARMADA_GITHUB_FAILURE bootstrap\\n')
     sys.exit(1)
 ARMADA_GITHUB_TOKEN
 `;

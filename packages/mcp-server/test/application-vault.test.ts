@@ -131,6 +131,50 @@ async function withVault(work: (f: Fixture) => Promise<void>) {
 }
 
 describe("application vault control API and MCP", () => {
+  test("duplicate personal/org variable and revoked secret names are readable conflicts with Bun PostgreSQL errors", async () => {
+    await withVault(async (f) => {
+      // Real constraints decide conflicts; adapt only the database driver's error envelope.
+      f.options.applicationVault = createApplicationVault(
+        {
+          ...f.sql,
+          transaction: async (work) => {
+            try {
+              return await f.sql.transaction!(work);
+            } catch (error) {
+              if (typeof error === "object" && error !== null && "code" in error && error.code === "23505")
+                throw Object.assign(new Error(CANARY), { code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" });
+              throw error;
+            }
+          },
+        },
+        KEY,
+      );
+      for (const scope of ["personal", "org"] as const) {
+        for (const resource of ["variables", "secrets"] as const) {
+          const user = scope === "org" ? f.admin : f.owner;
+          const input = { org: f.org, scope, name: "RESERVED_NAME", value: CANARY };
+          const created = await f.api(user, `${resource}/set`, input);
+          expect(created.status).toBe(200);
+          if (resource === "secrets")
+            expect(
+              (
+                await f.api(user, "secrets/revoke", {
+                  org: f.org,
+                  id: created.body.item.id,
+                  expectedVersion: 1,
+                })
+              ).status,
+            ).toBe(200);
+          const duplicate = await f.api(user, `${resource}/set`, input);
+          expect(duplicate.status).toBe(409);
+          expect(duplicate.body.error.code).toBe("conflict");
+          expect(duplicate.body.error.message).toContain("already in use");
+          expect(duplicate.body.error.message).toContain("delete revoked secrets");
+        }
+      }
+    });
+  });
+
   test("write-only secret lifecycle seals values, CAS-fences rotation/revocation, tombstones deletion and audits only IDs", async () => {
     await withVault(async (f) => {
       expect(() => expectNoCanary({ item: { value: CANARY } })).toThrow();

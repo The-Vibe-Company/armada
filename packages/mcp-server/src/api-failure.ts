@@ -2,6 +2,7 @@ import {
   API_FAILURE_STATUS,
   type ApiFailureCode,
   EncryptionKeyError,
+  GitHubHydrationError,
   LaunchError,
   ProviderError,
   VaultError,
@@ -9,6 +10,7 @@ import {
 
 /** Only typed causes determine categories. Never infer an error code from human diagnostics. */
 export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
+  if (error instanceof GitHubHydrationError) return "github_hydration_failed";
   if (error instanceof LaunchError) {
     if (Object.hasOwn(API_FAILURE_STATUS, error.code)) return error.code as ApiFailureCode;
     // A recorded failed launch is not an ambiguous dispatch: retain its post-start code.

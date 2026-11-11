@@ -1,4 +1,11 @@
-export { API_FAILURE_HELP, API_FAILURE_STATUS, type ApiFailureCode } from "./api-failure.ts";
+export {
+  API_FAILURE_HELP,
+  API_FAILURE_STATUS,
+  type ApiFailureCode,
+  GitHubHydrationError,
+  type GitHubHydrationPhase,
+  githubHydrationPhase,
+} from "./api-failure.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
