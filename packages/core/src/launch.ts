@@ -426,6 +426,30 @@ export async function launchSandbox(
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       await stores.connections?.prepare?.(provider, record, actor);
       await options.beforeStart?.(provider, record);
+      // Boat goldens carry the native CLI. A restored fork can be ready while its
+      // executable cannot even boot; probe the installed wrapper (including its
+      // harness-only readable environment) without creating a session or model turn.
+      // Modal validates its separately distributed native runtime at installation.
+      if (provider.id === "boat") {
+        try {
+          const health = await provider.exec({
+            sandboxId: ready.id,
+            command: `${harness} --version >/dev/null 2>&1`,
+            cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
+            timeoutSeconds: 15,
+            signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+          });
+          if (health.detached || health.timedOut || health.truncated || health.exitCode !== 0)
+            throw new Error("harness_health_failed");
+        } catch {
+          // Fixed text only: native boot errors can include paths or credentials.
+          // Reuse the existing public code; iPhone clients decode closed lists.
+          throw new LaunchError(
+            "start_failed",
+            "The agent runtime could not start in this sandbox. Relaunch in a new sandbox.",
+          );
+        }
+      }
       progress("initialization_publish");
       if (prompt === undefined) {
         signal.throwIfAborted();
