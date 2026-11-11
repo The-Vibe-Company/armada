@@ -116,11 +116,37 @@ access token; the next resolver then rotates. The account API callback instead
 persists its returned access token. Refresh fencing prevents replay, not
 rotation by a later authorized caller.
 
-For the Nov 11 09:02–09:24Z incident, the reported 401s establish loss of access,
-not which caller rotated or the lifetime returned by GitHub. There were no
-resolver rotation audit events before this change. Attribution and the actual
-production `expires_in` remain unverified pending sanitized historical logs;
-do not infer a twenty-minute issued lifetime from sandbox age.
+For the Nov 11 09:02–09:24Z incident, the coordinator confirmed historical
+GitHub evidence is unavailable: deployment `f1077743` served 08:57–09:27Z
+and its 52 log lines contain only preservation/lifecycle events, no GitHub
+events; `88d7445a` followed at 09:27Z. The reported token copies obtained at
+08:01, 08:51, 09:01 and 09:02 failed by 09:25; the 09:24:27 launch and
+09:26 repairs worked. This bounds a possible rotation to 09:02:19–09:24:27,
+potentially the last launch itself, but does not identify its caller or reason.
+The actual production-issued lifetime is unknown, not twenty minutes inferred
+from sandbox age. This PR is diagnostics only and does not close #952.
+
+Code trace of the repair/launch expiry hypothesis:
+- `refreshLegacyGitHub` uses a zero minimum lifetime. A healthy cached token is
+  hydrated with its existing `accessExpiresAt`; repair does not mint a separate
+  short-lived token or reset its age.
+- If refresh is necessary, `requestTokens` computes expiry as response-time
+  `now + expires_in * 1000`; `rotateGitHubToken` stores that exact ISO timestamp
+  in `github_connections.access_expires_at` alongside the encrypted token.
+- SSH hydration sends the same timestamp as epoch milliseconds to the guest's
+  private token file. It does not rewrite the database expiry. A later launch
+  reads the database timestamp and requires more than one hour remaining.
+- The durable consume fence is reached only after cache reuse fails admission
+  or explicit access validation rejects the token. It does not change expiry
+  or force rotation; a lost fence returns retryable unavailability without
+  replaying a refresh.
+
+Thus no expiry-conversion or fence-induced early-rotation defect was found in
+this code trace. A genuinely fresh eight-hour token from 08:40 would pass
+09:24 launch admission. However, a repair at 08:40 can also merely hydrate an
+older cached token: repair time alone does not prove issuance time or remaining
+lifetime. Missing/replaced cache, rejection, and threshold-driven refresh remain
+possible explanations, not established incident causes.
 
 New structured events (no credentials, codes, state or upstream error bodies):
 - `github_token_refresh_started`: owner, server-owned caller, reason
@@ -133,10 +159,14 @@ New structured events (no credentials, codes, state or upstream error bodies):
   caller, account/owner identity, observed remaining lifetime and whether the
   access token was cached.
 
-For historical attribution request sanitized 09:00–09:25Z OAuth callback,
-account-status, launch/golden/restore and `github/refresh` request logs plus
-connection update/cache-expiry metadata. For future incidents grep the three
-events above by owner (dashboard reconnect uses GitHub account id).
+On the next incident, read `github_token_rotated` by `ownerId`: its
+`caller`, `reason`, `previousRemainingLifetimeMs`, `minimumLifetimeMs`,
+`accessExpiresAt` and `observedRemainingLifetimeMs` identify the remote
+rotation decision and returned lifetime. Also inspect
+`github_token_refresh_started` for uncertain attempts and
+`github_connection_replaced` for reconnects (dashboard uses GitHub account id).
+These events only become available after this diagnostics change is deployed;
+they cannot reconstruct the historical window.
 
 Interim rule: static token injection has no guaranteed usable lifetime in a
 shared connection. Save and push work frequently; on a legacy Boat sandbox use
