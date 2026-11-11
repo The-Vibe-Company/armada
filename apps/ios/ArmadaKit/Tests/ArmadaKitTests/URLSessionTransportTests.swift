@@ -10,12 +10,16 @@ private extension URLSessionConfiguration {
     @objc class func transportFixtureEphemeral() -> URLSessionConfiguration {
         let configuration = transportFixtureEphemeral() // Original getter after exchange.
         configuration.protocolClasses = [TransportProtocol.self] + (configuration.protocolClasses ?? [])
+        // Supply a real, isolated store so the test can detect a transport that
+        // forgets to disable credential lookup on its otherwise ephemeral session.
+        configuration.urlCredentialStorage = TransportProtocol.credentials
         return configuration
     }
 }
 
 /// Only claims the fixture's unique hosts; all other package traffic is unchanged.
-private final class TransportProtocol: URLProtocol, @unchecked Sendable {
+private final class TransportProtocol: URLProtocol, URLAuthenticationChallengeSender, @unchecked Sendable {
+    static let credentials = URLCredentialStorage()
     static let routes = Routes()
     static let installed: Bool = {
         guard let original = class_getClassMethod(URLSessionConfiguration.self,
@@ -54,6 +58,27 @@ private final class TransportProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didLoad: Data("fixture".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
+    func challenge(in space: URLProtectionSpace) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 401,
+                                       httpVersion: "HTTP/1.1", headerFields: ["WWW-Authenticate": "Basic realm=fixture"])!
+        let challenge = URLAuthenticationChallenge(protectionSpace: space, proposedCredential: nil,
+                                                    previousFailureCount: 0, failureResponse: response,
+                                                    error: nil, sender: self)
+        client?.urlProtocol(self, didReceive: challenge)
+    }
+    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {
+        finishChallenge(credential)
+    }
+    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) { finishChallenge(nil) }
+    func cancel(_ challenge: URLAuthenticationChallenge) {
+        client?.urlProtocol(self, didFailWithError: URLError(.userCancelledAuthentication))
+    }
+    func performDefaultHandling(for challenge: URLAuthenticationChallenge) { finishChallenge(nil) }
+    func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) { finishChallenge(nil) }
+    private func finishChallenge(_ credential: URLCredential?) {
+        Self.routes.get(request.url)?.recordChallenge(credential)
+        reply(status: credential == nil ? 401 : 200)
+    }
     func redirect(to url: URL) {
         let response = HTTPURLResponse(url: request.url!, statusCode: 302,
                                        httpVersion: "HTTP/1.1", headerFields: ["Location": url.absoluteString])!
@@ -69,6 +94,9 @@ private final class Route: @unchecked Sendable {
     private var stopped: CheckedContinuation<Void, Never>?
     private var didStop = false
     private var count = 0
+    private var challenges: [URLCredential?] = []
+    var challengeCredentials: [URLCredential?] { lock.withLock { challenges } }
+    func recordChallenge(_ credential: URLCredential?) { lock.withLock { challenges.append(credential) } }
     var starts: Int { lock.withLock { count } }
 
     func start(_ value: TransportProtocol) {
@@ -189,4 +217,49 @@ private final class TransportFixture {
     let (_, response) = try await task.value
     #expect(response.statusCode == 302)
     #expect(targetRoute.starts == 0)
+}
+
+@Test func transportDoesNotReuseStoredCredentialsForAuthenticationChallenges() async throws {
+    let fixture = TransportFixture()
+    let (firstRequest, firstRoute) = fixture.route("/before-challenge")
+    let (secondRequest, secondRoute) = fixture.route("/challenge")
+    let space = URLProtectionSpace(host: secondRequest.url!.host!, port: 443,
+                                   protocol: "https", realm: "fixture",
+                                   authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+    let credential = URLCredential(user: "fixture-user", password: "fixture-password", persistence: .forSession)
+    let store = TransportProtocol.credentials
+    store.setDefaultCredential(credential, for: space)
+    defer { store.remove(credential, for: space) }
+    // Negative-control input: the configured factory store really contains a
+    // credential for this host/realm. Production must disconnect that store.
+    #expect(store.defaultCredential(for: space)?.user == "fixture-user")
+    // Positive control at the same URLSession/URLProtocol boundary: without the
+    // transport's no-storage policy, this challenge really selects the credential.
+    let (controlRequest, controlRoute) = fixture.route("/control-challenge")
+    let controlSession = URLSession(configuration: .ephemeral)
+    defer { controlSession.invalidateAndCancel() }
+    let control = Task { try await controlSession.data(for: controlRequest) }
+    let controlLoader = await controlRoute.waitForStart()
+    controlLoader.challenge(in: space)
+    let (_, controlResponse) = try await control.value
+    #expect((controlResponse as? HTTPURLResponse)?.statusCode == 200)
+    #expect(controlRoute.challengeCredentials.count == 1)
+    #expect(controlRoute.challengeCredentials.first.flatMap { $0 }?.user == "fixture-user")
+
+    let transport = URLSessionTransport()
+    let first = Task { try await transport.send(firstRequest) }
+    let firstLoader = await firstRoute.waitForStart()
+    firstLoader.reply()
+    _ = try await first.value
+
+    let second = Task { try await transport.send(secondRequest) }
+    let secondLoader = await secondRoute.waitForStart()
+    secondLoader.challenge(in: space)
+    let (_, response) = try await second.value
+    #expect(response.statusCode == 401)
+    // Proves URLSession actually resolved the challenge, not just an absent
+    // Authorization header on the initial request.
+    let selected = secondRoute.challengeCredentials
+    #expect(selected.count == 1)
+    #expect(selected.allSatisfy { $0 == nil })
 }
