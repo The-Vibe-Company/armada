@@ -3,6 +3,7 @@ import type { GoldenOperation } from "./golden.ts";
 import { assertGoldenMutation, type GoldenActor, type GoldenRecord, type GoldenStore } from "./golden.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
+import type { HelperReceipt } from "./helper.ts";
 import { parseMachineSizePolicy } from "./machine-size.ts";
 import { isSandboxProvider, type ModalBinding } from "./sandbox-provider.ts";
 
@@ -30,6 +31,7 @@ export interface GoldenRow {
   modal_environment: string | null;
   modal_app_id: string | null;
   config: unknown;
+  helper_receipt?: HelperReceipt | null;
   build_warnings?: GoldenBuildWarning[];
   size_policy?: unknown;
   created_at: string | Date;
@@ -37,10 +39,10 @@ export interface GoldenRow {
 
 /** The columns {@link mapGoldenRow} reads, as a PostgREST `select=`. */
 export const GOLDEN_SELECT =
-  "id,org_id,name,visibility,owner_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config,size_policy,build_warnings,created_at";
+  "id,org_id,name,visibility,owner_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config,size_policy,build_warnings,helper_receipt,created_at";
 
 const COLUMNS = `id, org_id, name, visibility::text as visibility, owner_id, provider::text as provider,
-  provider_sandbox_id, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config, size_policy, build_warnings, created_at`;
+  provider_sandbox_id, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config, size_policy, build_warnings, helper_receipt, created_at`;
 
 /**
  * Goldens through SQL. The connection's role is the caller: row level security hides
@@ -191,6 +193,7 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
     modal: modalBinding(provider, row),
     config: parseGoldenConfig(config),
     buildWarnings: row.build_warnings ?? [],
+    helperReceipt: row.helper_receipt ?? null,
     sizePolicy:
       row.size_policy == null
         ? null

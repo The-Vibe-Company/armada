@@ -87,6 +87,18 @@ describe("golden database", () => {
           config: configFromFlags([WEB], []),
         }),
       );
+      // Even an authorized admin cannot forge server-owned installation evidence.
+      await expect(
+        asUser(db, people.admin, () => db.query("update public.goldens set helper_receipt=null where name='shared'")),
+      ).rejects.toThrow(/permission denied/);
+      await expect(
+        asUser(db, people.admin, () =>
+          db.query(
+            "insert into public.goldens(org_id,name,visibility,owner_id,provider,config,helper_receipt) values($1,'forged','org',$2,'boat',$3::jsonb,null)",
+            [people.org, people.admin, JSON.stringify(configFromFlags([WEB], []))],
+          ),
+        ),
+      ).rejects.toThrow(/permission denied/);
       await expect(
         asUser(db, people.member, () =>
           store.insert({

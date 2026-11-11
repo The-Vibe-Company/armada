@@ -20,6 +20,7 @@ import {
   waitReady,
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
+import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
@@ -41,6 +42,8 @@ const OUTPUT_LIMIT = 2000;
 const OWNERSHIP_RETRY_DELAY_MS = 1000;
 
 export interface LaunchRequest {
+  /** Explicit admission requirement; slice 0 supports diagnose only. */
+  helperCapabilities?: string[];
   skills?: string[];
   credentialId?: string;
   size?: MachineSize;
@@ -123,6 +126,7 @@ export interface GitHubLaunchInfo {
 }
 
 export interface LaunchResult {
+  helper: HelperNegotiation;
   sandbox: SandboxRecord;
   golden: GoldenRecord;
   github: GitHubLaunchInfo;
@@ -181,6 +185,26 @@ export async function launchSandbox(
   const choice = checkModel(provider, harness, request);
 
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
+  const helper = negotiateHelper(golden.helperReceipt, golden.providerSnapshotId);
+  const requestedHelper = request.helperCapabilities;
+  if (
+    requestedHelper !== undefined &&
+    (!Array.isArray(requestedHelper) ||
+      requestedHelper.length > 8 ||
+      requestedHelper.some((cap) => typeof cap !== "string" || cap.length > 64))
+  )
+    throw new LaunchError("invalid_request", "Invalid helper capabilities.");
+  if (requestedHelper?.some((cap) => helper.status !== "supported" || !helper.capabilities.includes(cap as "diagnose")))
+    throw new LaunchError(
+      "unsupported",
+      "Helper capability unsupported. Rebuild the golden with armada golden update; this server supports diagnose only.",
+      {
+        helperRefusal:
+          helper.status === "unsupported"
+            ? helper
+            : { reason: "helper_capability_unsupported", action: "rebuild_golden" },
+      },
+    );
   // The provider comes from the golden. The one the caller passed must be that backend, never another.
   assertProviderOf(provider, golden.provider);
   const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
@@ -513,6 +537,7 @@ function finish(
   prompt: { conversationId: string; promptId: string } | undefined,
 ): LaunchResult {
   return {
+    helper: negotiateHelper(golden.helperReceipt, golden.providerSnapshotId),
     sandbox: { ...record, status, conversationIds },
     golden,
     github,

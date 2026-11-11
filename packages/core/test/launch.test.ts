@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
   type CredentialSource,
@@ -1117,3 +1118,46 @@ for (const harness of ["claude", "codex"] as const) {
     }
   });
 }
+
+// Admission owns compatibility: an unsupported requirement must not allocate a worker.
+test("helper admission preserves legacy launches and refuses missing, stale or unknown capabilities before fork", async () => {
+  const receipt = {
+    version: "0.1.0",
+    protocol: 1,
+    platform: "x86_64" as const,
+    digest: helperManifest.x86_64.digest,
+    capabilities: ["diagnose"],
+    snapshotId: SNAPSHOT,
+  };
+  for (const variant of ["legacy", "missing", "new", "stale", "unknown", "bad-digest"] as const) {
+    const selected = golden("org");
+    if (!["legacy", "missing"].includes(variant))
+      selected.helperReceipt = {
+        ...receipt,
+        ...(variant === "stale" ? { snapshotId: "old-snapshot" } : {}),
+        ...(variant === "bad-digest" ? { digest: "0".repeat(64) } : {}),
+      };
+    const world = setup({ golden: selected });
+    const request = {
+      golden: "web",
+      harness: "claude" as const,
+      ...(variant === "legacy" ? {} : { helperCapabilities: [variant === "unknown" ? "github" : "diagnose"] }),
+    };
+    if (variant === "legacy" || variant === "new") {
+      const result = await launchSandbox(world.provider, world.stores, owner, request);
+      expect(result.helper.status).toBe(variant === "new" ? "supported" : "unsupported");
+    } else {
+      await expect(launchSandbox(world.provider, world.stores, owner, request)).rejects.toMatchObject({
+        code: "unsupported",
+        reason:
+          variant === "missing"
+            ? "helper_missing"
+            : variant === "unknown"
+              ? "helper_capability_unsupported"
+              : "helper_receipt_invalid",
+        action: "rebuild_golden",
+      });
+      expect(world.forks).toEqual([]);
+    }
+  }
+});

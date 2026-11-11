@@ -11,8 +11,10 @@ import {
   GoldenError,
   parseGoldenName,
 } from "./golden-config.ts";
+import { GOLDEN_HELPER_SETUP } from "./golden-helper.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
+import type { HelperReceipt } from "./helper.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
 
@@ -56,6 +58,7 @@ export interface GoldenCreateDeps {
   ): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
   scan(provider: Provider, sandboxId: string, context?: { buildId: string }): Promise<void>;
+  verifyHelper?(provider: Provider, sandboxId: string): Promise<Omit<HelperReceipt, "snapshotId">>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
   /** Legacy factory hook; production persistence finalizes atomically itself. */
@@ -86,6 +89,7 @@ export interface GoldenCreateDeps {
     builderId: string;
     reservationId?: string;
     warnings: GoldenBuildWarning[];
+    helperReceipt?: HelperReceipt;
   }): Promise<string | void>;
 }
 
@@ -189,6 +193,7 @@ export class GoldenCreateService {
       });
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId });
+      const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
       requestedSnapshot = input.existingGolden
         ? `golden-r-${crypto.randomUUID()}`
         : `golden-${builder.id.replaceAll("_", "-")}`;
@@ -262,6 +267,7 @@ export class GoldenCreateService {
       {
         const goldenId = await this.deps.persist({
           warnings,
+          ...(helperReceipt ? { helperReceipt: { ...helperReceipt, snapshotId: snapshot } } : {}),
           actor,
           provider: providerId,
           modal,
@@ -488,6 +494,7 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     '[ "$(/usr/local/bin/claude --version)" = "2.1.322 (Claude Code)" ] || { printf "%s\\n" "Claude Code at /usr/local/bin/claude does not match the managed pin." >&2; exit 96; }',
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
     GOLDEN_SKILLPACK_SETUP,
+    GOLDEN_HELPER_SETUP,
   ].join("\n");
 }
 

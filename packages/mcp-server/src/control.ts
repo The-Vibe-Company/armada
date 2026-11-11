@@ -329,7 +329,13 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       );
     }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(
+        400,
+        error.code,
+        error.message,
+        error.reason ? { reason: error.reason, action: error.action } : undefined,
+      );
     if (error instanceof InvitationError)
       return Response.json(
         {
@@ -516,7 +522,13 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(
+        400,
+        error.code,
+        error.message,
+        error.reason ? { reason: error.reason, action: error.action } : undefined,
+      );
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Login exchange was refused.");
   }
@@ -576,7 +588,13 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(
+        400,
+        error.code,
+        error.message,
+        error.reason ? { reason: error.reason, action: error.action } : undefined,
+      );
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Refresh token was refused.");
   }
@@ -1245,6 +1263,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
       ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
+      ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
@@ -1294,6 +1313,7 @@ async function providerForGolden(options: ControlOptions, caller: Caller, golden
 
 function launchJson(result: LaunchResult) {
   return {
+    helper: result.helper,
     sandbox: {
       ...result.sandbox,
       boatId: result.sandbox.provider === "boat" ? result.sandbox.providerSandboxId : null,
@@ -1415,7 +1435,12 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(status: number, code: string, message: string, details?: ToolApiError["details"]): Response {
+function fail(
+  status: number,
+  code: string,
+  message: string,
+  details?: ToolApiError["details"] | Pick<LaunchError, "reason" | "action">,
+): Response {
   return Response.json(
     { error: { code, message, ...(details ? { details } : {}) } },
     { status, headers: { "cache-control": "no-store" } },
