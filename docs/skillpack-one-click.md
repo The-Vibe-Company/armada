@@ -36,7 +36,12 @@ Read-only inspection of `The-Vibe-Company/skillpack`, commit
 - `apps/web/src/components/org/SettingsApp.tsx` calls `issueTokenRpc({name})`;
   `ApiKeysPane.tsx` describes personal keys carrying the user's access. Creation
   returns a one-time token; listing and revocation already exist. This is not a
-  delegated, read-only installation grant.
+  delegated redirect consent flow. `POST /v1/tokens` already accepts explicit
+  scopes (including `skills:read` and `public-skills:install`); its browser form
+  defaults to all scopes. Agent Auth can mint bounded inherited grants through
+  the same endpoint. These are useful building blocks, not a browser redirect
+  exchange contract for third-party apps. See `packages/contracts/src/token.ts`
+  and `apps/api/src/index.ts`.
 - `docs/design.md` documents OAuth 2.1 under `/auth/oauth2/*`, dynamic client
   registration, S256 PKCE, consent, workspace pinning and refresh rotation.
   Discovery: `/.well-known/oauth-authorization-server/auth`. Existing MCP OAuth

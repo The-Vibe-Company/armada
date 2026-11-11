@@ -109,6 +109,41 @@ for (const failure of [
   });
 }
 
+test("Skillpack connection reports only visible metadata and never advertises unsupported authorization", async () => {
+  await withServer(async ({ options }) => {
+    const org = await options.store.createOrg("Skills", STAN);
+    await options.store.upsertCredential("user", STAN, "skillpack", await encryptSecret("personal-skill-key", KEY));
+    await options.store.upsertCredential("user", STAN, "anthropic", await encryptSecret("other-key", KEY));
+    await options.store.upsertCredential("org", org.id, "skillpack", await encryptSecret("org-skill-key", KEY));
+    const read = (userId?: string, body = {}) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/skillpack/connection", {
+          method: "POST",
+          headers: userId
+            ? {
+                authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
+              }
+            : {},
+          body: JSON.stringify(body),
+        }),
+        options,
+      );
+    expect((await read())?.status).toBe(401);
+    const result = (await (await read(STAN))?.json()) as {
+      user: { kind: string }[];
+      orgs: { id: string; credentials: { kind: string }[] }[];
+    };
+    expect(result).toMatchObject({ authorization: { available: false, reason: "delegated_key_flow_unavailable" } });
+    expect(result.user.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
+    expect(result.orgs.map((row: { id: string }) => row.id)).toEqual([org.id]);
+    expect(result.orgs[0]!.credentials.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
+    expect(JSON.stringify(result)).not.toContain("skill-key");
+    expect(JSON.stringify(result)).not.toContain("value_enc");
+    expect(await (await read(ADA))?.json()).toMatchObject({ orgs: [] });
+    expect((await read(ADA, { org: org.id }))?.status).toBe(404);
+  });
+});
+
 describe("armada org and armada creds against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
     await withServer(async ({ db, options, cli }) => {
