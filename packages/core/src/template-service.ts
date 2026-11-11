@@ -344,7 +344,16 @@ export function createTemplateService(sql: Sql) {
     if (!allowed[operation]) invalid();
     fields(input, allowed[operation]!);
     const org = id(input.org);
-    if (operation === "launch") return launch(actor, org, input, runtime);
+    if (operation === "launch") {
+      try {
+        return await launch(actor, org, input, runtime);
+      } catch (error) {
+        const reason = refusalReason(error);
+        // Closed reason only: never log credential errors, request bodies or readable values.
+        if (reason) console.warn("armada: template launch refused", { reason, templateId: id(input.id), orgId: org });
+        throw error;
+      }
+    }
     return transaction(async (tx) => {
       const a = await member(tx, actor, org);
       if (operation === "list")
@@ -425,12 +434,17 @@ export function createTemplateService(sql: Sql) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
-    const credentials = await runtime.stores.credentials.resolve(
-      selection.a,
-      def.harness,
-      def.modelAccount?.id,
-      def.modelAccount?.version,
-    );
+    const credentials = await runtime.stores.credentials
+      .resolve(selection.a, def.harness, def.modelAccount?.id, def.modelAccount?.version)
+      .catch((error: unknown) => {
+        // These are model-resolution failures, not a missing template/revision. Keep unrelated
+        // infrastructure and authorization failures intact rather than hiding them as account problems.
+        if (error instanceof VaultError && error.code === "missing_credential")
+          unavailable("model_account_unavailable");
+        if (error instanceof VaultError && error.code === "conflict") unavailable("model_account_ambiguous");
+        if (error instanceof VaultError && error.code === "credential_refused") unavailable("model_account_refused");
+        throw error;
+      });
     if (!credentials.binding) unavailable("model_account_unavailable");
     if (
       def.modelAccount &&

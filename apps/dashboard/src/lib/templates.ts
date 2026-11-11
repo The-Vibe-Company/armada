@@ -1,5 +1,6 @@
 import { type Harness, MODEL_CATALOG, PROVIDER_LIMITS, type SandboxProviderId } from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
+import type { LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 
@@ -121,6 +122,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
 
 /** What a template refers to, as the viewer sees it now. A list that could not be read is null: nothing is judged. */
 export type TemplateLookups = {
+  accounts?: LaunchAccounts;
   goldens: readonly {
     id: string;
     name: string;
@@ -330,7 +332,12 @@ const LAUNCH_REASONS: Record<string, string> = {
   variable_delivery_unavailable: "This provider cannot deliver variables yet.",
   connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a revision without it.",
   connection_version_changed: "A tool it uses was reconnected while launching. Try again.",
-  model_account_unavailable: "No model account can run this agent. Add one in Harness.",
+  model_account_unavailable:
+    "No usable model account is available for this agent in this organization. Add one in Build > Harness or choose another agent.",
+  model_account_ambiguous:
+    "Several model accounts can run this agent. Set a default in Build > Harness or publish a revision with an explicit account binding.",
+  model_account_refused:
+    "The selected model account is expired, revoked, changed or incompatible. Reconnect it in Build > Harness or publish a revision with a usable account binding.",
   model_account_version_changed: "Its model account changed. Try again.",
   model_account_incompatible: "Its model account cannot run this agent.",
   template_revision_changed: "A new revision was published while launching. Try again.",
