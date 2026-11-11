@@ -19,6 +19,7 @@ for (const outcome of [
   "manual-stop",
 ] as const) {
   const externalStop = outcome === "external-stop" || outcome === "invalid-stop-time";
+  const validStoppedAt = "2026-11-11T00:00:00.000Z";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await database();
     try {
@@ -74,7 +75,12 @@ for (const outcome of [
           return Response.json({
             ok: true,
             sandbox: sandbox({
-              stoppedAt: outcome === "invalid-stop-time" ? "not-a-date" : undefined,
+              stoppedAt:
+                outcome === "external-stop"
+                  ? validStoppedAt
+                  : outcome === "invalid-stop-time"
+                    ? "not-a-date"
+                    : undefined,
               state:
                 stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
                   ? "archived"
@@ -93,7 +99,11 @@ for (const outcome of [
           usage_runtime_seconds: number | null;
           status_reason: string | null;
           stop_time_finite: boolean | null;
-        }>("select *,isfinite(stopped_at) as stop_time_finite from sandboxes where id=$1", [id])
+          provider_stop_retained: boolean | null;
+        }>(
+          "select *,isfinite(stopped_at) as stop_time_finite,stopped_at=$2::timestamptz as provider_stop_retained from sandboxes where id=$1",
+          [id, validStoppedAt],
+        )
       ).rows[0]!;
       expect(row.status).toBe(
         externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
@@ -109,7 +119,8 @@ for (const outcome of [
       );
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
-      // Without a provider timestamp, confirmed stops close the observed interval locally.
+      if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
+      // Confirmed stops close observed intervals; absent/bad timestamps fall back locally.
       if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
         expect(row.stop_time_finite).toBe(true);
         expect(row.usage_runtime_seconds).not.toBeNull();
