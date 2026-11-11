@@ -15,6 +15,7 @@ import {
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
+  type Sql,
   VaultError,
   type VaultStore,
 } from "@armada/core";
