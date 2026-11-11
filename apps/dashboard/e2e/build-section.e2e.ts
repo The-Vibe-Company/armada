@@ -135,7 +135,7 @@ test("on a phone the list fits the width and the panel is a sheet over it", asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
   const panel = await goldenPanel(page, "web-frontend");
-  const sheet = page.locator("[data-resource-panel]");
+  const sheet = page.locator("[data-resource-panel]").filter({ visible: true });
   const box = await sheet.boundingBox();
   expect(box?.width).toBe(390);
   await expect(panel.getByRole("list", { name: "Repositories of web-frontend on Boat" })).toContainText(

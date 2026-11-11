@@ -18,7 +18,8 @@ async function mockState(): Promise<MockState> {
 }
 
 /** A connection's row in the Tools list, and its detail panel (hidden until the row is selected). */
-const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`).filter({ visible: true });
+const allCards = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`);
+const card = (page: Page, name: string) => allCards(page, name).filter({ visible: true });
 const panelOf = (page: Page, name: string) =>
   page.locator(`[data-connection-panel="${name}"]`).filter({ visible: true });
 
@@ -128,7 +129,7 @@ for (const mobile of [false, true]) {
 test("a member manages personal connections only and cannot add org ones", async ({ page }) => {
   await signIn(page, "bob@example.com", "/tools");
   await expect(card(page, "Bob Notes")).toBeVisible();
-  await expect(card(page, "Alice Linear")).toHaveCount(0);
+  await expect(allCards(page, "Alice Linear")).toHaveCount(0);
   // Only the row's select target: no action, and the panel holds no control either.
   await expect(card(page, "Acme Docs").getByRole("button")).toHaveCount(1);
   const docs = await panel(page, "Acme Docs");
@@ -472,8 +473,8 @@ test("switching organization switches the connections and their launch choices",
   await page.getByLabel("Active organization").selectOption(ZENITH);
   await expect(page).toHaveURL(/\/tools$/);
   await expect(card(page, "Zenith Search")).toBeVisible();
-  await expect(card(page, "Acme Docs")).toHaveCount(0);
-  await expect(card(page, "Alice Linear")).toHaveCount(0);
+  await expect(allCards(page, "Acme Docs")).toHaveCount(0);
+  await expect(allCards(page, "Alice Linear")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add server", exact: true })).toBeVisible();
   // Alice is only a member in Zenith: its org connections are read-only for her.
   await expect(await panel(page, "Zenith Search")).toContainText("Managed by the org's admins.");
