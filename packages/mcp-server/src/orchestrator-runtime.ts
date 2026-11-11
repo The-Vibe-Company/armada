@@ -413,7 +413,8 @@ export class OrchestratorRuntime {
         },
       });
       if (prior) return this.recorded(prior, diagnostics);
-      if (identity.state === "failed") throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      if (identity.state === "stopped" && !identity.sandboxId && identity.continuity === "not_started")
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       // Resume does not bootstrap skills. A failed create must be replaced, not
       // promoted to ready without its explicitly requested skill (including Boat).
       if (input.action === "resume" && identity.configuration.skill && !identity.skillReceipt)

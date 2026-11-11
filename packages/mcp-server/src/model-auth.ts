@@ -645,7 +645,12 @@ export function createModelAuthOwnership(
           if (error instanceof VaultError)
             throw new ProviderError({
               provider: provider.id,
-              code: error.code === "conflict" ? "conflict" : error.code === "not_found" ? "not_found" : "unavailable",
+              code:
+                error.code === "conflict" || error.code === "credential_busy"
+                  ? "conflict"
+                  : error.code === "not_found"
+                    ? "not_found"
+                    : "unavailable",
               message: error.message,
               retryable: false,
             });
@@ -664,7 +669,10 @@ export function createModelAuthOwnership(
         );
         const row = found.rows[0];
         if (!row || row.sandbox_id !== sandboxId || Number(row.account_version) !== version)
-          throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+          throw new VaultError(
+            "conflict",
+            "This sandbox no longer owns its subscription session. Stop it and launch a new sandbox with the intended account.",
+          );
       });
     },
   };

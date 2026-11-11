@@ -36,15 +36,7 @@ export class OrchestratorContractError extends Error {
   override readonly name = "OrchestratorContractError";
 }
 
-const STATES: readonly OrchestratorState[] = [
-  "creating",
-  "ready",
-  "stopping",
-  "stopped",
-  "resuming",
-  "blocked",
-  "failed",
-];
+const STATES: readonly OrchestratorState[] = ["creating", "ready", "stopping", "stopped", "resuming", "blocked"];
 const CONTINUITIES: readonly OrchestratorContinuity[] = ["not_started", "native", "unverified", "lost"];
 const OPERATION_KINDS: readonly OrchestratorOperation["kind"][] = ["create", "message", "steer", "stop", "resume"];
 const OPERATION_STATES: readonly OrchestratorOperation["state"][] = ["pending", "succeeded", "failed", "uncertain"];
@@ -421,7 +413,6 @@ export function troubledOperations(detail: OrchestratorDetail | null): Orchestra
 }
 
 export const STATE_LABELS: Record<OrchestratorState, string> = {
-  failed: "Failed",
   creating: "Starting",
   ready: "Ready",
   stopping: "Stopping",
@@ -481,6 +472,8 @@ function composerNote(
   if (orchestrator.continuity === "lost") return "This conversation cannot continue.";
   if (open?.state === "uncertain") return `Armada is settling the last ${open.kind}; nothing is repeated meanwhile.`;
   if (open) return `Waiting for the ${open.kind} to finish.`;
+  if (orchestrator.state === "stopped" && !orchestrator.sandboxId && orchestrator.continuity === "not_started")
+    return "Creation did not start a sandbox. Create a new orchestrator to try again.";
   if (orchestrator.state === "stopped")
     return can.resume
       ? "Stopped. Resume it to continue the same conversation."
@@ -496,11 +489,13 @@ function notice(orchestrator: Orchestrator): OrchestratorControls["notice"] {
       title: "The conversation was lost",
       text: "Its saved native state is gone, so it cannot resume as the same conversation. Create a new orchestrator to start over.",
     };
-  if (orchestrator.state === "failed")
+  if (orchestrator.state === "stopped" && !orchestrator.sandboxId && orchestrator.continuity === "not_started")
     return {
       tone: "danger",
       title: "Create failed",
-      text: orchestrator.failureMessage ?? orchestrator.blockedReason ?? "Create a new orchestrator to try again.",
+      text:
+        orchestrator.failureMessage ??
+        "Creation was refused before a sandbox started. Create a new orchestrator to try again.",
     };
   if (orchestrator.state === "blocked")
     return {

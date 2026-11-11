@@ -16,7 +16,7 @@ export const ORCHESTRATOR_DEFAULTS = {
   maxWaitSeconds: 86400,
 } as const;
 
-export type OrchestratorState = "creating" | "ready" | "stopping" | "stopped" | "resuming" | "blocked" | "failed";
+export type OrchestratorState = "creating" | "ready" | "stopping" | "stopped" | "resuming" | "blocked";
 export type OrchestratorContinuity = "not_started" | "native" | "unverified" | "lost";
 export type OrchestratorScope = "worker:launch" | "worker:read" | "worker:message" | "worker:stop" | "worker:extend";
 

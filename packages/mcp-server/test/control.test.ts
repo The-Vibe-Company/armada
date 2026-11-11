@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   API_FAILURE_HELP,
+  CREDENTIAL_BUSY_MESSAGE,
   createSqlVaultStore,
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
@@ -1643,7 +1644,38 @@ test.each(["claude", "codex"] as const)(
           modelAuth.claim({ userId: ADA, orgId: org.id, role: "member" }, winner.credentialId, 1, crypto.randomUUID()),
         ).rejects.toMatchObject({ code: "credential_busy" });
       }
-      expect((await post(ADA, winner.credentialId === chosen ? alternate : chosen)).status).toBe(409);
+      const refusedBinding = await post(ADA, winner.credentialId === chosen ? alternate : chosen);
+      expect(refusedBinding.status).toBe(409);
+      expect(await refusedBinding.json()).toMatchObject({ error: { code: "conflict", message: expect.any(String) } });
     });
   },
 );
+
+test("HTTP launch keeps build-5 refusal code and adds the busy account reason", async () => {
+  await withServer(async ({ options, cli, db }) => {
+    await cli(STAN).run(["org", "create", "Busy"]);
+    const org = (await options.store.memberships(STAN))[0]!;
+    await db.query(
+      "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'busy','org','snapshot',$3::jsonb)",
+      [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+    );
+    options.providers = {
+      resolve: async () => {
+        throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+      },
+    };
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+    const response = (await handleControlRequest(
+      new Request("https://armada.test/api/v1/sandbox/launch", {
+        method: "POST",
+        headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+        body: JSON.stringify({ org: org.id, golden: "busy", harness: "codex" }),
+      }),
+      options,
+    ))!;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: { code: "conflict", reason: "credential_busy", message: CREDENTIAL_BUSY_MESSAGE },
+    });
+  });
+});

@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
+  CREDENTIAL_BUSY_MESSAGE,
   createSqlGoldenStore,
   createSqlSandboxStore,
   createSqlVaultStore,
@@ -7,6 +8,7 @@ import {
   type GoldenActor,
   launchSandbox,
   ProviderError,
+  VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import {
@@ -114,6 +116,18 @@ test("real native state publication seals rotation without replacing binding, fe
     );
     const provider = fakeBoat().provider;
     provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    const admission = spyOn(auth, "assertSandbox").mockRejectedValueOnce(
+      new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE),
+    );
+    await expect(auth.beforeResume(provider, "native", actor)).rejects.toMatchObject({
+      code: "conflict",
+      retryable: false,
+    });
+    admission.mockRestore();
+    await expect(auth.assertOwned(actor, account.id, 1, OTHER)).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("launch a new sandbox"),
+    });
     await auth.capture(provider, "native", actor);
     expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(1), revision: 1 });
     expect((await db.query("select version from credentials where id=$1", [account.id])).rows).toEqual([

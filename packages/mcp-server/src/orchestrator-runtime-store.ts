@@ -801,7 +801,8 @@ export class OrchestratorRuntimeStore {
       );
       if (["message", "steer"].includes(input.action) && identity.state !== "ready")
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
-      if (identity.state === "failed") throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      if (identity.state === "stopped" && !identity.sandboxId && identity.continuity === "not_started")
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       if (busy.rows.length || identity.revision !== input.expectedRevision)
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
       // Foundation owns reservation; reuse the surrounding locked transaction, no nested COMMIT.
@@ -987,12 +988,12 @@ export class OrchestratorRuntimeStore {
         [reservation.operation.id, reservation.createDispatchId ?? null, errorCode],
       );
       if (!row.rows.length) return false;
-      await tx.query(`update public.orchestrators set state='failed' where id=$1 and revision=$2`, [
+      await tx.query(`update public.orchestrators set state='stopped' where id=$1 and revision=$2`, [
         reservation.identity.id,
         reservation.operation.revision,
       ]);
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason=$2,updated_at=now() where orchestrator_id=$1`,
+        `update public.orchestrator_runtime set blocked_reason=$2,continuity='not_started',updated_at=now() where orchestrator_id=$1`,
         [reservation.identity.id, errorCode],
       );
       await tx.query(
@@ -1065,11 +1066,11 @@ export class OrchestratorRuntimeStore {
         [row.id],
       );
       await tx.query(
-        `update public.orchestrators set state='blocked' where id=$1 and revision=$2 and sandbox_id is null`,
+        `update public.orchestrators set state='stopped' where id=$1 and revision=$2 and sandbox_id is null`,
         [row.orchestrator_id, row.revision],
       );
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',updated_at=now() where orchestrator_id=$1`,
+        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',continuity='not_started',updated_at=now() where orchestrator_id=$1`,
         [row.orchestrator_id],
       );
       await tx.query(
@@ -1078,7 +1079,7 @@ export class OrchestratorRuntimeStore {
           row.orchestrator_id,
           row.revision,
           JSON.stringify({ kind: "operation", operation }),
-          JSON.stringify({ kind: "state", state: "blocked", continuity: "not_started" }),
+          JSON.stringify({ kind: "state", state: "stopped", continuity: "not_started" }),
         ],
       );
       return operation;

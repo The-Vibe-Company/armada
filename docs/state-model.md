@@ -29,9 +29,9 @@ ordinary reconciliation/retention so it cannot bypass their checkpoint protocol.
 
 ## Orchestrator parent
 
-The parent enum is `creating | ready | stopping | stopped | resuming | blocked | failed`
+The parent enum is `creating | ready | stopping | stopped | resuming | blocked`
 (`core/src/orchestrator.ts`). There is no parent `deleted` state.
-A proven pre-allocation create refusal ends `failed`: no machine exists to recover.
+A proven pre-allocation create refusal ends `stopped` with `continuity: not_started` and no sandbox: no machine exists to recover. The create operation is `failed`; the parent uses only existing client-compatible state values.
 The closed `credential_busy` reason carries an actionable safe message in the
 operation receipt/events and parent detail; unknown allocation outcomes stay
 recoverable rather than being declared terminal.

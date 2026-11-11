@@ -278,7 +278,8 @@ export async function orchestratorHttp(
       {
         error: {
           code,
-          message: code,
+          message: error instanceof VaultError && error.code === "credential_busy" ? error.message : code,
+          ...(error instanceof VaultError && error.code === "credential_busy" ? { reason: "credential_busy" } : {}),
           ...(error instanceof OrchestratorRuntimeError && error.admission
             ? {
                 admission: error.admission,
@@ -305,7 +306,7 @@ export async function orchestratorHttp(
 export function orchestratorFailureCode(error: unknown) {
   if (error instanceof VaultError) {
     if (error.code === "not_found" || error.code === "forbidden") return "not_found" as const;
-    if (error.code === "conflict") return "conflict" as const;
+    if (error.code === "conflict" || error.code === "credential_busy") return "conflict" as const;
     if (error.code === "invalid") return "invalid_request" as const;
   }
   if (error instanceof OrchestratorRuntimeError) {

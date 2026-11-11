@@ -425,7 +425,7 @@ test("a refused create shows the account action without recovery or lifecycle co
   await testControl("patch", {
     id: ALICE_ORCHESTRATOR,
     patch: {
-      state: "failed",
+      state: "stopped",
       sandboxId: null,
       conversationId: null,
       continuity: "not_started",

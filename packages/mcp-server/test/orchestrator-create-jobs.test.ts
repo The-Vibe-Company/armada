@@ -205,6 +205,9 @@ test("only queued tagged work dispatches; expired dispatched work becomes uncert
     expect(await f.runtime.createWorker.reconcileOne()).toBe(true);
     expect((await f.store.operations(f.p.owner, f.p.org, queued.identity.id))[0]?.state).toBe("uncertain");
     expect((await f.store.operations(f.p.owner, f.p.org, legacy.identity.id))[0]?.state).toBe("pending");
+    expect(
+      (await f.sql.query("select state,sandbox_id from orchestrators where id=$1", [queued.identity.id])).rows,
+    ).toEqual([{ state: "stopped", sandbox_id: null }]);
     expect(f.diagnostics.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         stage: "create_reconciliation",
@@ -381,11 +384,18 @@ test("busy account refusal is terminal before allocation and retains the reason 
     await f.runtime.createWorker.drain();
     const detail = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
     expect(detail.orchestrator).toMatchObject({
-      state: "failed",
+      state: "stopped",
+      continuity: "not_started",
       sandboxId: null,
       blockedReason: "credential_busy",
       failureMessage: core.CREDENTIAL_BUSY_MESSAGE,
     });
+    // Build 5 synthesizes Codable for precisely these six parent state values.
+    const build5States = ["creating", "ready", "stopping", "stopped", "resuming", "blocked"];
+    const listed = await f.runtime.list(f.caller, f.p.org);
+    expect(listed.items.some((row) => row.id === admitted.orchestratorId)).toBe(true);
+    for (const row of [...listed.items, detail.orchestrator])
+      expect(build5States).toContain(JSON.parse(JSON.stringify(row)).state);
     expect(detail.operations[0]).toMatchObject({
       state: "failed",
       errorCode: "credential_busy",
@@ -420,7 +430,7 @@ test("busy account refusal is terminal before allocation and retains the reason 
     ).rejects.toMatchObject({ code: "conflict" });
     const afterStop = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
     expect(afterStop.orchestrator).toMatchObject({
-      state: "failed",
+      state: "stopped",
       blockedReason: "credential_busy",
       revision: detail.orchestrator.revision,
     });
