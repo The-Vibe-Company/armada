@@ -65,6 +65,7 @@ staging/production migrations remain an authorized operator task under the
 In that development shell, set explicit local origins and start the API process:
 
 ```sh
+export NODE_ENV=development
 export PORT=8080
 export ARMADA_PUBLIC_URL=http://localhost:8080
 export ARMADA_DASHBOARD_URL=http://localhost:3000
