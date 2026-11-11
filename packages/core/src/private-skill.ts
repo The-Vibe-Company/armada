@@ -1,41 +1,12 @@
 import type { Harness } from "./contract.ts";
 import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
+import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
-import { PRIVATE_SSH_FAILURES, PrivateSshError, sshPrivateSkillCommand } from "./ssh-executor.ts";
+import { PrivateSshError, sshPrivateSkillCommand } from "./ssh-executor.ts";
 import { cleanupGuestKey } from "./ssh-key-cleanup.ts";
 
-export const PRIVATE_SKILL_FAILURES = [
-  ...PRIVATE_SSH_FAILURES,
-  "skillpack_credential_unreadable",
-  "skillpack_process_failed",
-  "skillpack_install_nonzero",
-  "skillpack_install_state_invalid",
-  "skillpack_registry_unavailable",
-  "skillpack_cli_unavailable",
-  "skillpack_download_unavailable",
-  "skillpack_timeout",
-  "skillpack_auth_unavailable",
-  "skillpack_protocol_invalid",
-  "skillpack_install_conflict",
-  "skillpack_request_rejected",
-  "skillpack_receipt_invalid",
-  "skillpack_transport_failed",
-] as const;
-
-export type PrivateSkillFailure =
-  | (typeof PRIVATE_SKILL_FAILURES)[number]
-  | "skillpack_credential_missing"
-  | "skillpack_credential_refused"
-  | "skillpack_skill_unavailable";
-export class PrivateSkillError extends Error {
-  constructor(
-    readonly reason: PrivateSkillFailure,
-    readonly stage: "credential" | "auth" | "install" | "receipt" | "transport" = "credential",
-  ) {
-    super(reason);
-  }
-}
+export { PRIVATE_SKILL_FAILURES, PrivateSkillError, type PrivateSkillFailure } from "./private-skill-error.ts";
 
 /** Native registry references are bare slugs, scoped by the key's workspace. */
 export const PRIVATE_SKILL_PATTERN = /^[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
