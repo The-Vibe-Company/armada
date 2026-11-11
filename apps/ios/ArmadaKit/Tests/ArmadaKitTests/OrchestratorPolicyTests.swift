@@ -534,6 +534,39 @@ private actor Sleeps {
     #expect(open.state == .uncertain && !open.canDiscard)
 }
 
+// #971: a recognized refusal code must not hide the server's more specific remedy.
+// Exercise the public create submission boundary, including its durable admission classification.
+@Test func recognizedCreateRefusalPreservesReadableServerDetail() async throws {
+    for (message, expected) in [
+        ("Reconnect the selected model account in Settings.", "Reconnect the selected model account in Settings."),
+        ("  Reconnect\n the selected\taccount.  ", "Reconnect the selected account."),
+        ("credential_refused", OrchestratorExplanation.text(for: "credential_refused")),
+        (" \n\t ", OrchestratorExplanation.text(for: "credential_refused")),
+        (String(repeating: "x", count: 320), String(repeating: "x", count: 299) + "…"),
+    ] {
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "error": ["code": "credential_refused", "message": message]
+        ]), as: UTF8.self)
+        let (client, _, _) = try await signedIn([
+            (200, #"{"version":1,"enabled":true,"reason":null}"#),
+            (422, body),
+        ])
+        let (catalog, _) = try await catalog()
+        var draft = catalog.initialDraft()
+        catalog.adopt(golden: try #require(catalog.goldens.first { $0.id == "g-modal" }), into: &draft)
+        draft.name = "Release"
+        let operation = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+        do {
+            _ = try await client.submitOrchestratorOperation(operation.id)
+            Issue.record("Expected a refusal")
+        } catch let error as ArmadaError {
+            #expect(error.localizedDescription == expected)
+        }
+        let saved = try #require(await client.pendingOperations.first { $0.id == operation.id })
+        #expect(saved.rejectedBeforeAdmission && saved.canDiscard)
+    }
+}
+
 // #941: production 2.19 starts a new orchestrator's events with a `connections` event, then its
 // create receipt. Exact shape of the 2.19 server's first backward page.
 @Test func aNewOrchestratorsFirstEventsDecodeInTheProductionShape() async throws {
