@@ -307,7 +307,51 @@ export async function startServer(
     ...(options.logError ? { log: options.logError } : {}),
   });
   mcp.startBackground();
-  const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {
+  let draining = false;
+  const requests = new Set<Promise<unknown>>();
+  const fetch = (request: Request) => {
+    if (draining)
+      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
+    const pending = handler(request).then((response) => {
+      // Gateway POST tools use SSE responses: the handler can return before the
+      // admitted tool finishes. GET notification streams instead end at MCP close.
+      if (request.method !== "POST" || !response.body) return response;
+      const reader = response.body.getReader();
+      const finished = Promise.withResolvers<void>();
+      requests.add(finished.promise);
+      void finished.promise.then(() => requests.delete(finished.promise));
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) {
+              controller.close();
+              finished.resolve();
+            } else controller.enqueue(chunk.value);
+          } catch (error) {
+            controller.error(error);
+            finished.resolve();
+          }
+        },
+        async cancel(reason) {
+          try {
+            await reader.cancel(reason);
+          } finally {
+            finished.resolve();
+          }
+        },
+      });
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    });
+    requests.add(pending);
+    void pending.finally(() => requests.delete(pending)).catch(() => {});
+    return pending;
+  };
+  const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch }), {
     workerDone: Promise.resolve(),
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
@@ -332,13 +376,30 @@ export async function startServer(
       : undefined;
   const allWorkersDone = Promise.all([workers.done, invitationWorker?.done]).then(() => {});
   const stop = server.stop.bind(server);
+  let shutdown: Promise<void> | undefined;
   server.stop = (closeActiveConnections?: boolean) => {
+    if (shutdown) {
+      if (closeActiveConnections) void stop(true);
+      return shutdown;
+    }
+    draining = true;
     workers.stop();
     invitationWorker?.stop();
-    const closed = mcp.close();
+    // Requests may still use the gateway and SQL while finishing a launch.
+    // Drain handlers and POST response streams; idle GET SSE needs
+    // MCP close to finish. SQL stays alive until the native HTTP drain completes.
     const stopped = stop(closeActiveConnections);
-    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => sql.close());
-    return stopped;
+    shutdown = Promise.all([
+      allWorkersDone,
+      (async () => {
+        while (requests.size) await Promise.allSettled([...requests]);
+      })(),
+    ])
+      .then(() => mcp.close())
+      .then(() => stopped)
+      .then(() => sql.close());
+    server.workerDone = shutdown;
+    return shutdown;
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });

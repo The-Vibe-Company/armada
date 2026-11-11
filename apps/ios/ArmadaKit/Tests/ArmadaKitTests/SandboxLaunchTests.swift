@@ -250,7 +250,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(await transport.requests.count == 4)
 }
 
-@Test func refusalsMapToLocalExplanationsAndOnlyValidationShowsTheServerReason() {
+@Test func refusalsKeepSafeServerRemediesAndHidePostStartOutput() throws {
     func classify(_ status: Int, _ body: String) -> SandboxLaunchFailure {
         SandboxLaunchFailure.classify(status: status, body: Data(body.utf8))
     }
@@ -263,7 +263,24 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
         Issue.record("Expected a refusal"); return
     }
     #expect(missing.title == "No model account for this agent")
-    #expect(missing.detail == nil)
+    #expect(missing.detail == "Run 'armada creds set claude-oauth'.")
+    // Credential-resolution messages are authored by Armada, not provider or init output.
+    // A provider credential failure must not be explained as merely a missing model account.
+    let credentialCases: [(String, String, String?)] = [
+        ("missing_credential", "Your org has no Modal token pair.\nAsk an org admin to connect Modal.", "Your org has no Modal token pair. Ask an org admin to connect Modal."),
+        ("no_credentials", "The stored Codex auth.json is not valid JSON.", "The stored Codex auth.json is not valid JSON."),
+        ("no_credentials", "no_credentials", nil),
+        ("missing_credential", " \n\t ", nil),
+    ]
+    for (code, message, expected) in credentialCases {
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "error": ["code": code, "message": message]
+        ]), as: UTF8.self)
+        guard case .refused(let credential) = classify(404, body) else {
+            Issue.record("Credential resolution failed before launch"); return
+        }
+        #expect(credential.detail == expected)
+    }
     // A provider's non-allocating refusal of the fork arrives as 503 with its code.
     guard case .refused(let plan) = classify(503, #"{"error":{"code":"payment_required","message":"x"}}"#) else {
         Issue.record("Expected a refusal"); return
