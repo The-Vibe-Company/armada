@@ -389,6 +389,8 @@ const LAUNCH_REASONS: Record<string, string> = {
   secret_delivery_unavailable: "This provider cannot deliver secret environment values.",
   variable_unavailable: "A variable it uses was revoked or deleted. Publish a new revision without it.",
   variable_version_changed: "A variable it uses changed. Publish a new revision to use the new value.",
+  environment_limits_exceeded:
+    "Template variables and secrets exceed the environment limits (64 entries, 8 KiB per value, 64 KiB total). Reduce the bindings.",
   variable_delivery_unavailable: "This provider cannot deliver variables yet.",
   connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a revision without it.",
   connection_version_changed: "A tool it uses was reconnected while launching. Try again.",

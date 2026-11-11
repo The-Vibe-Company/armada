@@ -1129,3 +1129,63 @@ test("secret references authorize delivery without persisting values and revoke 
     await f.db.close();
   }
 });
+
+// Owns combined transport admission: neither per-list validation nor provider stubs enforce this contract.
+test("template publication caps readable and secret bindings at 64 combined entries", async () => {
+  const f = await fixture();
+  try {
+    const secretId = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+      )
+    ).rows[0]!.id;
+    const variables = Array.from({ length: 64 }, (_, i) => ({
+      key: `CONFIG_${i}`,
+      variableId: f.variableId,
+      version: 1,
+    }));
+    const secrets = [{ key: "APP_TOKEN", secretId, version: 1 }];
+    await expect(f.create(f.people.owner, "personal", { ...f.definition, variables, secrets })).rejects.toThrow(
+      "environment_limits_exceeded",
+    );
+    const valid = await f.create(f.people.owner, "personal", {
+      ...f.definition,
+      variables: variables.slice(1),
+      secrets,
+    });
+    expect((valid.item as LaunchTemplate).currentRevision).toBe(1);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template admission validates decrypted combined byte budget before any fork", async () => {
+  const f = await fixture();
+  try {
+    // Generated in memory, never included in assertion output, fixtures or receipts.
+    const canary = crypto.randomUUID().repeat(228).slice(0, 8192);
+    const secretId = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
+      )
+    ).rows[0]!.id;
+    const secrets = Array.from({ length: 8 }, (_, i) => ({ key: `APP_TOKEN_${i}`, secretId, version: 1 }));
+    const oversized = (await f.create(f.people.owner, "personal", { ...f.definition, secrets })).item as LaunchTemplate;
+    const refused = await f.launch(oversized.id, "over-budget");
+    expect(refused.reason).toBe("environment_limits_exceeded");
+    expect(refused.state).toBe("failed");
+    expect(f.boat.forks).toHaveLength(0);
+    expect(f.configured).toHaveLength(0);
+    expect(JSON.stringify(refused).includes(canary)).toBe(false);
+    const exact = (await f.create(f.people.owner, "personal", { ...f.definition, variables: [], secrets }))
+      .item as LaunchTemplate;
+    const accepted = await f.launch(exact.id, "exact-budget");
+    expect(accepted.state).toBe("succeeded");
+    expect(f.boat.forks).toHaveLength(1);
+    expect(JSON.stringify(accepted).includes(canary)).toBe(false);
+  } finally {
+    await f.db.close();
+  }
+});

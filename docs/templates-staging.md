@@ -208,6 +208,9 @@ slice does not introduce defaults, opt-out or orchestrator dependencies.
 
 Create/publish definitions accept optional `secrets` bindings:
 `{ key: "APP_TOKEN", secretId: "<vault secret UUID>", version: 1 }`.
+Variables and secrets share a combined maximum of 64 environment entries. Before
+allocation, the complete decrypted environment is checked against the transport
+limits (8 KiB per value, 64 KiB total), with a value-free refusal on overflow.
 Only references are stored or returned. Publication and launch check current
 membership, personal ownership, org scope, status, expiry and version.
 

@@ -321,6 +321,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (variables.some((v) => v.key === key) || secrets.some((v) => v.key === key)) invalid();
       secrets.push({ key, secretId: id(b.secretId), version: integer(b.version) });
     }
+    if (variables.length + secrets.length > 64) unavailable("environment_limits_exceeded");
     const skills = (d.skills ?? []) as string[];
     if (!Array.isArray(skills)) invalid();
     try {
@@ -664,6 +665,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           newId: () => request.sandbox_id,
           beforeFork: async (sandboxId) => {
             await revalidate(actor, org, m);
+            // Validate the full decrypted payload before any provider allocation.
+            // Discard plaintext after this check; final start resolves current authority again.
+            await resolveEnvironment(selection.a, m);
             await runtime.options?.beforeFork?.(sandboxId);
             await sql.query(
               "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
@@ -678,7 +682,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
               await p.configureReadableVariables!({
                 sandboxId: s.providerSandboxId,
                 harness: def.harness,
-                variables: { ...m.variables, ...(await resolveSecrets(selection.a, m.definition)) },
+                variables: await resolveEnvironment(selection.a, m),
               });
           },
         },
@@ -742,6 +746,15 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       await references(tx, a, h.scope, { ...m.definition, modelAccount: m.account }, false, m.connections);
     });
   }
+  async function resolveEnvironment(actor: { userId: string; orgId: string }, m: Manifest) {
+    const values = { ...m.variables, ...(await resolveSecrets(actor, m.definition)) };
+    try {
+      return validateReadableVariables(values);
+    } catch {
+      // Closed diagnostic only: never include keys, values or a decryption error.
+      unavailable("environment_limits_exceeded");
+    }
+  }
   // Resolve only into a short-lived provider call; never put plaintext in the durable manifest.
   async function resolveSecrets(actor: { userId: string; orgId: string }, def: TemplateDefinition) {
     const values: Record<string, string> = {};
@@ -786,7 +799,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     await provider.configureReadableVariables({
       sandboxId: providerSandboxId,
       harness: m.definition.harness,
-      variables: { ...m.variables, ...(await resolveSecrets(actor, m.definition)) },
+      variables: await resolveEnvironment(actor, m),
     });
   }
   return { command, prepare };
