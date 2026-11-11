@@ -23,11 +23,36 @@ describe("run", () => {
     expect(out).toContain("armada token create");
   });
 
-  test("launch help needs no login or server request", async () => {
-    const { code, out, err } = await capture(["launch", "--help"]);
+  test.each([
+    "launch",
+    "list",
+    "detail",
+    "status",
+    "advice",
+    "bind-credential",
+    "rm",
+    "extend",
+    "report",
+    "send",
+    "steer",
+    "exec",
+    "stop",
+    "wait",
+    "interrupt",
+    "logs",
+    "mcp",
+    "login",
+    "logout",
+    "token",
+    "org",
+    "account",
+    "github",
+    "creds",
+  ])("%s help needs no login or server request", async (command) => {
+    const { code, out, err } = await capture([command, "--help"]);
     expect(code).toBe(0);
     expect(err).toBe("");
-    expect(out).toContain("armada launch <golden>");
+    expect(out).toContain(`armada ${command}`);
   });
 
   test("an unknown command fails with a usage error", async () => {
