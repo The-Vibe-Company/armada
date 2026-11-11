@@ -149,6 +149,7 @@ export function parseOrchestrator(value: unknown): Orchestrator | null {
     idleDeadline: value.idleDeadline,
     skillRevision: value.skillRevision,
     blockedReason: value.blockedReason,
+    failureMessage: typeof value.failureMessage === "string" ? value.failureMessage : null,
   };
 }
 
@@ -172,6 +173,7 @@ export function parseOperation(value: unknown): OrchestratorOperation | null {
     state: value.state,
     revision: value.revision,
     errorCode: value.errorCode,
+    errorMessage: typeof value.errorMessage === "string" ? value.errorMessage : null,
   };
 }
 
@@ -470,6 +472,8 @@ function composerNote(
   if (orchestrator.continuity === "lost") return "This conversation cannot continue.";
   if (open?.state === "uncertain") return `Armada is settling the last ${open.kind}; nothing is repeated meanwhile.`;
   if (open) return `Waiting for the ${open.kind} to finish.`;
+  if (orchestrator.state === "stopped" && !orchestrator.sandboxId && orchestrator.continuity === "not_started")
+    return "Creation did not start a sandbox. Create a new orchestrator to try again.";
   if (orchestrator.state === "stopped")
     return can.resume
       ? "Stopped. Resume it to continue the same conversation."
@@ -484,6 +488,14 @@ function notice(orchestrator: Orchestrator): OrchestratorControls["notice"] {
       tone: "danger",
       title: "The conversation was lost",
       text: "Its saved native state is gone, so it cannot resume as the same conversation. Create a new orchestrator to start over.",
+    };
+  if (orchestrator.state === "stopped" && !orchestrator.sandboxId && orchestrator.continuity === "not_started")
+    return {
+      tone: "danger",
+      title: "Create failed",
+      text:
+        orchestrator.failureMessage ??
+        "Creation was refused before a sandbox started. Create a new orchestrator to try again.",
     };
   if (orchestrator.state === "blocked")
     return {
