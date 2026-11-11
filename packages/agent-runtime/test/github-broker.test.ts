@@ -168,3 +168,107 @@ test("late acquisition cannot publish across replacement/scrub and retired value
   expect(values.has(token)).toBe(true);
   await expect(broker.acquire("acme/repo", "git")).rejects.toThrow("github_credentials_denied");
 });
+
+// Installed wrapper, counting broker and offline downstream: authorization must
+// use only the positional REST endpoint, even when GH_REPO or flag values decoy it.
+test("managed REST binds acquisition to one canonical endpoint before executing gh", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gh1066-"));
+  const acquired: string[] = [];
+  const broker = new GitHubBroker(() => {}, (async (_url, init) => {
+    acquired.push(JSON.parse(String(init?.body)).repository);
+    return Response.json({ token: "offline-rest-fixture" });
+  }) as typeof fetch);
+  broker.configure({
+    version: 1,
+    revision: "1",
+    generation: "1",
+    url: "https://armada.example/api/internal/github/credentials",
+    capability: `armada_gh_${"a".repeat(64)}`,
+    expiresAt: Date.now() + 60000,
+  });
+  const socket = await broker.listen(join(root, "private"));
+  try {
+    const home = join(root, "home"),
+      bin = join(root, "bin");
+    await mkdir(home);
+    await mkdir(bin);
+    const gh = join(root, "offline-gh"),
+      git = join(root, "offline-git");
+    await writeFile(gh, '#!/bin/sh\nprintf "DOWNSTREAM\\n"\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+    await writeFile(git, `#!/bin/sh\nexec "${Bun.which("git")}" "$@"\n`, { mode: 0o755 });
+    const installer = Bun.spawn(
+      ["sudo", "-n", process.execPath, join(import.meta.dir, "../dist/main.js"), "github-install"],
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+    );
+    installer.stdin.write(
+      JSON.stringify({
+        root: join(root, "private"),
+        activation: socket.activation,
+        socket: socket.socket,
+        gh,
+        git,
+        ghWrapper: join(bin, "gh"),
+        gitWrapper: join(bin, "git"),
+        homes: [home],
+      }),
+    );
+    installer.stdin.end();
+    expect(await installer.exited).toBe(0);
+    const run = async (args: string[]) => {
+      const child = Bun.spawn([join(bin, "gh"), "api", ...args], {
+        env: { PATH: process.env.PATH, HOME: home, GH_REPO: "decoy/repo" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return { status: await child.exited, output: await new Response(child.stdout).text() };
+    };
+    const allowed = [
+      ["repos/acme/repo/pulls"],
+      ["--method", "POST", "/repos/acme/repo/issues", "--field", "title=example"],
+      ["repos/acme/repo/pulls/1/reviews", "-X", "POST", "--raw-field=body=example"],
+      ["--header", "repos/decoy/repo", "repos/acme/repo/issues", "--hostname=github.com"],
+      ["repos/acme/repo", "--jq", ".name", "--include"],
+    ];
+    for (const args of allowed) {
+      acquired.length = 0;
+      const result = await run(args);
+      expect(result.status).toBe(0);
+      expect(result.output).toBe(`DOWNSTREAM\napi\n${args.join("\n")}\n`);
+      expect(acquired).toEqual(["acme/repo"]);
+    }
+    const denied = [
+      ["user"],
+      ["repositories/123/issues"],
+      ["graphql"],
+      ["https://api.github.com/repos/acme/repo/issues"],
+      ["repos/{owner}/{repo}/issues"],
+      ["//repos/acme/repo/issues"],
+      ["repos/acme/repo/../other"],
+      ["repos/acme/repo/%2e%2e/other"],
+      ["repos/acme%2frepo/issues"],
+      ["repos/acme/repo?path=other"],
+      ["repos/../repo/issues"],
+      ["repos/acme/repo/"],
+      ["user", "--field", "repos/acme/repo"],
+      ["--header", "repos/acme/repo", "user"],
+      ["--field=repos/acme/repo", "repositories/123"],
+      ["repos/acme/repo", "user"],
+      ["user", "repos/acme/repo"],
+      ["--unknown", "repos/acme/repo"],
+      ["repos/acme/repo", "--field"],
+      ["--hostname=elsewhere.example", "repos/acme/repo"],
+      ["--", "repos/acme/repo"],
+      ["-XPOST", "repos/acme/repo"],
+    ];
+    for (const args of denied) {
+      acquired.length = 0;
+      const result = await run(args);
+      expect(result.status).toBe(1);
+      expect(result.output).toBe("");
+      expect(acquired).toEqual([]);
+    }
+  } finally {
+    socket.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
