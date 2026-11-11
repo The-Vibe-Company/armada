@@ -116,3 +116,19 @@ test("malformed version responses stay inside the picker and preserve exact-pin 
   await picker.getByRole("button", { name: "Add pin", exact: true }).click();
   await expect(launch.getByRole("button", { name: "Remove notes@1.0.0" })).toBeVisible();
 });
+
+test("long metadata stays bounded and keeps version confirmation visible on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await post("/__test/skill-catalog-long-description", { enabled: true });
+  await signIn(page, "alice@example.com", "/environments");
+  const launch = await openLaunch(page, "shared-golden", { advanced: false });
+  await launch.getByRole("button", { name: "Add skills", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Choose additional skills" });
+  await picker.getByRole("option", { name: /Code review/ }).click();
+  await expect(picker.getByLabel("Version", { exact: true })).toBeFocused();
+  await expect(picker.getByRole("button", { name: "Add skill", exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(picker.getByRole("button", { name: "All skills" })).toBeInViewport({ ratio: 1 });
+  const box = await picker.boundingBox();
+  expect(box?.y).toBeGreaterThanOrEqual(0);
+  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(844);
+});

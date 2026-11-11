@@ -56,6 +56,7 @@ type State = {
   skillDefaultRecords?: Record<string, string[]>;
   skillDefaultCalls?: { route: string; body: Row; user: string }[];
   skillDefaultsReadFailure?: boolean;
+  skillCatalogLongDescription?: boolean;
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -1114,7 +1115,9 @@ function skillCatalogRoute(route: string, body: Row, request: Request): Response
             {
               reference: "review-code",
               name: "Code review",
-              description: "Review changes for correctness, security and test coverage.",
+              description: state.skillCatalogLongDescription
+                ? "Additional context. ".repeat(200)
+                : "Review changes for correctness, security and test coverage.",
               visibility: "private",
               versions: ["2.1.0"],
             },
@@ -2817,6 +2820,10 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/skill-defaults-read-failure") {
     state.skillDefaultsReadFailure = body.enabled === true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/skill-catalog-long-description") {
+    state.skillCatalogLongDescription = body.enabled === true;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/skill-catalog-malformed") {
