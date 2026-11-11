@@ -186,3 +186,53 @@ test("MCP OAuth access tokens are restricted to their Alpha scope on every token
   const revoke = await call("token/revoke", access, { id: beta.id });
   expect(revoke.status).toBe(403);
 });
+
+test("token routes distinguish auth-store outages, post-auth I/O and invalid requests", async () => {
+  for (const route of ["token/list", "token/create", "token/revoke"]) {
+    for (const phase of ["auth", "operation"] as const) {
+      const { call, store } = makeServer();
+      if (phase === "auth") {
+        store.memberships = async () => {
+          throw new Error("private database diagnostic");
+        };
+      } else {
+        const fail = async () => {
+          throw new Error("private database diagnostic");
+        };
+        if (route === "token/list") store.listServiceTokens = fail;
+        if (route === "token/create") store.insertToken = fail;
+        if (route === "token/revoke") store.revokeToken = fail;
+      }
+      const response = await call(route, jwt(ALICE), { org: "Alpha", id: "missing" });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toMatchObject({ error: { code: "dependency_unavailable" } });
+    }
+  }
+  const { call } = makeServer();
+  for (const [route, body] of [
+    ["token/create", { org: 1 }],
+    ["token/create", { org: "Alpha", label: " " }],
+    ["token/revoke", {}],
+  ] as const) {
+    const response = await call(route, jwt(ALICE), body);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid" } });
+  }
+});
+
+test("route-local membership failures remain dependency failures after scoped authentication", async () => {
+  for (const route of ["token/list", "token/create", "token/revoke"]) {
+    const { call, store } = makeServer();
+    const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
+    const memberships = store.memberships.bind(store);
+    let reads = 0;
+    store.memberships = async (userId) => {
+      if (++reads > 0) throw new Error("private database diagnostic");
+      return memberships(userId);
+    };
+    const response = await call(route, parent.token, { org: "Alpha", id: parent.id });
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("private database diagnostic");
+  }
+});
