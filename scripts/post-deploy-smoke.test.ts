@@ -1217,3 +1217,31 @@ test("default probes require the shared worker pair and validate every UUID befo
     expect(fake.receipts()).toEqual([{ case: 0, step: "configure", pass: false, code: "invalid_configuration" }]);
   }
 });
+
+test("a merged default policy overflow has a closed failure line before allocation", async () => {
+  const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const goldenId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const fake = fixture((call) => {
+    if (call.path === "skills/defaults/get")
+      return json({ skills: Array.from({ length: 7 }, (_, i) => `${String(call.body.scope)}-${i}@1.0.0`) });
+  });
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org, goldenId }]) },
+      ["--work-preservation", "--default-skills"],
+      {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      },
+    ),
+  ).toBe(false);
+  expect(fake.calls).toHaveLength(3);
+  expect(fake.calls.every((call) => call.path === "skills/defaults/get")).toBe(true);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "default_skills_policy",
+    pass: false,
+    code: "invalid_response",
+  });
+});

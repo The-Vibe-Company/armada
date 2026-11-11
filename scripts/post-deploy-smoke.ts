@@ -325,7 +325,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         });
         defaultPins.set(index, pins);
-      } catch {
+        report(index, "default_skills_policy");
+      } catch (error) {
+        report(index, "default_skills_policy", error);
         return false;
       }
     }
