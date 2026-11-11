@@ -286,7 +286,8 @@ describe("sandboxes", () => {
         { body: reply },
         { body: { ok: true, sandbox: sandbox({ state: "running", archiveAfter: actual }) } },
       );
-      expect(await boat.provider.extendLifetime!({ sandboxId: ID, ttlSeconds: 3600 })).toEqual(new Date(actual));
+      if (!boat.provider.extendLifetime) throw Error("Missing Boat lifetime extension support");
+      expect(await boat.provider.extendLifetime({ sandboxId: ID, ttlSeconds: 3600 })).toEqual(new Date(actual));
       expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "PATCH", "GET"]);
     });
   }
@@ -298,11 +299,12 @@ describe("sandboxes", () => {
       { body: { ok: true } },
       { body: { ok: true, sandbox: sandbox({ id: "bx_98765432", state: "running" }) } },
     );
-    await expect(boat.provider.extendLifetime!({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
+    if (!boat.provider.extendLifetime) throw Error("Missing Boat lifetime extension support");
+    await expect(boat.provider.extendLifetime({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
       code: "unknown",
     });
     expect(boat.requests.map(({ method }) => method)).toEqual(["GET"]);
-    await expect(boat.provider.extendLifetime!({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
+    await expect(boat.provider.extendLifetime({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
       code: "unknown",
     });
     expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PATCH", "GET"]);
