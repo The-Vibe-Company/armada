@@ -419,12 +419,12 @@ public struct SandboxLaunchReceipt: Decodable, Sendable, Equatable {
 // MARK: Refusals
 
 /// Why a launch did not give a sandbox, for the person. Nothing here renders a raw body: a code
-/// selects local text, and a server message is shown only for Armada-authored validation and missing-credential codes, on one bounded line.
+/// selects local text, and a structured pre-start server reason is shown on one bounded line; post-start command output is hidden.
 public struct SandboxLaunchRefusal: Sendable, Equatable {
     public let code: String
     public let title: String
     public let hint: String
-    /// The server's own short reason, for validation and missing-credential refusals only.
+    /// The server's own short pre-start reason, never post-start command output.
     public let detail: String?
 }
 
@@ -438,8 +438,10 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     case failedAfterStart(SandboxLaunchRefusal)
     /// The answer was lost: a sandbox may exist. Check the list before launching again.
     case unconfirmed
+    case unconfirmedWithReason(String)
     /// Nothing left the device (offline, the session could not be refreshed). Safe to launch again.
     case notSent
+    case notSentWithReason(String)
 
     /// 4xx codes the server answers before any machine is allocated (`LaunchError`, `VaultError`,
     /// `GoldenError` and a provider's `invalid_request`/`forbidden` refusal of the fork).
@@ -454,11 +456,6 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     ]
     /// Launch steps that fail after the fork (`LaunchError` in `@armada/core`).
     static let postStartCodes: Set<String> = ["start_failed", "init_failed", "prompt_failed"]
-    /// Validation and missing-credential messages Armada writes itself; safe to show on one line.
-    static let detailCodes: Set<String> = [
-        "invalid", "invalid_request", "invalid_config", "conflict", "not_found", "forbidden",
-        "missing_credential", "no_credentials",
-    ]
     /// Codes that mean the outcome is not known. The server answers them as 5xx; they stay
     /// unconfirmed even on a 4xx, so a refusal is never inferred from them.
     static let uncertainCodes: Set<String> = [
@@ -473,20 +470,22 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
         }
         let envelope = try? JSONDecoder().decode(Envelope.self, from: body)
         let code = envelope?.error.code ?? ""
+        let explanation = (ArmadaServerFailure.explaining(.unavailable, body: body) as? ArmadaServerFailure)?.explanation
+        let uncertain: SandboxLaunchFailure = explanation.map { .unconfirmedWithReason($0) } ?? .unconfirmed
         if postStartCodes.contains(code) { return .failedAfterStart(refusal(code: code, message: nil)) }
         // A 5xx is a definite refusal only when its code says nothing was allocated.
         if status >= 500 {
-            guard nonAllocatingServerCodes.contains(code) else { return .unconfirmed }
+            guard nonAllocatingServerCodes.contains(code) else { return uncertain }
             return .refused(refusal(code: code, message: envelope?.error.message))
         }
-        guard (400..<500).contains(status), !uncertainCodes.contains(code) else { return .unconfirmed }
+        guard (400..<500).contains(status), !uncertainCodes.contains(code) else { return uncertain }
         // A 4xx without an envelope (a missing route) or with a pre-start code allocated nothing.
         if code.isEmpty || preStartCodes.contains(code) || status == 403 || status == 404 {
             return .refused(refusal(code: code, message: envelope?.error.message))
         }
         // A code this build does not know, with the server's own reason, is still a definite answer:
         // the server reports an unknown outcome as a 5xx. Without a reason there is nothing to show.
-        guard envelope?.error.message.flatMap(oneLine) != nil else { return .unconfirmed }
+        guard envelope?.error.message.flatMap(oneLine) != nil else { return uncertain }
         return .refused(refusal(code: code, message: envelope?.error.message))
     }
 
@@ -505,7 +504,7 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     static func refusal(code: String, message: String?) -> SandboxLaunchRefusal {
         let help: (String, String)
         // A code without local text shows the server's own reason, bounded to one line.
-        var showsMessage = detailCodes.contains(code)
+        let showsMessage = !postStartCodes.contains(code)
         switch code {
         case "payment_required":
             help = ("Provider plan limit reached", "The provider refused to start a machine for this plan or billing state. An admin can check the provider account, then launch again.")
@@ -531,7 +530,6 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
             help = ("The agent didn't start", "The sandbox is set up but the first prompt was refused. Open it from the list to send the prompt again.")
         default:
             help = ("Armada refused this launch", "Check the choices and launch again.")
-            showsMessage = true
         }
         let cleaned = showsMessage ? message.flatMap(oneLine) : nil
         let detail = cleaned == code ? nil : cleaned
@@ -595,6 +593,7 @@ extension ArmadaClient {
             _ = try await authority()
         } catch {
             if case .signedOut? = error as? ArmadaError { throw .signedOut }
+            if let server = error as? ArmadaServerFailure { throw .notSentWithReason(server.explanation) }
             throw .notSent
         }
         let receipt: SandboxLaunchReceipt

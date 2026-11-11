@@ -202,21 +202,28 @@ public actor ArmadaClient {
         if route == SandboxLaunchRequest.route, response.statusCode != 401, !(200..<300).contains(response.statusCode) {
             throw SandboxLaunchFailure.classify(status: response.statusCode, body: data)
         }
-        switch response.statusCode {
-        case 200..<300: break
-        case 401:
-            if route == "auth/email/verify" { throw ArmadaError.emailCodeRefused }
-            throw ArmadaError.signedOut
-        case 403: throw ArmadaError.forbidden
-        case 400:
-            let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
-            if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
-                throw ArmadaError.invalidRequest
+        do {
+            switch response.statusCode {
+            case 200..<300: break
+            case 401:
+                if route == "auth/email/verify" { throw ArmadaError.emailCodeRefused }
+                throw ArmadaError.signedOut
+            case 403: throw ArmadaError.forbidden
+            case 400:
+                let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
+                if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
+                    throw ArmadaError.invalidRequest
+                }
+                throw ArmadaError.http(400)
+            case 409: throw ArmadaError.conflict
+            case 500...599: throw ArmadaError.unavailable
+            default: throw ArmadaError.http(response.statusCode)
             }
-            throw ArmadaError.http(400)
-        case 409: throw ArmadaError.conflict
-        case 500...599: throw ArmadaError.unavailable
-        default: throw ArmadaError.http(response.statusCode)
+        } catch let cause as ArmadaError {
+            // Authenticated 401 still tears down local authority immediately. The sign-in code
+            // flow is not an authenticated session and can retain its server explanation.
+            if cause == .signedOut { throw cause }
+            throw ArmadaServerFailure.explaining(cause, body: data)
         }
         do { return try JSONDecoder().decode(Response.self, from: data) }
         catch { throw ArmadaError.invalidResponse }

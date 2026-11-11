@@ -33,8 +33,24 @@ enum ServiceFailure: Error, Hashable, Sendable {
     /// The server or the client refused the request with a safe, presentable reason.
     case rejected(String)
 
+    indirect case explained(ServiceFailure, String)
+
+    enum Category { case unavailable, signedOut, noAccess, uncertain, offline, rejected }
+    var category: Category {
+        switch self {
+        case .explained(let cause, _): cause.category
+        case .unavailable: .unavailable
+        case .signedOut: .signedOut
+        case .noAccess: .noAccess
+        case .uncertain: .uncertain
+        case .offline: .offline
+        case .rejected: .rejected
+        }
+    }
+
     var message: String {
         switch self {
+        case .explained(_, let reason): reason
         case .unavailable(let reason): reason
         case .signedOut: "Your session ended. Sign in again."
         case .noAccess: "You don't have access to this, or it no longer exists."

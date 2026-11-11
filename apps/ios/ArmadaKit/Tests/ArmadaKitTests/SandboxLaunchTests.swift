@@ -286,10 +286,12 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
         Issue.record("Expected a refusal"); return
     }
     #expect(plan.title == "Provider plan limit reached")
+    #expect(plan.detail == "x")
     guard case .refused(let notConnected) = classify(503, #"{"error":{"code":"provider_not_configured","message":"Modal is not configured."}}"#) else {
         Issue.record("Expected a refusal"); return
     }
     #expect(notConnected.title == "Provider not connected")
+    #expect(notConnected.detail == "Modal is not configured.")
     guard case .refused(let refused) = classify(422, #"{"error":{"code":"credential_refused"}}"#) else {
         Issue.record("Credential refusal must be actionable"); return
     }
@@ -300,7 +302,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
         #expect(classify(503, "{\"error\":{\"code\":\"\(code)\"}}") == .unconfirmed)
     }
     // Legacy unknown failures remain unproven.
-    #expect(classify(503, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmed)
+    #expect(classify(503, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmedWithReason("x"))
     // After the fork: a sandbox may exist, and its raw output is never shown.
     guard case .failedAfterStart(let setup) = classify(400, #"{"error":{"code":"init_failed","message":"npm ci exited 1: secret-looking output"}}"#) else {
         Issue.record("Expected a failure after start"); return
@@ -309,7 +311,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(setup.title == "Golden setup failed")
     // A missing route allocated nothing; a server error or the legacy `unknown` code proves nothing.
     #expect(classify(404, "Not Found") == .refused(SandboxLaunchFailure.refusal(code: "", message: nil)))
-    #expect(classify(500, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmed)
+    #expect(classify(500, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmedWithReason("x"))
     #expect(classify(400, #"{"error":{"code":"unknown","message":"x"}}"#) == .unconfirmed)
     // #962: a code this build does not know, answered as a 4xx with the server's reason, is a
     // refusal that shows that reason; without one, or with an uncertain code, nothing is proven.
@@ -320,7 +322,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(later.detail == "Your organization reached its sandbox quota.")
     #expect(classify(422, #"{"error":{"code":"quota_exceeded"}}"#) == .unconfirmed)
     #expect(classify(400, #"{"error":{"code":"quota_exceeded","message":" "}}"#) == .unconfirmed)
-    #expect(classify(409, #"{"error":{"code":"outcome_unknown","message":"x"}}"#) == .unconfirmed)
+    #expect(classify(409, #"{"error":{"code":"outcome_unknown","message":"x"}}"#) == .unconfirmedWithReason("x"))
     let long = String(repeating: "a", count: 400)
     guard case .refused(let bounded) = classify(409, #"{"error":{"code":"conflict","message":"\#(long)"}}"#) else {
         Issue.record("Expected a refusal"); return
@@ -350,11 +352,11 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     // Sign-in and the organization read each refresh into another already-expired session.
     let transport = LaunchTransport([
         .init(status: 200, body: expired), .init(status: 200, body: expired), .init(status: 200, body: orgs),
-        .init(status: 503, body: "{}")
+        .init(status: 503, body: #"{"error":{"code":"dependency_unavailable","message":"Authentication is restarting."}}"#)
     ])
     let client = try ArmadaClient(transport: transport, storage: LaunchMemoryStorage())
     try await client.verifyEmail(email: "person@example.test", code: "123456")
     try await client.selectOrganization("org-a")
-    await #expect(throws: SandboxLaunchFailure.notSent) { _ = try await client.launchSandbox(request) }
+    await #expect(throws: SandboxLaunchFailure.notSentWithReason("Authentication is restarting.")) { _ = try await client.launchSandbox(request) }
     #expect(await transport.requests.map { $0.url!.path }.last == "/api/v1/auth/refresh")
 }
