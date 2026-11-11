@@ -14,7 +14,6 @@ struct ConversationItem: Identifiable, Hashable, Sendable {
         case assistant(text: String, streaming: Bool, model: String?)
         case tool(ToolActivity)
         case outcome(PromptStatus, reason: String?)
-        case notice(ConversationNotice)
     }
 
     let key: String
@@ -23,19 +22,6 @@ struct ConversationItem: Identifiable, Hashable, Sendable {
     var kind: Kind
 
     var id: String { key }
-}
-
-/// Orchestrator-level facts the conversation shows inline, compactly.
-enum ConversationNotice: Hashable, Sendable {
-    case stopped
-    case resumed
-    case blocked
-    case continuityLost
-    case operationFailed(OperationKind, code: String?)
-    case operationUncertain(OperationKind)
-    case childLaunched(sandboxID: String)
-    case waiting(kind: String, reason: String, expiresAt: Date)
-    case waitExpired(kind: String, reason: String)
 }
 
 struct Conversation: Sendable {
@@ -62,7 +48,7 @@ enum ConversationProjection {
     /// Claude Code reports a tool's result under this name, with the id of the call it answers.
     private static let resultPlaceholder = "tool_result"
 
-    static func project(_ events: [OrchestratorEvent]) -> Conversation {
+    static func project(_ events: [AgentEvent]) -> Conversation {
         var items: [ConversationItem] = []
         var technicalCount = 0
         var promptIndex: [String: Int] = [:]
@@ -70,66 +56,21 @@ enum ConversationProjection {
         var toolIndex: [String: Int] = [:]
         var legacyChunks: [String: [String]] = [:]
         var superseded = Set<String>()
-        var lastState: OrchestratorState?
-        var noticeIndex: [String: Int] = [:]
-        var hiddenNotices = Set<String>()
-
         for event in events {
-            switch event.body {
-            case .agent(let agent):
-                project(
-                    agent,
-                    into: &items,
-                    technicalCount: &technicalCount,
-                    promptIndex: &promptIndex,
-                    messageIndex: &messageIndex,
-                    toolIndex: &toolIndex,
-                    legacyChunks: &legacyChunks,
-                    superseded: &superseded
-                )
-            case .state(let state, let continuity):
-                if let notice = notice(for: state, continuity: continuity, after: lastState) {
-                    items.append(ConversationItem(key: "event:\(event.id)", at: event.at, promptID: nil, kind: .notice(notice)))
-                }
-                lastState = state
-            case .operation(let operation):
-                // One notice per operation id, updated in place: an unconfirmed operation that
-                // later fails reads as failed, and one that succeeds stops being shown.
-                let key = "operation:\(operation.id)"
-                let notice: ConversationNotice?
-                switch operation.state {
-                case .failed: notice = .operationFailed(operation.kind, code: operation.errorCode)
-                case .uncertain: notice = .operationUncertain(operation.kind)
-                case .pending, .succeeded, .other: notice = nil
-                }
-                upsertNotice(notice, key: key, at: event.at, items: &items, index: &noticeIndex, hidden: &hiddenNotices)
-            case .wait(let lease, let status):
-                // One notice per lease id: active shows it, expired updates it, released clears it.
-                let key = "wait:\(lease.id)"
-                let notice: ConversationNotice?
-                switch status {
-                case "active": notice = .waiting(kind: lease.kind, reason: lease.reason, expiresAt: lease.expiresAt)
-                case "expired": notice = .waitExpired(kind: lease.kind, reason: lease.reason)
-                case "released": notice = nil
-                default:
-                    technicalCount += 1
-                    continue
-                }
-                upsertNotice(notice, key: key, at: event.at, items: &items, index: &noticeIndex, hidden: &hiddenNotices)
-            case .child(let sandboxID, _):
-                items.append(ConversationItem(
-                    key: "event:\(event.id)",
-                    at: event.at,
-                    promptID: nil,
-                    kind: .notice(.childLaunched(sandboxID: sandboxID))
-                ))
-            case .unknown:
-                technicalCount += 1
-            }
+            project(
+                event,
+                into: &items,
+                technicalCount: &technicalCount,
+                promptIndex: &promptIndex,
+                messageIndex: &messageIndex,
+                toolIndex: &toolIndex,
+                legacyChunks: &legacyChunks,
+                superseded: &superseded
+            )
         }
 
         let shown = items.filter { item in
-            if superseded.contains(item.key) || hiddenNotices.contains(item.key) { return false }
+            if superseded.contains(item.key) { return false }
             if case .assistant(let text, let streaming, _) = item.kind, text.isEmpty, !streaming { return false }
             // A status-only prompt (the server's published completion of a turn whose own prompt
             // event is on an older page) updates the turn and is never an empty bubble.
@@ -271,41 +212,7 @@ enum ConversationProjection {
         }
     }
 
-    /// Shows, updates or hides the single notice that `key` identifies, keeping its first position.
-    private static func upsertNotice(
-        _ notice: ConversationNotice?,
-        key: String,
-        at: Date,
-        items: inout [ConversationItem],
-        index: inout [String: Int],
-        hidden: inout Set<String>
-    ) {
-        if let position = index[key] {
-            if let notice {
-                items[position].kind = .notice(notice)
-                hidden.remove(key)
-            } else {
-                hidden.insert(key)
-            }
-        } else if let notice {
-            index[key] = items.count
-            items.append(ConversationItem(key: key, at: at, promptID: nil, kind: .notice(notice)))
-        }
-    }
 
-    private static func notice(
-        for state: OrchestratorState,
-        continuity: OrchestratorContinuity,
-        after previous: OrchestratorState?
-    ) -> ConversationNotice? {
-        if continuity == .lost { return .continuityLost }
-        switch state {
-        case .stopped: return previous == .stopped ? nil : .stopped
-        case .blocked: return previous == .blocked ? nil : .blocked
-        case .ready: return previous == .resuming || previous == .stopped ? .resumed : nil
-        case .creating, .stopping, .resuming, .other: return nil
-        }
-    }
 }
 
 /// Tool payload rendering helpers, with the dashboard's `toolSummary` and `toolText` semantics.

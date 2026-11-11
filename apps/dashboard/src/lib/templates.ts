@@ -164,7 +164,10 @@ export function templateProblems(definition: TemplateDefinition, lookups: Templa
           text: `${variable.name} changed since this revision: publish a new revision to use its new value.`,
         });
     }
-  return problems;
+  return problems.filter(
+    (problem, index) =>
+      problems.findIndex((other) => other.kind === problem.kind && other.text === problem.text) === index,
+  );
 }
 
 /** A template's row state: ready to launch, or what needs the viewer first. */

@@ -160,7 +160,7 @@ final class SandboxConversationModel {
     }
 
     private var fetch: ConversationFeed.Fetch {
-        { [service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
+        { [service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage in
             try await service.sandboxEvents(id: sandboxID, orgID: orgID, cursor: cursor, backward: backward)
         }
     }
@@ -214,8 +214,6 @@ final class SandboxConversationModel {
                 case .rejected(let reason), .unavailable(let reason):
                     removeBubble(bubbleID, restoreDraft: true)
                     notice = (reason, true)
-                case .staleRevision:
-                    removeBubble(bubbleID, restoreDraft: true)
                 }
             }
             _ = await loadState()
@@ -253,8 +251,6 @@ final class SandboxConversationModel {
                     notice = ("Armada did not confirm the stop. Its latest state is shown; you can stop again.", true)
                 case .rejected(let reason), .unavailable(let reason):
                     notice = (reason, true)
-                case .staleRevision:
-                    break
                 }
             }
             _ = await loadState()

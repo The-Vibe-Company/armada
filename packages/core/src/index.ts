@@ -256,6 +256,7 @@ export {
   resourceInterval,
   type VmResourceReading,
 } from "./resource-observation.ts";
+export type { Routine } from "./routines.ts";
 export {
   type CleanupResult,
   cleanupSandboxes,

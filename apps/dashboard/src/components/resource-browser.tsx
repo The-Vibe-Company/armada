@@ -54,7 +54,7 @@ export type ResourceRow = {
   panelAttrs?: Record<string, string>;
 };
 
-type BrowserContext = { select: (key: string | null) => void; selected: string | null };
+type BrowserContext = { select: (key: string | null) => void; selected: string | null; panelId: string };
 const Context = createContext<BrowserContext | null>(null);
 
 function useBrowser(): BrowserContext {
@@ -99,6 +99,10 @@ export function ResourceBrowser({
   // A row removed by an action, or a stale link, closes the panel rather than showing nothing.
   const selected = chosen !== null && valid(chosen) ? chosen : null;
   const [query, setQuery] = useState("");
+  const browserId = useId();
+  const panelId = `${browserId}-panel`;
+  const titleId = `${browserId}-panel-title`;
+  const rootRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const opener = useRef<string | null>(null);
 
@@ -117,7 +121,7 @@ export function ResourceBrowser({
         const back = opener.current;
         opener.current = null;
         requestAnimationFrame(() =>
-          document.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`)?.focus(),
+          rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`)?.focus(),
         );
       }
     },
@@ -129,8 +133,10 @@ export function ResourceBrowser({
     if (selected === null) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      if (document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')) return;
-      if (document.querySelector('[role="menu"][data-state="open"]')) return;
+      const overlays = document.querySelectorAll<HTMLElement>(
+        '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]',
+      );
+      if ([...overlays].some((overlay) => overlay.getClientRects().length > 0)) return;
       select(null);
     }
     document.addEventListener("keydown", onKey);
@@ -140,12 +146,12 @@ export function ResourceBrowser({
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
   const current = rows.find((row) => row.key === selected) ?? null;
   const filterId = useId();
-  const context = useMemo(() => ({ select, selected }), [select, selected]);
+  const context = useMemo(() => ({ select, selected, panelId }), [select, selected, panelId]);
   // Below the lg breakpoint the panel is a sheet over the list: a modal dialog, the list behind it inert.
   const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
   const sheet = selected !== null && !wide;
   const panelRef = useRef<HTMLElement>(null);
-  // As a sheet, the panel is a modal dialog that keeps Tab inside; above the list, a plain landmark.
+  // As a sheet, the panel is a modal dialog that keeps Tab inside; beside the list, a plain landmark.
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel || !sheet) return;
@@ -166,7 +172,7 @@ export function ResourceBrowser({
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
-      <div className="grid items-start gap-4">
+      <div ref={rootRef} className="grid items-start gap-4">
         <div className="@container min-w-0 space-y-3" inert={sheet}>
           {rows.length >= FILTER_FROM && (
             <div className="relative max-w-sm">
@@ -196,23 +202,31 @@ export function ResourceBrowser({
           ) : (
             <ul aria-label={label} className="divide-y overflow-hidden rounded-xl border bg-card shadow-xs">
               {shown.map((row) => (
-                <Row key={row.key} row={row} selected={selected === row.key} onSelect={() => select(row.key)} />
+                <Row
+                  key={row.key}
+                  row={row}
+                  panelId={panelId}
+                  selected={selected === row.key}
+                  onSelect={() => select(row.key)}
+                />
               ))}
             </ul>
           )}
           {footer}
         </div>
         <aside
-          id="resource-panel"
+          id={panelId}
+          data-resource-panel
           ref={panelRef}
-          aria-labelledby="resource-panel-title"
+          aria-labelledby={titleId}
           hidden={selected === null}
           className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
         >
           <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
             <div className="min-w-0 space-y-0.5">
               <h2
-                id="resource-panel-title"
+                id={titleId}
+                data-resource-panel-title
                 ref={titleRef}
                 tabIndex={-1}
                 className="truncate text-base font-semibold tracking-tight outline-none"
@@ -234,11 +248,12 @@ export function ResourceBrowser({
           </div>
         </aside>
         {selected !== null && (
-          <button
+          <Button
+            variant="ghost"
             type="button"
             tabIndex={-1}
             aria-hidden
-            className="fixed inset-0 z-40 cursor-default bg-black/40 lg:hidden"
+            className="fixed inset-0 z-40 h-auto w-auto cursor-default rounded-none bg-black/40 p-0 transition-none hover:bg-black/40 dark:hover:bg-black/40 motion-safe:active:not-disabled:scale-none lg:hidden"
             onClick={() => select(null)}
           />
         )}
@@ -247,7 +262,17 @@ export function ResourceBrowser({
   );
 }
 
-function Row({ row, selected, onSelect }: { row: ResourceRow; selected: boolean; onSelect: () => void }) {
+function Row({
+  row,
+  selected,
+  onSelect,
+  panelId,
+}: {
+  row: ResourceRow;
+  selected: boolean;
+  onSelect: () => void;
+  panelId: string;
+}) {
   return (
     <li
       {...row.attrs}
@@ -261,16 +286,17 @@ function Row({ row, selected, onSelect }: { row: ResourceRow; selected: boolean;
         {row.mark}
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            <button
+            <Button
+              variant="ghost"
               type="button"
               onClick={onSelect}
               aria-expanded={selected}
-              aria-controls="resource-panel"
+              aria-controls={panelId}
               data-select-item={row.key}
-              className="min-w-0 truncate text-left font-medium outline-none after:absolute after:inset-0 after:content-['']"
+              className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
-              {row.name}
-            </button>
+              <span className="truncate">{row.name}</span>
+            </Button>
             {row.tags}
           </div>
           <div className="truncate text-xs text-muted-foreground">{row.meta}</div>
@@ -288,15 +314,16 @@ function Row({ row, selected, onSelect }: { row: ResourceRow; selected: boolean;
 /** What blocks launching, each a link to its fix. The page leaves it out when nothing blocks. */
 function ReadinessStrip({ blockers }: { blockers: Blocker[] }) {
   const { select } = useBrowser();
+  const titleId = useId();
   return (
     <section
-      aria-labelledby="readiness-title"
+      aria-labelledby={titleId}
       data-readiness
       className="flex flex-col gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 sm:flex-row sm:items-center"
     >
-      <h2 id="readiness-title" className="flex shrink-0 items-center gap-2 text-sm font-medium">
+      <h2 id={titleId} className="flex shrink-0 items-center gap-2 text-sm font-medium">
         <TriangleAlertIcon aria-hidden className="size-4 text-warning" />
-        {blockers.length === 1 ? "1 thing blocks launching" : `${blockers.length} things block launching`}
+        {blockers.length === 1 ? "1 item needs attention" : `${blockers.length} items need attention`}
       </h2>
       <ul className="flex flex-wrap gap-2">
         {blockers.map((blocker) => (
@@ -335,8 +362,8 @@ function BlockerLink(props: ComponentProps<typeof Button>) {
 
 /** A button that opens a row's panel (a row action whose fix lives there, a pointer to another row). */
 export function SelectItem({ item, ...props }: { item: string } & Omit<ComponentProps<typeof Button>, "onClick">) {
-  const { select } = useBrowser();
-  return <Button {...props} onClick={() => select(item)} aria-controls="resource-panel" />;
+  const { select, panelId } = useBrowser();
+  return <Button {...props} onClick={() => select(item)} aria-controls={panelId} />;
 }
 
 const WIDE = "(min-width: 64rem)";
@@ -354,7 +381,7 @@ const FOCUSABLE =
 function trapFocus(event: KeyboardEvent) {
   if (event.key !== "Tab" || !(event.currentTarget instanceof HTMLElement)) return;
   const items = [...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-    (item) => item.getClientRects().length > 0,
+    (item) => item.tabIndex >= 0 && item.getClientRects().length > 0 && !item.closest('[aria-hidden="true"], [hidden]'),
   );
   const first = items[0];
   const last = items.at(-1);
@@ -367,4 +394,11 @@ function trapFocus(event: KeyboardEvent) {
     event.preventDefault();
     first.focus();
   }
+}
+
+/** Focus handoffs from nested dialogs must target the current visible frame, never a retained route's ID. */
+export function visibleResourcePanelTitle(): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>("[data-resource-panel-title]")].find(
+    (title) => title.getClientRects().length > 0,
+  );
 }

@@ -30,6 +30,7 @@ import {
   createApplicationVault,
   createGoldenAdoption,
   createOrg,
+  createRoutineService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
   createSqlVaultStore,
@@ -68,6 +69,7 @@ import {
   parseCredentialKind,
   parseGoldenConfig,
   parseRole,
+  type RoutineService,
   removeCredential,
   removeMember,
   resolveBoatKey,
@@ -126,6 +128,7 @@ import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 export interface ControlOptions {
   sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
+  routines?: RoutineService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
@@ -240,13 +243,19 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   try {
     const caller = await authenticatedCaller(request, options);
     if (
-      (route.startsWith("templates/") || route.startsWith("variables/") || route.startsWith("secrets/")) &&
+      (route.startsWith("templates/") ||
+        route.startsWith("routines/") ||
+        route.startsWith("variables/") ||
+        route.startsWith("secrets/")) &&
       url.search
     )
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("templates/") || route.startsWith("variables/") || route.startsWith("secrets/")
+      : route.startsWith("templates/") ||
+          route.startsWith("routines/") ||
+          route.startsWith("variables/") ||
+          route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
     if (route === "account/logout") {
@@ -643,6 +652,10 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("routines/")) {
+    if (!options.routines) throw new VaultError("unavailable", "Routines unavailable.");
+    return options.routines.command(caller, route.slice(9), body);
+  }
   if (route.startsWith("templates/")) {
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     const stores = options.data?.(caller);
@@ -1236,11 +1249,13 @@ async function readLogs(
     }
     cursor = next;
   }
-  const info = await target.provider.get(target.providerSandboxId);
+  // Ordinary history reads need only the authorized event stream. Live compute is
+  // consulted solely to decide whether a follow request should keep waiting.
+  const info = follow ? await target.provider.get(target.providerSandboxId) : null;
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    follow && latest && info.state !== "stopped" && info.state !== "failed"
+    follow && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
       : null;
   return {
@@ -1250,9 +1265,9 @@ async function readLogs(
     hasMore,
     settled:
       !follow ||
-      info.state === "stopped" ||
-      info.state === "failed" ||
-      (latest === null ? info.state !== "running" && info.state !== "starting" : prompt?.done === true),
+      info?.state === "stopped" ||
+      info?.state === "failed" ||
+      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
   };
 }
 
@@ -1609,6 +1624,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     templates,
+    routines: createRoutineService(sql),
     applicationVault: createApplicationVault(sql, encryptionKey),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),

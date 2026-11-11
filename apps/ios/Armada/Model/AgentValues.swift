@@ -1,6 +1,6 @@
 import Foundation
 
-/// Presentation vocabulary shared by orchestrators and sandboxes. Raw values are the exact
+/// Presentation vocabulary for sandboxes. Raw values are the exact
 /// strings of `@armada/core` (`HARNESSES`, `SandboxProviderId`, `PROMPT_STATUSES`,
 /// `sandbox_status`, `MACHINE_SIZES`). A value this build does not know is preserved and shown
 /// as-is rather than coerced into a known case.
@@ -136,7 +136,7 @@ enum SandboxStatus: Hashable, Sendable {
     }
 }
 
-/// One visual vocabulary for every status dot, so orchestrators and sandboxes read the same.
+/// One visual vocabulary for every status dot, so sandbox states read consistently.
 enum StatusTone: Hashable, Sendable {
     /// Working now (a turn is running).
     case live

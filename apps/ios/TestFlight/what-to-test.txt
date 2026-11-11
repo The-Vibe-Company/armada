@@ -1,57 +1,34 @@
-Armada private beta — candidate checklist (publish only after root validates the build)
+Armada private beta — candidate checklist (publish only after coordinator validates the build)
 
-Check sign-in, refresh and sign-out using your authorized Armada account.
-Check organization selection and that private resources stay private.
-Check orchestrator listing and chat only where enabled by the real backend.
-Check New Sandbox (+ on the Sandboxes tab): pick a golden (its provider is shown), the
-agent, model, effort and, when you have several, the model account; optionally the
-repository, machine size and lifetime under More Options; write the first prompt and
-Launch. You should land in the new sandbox's conversation and see the first turn run.
-Check that a refused launch keeps every field and explains why, and that stop and
-sending a new prompt (which resumes a stopped sandbox) work from the conversation.
-Orchestrators tab: each row shows its state (starting, ready, needs attention with a
-plain reason, stopped), name, agent, model, provider and last activity.
-Orchestrators and Sandboxes tabs: rows are grouped by status, each group a section with
-its count: Needs Attention, Active, In Transition, Stopped, then Other (failed, deleted
-or unknown); newest created first inside a group. Stopped starts collapsed when other
-rows are listed; tap its header to open it. Pull to refresh or wait for a refresh: rows
-stay still unless their status changes. Only loaded rows are ordered: scrolling to the
-bottom loads the next page, whose rows join their groups.
-New Orchestrator (+ on the Orchestrators tab): the form opens with your goldens, not
-"Not available yet" (unless the server has orchestrators turned off). Pick a name and
-a golden (its provider is shown); only provider and agent pairs the server enables
-can be chosen, each saying "Resume guaranteed" or "Resume not guaranteed"; a
-disabled pair is listed with the server's reason. Models, efforts and accounts come
-from the server, the same lists as New Sandbox; the account is a choice only when
-you have several. The idle stop is under More Options. After Create you land on the
-orchestrator in "starting" and nothing can be sent until the server confirms it is
-ready. Turn on Airplane Mode while a create is sending: it shows as not confirmed with
-Retry, which repeats the same request; offline before Create, the form explains the
-failure and keeps every field. A refused create keeps every field and explains why.
-Not rendered on a device or simulator before this build: the New Orchestrator form
-(resume wording, single-account row) and following a create until it is ready were
-checked by ArmadaKit tests and a compile only.
-Conversation: send and steer, the event stream updating live, Details listing the
-workers it launched with a link to each worker's sandbox.
-Follow-up after a turn (#847): send a message, wait for the reply, then send a second one
-right away, including with "Steer now" still selected. It must arrive as a normal message
-(no "Steer" caption), never as "Not confirmed" with Dismiss and Retry. If Armada answers that
-no turn was running, the same text is sent as a new message on its own and "is working"
-disappears. In a sandbox, "is working" and the composer follow the end of the turn as soon
-as the conversation shows it. If Armada still cannot confirm a steer, the composer says what
-you can do instead of only waiting.
-Actions menu: Stop, Resume and Recover each ask for confirmation. Turn on Airplane
-Mode during an action: it shows as not confirmed with Retry, which repeats the same
-request; Recover is offered when the orchestrator needs attention.
-Opening a conversation (sandbox or orchestrator): the screen, its name and status and the
-composer appear at once, and the latest messages follow within about a second, even for a long
-conversation. Scroll up: earlier messages load above without moving what you were reading.
-Typing is never blocked while messages load. Go back and open the same conversation again: it shows immediately
-and only what is new is read. Switching organization or signing out forgets it.
-Check iPhone and iPad, light and dark appearance.
-Check loading, empty, permission-denied, offline and retry states.
-Check readability, keyboard/composer behavior and accessibility on iPhone and iPad.
+This build opens directly on Sandboxes; there is no Orchestrators tab, create form,
+conversation or details screen. Check this after both a clean install and upgrading
+an earlier signed-in build. Existing server orchestrators are not stopped or deleted.
 
-Report the app version/build, device/iOS version, steps and expected versus actual
-result. Never include credentials, verification codes or private conversation data.
-Native runtime features remain unavailable until operator conformance is approved.
+Check email sign-in, session restore/refresh, organization selection/switching and
+sign-out. Upgrading preserves the existing session and selected organization; any
+old saved orchestrator commands must not be replayed. The older published app must
+still work against the unchanged server until this build is published.
+
+Check New Sandbox (+): choose a golden, agent, model, effort and model account;
+repository, machine size and lifetime remain under More Options. Launch with a
+prompt and confirm the first turn appears. Refused launches keep the fields and
+explain why. An unconfirmed launch must not retry automatically.
+
+Check sandbox list grouping, newest-first order, stopped-section collapse, refresh
+and next-page loading. Another member's metadata remains visible as allowed, but a
+row without access cannot open its private conversation.
+
+Open a sandbox conversation: latest messages appear, history loads on scroll-up
+without jumping, streaming text/tool results update, and returning to a recently
+opened conversation shows the cached view. Switching organization or signing out
+clears that cache. Send a prompt, wait for completion and send a follow-up; the
+composer follows the turn status. Stop asks for confirmation and keeps history.
+Sending to a stopped sandbox resumes it. Offline/unconfirmed prompts must not be
+resent automatically; check the transcript before sending again.
+
+Check iPhone and iPad, light/dark appearance, loading/empty/permission-denied/offline
+states, keyboard/composer layout, large text and VoiceOver labels. No simulator or
+device run was available during implementation; the coordinator performs these checks.
+
+Report version/build, device/iOS version, steps, expected and actual results. Never
+include credentials, verification codes or private conversation data.

@@ -1,4 +1,4 @@
-import { CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, InfoIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AddAccountDialog, HarnessAccounts } from "@/components/model-accounts";
@@ -83,8 +83,8 @@ async function HarnessSections({
     );
   if (list.state === "not-configured")
     return (
-      <Alert variant="destructive">
-        <CircleAlertIcon />
+      <Alert role="status">
+        <InfoIcon />
         <AlertDescription>The Armada server is not configured: subscriptions cannot be managed here.</AlertDescription>
       </Alert>
     );

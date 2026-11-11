@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
@@ -22,6 +23,8 @@ import { ModKey } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +36,7 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import {
   CONNECTION_CHOICE_FIELD,
@@ -159,7 +163,8 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
   });
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
-  const advanced = useRef<HTMLDetailsElement>(null);
+  const advanced = useRef<HTMLDivElement>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   useVisibleViewport(root);
 
   useEffect(() => {
@@ -174,7 +179,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
     };
     // A field the browser refuses to submit (an empty custom model id) must be visible to be focused and explained.
     const reveal = () => {
-      details.open = true;
+      flushSync(() => setAdvancedOpen(true));
     };
     // ⌘↵ launches from any field, as the composer sends. It goes through the Launch button, so a held or pending
     // launch (the button is disabled) is not submitted by the keyboard either.
@@ -278,35 +283,47 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
           {access.alerts(() => {
             focusLaunch.current = true;
           })}
-          <details ref={advanced} data-launch-advanced className="group rounded-md border">
+          <Collapsible
+            ref={advanced}
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            data-launch-advanced
+            className="group rounded-md border"
+          >
             {/* On a phone the summary wraps under the label: every default stays readable, none is cut off. */}
-            <summary className="flex cursor-pointer list-none items-center gap-3 rounded-md px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
-                <span className="font-medium">Advanced</span>
-                {/* Each default is its own chip; the hidden separators keep it one sentence when read aloud. */}
-                <span
-                  data-launch-summary
-                  className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground sm:flex-1 sm:justify-end"
-                >
-                  {summary.map((fact, index) => (
-                    <Fragment key={fact.key}>
-                      {index > 0 && <span className="sr-only"> · </span>}
-                      <span
-                        data-launch-fact={fact.key}
-                        className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2 py-0.5 dark:bg-input/30 [&_svg]:size-3 [&_svg]:shrink-0"
-                      >
-                        <span aria-hidden="true" className="contents">
-                          {fact.icon}
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="flex h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-md px-3 py-2.5 text-sm"
+              >
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
+                  <span className="font-medium">Advanced</span>
+                  {/* Each default is its own chip; the hidden separators keep it one sentence when read aloud. */}
+                  <span
+                    data-launch-summary
+                    className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground sm:flex-1 sm:justify-end"
+                  >
+                    {summary.map((fact, index) => (
+                      <Fragment key={fact.key}>
+                        {index > 0 && <span className="sr-only"> · </span>}
+                        <span
+                          data-launch-fact={fact.key}
+                          className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2 py-0.5 dark:bg-input/30 [&_svg]:size-3 [&_svg]:shrink-0"
+                        >
+                          <span aria-hidden="true" className="contents">
+                            {fact.icon}
+                          </span>
+                          <span className="truncate">{fact.text}</span>
                         </span>
-                        <span className="truncate">{fact.text}</span>
-                      </span>
-                    </Fragment>
-                  ))}
+                      </Fragment>
+                    ))}
+                  </span>
                 </span>
-              </span>
-              <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="space-y-4 border-t p-3">
+                <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]:rotate-180" />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent forceMount className="space-y-4 border-t p-3 data-[state=closed]:hidden">
               <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} onChoice={onChoice} />
               {repositories.length === 1 && (
                 <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
@@ -321,8 +338,8 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
                 />
               )}
               {access.fields(id)}
-            </div>
-          </details>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
       </ActionForm>
     </div>
@@ -513,27 +530,28 @@ export function Segmented<T extends string>({
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
 }) {
+  const id = useId();
   return (
     <fieldset className="min-w-0 space-y-2">
       <legend className="text-sm leading-none font-medium">{legend}</legend>
-      <div className="grid h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30">
+      <RadioGroup
+        name={name}
+        value={value}
+        onValueChange={(next) => onChange(next as T)}
+        aria-label={legend}
+        className="h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30"
+      >
         {options.map((option) => (
-          <label
+          <RadioGroupItem
             key={option.value}
-            className="relative flex min-w-0 cursor-pointer items-center justify-center rounded-sm px-2 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground has-[:checked]:bg-accent has-[:checked]:font-medium has-[:checked]:text-foreground has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50"
+            id={`${id}-${option.value}`}
+            value={option.value}
+            className="flex h-full w-full min-w-0 items-center justify-center rounded-sm border-0 bg-transparent px-2 text-sm whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-accent data-[state=checked]:font-medium data-[state=checked]:text-foreground"
           >
-            <input
-              type="radio"
-              name={name}
-              value={option.value}
-              checked={value === option.value}
-              onChange={() => onChange(option.value)}
-              className="absolute inset-0 size-full cursor-pointer appearance-none rounded-sm opacity-0 disabled:cursor-not-allowed"
-            />
             {option.label}
-          </label>
+          </RadioGroupItem>
         ))}
-      </div>
+      </RadioGroup>
     </fieldset>
   );
 }
@@ -727,16 +745,15 @@ function ConnectionOption({
       .join(" · ");
   return (
     <li className={cn("flex items-start gap-3 px-3 py-2.5", blocker && "opacity-70")}>
-      <input
+      <Checkbox
         id={inputId}
-        type="checkbox"
         name="connections"
         value={connection.id}
         checked={checked && !blocker}
         disabled={blocker !== null}
-        onChange={(event) => onChange(event.target.checked)}
+        onCheckedChange={(value) => onChange(value === true)}
         aria-describedby={hint ? `${inputId}-hint` : undefined}
-        className="mt-0.5 size-4 shrink-0 accent-primary"
+        className="mt-0.5"
       />
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex flex-wrap items-center gap-2">

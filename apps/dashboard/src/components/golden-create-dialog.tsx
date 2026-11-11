@@ -5,6 +5,7 @@ import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { goldenBuildStatus } from "@/app/actions/goldens";
 import { CreateDialog } from "@/components/create-dialog";
+import { visibleResourcePanelTitle } from "@/components/resource-browser";
 import { ITEM_PARAM } from "@/lib/resource-list";
 
 /**
@@ -40,7 +41,7 @@ export function GoldenCreateDialog({
         className="sm:max-w-3xl"
         onCloseAutoFocus={(event) => {
           // Closed by choosing an environment to rebuild instead: the focus stays on its panel, not on New.
-          const title = document.getElementById("resource-panel-title");
+          const title = visibleResourcePanelTitle();
           const item = currentItem();
           if (title && item !== null && item !== itemAtOpen.current) {
             event.preventDefault();

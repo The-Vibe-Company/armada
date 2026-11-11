@@ -24,7 +24,6 @@ private struct StoredSession: Codable {
     let origin: String
     let session: ArmadaSession
     let selectedOrgID: String?
-    let operations: [PendingOrchestratorOperation]?
     let sandboxPrompts: [PendingSandboxPrompt]?
 }
 
@@ -37,12 +36,8 @@ public actor ArmadaClient {
     private let storage: any SessionStorage
     private var session: ArmadaSession?
     private var generation = 0
-    // Only concurrent submissions need receipts older than the durable retention window.
-    var activeSubmissions: [UUID: Int] = [:]
-    var activeTerminalReceipts: [UUID: OrchestratorOperation] = [:]
     private var refreshing: Task<ArmadaSession, Error>?
     private var refreshID: UUID?
-    public private(set) var pendingOperations: [PendingOrchestratorOperation] = []
     public private(set) var selectedOrgID: String?
     public private(set) var pendingSandboxPrompts: [PendingSandboxPrompt] = []
 
@@ -64,11 +59,10 @@ public actor ArmadaClient {
             guard let data = try storage.load() else { return }
             let stored = try JSONDecoder().decode(StoredSession.self, from: data)
             guard stored.origin == origin.absoluteString else { return }
-            let operations = Self.boundedOperations(stored.operations ?? [])
             let prompts = stored.sandboxPrompts ?? []
-            try persist(stored.session, org: stored.selectedOrgID, operations: operations, sandboxPrompts: prompts)
+            try persist(stored.session, org: stored.selectedOrgID, sandboxPrompts: prompts)
             pendingSandboxPrompts = prompts
-            session = stored.session; selectedOrgID = stored.selectedOrgID; pendingOperations = operations; generation += 1
+            session = stored.session; selectedOrgID = stored.selectedOrgID; generation += 1
         } catch { throw ArmadaError.secureStorage }
     }
 
@@ -93,9 +87,9 @@ public actor ArmadaClient {
         let fence = generation
         let next: ArmadaSession = try await post("auth/email/verify", Verify(email: email, code: code), authenticated: false)
         guard generation == fence else { throw CancellationError() }
-        try persist(next, org: nil, operations: [], sandboxPrompts: [])
+        try persist(next, org: nil, sandboxPrompts: [])
         refreshing?.cancel(); refreshing = nil; refreshID = nil; generation += 1
-        pendingSandboxPrompts = []; session = next; selectedOrgID = nil; pendingOperations = []; activeTerminalReceipts = [:]
+        pendingSandboxPrompts = []; session = next; selectedOrgID = nil
     }
     public func organizations() async throws -> [Organization] {
         let result: Organizations = try await post("org/list", Empty())
@@ -113,12 +107,12 @@ public actor ArmadaClient {
     public func signOut() async throws {
         let token = session?.accessToken
         pendingSandboxPrompts = []
-        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil; pendingOperations = []; activeTerminalReceipts = [:]
+        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil
         do { try storage.remove() } catch { throw ArmadaError.secureStorage }
         if let token { let _: OK = try await wire("account/logout", Empty(), token: token) }
     }
-    private func persist(_ next: ArmadaSession, org: String?, operations: [PendingOrchestratorOperation]? = nil, sandboxPrompts: [PendingSandboxPrompt]? = nil) throws {
-        do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org, operations: operations ?? pendingOperations, sandboxPrompts: sandboxPrompts ?? pendingSandboxPrompts))) }
+    private func persist(_ next: ArmadaSession, org: String?, sandboxPrompts: [PendingSandboxPrompt]? = nil) throws {
+        do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org, sandboxPrompts: sandboxPrompts ?? pendingSandboxPrompts))) }
         catch { throw ArmadaError.secureStorage }
     }
     func authority() async throws -> String {
@@ -170,32 +164,12 @@ public actor ArmadaClient {
     ) async throws -> Response {
         return try await request(route, method: "POST", body: JSONEncoder().encode(body), token: token)
     }
-    func authenticatedRequest<Response: Decodable & Sendable>(
-        _ route: String, method: String, query: [URLQueryItem] = [], body: Data? = nil, key: String? = nil
-    ) async throws -> Response {
-        let fence = generation
-        let token = try await authority()
-        let response: Response = try await request(route, method: method, query: query, body: body, token: token, key: key)
-        guard fence == generation else { throw CancellationError() }
-        return response
-    }
-    func saveOperations(_ operations: [PendingOrchestratorOperation]) throws {
-        guard let session else { throw ArmadaError.signedOut }
-        let bounded = Self.boundedOperations(operations)
-        try persist(session, org: selectedOrgID, operations: bounded)
-        pendingOperations = bounded
-    }
     func saveSandboxPrompts(_ prompts: [PendingSandboxPrompt]) throws {
         guard let session else { throw ArmadaError.signedOut }
         try persist(session, org: selectedOrgID, sandboxPrompts: prompts)
         pendingSandboxPrompts = prompts
     }
 
-    /// Keep the latest 32 terminal records; unresolved commands are never evicted.
-    static func boundedOperations(_ operations: [PendingOrchestratorOperation]) -> [PendingOrchestratorOperation] {
-        let retained = Set(operations.filter { $0.state == .succeeded || $0.state == .failed }.suffix(32).map(\.id))
-        return operations.filter { $0.state == .pending || $0.state == .uncertain || retained.contains($0.id) }
-    }
     /// Sandbox route codes that refuse before anything reaches the agent. Older servers answer 400 for
     /// other codes too, including `unknown` after a provider already accepted a prompt, so a bare
     /// 400 never proves that a prompt was not delivered.
@@ -236,35 +210,15 @@ public actor ArmadaClient {
         case 403: throw ArmadaError.forbidden
         case 400:
             let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
-            if route == "orchestrators" || route.hasPrefix("orchestrators/") {
-                if code == "invalid_request" { throw ArmadaError.invalidRequest }
-                // The orchestrator handler answers a 4xx only before admission (an unknown outcome is
-                // `outcome_unknown`, a 503), so a code this build does not know is still a refusal.
-                if let code, OrchestratorExplanation.isClosedCode(code) { throw orchestratorRefusal(code: code, data: data) }
-            } else if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
+            if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
                 throw ArmadaError.invalidRequest
             }
             throw ArmadaError.http(400)
         case 409: throw ArmadaError.conflict
         case 500...599: throw ArmadaError.unavailable
-        case 402...499 where response.statusCode != 404 && response.statusCode != 429
-            && (route == "orchestrators" || route.hasPrefix("orchestrators/")):
-            // Keep the server's closed reason (422 `credential_refused`) so it can be explained.
-            if let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code,
-               OrchestratorExplanation.isClosedCode(code) {
-                throw orchestratorRefusal(code: code, data: data)
-            }
-            throw ArmadaError.http(response.statusCode)
         default: throw ArmadaError.http(response.statusCode)
         }
         do { return try JSONDecoder().decode(Response.self, from: data) }
         catch { throw ArmadaError.invalidResponse }
     }
-}
-
-/// Preserve a future refusal's human-readable reason, never raw multiline/unbounded server text.
-private func orchestratorRefusal(code: String, data: Data) -> ArmadaError {
-    let message = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.message
-    let detail = OrchestratorExplanation.known[code] == nil ? message.flatMap(SandboxLaunchFailure.oneLine) : nil
-    return .refused(code: code, message: detail)
 }

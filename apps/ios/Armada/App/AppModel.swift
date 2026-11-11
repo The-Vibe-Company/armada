@@ -34,7 +34,6 @@ final class AppModel {
     private(set) var organization: OrganizationChoice?
     /// A short message for the sign-in screen (for example, why the session ended).
     private(set) var signInNotice: String?
-    private(set) var orchestrators: any OrchestratorService
     private(set) var sandboxes: any SandboxService
     /// The signed-in person's id, once ArmadaKit publishes the account identity (`account/status`).
     /// Until then ownership is shown from server hints only, never inferred.
@@ -48,12 +47,10 @@ final class AppModel {
     private init(
         client: ArmadaClient?,
         phase: Phase,
-        orchestrators: any OrchestratorService,
         sandboxes: any SandboxService
     ) {
         self.client = client
         self.phase = phase
-        self.orchestrators = orchestrators
         self.sandboxes = sandboxes
     }
 
@@ -64,14 +61,12 @@ final class AppModel {
             return AppModel(
                 client: nil,
                 phase: .misconfigured(unavailable),
-                orchestrators: UnavailableServices.orchestrators,
                 sandboxes: UnavailableServices.sandboxes
             )
         }
         return AppModel(
             client: client,
             phase: .restoring,
-            orchestrators: ServiceWiring.orchestrators(client: client),
             sandboxes: ServiceWiring.sandboxes(client: client)
         )
     }
@@ -235,10 +230,9 @@ extension AppModel {
     static func preview(
         phase: Phase = .ready,
         organizations: [OrganizationChoice] = PreviewData.organizations,
-        orchestrators: any OrchestratorService = PreviewData.Services(),
         sandboxes: any SandboxService = PreviewData.Services()
     ) -> AppModel {
-        let model = AppModel(client: nil, phase: phase, orchestrators: orchestrators, sandboxes: sandboxes)
+        let model = AppModel(client: nil, phase: phase, sandboxes: sandboxes)
         model.organizations = organizations
         model.organization = phase == .ready ? organizations.first : nil
         model.currentUserID = PreviewData.me

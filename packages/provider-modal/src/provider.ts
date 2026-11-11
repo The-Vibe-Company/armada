@@ -736,7 +736,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const row = await store.get(id);
       assertMachineSource(row);
       if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
-      if (row.phase === "active" && (await (await physical(row)).poll()) !== null)
+      // bound() and assertMachineSource above already verified this read. Do not
+      // repeat the remote App lookup through physical(); keep the live exit poll.
+      let exited = false;
+      if (row.phase === "active") {
+        if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
+        exited = (await (await client.sandboxes.fromId(row.physicalId)).poll()) !== null;
+      }
+      if (exited)
         return {
           ...sandboxInfo(row),
           state: "failed",
@@ -1267,7 +1274,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       r.signal?.throwIfAborted();
       await bound();
       r.signal?.throwIfAborted();
-      await store.get(r.sandboxId);
+      const row = await store.get(r.sandboxId);
+      // History is readable without live compute, but still belongs to this
+      // immutable source/management authority and must not be a deleted machine.
+      assertMachineSource(row);
+      if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
       r.signal?.throwIfAborted();
       const page = await store.events(r);
       r.signal?.throwIfAborted();
