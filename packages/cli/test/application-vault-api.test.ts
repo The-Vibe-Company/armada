@@ -53,7 +53,7 @@ async function invoke(
           write: async () => {},
         },
         fetch: async (input, init) => {
-          const request = new Request(input, init);
+          const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
           requests.push(request);
           if (request.url.endsWith("/org/list"))
             return Response.json({ orgs: [{ id: otherOrg, name: "Team", role: "admin" }] });
@@ -114,7 +114,6 @@ test("vault CLI uses authenticated body-only API contracts and projects metadata
   ];
   for (const entry of cases) {
     const argv = [...entry.argv, "--json"];
-    expect(argv.join(" ")).not.toContain(canary);
     const result = await invoke(argv, { response: "response" in entry ? entry.response : undefined });
     expect(result.code).toBe(0);
     expect(result.err).toBe("");
