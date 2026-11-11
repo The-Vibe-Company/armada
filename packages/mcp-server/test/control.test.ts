@@ -587,7 +587,7 @@ describe("control API", () => {
       options.providers = { resolve: async () => boat.provider };
       options.github = {
         app: { clientId: "fixture", clientSecret: "fixture" },
-        fetch: (async () => Response.json({ id: 7, login: "owner", name: null })) as typeof fetch,
+        fetch: (async () => Response.json({ id: 7, login: "owner", name: null })) as unknown as typeof fetch,
       };
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/github/refresh", {
