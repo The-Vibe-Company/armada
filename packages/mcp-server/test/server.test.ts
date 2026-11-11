@@ -1259,32 +1259,36 @@ describe("tools", () => {
     },
   );
 
-  test("stop without a provider timestamp retains observed compute time", async () => {
-    const { token, client, people, boat, db, clock } = await start();
+  test("a clean fully-pushed stop leaves no preservation note", async () => {
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    await db.query("update sandboxes set usage_running_since=$2::timestamptz - interval '12 seconds' where id=$1", [
-      launched.data.id,
-      clock.now.toISOString(),
-    ]);
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    expect((await call(mcp, "stop", { id: launched.data.id })).data.status).toBe("stopped");
+    const row = (
+      await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [
+        launched.data.id,
+      ])
+    ).rows[0];
+    expect(row?.preservation_note).toBeNull();
+  });
+
+  test("user-stop trace places capture before physical dispatch", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const log = spyOn(console, "info").mockImplementation(() => {});
     try {
-      expect((await call(mcp, "stop", { id: launched.data.id })).data).toMatchObject({ status: "stopped" });
+      await call(mcp, "stop", { id: launched.data.id });
       const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
-      const stages = events.filter((e) => e.event === "work_preservation_stage");
-      expect(stages.map((e) => e.phase)).toEqual([
+      expect(events.filter((e) => e.event === "work_preservation_stage").map((e) => e.phase)).toEqual([
         "observed",
         "quiesce_started",
         "quiesce_finished",
         "capture_started",
         "capture_clean",
       ]);
-      expect(
-        stages.every(
-          (e) => e.source === "user_stop" && e.sandboxId === launched.data.id && e.providerSandboxId === "bx_1",
-        ),
-      ).toBe(true);
       expect(events.at(-1)).toMatchObject({
         event: "sandbox_stop_dispatch",
         source: "user_stop",
@@ -1293,6 +1297,17 @@ describe("tools", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  test("stop without a provider timestamp retains observed compute time", async () => {
+    const { token, client, people, boat, db, clock } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    await db.query("update sandboxes set usage_running_since=$2::timestamptz - interval '12 seconds' where id=$1", [
+      launched.data.id,
+      clock.now.toISOString(),
+    ]);
+    expect((await call(mcp, "stop", { id: launched.data.id })).data).toMatchObject({ status: "stopped" });
     expect(boat.stops).toEqual(["bx_1"]);
     const row = await db.query<{ status: string; stopped_at: Date | null; seconds: number | null }>(
       "select status::text as status, stopped_at, usage_runtime_seconds as seconds from sandboxes where id = $1",

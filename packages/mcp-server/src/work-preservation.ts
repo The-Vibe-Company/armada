@@ -36,7 +36,7 @@ export async function preserveBeforeStop(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   const controller = new AbortController();
-  const progress = { stage: "observe" };
+  const progress = { stage: "observe", workAtRisk: false };
   try {
     return await Promise.race([
       captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal, source),
@@ -53,6 +53,7 @@ export async function preserveBeforeStop(
               sandboxId: id,
               stage: progress.stage,
               reason,
+              workRisk: progress.workAtRisk ? "confirmed" : "unknown",
               ...diagnostic,
             }),
           );
@@ -61,7 +62,10 @@ export async function preserveBeforeStop(
             return;
           }
           void sql
-            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, failureNote("timeout")])
+            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
+              id,
+              progress.workAtRisk ? failureNote(`${progress.stage}_timeout`) : null,
+            ])
             .catch(() => {});
           resolve();
         }, 20_000);
@@ -79,14 +83,14 @@ async function captureAndStore(
   id: string,
   providerId: string,
   expired: () => boolean,
-  progress: { stage: string },
+  progress: { stage: string; workAtRisk: boolean },
   signal: AbortSignal,
   source: StopSource,
 ): Promise<"pending" | void> {
   let reason = "failed";
   let stage = "observe";
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
-  let note: string;
+  let note: string | null;
   const observed = (phase: string, state?: string) => {
     try {
       console.info(
@@ -126,10 +130,13 @@ async function captureAndStore(
     stage = progress.stage = "capture";
     reason = "failed";
     observed("capture_started");
-    const result = await preserveWork(provider, providerId, signal);
+    const result = await preserveWork(provider, providerId, signal, () => {
+      progress.workAtRisk = true;
+    });
     if (expired()) return;
     observed(`capture_${result.status}`);
     if (result.status === "preserved") {
+      progress.workAtRisk = true;
       stage = progress.stage = "storage";
       reason = "failed";
       const encrypted = await encryptSecret(result.archive);
@@ -143,14 +150,8 @@ async function captureAndStore(
     } else if (result.status === "clean") {
       stage = progress.stage = "storage";
       reason = "failed";
-      // Clear stale warnings, but retain the latest recovery receipt if one exists.
-      await sql.query(
-        `update public.sandboxes set preservation_note=(
-          select 'unpushed work preserved at work_recovery:' || sandbox_id || '/' || id
-          from public.sandbox_work_recovery where sandbox_id=$1::uuid order by created_at desc limit 1
-        ) where id=$1::uuid`,
-        [id],
-      );
+      // A clean stop has no current work at risk; historical archives remain retrievable.
+      await sql.query("update public.sandboxes set preservation_note=null where id=$1::uuid", [id]);
       return;
     } else {
       reason = result.reason;
@@ -158,7 +159,8 @@ async function captureAndStore(
         stage = result.diagnostic.stage;
         diagnostic = result.diagnostic;
       }
-      note = failureNote(reason);
+      progress.workAtRisk = result.workAtRisk === true;
+      note = progress.workAtRisk ? failureNote(`${stage}_${reason}`) : null;
       reason = closedFailure(stage, reason, diagnostic);
     }
   } catch (error) {
@@ -174,16 +176,25 @@ async function captureAndStore(
       return "pending";
     }
     diagnostic = workPreservationError(error);
-    note = failureNote(stage === "capture" ? "capture_failed" : `${stage}_failed`);
+    note = progress.workAtRisk ? failureNote(`${stage}_failed`) : null;
     reason = closedFailure(stage, reason, diagnostic);
   }
   if (expired()) return;
-  if (!note.startsWith("unpushed work preserved"))
-    console.warn(JSON.stringify({ event: "work_preservation_failed", sandboxId: id, stage, reason, ...diagnostic }));
+  if (!note?.startsWith("unpushed work preserved"))
+    console.warn(
+      JSON.stringify({
+        event: "work_preservation_failed",
+        sandboxId: id,
+        stage,
+        reason,
+        workRisk: progress.workAtRisk ? "confirmed" : "unknown",
+        ...diagnostic,
+      }),
+    );
   try {
     await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
   } catch (error) {
-    if (!expired() && note.startsWith("unpushed work preserved"))
+    if (!expired() && note?.startsWith("unpushed work preserved"))
       console.warn(
         JSON.stringify({
           event: "work_preservation_failed",

@@ -621,7 +621,8 @@ try {
     assert.equal(row.status, "stopped");
     assert.equal(
       row.preservation_note,
-      `unpushed work could not be preserved (${reason === "unavailable" ? "exec_failed" : reason}). Resume the sandbox and push or copy any local work before stopping again.`,
+      null,
+      "A refused/unverified capture is diagnostic-only, not confirmed work at risk",
     );
   }
   const epochsBeforeFailure = effects.epochInstalls;

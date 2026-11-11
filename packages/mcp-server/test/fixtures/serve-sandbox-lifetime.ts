@@ -586,10 +586,7 @@ try {
     const stopped = await row(scenario.id);
     assert.equal(stopped.status, "stopped", JSON.stringify({ scenario, stopped, logs, effects }));
     assert.equal(stopped.status_reason, "expired");
-    assert.equal(
-      stopped.preservation_note,
-      "unpushed work could not be preserved (missing_bun). Resume the sandbox and push or copy any local work before stopping again.",
-    );
+    assert.equal(stopped.preservation_note, null, "Missing collector runtime cannot establish work at risk");
     const operations = effects
       .slice(expirationStart)
       .filter((item) => item.id === scenario.nativeId)

@@ -32,6 +32,7 @@ import {
   type CreateSandboxRequest,
   type PromptRequestProviderEnum,
   type Sandbox,
+  SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
 } from "@boatdev/sdk";
@@ -85,24 +86,8 @@ const BOAT_STATES: Record<SandboxState, readonly string[]> = {
   failed: ["error", "cancelled"],
 };
 
-const DOCUMENTED_STATES = new Set(Object.values(BOAT_STATES).flat());
-// Never log an arbitrary provider string: state is an enum, not an error body.
-// Recognize common out-of-contract states for diagnosis without admitting them.
-const LOG_STATES = new Set([
-  ...DOCUMENTED_STATES,
-  "stopped",
-  "stopping",
-  "suspended",
-  "suspending",
-  "sleeping",
-  "paused",
-  "resuming",
-  "booting",
-  "starting",
-  "failed",
-  "deleted",
-  "terminated",
-]);
+const LOG_STATES = new Set<string>(Object.values(SandboxStateEnum));
+const MAPPED_STATES = new Set(Object.values(BOAT_STATES).flat());
 function trace(fields: Record<string, unknown>): void {
   try {
     console.info(JSON.stringify({ ...fields, at: new Date().toISOString() }));
@@ -630,7 +615,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           observation(attempt, {
             source: "state_guard",
             providerState: LOG_STATES.has(current.providerState) ? current.providerState : "unrecognized",
-            stateMappingKnown: DOCUMENTED_STATES.has(current.providerState),
+            stateMappingKnown: MAPPED_STATES.has(current.providerState),
             normalizedState: current.state,
             physicalExitConfirmed: current.physicalExitConfirmed === true,
             autoStopAt:
