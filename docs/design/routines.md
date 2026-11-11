@@ -180,7 +180,7 @@ The minimum interval is **one hour**, so the script cannot truthfully finish in 
 few minutes. Each invocation takes about **122 minutes plus setup/cleanup**, with
 a 130-minute main deadline and a five-minute cleanup budget (about 135 minutes
 maximum under normal bounded HTTP timeouts). The two provider invocations can run
-in parallel. It refuses the known production origin, requires HTTPS, does not
+in parallel. It refuses both documented production origins, requires HTTPS, does not
 follow redirects, and never prints bearer values, raw errors or event contents.
 Existing staging templates/goldens and usable current owner credentials are
 prerequisites; when multiple templates are visible, select one explicitly.

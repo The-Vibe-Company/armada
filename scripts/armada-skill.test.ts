@@ -79,7 +79,7 @@ async function markdownFiles(directory: string): Promise<string[]> {
 
 test("published Armada skill commands and flags match the live CLI usage contract", async () => {
   const contract: Command[] = [];
-  for (const prefix of [[], ["template"], ["vars"], ["secrets"], ["skill"]]) {
+  for (const prefix of [[], ["template"], ["routine"], ["vars"], ["secrets"], ["skill"]]) {
     const child = Bun.spawn([process.execPath, "packages/cli/src/main.ts", ...prefix, "--help"], {
       cwd: root,
       env: { ...process.env, ARMADA_TOKEN: "", ARMADA_URL: "http://127.0.0.1:1" },
@@ -111,4 +111,5 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada golden nonexistent-subcommand", contract)).toContain("Unknown command");
   expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
+  expect(validate("armada routine enable routine --revision 1", contract)).toContain("Unknown flag");
 });
