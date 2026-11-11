@@ -713,6 +713,8 @@ exit 1
       { harness: "claude", ttlSeconds: 1.5 },
       { harness: "claude", prompt: "   " },
       { harness: "claude", reasoningEffort: "ultra" },
+      { harness: "claude", model: "claude-fable-5-2", reasoningEffort: "ultra" },
+      { harness: "claude", model: "unknown model!" },
       { harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" },
       { harness: "codex", model: "gpt 6; rm -rf /" },
     ]) {
@@ -723,17 +725,18 @@ exit 1
     expect([noSnapshot, none, world].flatMap((entry) => entry.forks)).toEqual([]);
   });
 
-  test("an explicit model and effort reach the prompt and the record as given, never substituted", async () => {
+  test.each([
+    { harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" },
+    { harness: "claude", model: "claude-fable-5-2", reasoningEffort: "high" },
+  ] as const)("an explicit model and effort reach the prompt and record unchanged: %j", async (choice) => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, {
       golden: "web",
-      harness: "codex",
       prompt: "Go",
-      model: "gpt-7-preview",
-      reasoningEffort: "ultra",
+      ...choice,
     });
-    expect(world.prompts[0]).toMatchObject({ harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" });
-    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "gpt-7-preview", reasoningEffort: "ultra" });
+    expect(world.prompts[0]).toMatchObject(choice);
+    expect(world.rows.get(result.sandbox.id)).toMatchObject(choice);
   });
 
   test("a provider that cannot set a reasoning effort is refused before the fork", async () => {
