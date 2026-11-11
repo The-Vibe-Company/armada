@@ -322,7 +322,10 @@ async function chooseOrg(request: Request, options: OAuthServerOptions): Promise
     if (!client?.redirectUris.includes(pending.redirectUri)) {
       return finish(page("Authorization failed", "<p>The client is no longer registered.</p>", 400), options);
     }
-    return finish(failRedirect(pending.redirectUri, "access_denied", "Authorization was declined.", pending.state), options);
+    return finish(
+      failRedirect(pending.redirectUri, "access_denied", "Authorization was declined.", pending.state),
+      options,
+    );
   }
   if (decision !== "allow") return page("Authorization failed", "<p>Choose Allow or Cancel.</p>", 400);
   const orgId = form.get("org") ?? "";
