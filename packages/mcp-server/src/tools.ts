@@ -1,4 +1,10 @@
-import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import {
+  GitHubHydrationError,
+  goldenForSettings,
+  MACHINE_SIZES,
+  parseMachineSizePolicy,
+  USAGE_UNAVAILABLE_CODES,
+} from "@armada/core";
 import {
   type ApplicationVault,
   assertGoldenMutation,
@@ -213,6 +219,7 @@ const sandboxUsage = z
         cachedTokens: z.number().nullable(),
         cacheWriteTokens: z.number().nullable().optional(),
         reasoningTokens: z.number().nullable().optional(),
+        unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
       }),
     ),
   })

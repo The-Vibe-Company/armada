@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NATIVE_USAGE_PYTHON } from "../src/native-usage.ts";
+import { type Provider, ProviderError } from "@armada/core";
+import { collectNativeUsage, NATIVE_USAGE_PYTHON } from "../src/native-usage.ts";
 
 /** Exercises real guest admission and parsing, no harness/model or network. */
 function guest(scenario: string): unknown {
@@ -18,7 +19,8 @@ function guest(scenario: string): unknown {
 }
 const setup = `
 init()
-digest=hashlib.sha256(b'normal prompt').hexdigest()
+raw_digest=hashlib.sha256(b'normal prompt').hexdigest()
+digest=hashlib.sha256((INPUT_PREFIX+'normal prompt'+INPUT_SUFFIX).encode()).hexdigest()
 session='12345678-1234-1234-1234-123456789012'
 os.makedirs(HOME+'/.codex/sessions/2026/01/01')
 path=HOME+'/.codex/sessions/2026/01/01/rollout-'+session+'.jsonl'
@@ -27,7 +29,7 @@ def write(total,mode='w',model='gpt-5',turn='t1'):
     with open(path,mode) as f:
         for row in rows: f.write(json.dumps(row)+'\\n')
 def admit(ticket,prompt):
-    save(ticket+'.json',{});save('pending.json',{'ticket':ticket,'at':time.time(),'digest':digest});save('prompt-'+prompt+'.json',{'ticket':ticket})
+    save(ticket+'.json',{});save('pending.json',{'ticket':ticket,'at':time.time(),'rawDigest':raw_digest,'wireDigest':digest,'inputEncoding':INPUT_ENCODING});save('prompt-'+prompt+'.json',{'ticket':ticket})
 `;
 describe("Boat guest native usage", () => {
   test("multi-turn Codex cumulative counters yield deltas, retries do not add", () => {
@@ -169,16 +171,17 @@ print(json.dumps(collect('p1')))
 import contextlib,io
 def launch(ticket,text):
     fingerprint=hashlib.sha256(text.encode()).hexdigest()
-    sys.argv=['usage','admit',ticket,'sandbox1',fingerprint]
+    wire=hashlib.sha256((INPUT_PREFIX+text+INPUT_SUFFIX).encode()).hexdigest()
+    sys.argv=['usage','admit',ticket,'sandbox1',fingerprint,wire]
     with contextlib.redirect_stdout(io.StringIO()) as out: main()
     if out.getvalue().strip()=='admitted': save('prompt-'+ticket+'.json',{'ticket':ticket})
-    return fingerprint,out.getvalue().strip()
+    return wire,out.getvalue().strip()
 old,_=launch('old','abandoned')
 pending=load('pending.json');pending['at']-=91;save('pending.json',pending)
 expired=capture('codex',session,True,old)
 current,admitted=launch('current','new prompt')
 late=capture('codex',session,True,old)
-matched=capture('codex',session,True,prompt_digest([{'type':'text','text':'new prompt'}]));start('current','t1')
+matched=capture('codex',session,True,prompt_digest([{'type':'text','text':INPUT_PREFIX+'new prompt'+INPUT_SUFFIX}]));start('current','t1')
 write([100,20,0,0,0]);terminal('current','t1')
 a=collect('current')
 # An unclaimed rejected dispatch need not expire before a different input recovers.
@@ -193,21 +196,115 @@ print(json.dumps([expired,admitted,late,matched,a[0]['inputTokens'],collect('old
       ),
     ).toEqual([null, "admitted", null, "current", 100, [], "admitted", null, "next", 50, [], null]);
   });
+  test("wire codec rejects ambiguous context and legacy admissions without losing safe recovery", () => {
+    expect(
+      guest(
+        setup +
+          `
+import contextlib,io
+def launch(ticket,text):
+    raw=hashlib.sha256(text.encode()).hexdigest()
+    wire=hashlib.sha256((INPUT_PREFIX+text+INPUT_SUFFIX).encode()).hexdigest()
+    sys.argv=['usage','admit',ticket,'sandbox1',raw,wire]
+    with contextlib.redirect_stdout(io.StringIO()) as out: main()
+    return out.getvalue().strip()
+# Old in-flight raw admissions cannot be reinterpreted as wire admissions.
+launch('seed','seed')
+save('legacy.json',{})
+save('pending.json',{'ticket':'legacy','at':time.time(),'digest':raw_digest})
+legacy=capture('codex',session,True,digest)
+quarantined=launch('retry','normal prompt')
+# Both old raw callbacks and delayed old framed callbacks must miss a new input.
+recovery=launch('safe','distinct input')
+raw_callback=capture('codex',session,True,raw_digest)
+late_callback=capture('codex',session,True,digest)
+# Native resume context, separate instruction blocks, images and extra text are
+# not proof of the admitted user input, even when the final substring matches.
+framed=INPUT_PREFIX+'distinct input'+INPUT_SUFFIX
+unsupported=[
+    [{'type':'text','text':'distinct input'}],
+    [{'type':'text','text':'<resumed-conversation-context>history</resumed-conversation-context>'+framed}],
+    [{'type':'text','text':INPUT_PREFIX+'instructions'+INPUT_SUFFIX+'\\n\\n'+framed}],
+    [{'type':'text','text':'other'}, {'type':'text','text':framed}],
+    [{'type':'image','url':'fixture'}, {'type':'text','text':framed}]
+]
+rejected=[capture('codex',session,True,prompt_digest(items)) for items in unsupported]
+valid=capture('codex',session,True,prompt_digest([{'type':'text','text':framed}]))
+start('safe','t1');write([100,20,0,0,0]);terminal('safe','t1')
+save('prompt-safe.json',{'ticket':'safe'})
+print(json.dumps([legacy,quarantined,recovery,raw_callback,late_callback,rejected,valid,collect('safe')[0]['inputTokens']]))
+`,
+      ),
+    ).toEqual([null, "", "admitted", null, null, [null, null, null, null, null], "safe", 100]);
+  });
+  test("a warm legacy bridge cannot consume a new admission whose raw text aliases an old envelope", () => {
+    const legacyCapture = readFileSync(new URL("./fixtures/native-usage-capture-v1.py", import.meta.url), "utf8");
+    expect(
+      guest(
+        setup +
+          `
+import contextlib,io
+exec(${JSON.stringify(legacyCapture)})
+# A delayed OLD callback for A hashes W(A). The NEW user's literal prompt is
+# W(A), but its native text must be W(W(A)). A raw-digest fallback is unsafe.
+new_text=INPUT_PREFIX+'normal prompt'+INPUT_SUFFIX
+raw=hashlib.sha256(new_text.encode()).hexdigest()
+wire=hashlib.sha256((INPUT_PREFIX+new_text+INPUT_SUFFIX).encode()).hexdigest()
+sys.argv=['usage','admit','new','sandbox1',raw,wire]
+with contextlib.redirect_stdout(io.StringIO()): main()
+old=capture_v1('codex',session,True,digest)
+current=capture('codex',session,True,wire)
+print(json.dumps([old,current]))
+`,
+      ),
+    ).toEqual([null, "new"]);
+  });
+  test("collection explains the failed stage without exposing raw state or changing counters", () => {
+    expect(
+      guest(
+        setup +
+          `
+reasons=[collection_result('missing')['reason']]
+admit('one','p1');reasons.append(collection_result('p1')['reason'])
+capture('codex',session,True,hashlib.sha256(b'PRIVATE_NATIVE_INPUT').hexdigest())
+reasons.append(collection_result('p1')['reason'])
+capture('codex',session,True,digest);reasons.append(collection_result('p1')['reason'])
+start('one','t1');reasons.append(collection_result('p1')['reason'])
+terminal('one','t1');reasons.append(collection_result('p1')['reason'])
+write([100,20,0,0,0]);result=collection_result('p1')
+print(json.dumps([reasons,result['reason'],result['turns'][0]['inputTokens']]))
+`,
+      ),
+    ).toEqual([
+      [
+        "admission_missing",
+        "native_start_unobserved",
+        "native_input_unmatched",
+        "native_turn_unobserved",
+        "native_terminal_unobserved",
+        "native_history_unavailable",
+      ],
+      null,
+      100,
+    ]);
+  });
   test("identical ambiguous inputs stay unknown while later distinct admissions and fresh forks recover", () => {
     expect(
       guest(
         setup +
           `
 import contextlib,io
-def launch(ticket,generation,value=digest):
-    sys.argv=['usage','admit',ticket,generation,value]
+def launch(ticket,generation,text='normal prompt'):
+    value=hashlib.sha256(text.encode()).hexdigest()
+    wire=hashlib.sha256((INPUT_PREFIX+text+INPUT_SUFFIX).encode()).hexdigest()
+    sys.argv=['usage','admit',ticket,generation,value,wire]
     with contextlib.redirect_stdout(io.StringIO()) as out: main()
     return out.getvalue().strip()
 launch('one','sandbox1');save('prompt-p1.json',{'ticket':'one'})
 ambiguous=launch('two','sandbox1')
 late=capture('codex',session,True,digest)
 retry=launch('three','sandbox1')
-other=hashlib.sha256(b'different input').hexdigest()
+other='different input'
 recovered=launch('four','sandbox1',other)
 # A fresh physical sandbox resets inherited quarantines as well as tickets.
 fork=launch('five','sandbox2')
@@ -217,4 +314,48 @@ print(json.dumps([collect('p1') if os.path.exists(ROOT+'/prompt-p1.json') else [
       ),
     ).toEqual([[], "", null, "", "admitted", "admitted", "five", true]);
   });
+});
+
+test("native reader transport failures expose only closed public diagnostics", async () => {
+  const secret = "PRIVATE_NATIVE_OUTPUT_NOT_A_CREDENTIAL";
+  const execute = async (response: unknown) =>
+    collectNativeUsage({ exec: async () => response } as unknown as Provider, "sandbox", "prompt");
+  const response = (stdout: string) => ({
+    detached: false,
+    exitCode: 0,
+    stdout,
+    stderr: secret,
+    timedOut: false,
+    truncated: false,
+  });
+  const unobserved = await execute(
+    response(JSON.stringify({ turns: [], reason: "native_start_unobserved", private: secret })),
+  );
+  expect(unobserved[0]).toMatchObject({
+    promptId: "prompt",
+    inputTokens: null,
+    unavailableReason: { code: "native_start_unobserved" },
+  });
+  expect(unobserved[0]?.unavailableReason?.message).toContain("no matching native start");
+  for (const r of [
+    response(JSON.stringify({ turns: [], reason: secret })),
+    response(secret),
+    { ...response(secret), exitCode: 1 },
+    { ...response(secret), timedOut: true },
+  ]) {
+    const rows = await execute(r);
+    expect(rows[0]?.unavailableReason?.code).toBe("reader_unavailable");
+    expect(JSON.stringify(rows)).not.toContain(secret);
+  }
+  const stopped = await collectNativeUsage(
+    {
+      exec: async () => {
+        throw new ProviderError({ provider: "boat", code: "sandbox_not_ready", message: secret, retryable: false });
+      },
+    } as unknown as Provider,
+    "sandbox",
+    "prompt",
+  );
+  expect(stopped[0]?.unavailableReason?.code).toBe("compute_inactive");
+  expect(JSON.stringify(stopped)).not.toContain(secret);
 });

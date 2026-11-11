@@ -311,6 +311,10 @@ export {
   sumSandboxUsage,
   type TokenUsageTotals,
   type TurnTokenUsage,
+  USAGE_UNAVAILABLE_CODES,
+  type UsageUnavailableCode,
+  type UsageUnavailableReason,
+  usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
