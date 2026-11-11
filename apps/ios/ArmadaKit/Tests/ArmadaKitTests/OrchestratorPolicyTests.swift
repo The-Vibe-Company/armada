@@ -243,7 +243,7 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
 @Test func everyCodeGetsAPlainSentence() {
     for code in ["conflict", "unavailable", "runtime_uncertain", "not_found", "invalid_request", "create_recovered_terminated", "stop_recovered_terminated", "native_state_lost",
                  "provider_payment_required", "credential_refused", "provider_unavailable", "dependency_unavailable", "outcome_unknown",
-                 "boat_conversation_unavailable", "previous_conversation_not_continued", "skillpack_scope_refused"] {
+                 "boat_conversation_unavailable", "previous_conversation_not_continued", "skillpack_credential_refused"] {
         let text = OrchestratorExplanation.text(for: code)
         #expect(!text.contains("_") && text.hasSuffix(".") && text != code)
     }

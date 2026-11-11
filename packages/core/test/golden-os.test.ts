@@ -161,7 +161,7 @@ test.skipIf(!process.env.ARMADA_GOLDEN_OS_IMAGE).each(["user-standard", "root-nn
           },
         } as unknown as Provider;
         const fake =
-          '#!/usr/bin/env node\nconsole.log(JSON.stringify({workspace:{id:"11111111-1111-4111-8111-111111111111"},token:{scopes:["skills:read","secrets:read"]}}));\n';
+          '#!/usr/bin/env node\nif(process.argv[2]!=="auth")process.exit(3);console.log(JSON.stringify({workspace:{id:"11111111-1111-4111-8111-111111111111"},token:{scopes:["skills:read","secrets:read"]}}));\n';
         expect(
           docker(
             [
@@ -181,7 +181,7 @@ test.skipIf(!process.env.ARMADA_GOLDEN_OS_IMAGE).each(["user-standard", "root-nn
             harness: "codex",
             key: "cmp_pat_" + "a".repeat(48),
           });
-        await expect(install()).rejects.toMatchObject({ reason: "skillpack_scope_refused", stage: "auth" });
+        await expect(install()).rejects.toMatchObject({ reason: "skillpack_credential_refused", stage: "install" });
         expect(
           docker(
             [
