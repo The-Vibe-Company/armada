@@ -47,7 +47,7 @@ export async function callSharedTool(context: ToolContext, name: string, args: R
       );
       const code = marker?.text?.slice("error code: ".length) ?? "internal";
       // Error details cross the MCP transport only through this closed, secret-free field.
-      const structured = result.structuredContent as { error?: { details?: { phase?: unknown } } } | undefined;
+      const structured = result._meta as { error?: { details?: { phase?: unknown } } } | undefined;
       const phase =
         code === "github_hydration_failed" ? githubHydrationPhase(structured?.error?.details?.phase) : undefined;
       throw new ToolApiError(code, block?.text ?? "Operation failed.", phase ? { phase } : undefined);
