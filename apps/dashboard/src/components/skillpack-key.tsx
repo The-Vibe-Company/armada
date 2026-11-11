@@ -140,7 +140,7 @@ function KeyRow({
       : { tone: "warning" as const, label: "Expired or revoked" };
   return (
     <li
-      className="grid gap-x-4 gap-y-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_9.5rem_minmax(0,11rem)_auto] sm:items-center"
+      className="grid gap-x-4 gap-y-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_10rem_11rem_11rem] sm:items-center"
       data-skillpack-key={scope}
       data-skillpack-state={stored ? (stored.usable ? "active" : "unusable") : "not-set"}
     >
