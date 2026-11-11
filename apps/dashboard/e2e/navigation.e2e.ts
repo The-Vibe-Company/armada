@@ -9,6 +9,7 @@ for (const phone of [false, true]) {
   test(`relationship navigation stays usable on ${phone ? "phone" : "desktop"}`, async ({ page }) => {
     await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
     await signIn(page, "alice@example.com", "/environments");
+    await expect(page.getByLabel("Active organization", { exact: true })).toHaveCount(1);
     const nav = page.getByRole("navigation", { name: "Main", exact: true });
     const toggle = page.getByRole("button", { name: /Navigation/ });
     if (phone) {
@@ -27,7 +28,10 @@ for (const phone of [false, true]) {
     );
     const environment = nav.getByRole("link", { name: "Environments", exact: true });
     await expect(environment).toHaveAttribute("aria-current", "page");
-    await page.screenshot({ path: `test-results/navigation-after-${phone ? "phone" : "desktop"}.png` });
+    await page.screenshot({
+      animations: "disabled",
+      path: `test-results/navigation-after-${phone ? "phone" : "desktop"}.png`,
+    });
     if (phone) {
       await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
       await page.keyboard.press("Escape");
