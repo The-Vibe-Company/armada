@@ -24,9 +24,10 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
-          const notice = page
-            .getByRole(phase === "before" ? "alert" : "status")
-            .filter({ hasText: "The Armada server is not configured" });
+          // Both revisions may already use a status live region; capture the visible refusal, not a historical role.
+          const notice = page.getByText("The Armada server is not configured: subscriptions cannot be managed here.", {
+            exact: true,
+          });
           await expect(notice).toBeVisible();
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.screenshot({
