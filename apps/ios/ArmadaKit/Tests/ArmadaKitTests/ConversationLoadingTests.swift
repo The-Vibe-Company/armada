@@ -276,3 +276,19 @@ private final class SuspendedPresentation {
         #expect(retained == "fresh")
     }
 }
+
+@MainActor
+@Test func cancelledRenderingIsNeverRetainedAsACompletePresentation() async {
+    let cache = ConversationCache<Entry>()
+    let snapshot = ConversationSnapshot(events: [Entry(id: "e")], cursor: "c")
+    cache.store(snapshot, for: "k")
+    let gate = SuspendedPresentation()
+    let cancelled = Task { await cache.rendered(for: "k", events: snapshot.events) { _ in await gate.build() } }
+    for await _ in gate.started { break }
+    cancelled.cancel()
+    // Markdown's cooperative cancellation may return partial output rather than throw.
+    gate.release?.resume(returning: "partial")
+    #expect(await cancelled.value == "partial")
+    let reopened = await cache.rendered(for: "k", events: snapshot.events) { _ in "complete" }
+    #expect(reopened == "complete")
+}
