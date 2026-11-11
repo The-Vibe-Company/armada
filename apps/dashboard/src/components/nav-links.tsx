@@ -21,16 +21,16 @@ import { cn } from "@/lib/utils";
 
 /**
  * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), environments, templates,
- * tools, variables and harness subscriptions are set up once (Build), and the account pages sit last. The hint, a
- * tooltip, says what each page holds. On a phone the ten links fit two rows of five, so the conversation pages keep
- * their height.
+ * tools, skills, variables and harness subscriptions are set up once (Build), and the account pages sit last. The
+ * hint, a tooltip, says what each page holds. On a phone the eleven links fit two rows of six, so the conversation
+ * pages keep their height.
  */
 const GROUPS = [
   {
     label: "Run",
     links: [
       { href: "/fleet", label: "Fleet", hint: "Every agent and what needs you", icon: GaugeIcon },
-      { href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon },
+      { href: "/sandboxes", label: "Sandboxes", short: "Boxes", hint: "Running agents and logs", icon: BoxesIcon },
       {
         href: "/orchestrators",
         label: "Orchestrators",
