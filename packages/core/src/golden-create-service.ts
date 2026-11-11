@@ -188,7 +188,9 @@ export class GoldenCreateService {
       });
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId });
-      requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
+      requestedSnapshot = input.existingGolden
+        ? `golden-r-${crypto.randomUUID()}`
+        : `golden-${builder.id.replaceAll("_", "-")}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       await enter("snapshot");
@@ -275,6 +277,12 @@ export class GoldenCreateService {
       }
       return { snapshot, warnings };
     } catch (error) {
+      // An explicit refusal cannot have started a save. Unknown/time-out outcomes still
+      // retain capacity until an operator can reconcile the artifact.
+      if (phase === "snapshot" && !ownedSnapshot && isNonMutatingProviderRefusal(error)) {
+        snapshotAttempted = false;
+        uncertainSnapshot = false;
+      }
       refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
       console.error(
         JSON.stringify({
@@ -282,6 +290,13 @@ export class GoldenCreateService {
           buildId,
           phase,
           code: error instanceof GoldenError || error instanceof ProviderError ? error.code : "unknown",
+          ...(error instanceof ProviderError
+            ? {
+                provider: error.provider,
+                status: error.status,
+                detail: error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure",
+              }
+            : {}),
           elapsedMs: Date.now() - startedAt,
         }),
       );
@@ -559,4 +574,12 @@ function shellQuote(value: string): string {
 function safe(v: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v)) throw new GoldenError("invalid_config", "Unsafe repository path.");
   return v;
+}
+
+/** Closed diagnostic classes: upstream text, codes and details may contain credentials. */
+function snapshotRejectionClass(message: string): string {
+  if (/name/i.test(message) && /invalid|reserved|characters|pattern/i.test(message)) return "snapshot_name_invalid";
+  if (/trial|subscription|plan|billing|credit/i.test(message)) return "snapshot_account_restricted";
+  if (/quota|limit|capacity/i.test(message)) return "snapshot_limit_reached";
+  return "request_rejected";
 }

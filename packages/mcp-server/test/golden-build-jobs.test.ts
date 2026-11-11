@@ -431,3 +431,52 @@ test.each([false, true])(
     }
   },
 );
+
+test.each([false, true])(
+  "snapshot refusal cleans up only confirmed non-mutating failures (keepSource=%s)",
+  async (keepSource) => {
+    const s = await fixture();
+    const logs: string[] = [];
+    const logging = spyOn(console, "error").mockImplementation((line) => logs.push(String(line)));
+    try {
+      s.boat.provider.snapshot = async ({ name }) => {
+        // Independently enforce Boat's documented saved-name contract.
+        expect(name).toMatch(/^[a-z0-9][a-z0-9-]{0,62}$/);
+        throw new ProviderError({
+          provider: "boat",
+          code: "invalid_request",
+          status: 400,
+          message: "unsafe-secret-payload",
+          providerCode: "unsafe-secret-payload",
+          details: { ...(keepSource ? { keepSource: true } : {}), secret: "unsafe-secret-payload" },
+          retryable: false,
+        });
+      };
+      const token = await s.token(s.people.admin);
+      const admitted = await s.http(token, "golden/create", {
+        name: "snapshot-refused",
+        org: s.people.org,
+        repos: ["acme/web"],
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const job = (await admitted.json()) as GoldenBuildStatus;
+      await s.builds.runOne();
+      const response = await s.http(token, "golden/build/status", { jobId: job.jobId });
+      const status = await response.json();
+      expect(status).toMatchObject({
+        state: keepSource ? "recovery_required" : "failed",
+        phase: "snapshot",
+        failureReason: keepSource ? null : "provider_snapshot_rejected",
+        result: null,
+      });
+      expect(s.boat.stops).toHaveLength(1);
+      expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(keepSource ? 1 : 0);
+      expect((await s.db.query("select 1 from goldens where name='snapshot-refused'")).rows).toEqual([]);
+      expect(logs.join(" ")).toContain('"detail":"request_rejected"');
+      expect(JSON.stringify({ logs, status })).not.toContain("unsafe-secret-payload");
+    } finally {
+      logging.mockRestore();
+      await s.close();
+    }
+  },
+);
