@@ -944,7 +944,7 @@ test("template mode runs through the API transport and cleans its worker without
           promptId: "prompt-id",
           manifest: { skillReceipts: [receipt] },
         });
-      case "sandbox/logs":
+      case "logs/read":
         return json({
           events: [
             {

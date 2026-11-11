@@ -202,11 +202,11 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         let cursor: string | undefined;
         const cursors = new Set<string>();
         for (let pageIndex = 0; pageIndex < 120; pageIndex++) {
-          const page = await api<{ events: Event[]; cursor: string | null; hasMore: boolean }>("sandbox/logs", {
+          const page = await api<{ events: Event[]; cursor: string | null; hasMore: boolean }>("logs/read", {
             id: record.sandboxId,
             limit: 100,
             coalesce: true,
-            ...(cursor ? { since_cursor: cursor } : {}),
+            ...(cursor ? { cursor } : {}),
           });
           if (!Array.isArray(page?.events) || typeof page.hasMore !== "boolean") fail("invalid_response");
           for (const event of page.events) {

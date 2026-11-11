@@ -112,10 +112,12 @@ function fixture(options: { key?: "user" | "org" | "absent"; fault?: Fault; spli
           skills: [receipt(fault === "mismatched_receipt" ? selected.privateSkill : template!.definition.skills[0]!)],
         };
       } else if (path === "sandbox/wait") output = { prompt: { promptId: input.prompt_id, state: "finished" } };
-      else if (path === "sandbox/logs") {
+      else if (path === "logs/read") {
+        expect(input).not.toHaveProperty("since_cursor");
+        if (input.cursor !== undefined) expect(input.cursor).toBe("next");
         const prompt = `prompt-${String(input.id).replace("sandbox-", "")}`;
         const text = fault === "answer" ? "not-the-value" : variable!.value;
-        if (splitAnswer && !input.since_cursor)
+        if (splitAnswer && !input.cursor)
           output = {
             events: [
               {
