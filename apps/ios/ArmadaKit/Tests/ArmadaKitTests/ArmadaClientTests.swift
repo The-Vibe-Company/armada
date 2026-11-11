@@ -169,7 +169,7 @@ private actor RefreshTransport: ArmadaTransport {
 @Test func restoringAnOlderSessionIgnoresTheRetiredCommandJournal() async throws {
     let storage = MemoryStorage()
     // Retired payloads need not be understood to retain the person's login and organization.
-    let stored = #"{"origin":"https://armada.thevibecompany.co","session":\#(login),"selectedOrgID":"org-a","operations":[{"retiredCommandFormat":"not-decoded"}]}"#
+    let stored = #"{"origin":"https://armada.thevibecompany.co","session":\#(login),"selectedOrgID":"org-a","operations":[{"retiredCommandFormat":"not-decoded"}],"sandboxPrompts":[{"id":"00000000-0000-4000-8000-000000000001","sandboxID":"00000000-0000-4000-8000-000000000002","orgID":"org-a","text":"Unconfirmed before upgrade","sentAt":0}]}"#
     storage.save(Data(stored.utf8))
     let transport = ScriptedTransport([])
     let client = try ArmadaClient(transport: transport, storage: storage)
@@ -180,4 +180,11 @@ private actor RefreshTransport: ArmadaTransport {
     let retained = try #require(storage.load())
     let data = try #require(JSONSerialization.jsonObject(with: retained) as? [String: Any])
     #expect(data["operations"] == nil)
+    let pending = await client.pendingSandboxPrompts
+    #expect(pending.count == 1)
+    #expect(pending.first?.text == "Unconfirmed before upgrade")
+    let restoredAgain = try ArmadaClient(transport: transport, storage: storage)
+    try await restoredAgain.restore()
+    #expect(await restoredAgain.pendingSandboxPrompts == pending)
+    #expect(await transport.requests.isEmpty)
 }

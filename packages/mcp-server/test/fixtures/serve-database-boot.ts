@@ -1,5 +1,6 @@
 import { mock, spyOn } from "bun:test";
 import assert from "node:assert/strict";
+import { VERSION } from "@armada/core";
 
 const sqlModule = await import("../../src/sql.ts");
 const originalSQL = Bun.SQL;
@@ -109,6 +110,19 @@ try {
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
     assert.equal(((await response.json()) as { ok: boolean }).ok, true);
+    // Runtime failure after successful boot must not keep reporting healthy.
+    now += 1_001;
+    failUntil = Infinity;
+    const unavailable = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailable.headers.get("cache-control"), "no-store");
+    assert.equal(unavailable.headers.get("retry-after"), "5");
+    assert.deepEqual(await unavailable.json(), { ok: false, version: VERSION, reason: "database_unavailable" });
+    now += 1_001;
+    failUntil = 0;
+    const recovered = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+    assert.equal(recovered.status, 200);
+    assert.equal(((await recovered.json()) as { ok: boolean }).ok, true);
     const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, { method: "POST" });
     const streamText = stream.text();
     const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`);

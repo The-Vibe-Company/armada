@@ -5,29 +5,10 @@ import { join } from "node:path";
 import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
+import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
-export const PRIVATE_SSH_FAILURES = [
-  "skillpack_ssh_keygen_failed",
-  "skillpack_ssh_local_storage_failed",
-  "skillpack_ssh_authorization_failed",
-  "skillpack_ssh_connection_invalid",
-  "skillpack_ssh_connection_failed",
-  "skillpack_ssh_host_key_rejected",
-  "skillpack_ssh_authentication_failed",
-  "skillpack_ssh_unreachable",
-  "skillpack_ssh_timeout",
-  "skillpack_ssh_node_missing",
-  "skillpack_ssh_flock_missing",
-  "skillpack_ssh_home_unavailable",
-  "skillpack_ssh_key_cleanup_failed",
-  "skillpack_ssh_remote_failed",
-  "skillpack_ssh_output_invalid",
-] as const;
-export class PrivateSshError extends Error {
-  constructor(readonly reason: (typeof PRIVATE_SSH_FAILURES)[number]) {
-    super(reason);
-  }
-}
+
+export { PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 export interface SshExecDeps {
   /** Opt in only for the private GitHub repair installer, never generic guest output. */
   githubHydration?: boolean;

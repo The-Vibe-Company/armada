@@ -24,6 +24,7 @@ private struct StoredSession: Codable {
     let origin: String
     let session: ArmadaSession
     let selectedOrgID: String?
+    let sandboxPrompts: [PendingSandboxPrompt]?
 }
 
 /// API-only authority owner. No Supabase configuration, provider key or browser callback.
@@ -38,6 +39,7 @@ public actor ArmadaClient {
     private var refreshing: Task<ArmadaSession, Error>?
     private var refreshID: UUID?
     public private(set) var selectedOrgID: String?
+    public private(set) var pendingSandboxPrompts: [PendingSandboxPrompt] = []
 
     public init(origin: URL = productionOrigin, transport: any ArmadaTransport = URLSessionTransport(),
                 storage: any SessionStorage = KeychainSessionStorage()) throws {
@@ -57,7 +59,9 @@ public actor ArmadaClient {
             guard let data = try storage.load() else { return }
             let stored = try JSONDecoder().decode(StoredSession.self, from: data)
             guard stored.origin == origin.absoluteString else { return }
-            try persist(stored.session, org: stored.selectedOrgID)
+            let prompts = stored.sandboxPrompts ?? []
+            try persist(stored.session, org: stored.selectedOrgID, sandboxPrompts: prompts)
+            pendingSandboxPrompts = prompts
             session = stored.session; selectedOrgID = stored.selectedOrgID; generation += 1
         } catch { throw ArmadaError.secureStorage }
     }
@@ -83,9 +87,9 @@ public actor ArmadaClient {
         let fence = generation
         let next: ArmadaSession = try await post("auth/email/verify", Verify(email: email, code: code), authenticated: false)
         guard generation == fence else { throw CancellationError() }
-        try persist(next, org: nil)
+        try persist(next, org: nil, sandboxPrompts: [])
         refreshing?.cancel(); refreshing = nil; refreshID = nil; generation += 1
-        session = next; selectedOrgID = nil
+        pendingSandboxPrompts = []; session = next; selectedOrgID = nil
     }
     public func organizations() async throws -> [Organization] {
         let result: Organizations = try await post("org/list", Empty())
@@ -102,12 +106,13 @@ public actor ArmadaClient {
     /// so the UI must not claim remote sign-out succeeded while offline.
     public func signOut() async throws {
         let token = session?.accessToken
+        pendingSandboxPrompts = []
         generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil
         do { try storage.remove() } catch { throw ArmadaError.secureStorage }
         if let token { let _: OK = try await wire("account/logout", Empty(), token: token) }
     }
-    private func persist(_ next: ArmadaSession, org: String?) throws {
-        do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org))) }
+    private func persist(_ next: ArmadaSession, org: String?, sandboxPrompts: [PendingSandboxPrompt]? = nil) throws {
+        do { try storage.save(JSONEncoder().encode(StoredSession(origin: origin.absoluteString, session: next, selectedOrgID: org, sandboxPrompts: sandboxPrompts ?? pendingSandboxPrompts))) }
         catch { throw ArmadaError.secureStorage }
     }
     func authority() async throws -> String {
@@ -159,6 +164,12 @@ public actor ArmadaClient {
     ) async throws -> Response {
         return try await request(route, method: "POST", body: JSONEncoder().encode(body), token: token)
     }
+    func saveSandboxPrompts(_ prompts: [PendingSandboxPrompt]) throws {
+        guard let session else { throw ArmadaError.signedOut }
+        try persist(session, org: selectedOrgID, sandboxPrompts: prompts)
+        pendingSandboxPrompts = prompts
+    }
+
     /// Sandbox route codes that refuse before anything reaches the agent. Older servers answer 400 for
     /// other codes too, including `unknown` after a provider already accepted a prompt, so a bare
     /// 400 never proves that a prompt was not delivered.
