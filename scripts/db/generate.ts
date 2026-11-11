@@ -28,6 +28,8 @@ type Schema = {
 
 const ROW_ALIASES: Record<string, string> = {
   routines: "RoutineRow",
+  routine_runs: "RoutineRunRow",
+  routine_run_inputs: "RoutineRunInputRow",
   launch_templates: "LaunchTemplateRow",
   launch_template_revisions: "LaunchTemplateRevisionRow",
   template_launch_requests: "TemplateLaunchRequestRow",

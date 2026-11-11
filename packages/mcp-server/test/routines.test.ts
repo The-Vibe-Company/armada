@@ -51,7 +51,7 @@ async function fixture() {
   return { db, sql, people, actor, service, template, config, command, create };
 }
 
-test("routine CRUD pins revisions, preserves prompt bytes, uses optimistic versions and cannot enable", async () => {
+test("routine CRUD pins revisions, preserves prompt bytes, uses optimistic versions and rejects invalid configuration", async () => {
   const f = await fixture();
   try {
     const templateId = await f.template();
@@ -210,6 +210,47 @@ test("routine HTTP routes authenticate, reject query parameters, and persist str
       prompt: "Inspect\nwithout editing",
       status: "paused",
     });
+  } finally {
+    await f.db.close();
+  }
+});
+
+// Lifecycle API contract is distinct from scheduler firing: authorization, versions and schedule reset.
+test("routine lifecycle enables, pauses and preserves accessible history after deletion", async () => {
+  const f = await fixture();
+  try {
+    const row = await f.create(await f.template());
+    const enabled = (await f.command("enable", { id: row.id, expectedVersion: 1 })).item as Routine;
+    expect(enabled).toMatchObject({ status: "enabled", version: 2, consecutiveFailures: 0 });
+    expect(new Date(enabled.nextDueAt!).getTime()).toBeGreaterThan(Date.now());
+    expect((await f.command("list", {})).items).toHaveLength(1);
+    await expect(f.command("pause", { id: row.id, expectedVersion: 1 })).rejects.toMatchObject({ code: "conflict" });
+    const paused = await f.command("pause", { id: row.id, expectedVersion: 2 });
+    expect(paused).toMatchObject({
+      item: { status: "paused", version: 3, nextDueAt: null },
+      admittedRunsMayFinish: true,
+    });
+    // API history owns the safe projection and readable diagnostic, not scheduler execution.
+    await f.db.query(
+      `insert into routine_runs(routine_id,org_id,owner_id,scheduled_due_at,
+      configuration_version,state,reason,request_key) values($1,$2,$3,now(),1,'skipped',
+      'daily_limit_reached','projection-fixture')`,
+      [row.id, f.people.org, f.people.owner],
+    );
+    const history = (await f.command("history", { id: row.id })).items as Record<string, unknown>[];
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      state: "skipped",
+      reason: "daily_limit_reached",
+      sandboxId: null,
+      reasonHelp: "Skipped because the rolling 24-hour launch limit was reached.",
+    });
+    expect(history[0]).not.toHaveProperty("requestKey");
+    expect(history[0]).not.toHaveProperty("prompt");
+    await expect(f.command("history", { id: row.id }, f.people.admin)).rejects.toMatchObject({ code: "not_found" });
+    await f.command("delete", { id: row.id, expectedVersion: 3 });
+    expect((await f.command("history", { id: row.id })).items).toHaveLength(1);
+    await expect(f.command("enable", { id: row.id, expectedVersion: 4 })).rejects.toMatchObject({ code: "not_found" });
   } finally {
     await f.db.close();
   }

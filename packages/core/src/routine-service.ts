@@ -1,6 +1,6 @@
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { Sql } from "./golden-store.ts";
-import type { Routine } from "./routines.ts";
+import { type Routine, routineReasonHelp } from "./routines.ts";
 import { VaultError } from "./vault-error.ts";
 
 type Row = {
@@ -15,7 +15,10 @@ type Row = {
   interval_hours: number;
   max_runs_per_day: number;
   ttl_seconds: number;
-  status: "paused" | "deleted";
+  status: "enabled" | "paused" | "deleted";
+  next_due_at: string | Date | null;
+  consecutive_failures: number;
+  pause_reason: string | null;
   version: number;
   created_at: string | Date;
   updated_at: string | Date;
@@ -34,6 +37,9 @@ function dto(r: Row): Routine {
     maxRunsPerDay: r.max_runs_per_day,
     ttlSeconds: r.ttl_seconds,
     status: r.status,
+    nextDueAt: r.next_due_at,
+    consecutiveFailures: r.consecutive_failures,
+    pauseReason: r.pause_reason,
     version: r.version,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -76,6 +82,9 @@ export function createRoutineService(sql: Sql) {
       get: ["org", "id"],
       update: ["org", "id", "expectedVersion", ...configFields],
       delete: ["org", "id", "expectedVersion"],
+      enable: ["org", "id", "expectedVersion"],
+      pause: ["org", "id", "expectedVersion"],
+      history: ["org", "id"],
     };
     if (!Object.hasOwn(fields, operation) || Object.keys(input).some((k) => !fields[operation]?.includes(k))) invalid();
     const org = id(input.org);
@@ -94,7 +103,7 @@ export function createRoutineService(sql: Sql) {
           return {
             items: (
               await tx.query<Row>(
-                "select * from public.routines where org_id=$1 and (scope='org' or owner_id=$2) and status='paused' order by name,id",
+                "select * from public.routines where org_id=$1 and (scope='org' or owner_id=$2) and status<>'deleted' order by name,id",
                 [org, actor.userId],
               )
             ).rows.map(dto),
@@ -103,12 +112,61 @@ export function createRoutineService(sql: Sql) {
         if (operation !== "create") {
           current = (
             await tx.query<Row>(
-              "select * from public.routines where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) and status='paused' for update",
-              [id(input.id), org, actor.userId],
+              "select * from public.routines where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) and (status<>'deleted' or $4::boolean) for update",
+              [id(input.id), org, actor.userId, operation === "history"],
             )
           ).rows[0];
           if (!current) throw new VaultError("not_found", "Routine unavailable.");
           if (operation === "get") return { item: dto(current) };
+          if (operation === "history") {
+            const runs = await tx.query<{
+              id: string;
+              scheduled_due_at: string | Date;
+              configuration_version: number;
+              state: string;
+              reason: string | null;
+              missed_intervals: number;
+              created_at: string | Date;
+              updated_at: string | Date;
+              sandbox_id: string | null;
+              template_request_id: string | null;
+              task_state: string | null;
+              task_checked_at: string | Date | null;
+            }>(
+              `select r.id,r.scheduled_due_at,r.configuration_version,r.state,r.reason,r.template_request_id,r.task_state,r.task_checked_at,
+                r.missed_intervals,r.created_at,r.updated_at,
+                case when exists(select 1 from public.sandboxes s where s.id=r.sandbox_id
+                  and s.org_id=$2 and s.owner_id=$3) then r.sandbox_id else null end as sandbox_id
+                from public.routine_runs r where r.routine_id=$1
+                order by r.scheduled_due_at desc,r.id desc limit 100`,
+              [current.id, org, actor.userId],
+            );
+            return {
+              items: runs.rows.map((r) => ({
+                id: r.id,
+                scheduledDueAt: r.scheduled_due_at,
+                configurationVersion: r.configuration_version,
+                state: r.state,
+                reason: r.reason,
+                reasonHelp: routineReasonHelp(r.reason),
+                missedIntervals: r.missed_intervals,
+                createdAt: r.created_at,
+                updatedAt: r.updated_at,
+                sandboxId: r.sandbox_id,
+                templateRequestId: r.template_request_id,
+                taskState: r.task_state,
+                taskCheckedAt: r.task_checked_at,
+                taskHelp:
+                  r.task_state === "failed"
+                    ? "The initial agent prompt failed. Inspect the authorized sandbox for details."
+                    : r.task_state === "interrupted"
+                      ? "The initial agent prompt was interrupted."
+                      : r.task_state === "unknown"
+                        ? "The initial prompt outcome could not be observed. No replacement is launched."
+                        : null,
+              })),
+            };
+          }
           if (current.version !== integer(input.expectedVersion, 1, 2147483647))
             throw new VaultError("conflict", "Routine version changed.");
         }
@@ -119,11 +177,20 @@ export function createRoutineService(sql: Sql) {
         if (operation === "delete") {
           const row = (
             await tx.query<Row>(
-              "update public.routines set status='deleted',version=version+1,updated_at=now() where id=$1 returning *",
+              "update public.routines set status='deleted',next_due_at=null,version=version+1,updated_at=now() where id=$1 returning *",
               [current!.id],
             )
           ).rows[0]!;
-          return { item: dto(row) };
+          return { item: dto(row), admittedRunsMayFinish: true };
+        }
+        if (operation === "pause") {
+          const row = (
+            await tx.query<Row>(
+              "update public.routines set status='paused',next_due_at=null,pause_reason=null,version=version+1,updated_at=now() where id=$1 returning *",
+              [current!.id],
+            )
+          ).rows[0]!;
+          return { item: dto(row), admittedRunsMayFinish: true };
         }
         if (
           current &&
@@ -135,6 +202,32 @@ export function createRoutineService(sql: Sql) {
           ).rows.length
         )
           throw new VaultError("conflict", "Routine owner is no longer an organization member.");
+        if (operation === "enable") {
+          const owner = (
+            await tx.query<{ role: string }>(
+              "select role from public.members where org_id=$1 and user_id=$2 for share",
+              [org, current!.owner_id],
+            )
+          ).rows[0];
+          if (!owner || (scope === "org" && owner.role !== "admin"))
+            throw new VaultError("conflict", "Routine owner cannot run this routine.");
+          const available = (
+            await tx.query(
+              `select t.id from public.launch_templates t
+            join public.launch_template_revisions r on r.template_id=t.id and r.revision=$2
+            where t.id=$1 and t.org_id=$3 and t.status='active' and (t.scope='org' or (t.owner_id=$4 and $5='personal')) for share of t`,
+              [current!.template_id, current!.template_revision, org, current!.owner_id, scope],
+            )
+          ).rows[0];
+          if (!available) throw new VaultError("not_found", "Routine template revision unavailable.");
+          const row = (
+            await tx.query<Row>(
+              "update public.routines set status='enabled',next_due_at=now()+interval_hours*interval '1 hour',consecutive_failures=0,pause_reason=null,version=version+1,updated_at=now() where id=$1 returning *",
+              [current!.id],
+            )
+          ).rows[0]!;
+          return { item: dto(row) };
+        }
         const name = text(input.name, 200),
           templateId = id(input.templateId),
           revision = integer(input.templateRevision, 1, 2147483647);
@@ -155,7 +248,7 @@ export function createRoutineService(sql: Sql) {
         const row = current
           ? (
               await tx.query<Row>(
-                "update public.routines set name=$1,template_id=$2,template_revision=$3,prompt=$4,interval_hours=$5,max_runs_per_day=$6,ttl_seconds=$7,version=version+1,updated_at=now() where id=$8 returning *",
+                "update public.routines set name=$1,template_id=$2,template_revision=$3,prompt=$4,interval_hours=$5,max_runs_per_day=$6,ttl_seconds=$7,next_due_at=case when status='enabled' then now()+$5::integer*interval '1 hour' else null end,version=version+1,updated_at=now() where id=$8 returning *",
                 [...params, current.id],
               )
             ).rows[0]!
