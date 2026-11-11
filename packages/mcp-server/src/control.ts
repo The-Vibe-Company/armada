@@ -1236,11 +1236,13 @@ async function readLogs(
     }
     cursor = next;
   }
-  const info = await target.provider.get(target.providerSandboxId);
+  // Ordinary history reads need only the authorized event stream. Live compute is
+  // consulted solely to decide whether a follow request should keep waiting.
+  const info = follow ? await target.provider.get(target.providerSandboxId) : null;
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    follow && latest && info.state !== "stopped" && info.state !== "failed"
+    follow && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
       : null;
   return {
@@ -1250,9 +1252,9 @@ async function readLogs(
     hasMore,
     settled:
       !follow ||
-      info.state === "stopped" ||
-      info.state === "failed" ||
-      (latest === null ? info.state !== "running" && info.state !== "starting" : prompt?.done === true),
+      info?.state === "stopped" ||
+      info?.state === "failed" ||
+      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
   };
 }
 

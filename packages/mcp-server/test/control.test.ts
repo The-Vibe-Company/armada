@@ -511,6 +511,7 @@ describe("armada org and armada creds against the control API", () => {
                 return { events: prompt, cursor: status ? "cursor" : undefined, hasMore: false };
               },
               async get() {
+                if (!follow) throw new Error("History reads must not depend on live compute availability");
                 return { id: "bx_follow", name: "x", state: "ready", providerState: "ready", labels: {} };
               },
               async getPrompt() {
