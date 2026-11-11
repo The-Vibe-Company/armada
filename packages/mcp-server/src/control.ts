@@ -97,6 +97,7 @@ import { InvitationError, type Invitations, invitationsFromEnv } from "./invitat
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
+import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
@@ -1482,11 +1483,19 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     ),
   });
   const templates = createTemplateService(sql);
+  const lifecycle = () =>
+    createMcpLifecycle({
+      sql,
+      registry,
+      encryptionKey,
+      origin: need("ARMADA_PUBLIC_URL"),
+      prepareReadableVariables: templates.prepare,
+    });
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
     createBoatProvider({
       apiKey,
       beforePrompt: async (provider, id) => {
-        if (caller) await templates.prepare(provider, id, caller);
+        if (caller) await lifecycle().beforePrompt(provider, id, caller);
       },
     });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
@@ -1497,7 +1506,9 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       encryptionKey,
       publicUrl: need("ARMADA_PUBLIC_URL"),
       github: { store, app: githubApp },
-      beforePrompt: (provider, id, caller) => templates.prepare(provider, id, caller),
+      beforePrompt: async (provider, id, caller) => {
+        await lifecycle().beforePrompt(provider, id, caller);
+      },
     }));
   const providers = providerRegistry({
     vault: store,

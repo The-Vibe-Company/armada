@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
@@ -7,18 +10,28 @@ import {
   createSqlVaultStore,
   createTemplateService,
   type LaunchTemplate,
+  launchSandbox,
   type Sql,
   type TemplateRuntime,
 } from "@armada/core/server";
+import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
 async function fixture() {
   const { db, people } = await database();
-  const sql: Sql = { query: (s, p) => db.query(s, p), transaction: (work) => db.transaction((tx) => work(tx)) };
+  const queries: string[] = [];
+  const sql: Sql = {
+    query: (s, p) => {
+      queries.push(s);
+      return db.query(s, p);
+    },
+    transaction: (work) => db.transaction((tx) => work(tx)),
+  };
   const service = createTemplateService(sql);
   const vault = createApplicationVault(sql, undefined);
   const actor = (userId = people.owner) => ({
@@ -86,6 +99,7 @@ async function fixture() {
       runtime,
     );
   return {
+    queries,
     db,
     sql,
     people,
@@ -388,16 +402,45 @@ test("exact connection grant generations and account versions fail closed withou
     ]);
     const def = { ...f.definition, connections: [connection.id, second.id] };
     const t = (await f.create(f.people.owner, "personal", def)).item as LaunchTemplate;
+    // Routine OAuth refresh after publication must not require a new template revision.
+    await f.db.query("update mcp_grants set version=version+1 where connection_id in ($1,$2)", [
+      connection.id,
+      second.id,
+    ]);
     const first = await f.launch(t.id);
     expect(first.state).toBe("succeeded");
+    const saved = await f.service.command(f.actor(), "get", { org: f.people.org, id: t.id });
+    expect((saved.revision as { definition: { connections: string[] } }).definition.connections).toEqual([
+      connection.id,
+      second.id,
+    ]);
+    expect(
+      (first.manifest as { connections: { id: string; version: number; generation: number }[] }).connections.map(
+        (c) => ({ id: c.id, version: c.version }),
+      ),
+    ).toEqual([
+      { id: connection.id, version: 2 },
+      { id: second.id, version: 2 },
+    ]);
     expect(
       (
         await f.db.query<{ connection_id: string }>("select connection_id from mcp_bindings order by connection_id")
       ).rows.map((r) => r.connection_id),
     ).toEqual([connection.id, second.id].sort());
+    f.runtime.provider = async () => {
+      await f.db.query("update mcp_grants set version=version+1 where connection_id=$1", [connection.id]);
+      return f.provider;
+    };
+    expect(await f.launch(t.id, "refresh-during-admission")).toMatchObject({
+      state: "failed",
+      reason: "connection_version_changed",
+    });
+    expect(f.boat.forks).toHaveLength(1);
+    f.runtime.provider = async () => f.provider;
+    expect((await f.launch(t.id, "after-refresh")).state).toBe("succeeded");
     await registry.revoke(f.people.owner, f.people.org, connection.id, true);
     await expect(f.launch(t.id, "next-request")).rejects.toMatchObject({ code: "conflict" });
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(2);
     const account = f.runtime.stores.credentials.resolve;
     const binding = await account({ userId: f.people.owner, orgId: f.people.org, role: "member" }, "codex");
     const pinned = (
@@ -410,7 +453,7 @@ test("exact connection grant generations and account versions fail closed withou
       binding.binding!.credentialId,
     ]);
     await expect(f.launch(pinned.id, "stale-account")).rejects.toMatchObject({ code: "conflict" });
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(2);
   } finally {
     await f.db.close();
   }
@@ -498,3 +541,174 @@ test("claimed snapshot fences release on pre-adoption launch refusals without lo
     await f.db.close();
   }
 });
+
+test("later readable preparation survives variable edits, template tombstones and role changes", async () => {
+  const f = await fixture();
+  try {
+    const template = (await f.create()).item as LaunchTemplate;
+    const launched = await f.launch(template.id);
+    await f.vault.command(f.actor(), "variable", "update", {
+      org: f.people.org,
+      id: f.variableId,
+      expectedVersion: 1,
+      value: "replacement",
+    });
+    await f.service.command(f.actor(), "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+    await f.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      prepareReadableVariables: f.service.prepare,
+    });
+    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+      userId: f.people.owner,
+      orgId: f.people.org,
+    });
+    expect(f.configured).toHaveLength(2);
+    expect(f.configured[1]).toMatchObject({ variables: { APP_REGION: "europe\n$(not-a-command)" } });
+    await f.provider.prompt({
+      sandboxId: launched.providerSandboxId as string,
+      harness: "codex",
+      text: "Continue with frozen values",
+    });
+    await expect(
+      lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+        userId: f.people.member,
+        orgId: f.people.org,
+      }),
+    ).rejects.toThrow("No authorized Armada sandbox");
+    await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+    await expect(
+      f.service.prepare(
+        f.provider,
+        launched.providerSandboxId as string,
+        { userId: f.people.owner, orgId: f.people.org },
+        launched.requestId as string,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(f.configured).toHaveLength(2);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("ordinary prompt admission performs no additional template queries or provider bootstrap", async () => {
+  const f = await fixture();
+  try {
+    const launched = await launchSandbox(
+      f.provider,
+      f.runtime.stores,
+      { userId: f.people.owner, orgId: f.people.org, role: "member" },
+      { golden: "shared", provider: "boat", harness: "codex", connections: [] },
+    );
+    const options = {
+      sql: f.sql,
+      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+    };
+    const ordinary = createMcpLifecycle(options);
+    const withTemplates = createMcpLifecycle({ ...options, prepareReadableVariables: f.service.prepare });
+    const actor = { userId: f.people.owner, orgId: f.people.org };
+    f.queries.length = 0;
+    await ordinary.beforePrompt(f.provider, launched.sandbox.providerSandboxId, actor);
+    const baseline = f.queries.length;
+    f.queries.length = 0;
+    await withTemplates.beforePrompt(f.provider, launched.sandbox.providerSandboxId, actor);
+    expect(f.queries).toHaveLength(baseline);
+    expect(f.configured).toHaveLength(0);
+    // A fresh read sees a newly admitted template; there is no negative process cache.
+    const template = (await f.create()).item as LaunchTemplate;
+    const fromTemplate = await f.launch(template.id);
+    await withTemplates.beforePrompt(f.provider, fromTemplate.providerSandboxId as string, actor);
+    expect(f.configured).toHaveLength(2);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test.skipIf(process.platform !== "linux")(
+  "a replacement Modal runner receives frozen readable values again before the next native turn",
+  async () => {
+    const f = await fixture();
+    const root = await mkdtemp(join(tmpdir(), "template-restore-"));
+    const generations: { driver: CodexDriver; journal: Journal }[] = [];
+    try {
+      const generation = async (name: string) => {
+        const cwd = join(root, name);
+        await mkdir(cwd);
+        const proof = join(cwd, "proof.json");
+        const driver = new CodexDriver({
+          executable: join(import.meta.dir, "../../agent-runtime/test/fixtures/app-server.ts"),
+          cwd,
+          env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_READABLE_INSPECTION: proof },
+        });
+        const journal = new Journal(join(cwd, "journal"), (s) => s);
+        const grant = {
+          token: crypto.randomUUID(),
+          sandboxId: "runtime",
+          generation: name,
+          expiresAt: Date.now() + 60000,
+        };
+        const runner = new Runner(journal, grant, { claude: driver, codex: driver });
+        generations.push({ driver, journal });
+        const inspect = async () => {
+          const turn = driver.start({
+            request: { sandboxId: "runtime", harness: "codex", text: "message-semantics" },
+            signal: new AbortController().signal,
+            session: () => {},
+            emit: () => {},
+          });
+          await turn.done;
+          return JSON.parse(await readFile(proof, "utf8"));
+        };
+        return { runner, grant, inspect };
+      };
+      let active = await generation("modal-incarnation-1");
+      // Transparent provider transport into the actual private runner/native driver, not a hydration mock.
+      f.provider.configureReadableVariables = async (input) => {
+        const request = input as { harness: string; variables: Record<string, string> };
+        const result = await active.runner.handle(
+          new Request("https://private-runner", {
+            method: "POST",
+            headers: { [AUTH_HEADER]: active.grant.token },
+            body: JSON.stringify({
+              version: 1,
+              requestId: crypto.randomUUID(),
+              op: "configureReadableVariables",
+              ...request,
+              sandboxId: active.grant.sandboxId,
+            }),
+          }),
+        );
+        if (result.status !== 200) throw Error("Native readable bootstrap refused");
+      };
+      const template = (await f.create()).item as LaunchTemplate;
+      const launched = await f.launch(template.id);
+      expect(launched.state).toBe("succeeded");
+      active = await generation("modal-incarnation-2");
+      expect(await active.inspect()).toEqual({}); // A fresh physical runner has no retained application environment.
+      const lifecycle = createMcpLifecycle({
+        sql: f.sql,
+        registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+        encryptionKey: ENCRYPTION_KEY,
+        origin: "https://armada.test",
+        prepareReadableVariables: f.service.prepare,
+      });
+      await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+        userId: f.people.owner,
+        orgId: f.people.org,
+      });
+      expect(await active.inspect()).toEqual({ region: "europe\n$(not-a-command)" });
+    } finally {
+      for (const g of generations) {
+        await g.driver.close();
+        g.journal.close();
+      }
+      await f.db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

@@ -88,7 +88,9 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
+  const templates = createTemplateService(sql);
   const mcp = createMcpHttpIntegration({
+    prepareReadableVariables: templates.prepare,
     deferBackground: true,
     githubRuntimeEnabled: config.githubRuntimeEnabled,
     githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
@@ -110,7 +112,6 @@ export async function startServer(
     await sql.close();
     throw error;
   }
-  const templates = createTemplateService(sql);
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
@@ -133,7 +134,6 @@ export async function startServer(
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
         await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
-        await templates.prepare(provider, id, caller);
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
@@ -159,10 +159,7 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
     github: { store, app: githubApp },
-    beforePrompt: async (provider, id, caller) => {
-      await mcp.beforePrompt(provider, id, caller);
-      await templates.prepare(provider, id, caller);
-    },
+    beforePrompt: mcp.beforePrompt,
   });
   const providers = providerRegistry({
     vault: store,

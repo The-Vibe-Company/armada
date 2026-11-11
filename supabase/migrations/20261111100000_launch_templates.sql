@@ -36,6 +36,8 @@ create table public.template_launch_requests (
  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
  unique(org_id,actor_id,client_key)
 );
+-- Prompt admission resolves a template hint within its existing authorized sandbox read.
+create unique index template_launch_requests_sandbox on public.template_launch_requests(sandbox_id);
 create function public.immutable_template_revision() returns trigger language plpgsql set search_path=public as $$
 begin raise exception 'Template revisions are immutable'; end $$;
 create trigger immutable_template_revision before update or delete on public.launch_template_revisions for each row execute function public.immutable_template_revision();

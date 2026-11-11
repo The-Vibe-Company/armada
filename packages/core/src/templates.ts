@@ -8,7 +8,8 @@ export interface TemplateDefinition {
   model: string;
   reasoningEffort: string;
   modelAccount?: { id: string; version: number };
-  connections: { id: string; version: number; generation: number }[];
+  /** Stable connection identities; live connected grant versions resolve only at launch admission. */
+  connections: string[];
   variables: { key: string; variableId: string; version: number }[];
   skills: string[];
 }

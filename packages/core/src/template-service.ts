@@ -36,6 +36,7 @@ type Manifest = {
   revisionHash: string;
   golden: GoldenRecord;
   definition: TemplateDefinition;
+  connections: { id: string; version: number; generation: number }[];
   variables: Record<string, string>;
   variableProvenance: TemplateDefinition["variables"];
   account: { id: string; version: number };
@@ -176,6 +177,7 @@ export function createTemplateService(sql: Sql) {
     scope: string,
     def: TemplateDefinition,
     enforceModelScope = true,
+    expectedConnections?: Manifest["connections"],
   ) {
     const g = await golden(tx, actor, scope, def.goldenId, def.provider);
     if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
@@ -203,17 +205,20 @@ export function createTemplateService(sql: Sql) {
     } catch {
       invalid();
     }
-    for (const binding of def.connections) {
+    const connections: Manifest["connections"] = [];
+    for (const connectionId of def.connections) {
       const c = (
         await tx.query<{ version: number; generation: number; scope: string; status: string }>(
           `select g.version,g.generation,c.scope,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id where c.id=$1 and c.org_id=$2 and not c.disabled and (c.scope='org' or c.owner_id=$3) for share of c,g`,
-          [binding.id, actor.orgId, actor.userId],
+          [connectionId, actor.orgId, actor.userId],
         )
       ).rows[0];
       if (!c || c.status !== "connected" || (scope === "org" && c.scope !== "org"))
         unavailable("connection_unavailable");
-      if (c.version !== binding.version || c.generation !== binding.generation)
+      const expected = expectedConnections?.find((binding) => binding.id === connectionId);
+      if (expectedConnections && (!expected || c.version !== expected.version || c.generation !== expected.generation))
         unavailable("connection_version_changed");
+      connections.push({ id: connectionId, version: c.version, generation: c.generation });
     }
     if (def.modelAccount) {
       const c = (
@@ -228,7 +233,7 @@ export function createTemplateService(sql: Sql) {
       if (!(def.harness === "codex" ? ["openai", "codex_auth"] : ["anthropic", "claude_oauth"]).includes(c.kind))
         unavailable("model_account_incompatible");
     }
-    return { golden: g, variables: values };
+    return { golden: g, variables: values, connections };
   }
   async function definition(tx: Sql, actor: GoldenActor, scope: string, input: unknown): Promise<TemplateDefinition> {
     const d = object(input);
@@ -259,15 +264,8 @@ export function createTemplateService(sql: Sql) {
     if (d.connections !== undefined && (!Array.isArray(d.connections) || d.connections.length > 100)) invalid();
     for (const connection of (d.connections ?? []) as unknown[]) {
       const connectionId = id(connection);
-      if (connections.some((c) => c.id === connectionId)) invalid();
-      const grant = (
-        await tx.query<{ version: number; generation: number }>(
-          "select version,generation from public.mcp_grants where connection_id=$1 for share",
-          [connectionId],
-        )
-      ).rows[0];
-      if (!grant) unavailable("connection_unavailable");
-      connections.push({ id: connectionId, ...grant });
+      if (connections.includes(connectionId)) invalid();
+      connections.push(connectionId);
     }
     const variables: TemplateDefinition["variables"] = [];
     if (d.variables !== undefined && (!Array.isArray(d.variables) || d.variables.length > 64)) invalid();
@@ -474,6 +472,7 @@ export function createTemplateService(sql: Sql) {
         revisionHash: r.digest,
         golden: resolved.golden,
         definition: def,
+        connections: resolved.connections,
         variables: resolved.variables,
         variableProvenance: def.variables,
         account: { id: credentials.binding!.credentialId, version: credentials.binding!.credentialVersion },
@@ -562,7 +561,7 @@ export function createTemplateService(sql: Sql) {
           harness: def.harness,
           model: def.model,
           reasoningEffort: def.reasoningEffort,
-          connections: def.connections.map((c) => c.id),
+          connections: def.connections,
           skills: def.skills,
           ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
           ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
@@ -642,19 +641,28 @@ export function createTemplateService(sql: Sql) {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, m.templateId);
       if ((await epoch(tx, a)) !== m.actorEpoch) unavailable("authorization_changed");
-      await references(tx, a, h.scope, { ...m.definition, modelAccount: m.account }, false);
+      await references(tx, a, h.scope, { ...m.definition, modelAccount: m.account }, false, m.connections);
     });
   }
-  /** Restore/send path rehydrates only the frozen readable manifest, not current variable values. */
-  async function prepare(provider: Provider, providerSandboxId: string, actor: { userId: string; orgId: string }) {
-    await transaction((tx) => member(tx, { userId: actor.userId, orgs: [{ orgId: actor.orgId }] }, actor.orgId));
-    const rows = await sql.query<{ manifest: Manifest }>(
-      "select r.manifest from public.template_launch_requests r join public.sandboxes s on s.id=r.sandbox_id join public.members current_member on current_member.org_id=s.org_id and current_member.user_id=$4 where s.provider=$1 and s.provider_sandbox_id=$2 and r.org_id=$3 and (s.owner_id=$4 or current_member.role='admin')",
-      [provider.id, providerSandboxId, actor.orgId, actor.userId],
-    );
-    const m = rows.rows[0]?.manifest;
-    if (!m || !m.definition.variables.length) return;
-    await revalidate({ userId: m.actorId, orgs: [{ orgId: actor.orgId }] }, actor.orgId, m);
+  /** Later turns need current sandbox authority, NOT the mutable sources of a frozen readable launch. */
+  async function prepare(
+    provider: Provider,
+    providerSandboxId: string,
+    actor: { userId: string; orgId: string },
+    requestId: string,
+  ) {
+    const row = (
+      await sql.query<{ manifest: Manifest }>(
+        `select r.manifest from public.template_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
+       join public.members m on m.org_id=s.org_id and m.user_id=$4
+       where r.id=$5 and s.provider=$1 and s.provider_sandbox_id=$2 and r.org_id=$3
+       and s.deleted_at is null and (s.owner_id=$4 or m.role='admin')`,
+        [provider.id, providerSandboxId, actor.orgId, actor.userId, requestId],
+      )
+    ).rows[0];
+    if (!row) throw new VaultError("forbidden", "Sandbox access denied.");
+    const m = row.manifest;
+    if (!Object.keys(m.variables).length) return;
     if (!provider.configureReadableVariables) unavailable("variable_delivery_unavailable");
     await provider.configureReadableVariables({
       sandboxId: providerSandboxId,

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { ProviderError } from "@armada/core";
 import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
@@ -915,4 +916,54 @@ test("capture cancellation during a readiness wait cannot admit a later command"
     provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true, signal: controller.signal }),
   ).rejects.toBeDefined();
   expect(paths).toEqual([`/api/v1/sandboxes/${ID}`, `/api/v1/sandboxes/${ID}/commands`]);
+});
+
+test("matching live readable-variable receipt skips Boat wrapper installation and SSH", async () => {
+  const variables = { APP_REGION: "europe\n$(literal)", APP_EMPTY: "" };
+  const digest = createHash("sha256")
+    .update(JSON.stringify(Object.entries(variables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
+    .digest("hex");
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "command.finished",
+      success: true,
+      exitCode: 0,
+      stdout: digest + "\n",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    },
+  });
+  await boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables });
+  expect(boat.requests).toHaveLength(1);
+  expect(boat.requests[0]?.path).toBe(`/api/v1/sandboxes/${ID}/commands`);
+  expect(JSON.stringify(boat.requests[0]?.body)).not.toContain("literal");
+});
+
+test("cleared Boat /run receipt restarts SSH hydration instead of trusting a previous delivery", async () => {
+  const variables = { APP_REGION: "frozen" };
+  const digest = createHash("sha256")
+    .update(JSON.stringify(Object.entries(variables)))
+    .digest("hex");
+  const completed = (stdout: string) => ({
+    body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout, stderr: "", timedOut: false },
+  });
+  const boat = fakeBoat(completed(digest), completed("missing"), completed(""), {
+    status: 403,
+    body: errorBody(403, "FORBIDDEN", "Synthetic SSH authorization refused"),
+  });
+  await boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables });
+  // The VM has now lost /run state. Actual SSH authorization is deliberately refused,
+  // proving the owner re-enters hydration (and fails closed) without network transport.
+  await expect(
+    boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables }),
+  ).rejects.toThrow();
+  expect(boat.requests.map((request) => request.path)).toEqual([
+    `/api/v1/sandboxes/${ID}/commands`,
+    `/api/v1/sandboxes/${ID}/commands`,
+    `/api/v1/sandboxes/${ID}/commands`,
+    `/api/v1/sandboxes/${ID}/sshkey`,
+  ]);
+  expect(JSON.stringify(boat.requests.map((request) => request.body))).not.toContain("frozen");
 });

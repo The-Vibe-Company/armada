@@ -165,6 +165,8 @@ export class Runner {
         const digest = JSON.stringify(Object.entries(variables).sort());
         const previous = this.readableDigests.get(r.harness);
         if (previous !== undefined && previous !== digest) throw Error("invalid_request");
+        if (previous === digest)
+          return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
         const bootstrap = this.drivers[r.harness].configureReadableVariables;
         if (!bootstrap) throw Error("invalid_request");
         bootstrap.call(this.drivers[r.harness], variables);

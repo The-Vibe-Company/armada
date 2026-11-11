@@ -11,6 +11,7 @@ import {
   parsePinnedMcpStdio,
   type Sql,
   sshHydrateGitHubToken,
+  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -41,6 +42,7 @@ export function createMcpHttpIntegration(options: {
   sql: Sql;
   /** Server boot owns initial draining/backoff before periodic database work starts. */
   deferBackground?: boolean;
+  prepareReadableVariables?: TemplateService["prepare"];
   /** Trusted server opt-in, never a request parameter. Defaults off. */
   githubRuntimeEnabled?: boolean;
   /** Default off until the coordinator verifies the legacy installer on a real Boat image. */
@@ -81,6 +83,7 @@ export function createMcpHttpIntegration(options: {
   const lifecycle = createMcpLifecycle({
     sql,
     registry,
+    ...(options.prepareReadableVariables ? { prepareReadableVariables: options.prepareReadableVariables } : {}),
     ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
     encryptionKey: options.encryptionKey,
     origin: new URL(options.publicUrl).origin,

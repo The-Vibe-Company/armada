@@ -37,8 +37,11 @@ All inputs require `org` (UUID). Create additionally accepts `name`, `scope`
 Omit unused connections/variables/skills; omit model/effort to freeze the current
 harness defaults. Optional `modelAccount: {id, version}` pins an account; otherwise
 launch resolves the actor's existing user-over-org default and freezes its ID/version.
-No silent fallback from a pinned account occurs. At publication, exact tool grant
-versions/generations and the immutable provider binding are captured server-side.
+No silent fallback from a pinned account occurs. The revision stores connection IDs
+only, plus the immutable provider binding.
+At launch admission, currently connected tool grant versions/generations resolve into
+the immutable manifest; ordinary OAuth refresh before admission needs no republication.
+Changes after that claim fail admission instead of silently substituting a new grant.
 Variables require explicit versions; changes require a new revision.
 
 List uses `{org}`. Get uses `{org,id,revision?}` (default current). Publish uses
@@ -70,15 +73,20 @@ membership/reference versions, then calls a trusted provider bootstrap:
   driver's future process environment; ordinary exec has its separate environment.
   The operation is not stored in request replay journals and does not register
   values as secrets. A different configuration for the same harness/incarnation
-  is refused. New physical incarnations receive the same frozen manifest through
+  is refused; an identical live configuration is acknowledged without reapplying it.
+  New physical incarnations receive the same frozen manifest through
   the server's authorized before-prompt lifecycle hook.
 - **Boat:** pinned SSH stdin delivers JSON to a fixed bootstrap, not argv or VM
   exec journals. A root-owned readable JSON file is atomically installed under
   `/run/armada-readable-variables/<harness>.json`, outside checkouts. The managed
   native harness wrapper reads it only when starting the selected native workload;
   unrelated exec does not inherit it. Before-prompt rehydrates it after resume.
-  This file is deliberately readable configuration, not a secret store. Temporary
-  SSH key material is removed locally; authorized-key cleanup is attempted remotely.
+  The file has mode **0644 (world-readable)**: unrelated exec does not inherit the
+  environment, but any sandbox user/exec can intentionally read the file. This is
+  non-secret configuration, not a confidentiality boundary or a secret store.
+  A fixed live file/wrapper digest probe skips reinstall/SSH when unchanged; clearing
+  `/run` or restoring a new VM forces re-delivery, without a process-local cache.
+  Temporary SSH key material is removed locally; authorized-key cleanup is attempted remotely.
 
 Both paths support empty/multiline values, literal shell syntax, at most 64 bindings,
 8 KiB UTF-8/value and 64 KiB aggregate. Reserved/infrastructure names, NUL, invalid
@@ -95,8 +103,15 @@ an agent and cannot be recalled. This does not enable application-secret deliver
    model/effort and variable values. Inspect returned manifest/account, sandbox
    model fields and actual native environment. Confirm empty and multiline values
    survive without shell expansion. Confirm values are absent during golden build,
-   pull/init and unrelated sandbox exec, but present in harness children. Repeat
-   after idle launch → first send, stop → send/restore, and on Boat staging.
+   pull/init and unrelated sandbox exec environments, but present in harness children. Repeat
+   after idle launch → first send, stop → send/restore, and on Boat staging. On Boat,
+   explicitly confirm unrelated exec can read the world-readable JSON file; only
+   environment inheritance, not value confidentiality, is excluded.
+   Edit the readable variable, delete/tombstone its template, refresh the tool token,
+   rotate the model credential or change the member's role: an already admitted
+   readable sandbox keeps taking later prompts with the frozen values (subject to
+   normal current sandbox/model/tool authorization). Confirm re-delivery after a
+   new Modal runner incarnation and after Boat `/run` is cleared.
 3. Exercise owner, other member, admin and outsider identities. Personal templates
    and revisions must be invisible to peers/admins; org members can launch but
    cannot publish/delete. Remove membership and retry: denied. Direct JWT probes
@@ -118,6 +133,19 @@ an agent and cannot be recalled. This does not enable application-secret deliver
    `reconciling`; retries return its record and never fork or resend a prompt.
 7. Confirm all six operations through both the authenticated public-origin proxy
    and MCP, including stale publication, query/unknown-field refusal and no bearer.
+
+## Later-turn admission and ordinary-prompt cost
+
+Later readable preparation checks **current caller membership and sandbox interior
+access only**, then delivers the copied manifest values. It never rereads current
+template/golden/variable/grant/account versions or the original actor epoch. Deleting
+or editing those source objects does not retroactively invalidate readable config.
+Existing independent sandbox/model/tool policies still apply to their own operations.
+
+The existing MCP lifecycle authorized sandbox read resolves an immutable template
+request hint through an indexed lookup. Only a nonempty readable manifest triggers
+preparation. Ordinary non-template prompts add **no database round trips or SSH**;
+there is no stale negative cache that could miss a later template admission.
 
 ## Conservative recovery limits
 
