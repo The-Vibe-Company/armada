@@ -227,9 +227,13 @@ twice, using separate disposable sandboxes. The first must start clean with no
 local-only refs and stop without a preservation note or recovery archive. The
 second creates a single empty, unpushed commit (no remote push), stops, retrieves
 the same recovery endpoint used by `armada recovery`, and checks the in-memory
-tar manifest and Git bundle header for that exact commit. Archive contents,
-commit IDs and provider messages are never logged or written to local disk.
-This checks recovery packaging, not a full Git restore.
+tar manifest for that exact commit. The selected bundle pack is indexed with Git
+in a private temporary object store, then Git must read the expected commit
+object. Incremental bundle prerequisite parents/trees need not be present; this
+is an object-payload check, not a full checkout/restore. The archive is capped at
+3 MiB base64, Git subprocesses at 10 seconds each, and the temporary store is
+removed in a finally block. No tar paths are extracted. Archive contents, commit
+IDs and Git/provider output are never logged. The smoke runner now requires Git.
 
 Named steps are `preservation_clean_checkout`, `preservation_commit`,
 `preservation_clean_stop` and `preservation_archive`. Missing or mismatched

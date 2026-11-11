@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 
 const selected = {
@@ -762,14 +764,41 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
 
 // Exercises the smoke's verdict, not the product collector (covered in core).
 test("preservation checks both providers and rejects missing, wrong or overwritten recovery without leaking material", async () => {
-  const commit = "a".repeat(40);
-  function archive(head: string) {
+  const directory = mkdtempSync(join(tmpdir(), "armada-smoke-fixture-"));
+  function git(...args: string[]) {
+    const result = Bun.spawnSync(["git", "-C", directory, ...args], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Smoke",
+        GIT_AUTHOR_EMAIL: "smoke@example.invalid",
+        GIT_COMMITTER_NAME: "Smoke",
+        GIT_COMMITTER_EMAIL: "smoke@example.invalid",
+      },
+    });
+    if (result.exitCode !== 0) throw new Error("Fixture Git failed");
+    return result.stdout;
+  }
+  let commit: string;
+  let bundle: Buffer;
+  try {
+    git("init", "--quiet");
+    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base");
+    const base = git("rev-parse", "HEAD").toString().trim();
+    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unpushed");
+    commit = git("rev-parse", "HEAD").toString().trim();
+    bundle = git("bundle", "create", "-", "HEAD", `^${base}`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  function archive(head: string, corruptPack = false) {
     const files = {
-      "manifest.json": JSON.stringify({
-        version: 2,
-        repositories: [{ path: selected.repo, directory: "repo-0", head, bundle: true }],
-      }),
-      "repo-0/commits.bundle": `# v2 git bundle\n${head} HEAD\n\nPACKsynthetic-offline-payload`,
+      "manifest.json": Buffer.from(
+        JSON.stringify({
+          version: 2,
+          repositories: [{ path: selected.repo, directory: "repo-0", head, bundle: true }],
+        }),
+      ),
+      "repo-0/commits.bundle": corruptPack ? bundle.subarray(0, bundle.length - 12) : bundle,
     };
     return Buffer.concat(
       Object.entries(files)
@@ -788,6 +817,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
       "missing",
       "wrong",
       "corrupt",
+      "corrupt_pack",
       "clean_note",
       "clean_archive",
       "overwritten",
@@ -827,7 +857,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
                   ? null
                   : fault === "corrupt"
                     ? Buffer.from("secret-invalid").toString("base64")
-                    : archive(fault === "wrong" ? "b".repeat(40) : commit),
+                    : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
           });
       });
       const staging = "https://armada-mcp-staging.up.railway.app";

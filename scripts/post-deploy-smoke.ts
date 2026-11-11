@@ -7,6 +7,10 @@
  * provider/harness pairs work). No defaults, provider credentials or DB access.
  */
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
 import type {
   OrchestratorDetail,
@@ -77,8 +81,8 @@ interface SmokeIo {
 const POLLS = 120;
 const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
 
-/** Inspect only the expected manifest and bundle header in memory; never extract recovery material. */
-function verifyRecovery(archive: string, repo: string, commit: string) {
+/** Parse the tar in memory; validate only its selected Git pack in an isolated disposable object store. */
+async function verifyRecovery(archive: string, repo: string, commit: string) {
   if (archive.length > 3 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(archive)) fail("preservation_failed");
   const bytes = Buffer.from(archive, "base64");
   const entries = new Map<string, Buffer>();
@@ -104,9 +108,38 @@ function verifyRecovery(archive: string, repo: string, commit: string) {
     )
       fail("preservation_failed");
     const bundle = entries.get(`${entry.directory}/commits.bundle`);
-    const header = bundle?.subarray(0, bundle.indexOf(Buffer.from("\n\n"))).toString();
-    if (!header?.split("\n").includes(`${commit} HEAD`) || !bundle?.includes(Buffer.from("PACK")))
-      fail("preservation_failed");
+    const boundary = bundle?.indexOf(Buffer.from("\n\n")) ?? -1;
+    if (!bundle || boundary < 0) fail("preservation_failed");
+    const header = bundle.subarray(0, boundary).toString();
+    if (!header.split("\n").includes(`${commit} HEAD`)) fail("preservation_failed");
+    const directory = await mkdtemp(join(tmpdir(), "armada-smoke-recovery-"));
+    try {
+      async function git(args: string[], input?: Buffer) {
+        const child = Bun.spawn(["git", ...args], {
+          cwd: directory,
+          env: {
+            PATH: process.env.PATH,
+            HOME: directory,
+            TMPDIR: directory,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "/dev/null",
+          },
+          stdin: input ? input : "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+          timeout: 10_000,
+        });
+        if ((await child.exited) !== 0) fail("preservation_failed");
+      }
+      await git(["init", "--bare", "--quiet", "."]);
+      // Index the pack directly: incremental bundles legitimately omit prerequisite
+      // parents/trees. Unlike bundle verify/fsck, this does not require connectivity.
+      // Git still verifies pack integrity, object hashes and any in-pack deltas.
+      await git(["index-pack", "--stdin"], bundle.subarray(boundary + 2));
+      await git(["cat-file", "commit", commit]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   } catch {
     fail("preservation_failed");
   }
@@ -520,7 +553,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
               !preservationNote?.startsWith("unpushed work preserved at work_recovery:")
             )
               fail("preservation_failed");
-            verifyRecovery(result.archive, item.repo, commit);
+            await verifyRecovery(result.archive, item.repo, commit);
           }
         });
     } catch {
