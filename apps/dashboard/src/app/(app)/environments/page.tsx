@@ -42,6 +42,8 @@ import { findRemovedGolden, type GoldenRow, listGoldenHistory, listGoldens } fro
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
+import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
+import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import {
@@ -70,6 +72,8 @@ import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { createClient } from "@/lib/supabase/server";
+import { launchTarget, type TemplateLaunchTarget } from "@/lib/template-launch";
+import type { TemplateLookups } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Environments" };
@@ -101,26 +105,30 @@ export default async function GoldensPage({ searchParams }: Props) {
     items.filter((item) => item.org.id === selected?.org.id),
   );
   const serverUrl = mcpUrl();
-  const [goldens, history, memberships, directory, github, capabilities, listed, accountList] = await Promise.all([
-    listGoldens(supabase),
-    listGoldenHistory(supabase),
-    pending,
-    pending.then((items) =>
-      memberDirectory(
-        supabase,
-        items.map((item) => item.org.id),
+  const [goldens, history, memberships, directory, github, capabilities, listed, accountList, templateList, vault] =
+    await Promise.all([
+      listGoldens(supabase),
+      listGoldenHistory(supabase),
+      pending,
+      pending.then((items) =>
+        memberDirectory(
+          supabase,
+          items.map((item) => item.org.id),
+        ),
       ),
-    ),
-    getGitHubConnection(supabase).catch(() => null),
-    selected ? allCapabilities(serverUrl, viewer.token, selected.org.id, connected ?? []) : null,
-    listSelectedConnections(),
-    listSelectedAccounts(),
-  ]);
+      getGitHubConnection(supabase).catch(() => null),
+      selected ? allCapabilities(serverUrl, viewer.token, selected.org.id, connected ?? []) : null,
+      listSelectedConnections(),
+      listSelectedAccounts(),
+      listSelectedTemplates(),
+      listSelectedVault(),
+    ]);
   const connections: LaunchConnections =
     listed.state === "ready"
       ? { connections: listed.connections }
       : { unavailable: listed.state === "error" ? listed.message : "The Armada server is not configured." };
   const accounts = launchAccounts(accountList, Date.now());
+  const templates = launchTemplates(templateList, goldens, lookupsFrom(goldens, listed, vault));
   const createTracked = selected !== null && tracked(`create.${selected.org.id}`);
   const rebuildsTracked = new Set(
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
@@ -160,6 +168,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     rebuildsTracked,
     connections,
     accounts,
+    templates,
   };
 
   const now = Date.now();
@@ -447,6 +456,8 @@ type RowContext = {
   rebuildsTracked: Set<string>;
   connections: LaunchConnections;
   accounts: LaunchAccounts;
+  /** Every template the viewer can launch, with the environment each starts from. */
+  templates: readonly TemplateLaunchTarget[];
 };
 
 type EnvironmentRow = ResourceRow & {
@@ -519,6 +530,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         repositories={directories}
         connections={context.connections}
         accounts={context.accounts}
+        templates={context.templates.filter((template) => template.definition.goldenId === golden.id)}
         {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}
       />
     ) : state.action === "snapshot" ? (
@@ -752,4 +764,14 @@ function VisibilityControl({ golden, viewerId, isAdmin }: { golden: Golden; view
       )}
     </div>
   );
+}
+
+/** The templates of the list as launch choices; one whose revision could not be read is not offered. */
+function launchTemplates(
+  list: TemplateList,
+  goldens: readonly GoldenRow[],
+  lookups: TemplateLookups,
+): TemplateLaunchTarget[] {
+  if (list.state !== "ready") return [];
+  return list.items.flatMap((item) => launchTarget(item, goldens, lookups) ?? []);
 }
