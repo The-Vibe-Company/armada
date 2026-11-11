@@ -77,7 +77,7 @@ Existing model credentials are separately managed. Readable values are not secre
 
 ## First gate implementation and rollout boundary
 
-The first gate adds `20261111120000_application_secret_taint.sql`. The service-only
+The first gate adds `20261111130000_application_secret_taint.sql`. The service-only
 `application_secret_tainted` flag is irreversible. Setting it removes existing
 online recovery rows; a database trigger refuses subsequent recovery writes.
 Preservation checks the durable marker before contacting compute. Recovery reads
