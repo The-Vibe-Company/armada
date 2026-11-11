@@ -1,5 +1,5 @@
-import { validateRunnerArtifact } from "./artifact-validation.ts";
 import { join } from "node:path";
+import { validateRunnerArtifact } from "./artifact-validation.ts";
 import { refusal } from "./errors.ts";
 /** Build with packages/agent-runtime/build.ts under Bun1.4.2 on target Linux first.
  * Native resources are installed in image from identical pinned official packages,

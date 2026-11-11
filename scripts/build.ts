@@ -38,7 +38,6 @@ function prepareRuntime(): void {
     stderr: "inherit",
   });
   if (prepared.exitCode !== 0) throw new Error("Pinned runtime preparation failed.");
-
 }
 
 if (import.meta.main) {
