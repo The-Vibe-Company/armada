@@ -193,7 +193,7 @@ Usage:
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
-                                           Personal or --org scope. --json is metadata only; no sandbox delivery.
+                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
   armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]
