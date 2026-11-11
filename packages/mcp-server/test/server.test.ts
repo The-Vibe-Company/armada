@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { createServiceStore, createSqlAuthStore } from "@armada/auth";
+import { createSqlAuthStore } from "@armada/auth";
 import {
   CREDENTIAL_BUSY_MESSAGE,
   createSqlVaultStore,
@@ -191,26 +191,32 @@ describe("http", () => {
 });
 
 describe("when the auth lookup fails", () => {
-  const SERVICE_KEY = "service-role-key-that-supabase-rejects";
-
-  test("a rejected PostgREST key is a 503 whose real cause is logged, without the token or the key", async () => {
+  test("a SQL session membership failure is a 503 with a sanitized diagnostic", async () => {
     const lines: string[] = [];
-    const rejecting = createServiceStore({
-      env: { SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY },
-      fetch: async () =>
-        Response.json(
-          { message: "Invalid API key" },
-          { status: 401, headers: { "sb-error-code": "UNAUTHORIZED_INVALID_API_KEY" } },
-        ),
+    const credential = "postgres://armada:synthetic-password@database.test/armada";
+    let jwt = "";
+    const broken = createSqlAuthStore({
+      query: async () => {
+        throw new Error(`membership query failed: ${credential} Bearer ${jwt}`);
+      },
     });
-    const { handler, session, people } = await start({ authStore: () => rejecting, log: (line) => lines.push(line) });
-    const jwt = session(people.member);
-    const response = await rpc(handler, jwt).tool("list", {});
+    const { handler, session, people } = await start({ authStore: () => broken, log: (line) => lines.push(line) });
+    jwt = session(people.member);
+    const response = await rpc(handler, jwt).post({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "list", arguments: {} },
+    });
     expect(response.status).toBe(503);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("Supabase answered 401 (UNAUTHORIZED_INVALID_API_KEY) for GET members");
-    expect(lines[0]).not.toContain(jwt);
-    expect(lines[0]).not.toContain(SERVICE_KEY);
+    expect(lines[0]).toContain("The membership store is unavailable.");
+    expect(lines[0]).toContain("membership query failed");
+    for (const text of [lines[0] ?? "", await response.text()]) {
+      expect(text).not.toContain(jwt);
+      expect(text).not.toContain(credential);
+      expect(text).not.toContain("synthetic-password");
+    }
   });
 
   test("a database failure on an Armada token is a 503 with its cause logged", async () => {
