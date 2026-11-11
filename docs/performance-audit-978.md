@@ -18,6 +18,53 @@ DOM rendering, transport or the owner's reported ~10 seconds on the phone.
 Existing chat projection tests own ordering, turn isolation and final-snapshot
 supersession; no timing assertions are added to CI.
 
+## Staging handoff (required before readiness)
+
+From a fresh checkout, install workspace links before running chat tests:
+
+```sh
+bun install --frozen-lockfile
+bun test apps/dashboard/test/chat.test.ts
+```
+
+Run the self-contained measurement script on macOS or Linux with Python 3.9+
+and Bun (or pass `--cli /path/to/compiled/armada`):
+
+```sh
+# Export ARMADA_TOKEN securely first; do not put it in command arguments or logs.
+export STAGING_URL=https://YOUR-STAGING-ORIGIN
+export STAGING_ORG=YOUR-ORG-UUID
+python3 scripts/perf/staging.py > /tmp/armada-staging-perf.json
+```
+
+This is a billable **single disposable Modal × Codex launch**, using an existing
+snapshotted Modal golden (select one explicitly with `--golden NAME` if needed)
+and the caller's existing Codex credential/default. It repeats only reads:
+golden/list, sandbox/list, disposable sandbox detail and logs. Default 20 samples,
+nearest-rank p50/p95 wall time and decoded response bytes; CLI source startup/help,
+list/golden-list/detail timings are separate. It suppresses API bodies and CLI
+output, never prints the token, refuses redirects and known production origins,
+and requires neither GNU timeout nor util-linux.
+
+Lifecycle phases are client-observable: idle launch-to-ready (combined server
+authorization/fork/init), prompt admission, prompt-to-first-text observation
+(includes admission and 500ms polling), stop and delete. A finally block attempts
+stop/delete of **only the returned disposable ID**, including on interruption.
+A hard kill or unknown launch outcome can prevent automatic cleanup: the script
+prints a recovery ID when available; inspect staging rather than retrying an
+ambiguous launch. Cleanup failure produces a nonzero exit and explicit manual
+action. Ten-minute TTL bounds compute, not retained-disk lifetime.
+
+No internal server phase breakdown or SQL round trips are exposed through these
+APIs; the report marks those unavailable. Dashboard paint/navigation and actual
+long-session phone-open remain unmeasured. These gaps must not be presented as
+zero or inferred from synthetic CPU timing.
+
+Coordinator: post the JSON and revision/host details on #978. Run consistently
+against baseline/candidate to obtain user-facing before/after. Until those
+numbers are folded in, this PR is blocked and **does not establish biggest-wait
+priorities**. The list below is a measurement backlog, not a ranked fix plan.
+
 ## Scope exclusion
 
 Per the owner decision on #978 (2026-11-11), orchestrators are out of scope:
