@@ -34,6 +34,21 @@ Bun.SQL = class {
 } as unknown as typeof Bun.SQL;
 // Use the real adapter over fake physical pools, so close assertions cover both clients.
 mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => sqlModule);
+const mcpModule = await import("../../src/mcp-http-integration.ts");
+const createIntegration = mcpModule.createMcpHttpIntegration;
+let mcpClosed = false;
+mock.module(new URL("../../src/mcp-http-integration.ts", import.meta.url).pathname, () => ({
+  ...mcpModule,
+  createMcpHttpIntegration: (...args: Parameters<typeof mcpModule.createMcpHttpIntegration>) => {
+    const integration = createIntegration(...args);
+    const close = integration.close.bind(integration);
+    integration.close = async () => {
+      mcpClosed = true;
+      await close();
+    };
+    return integration;
+  },
+}));
 const { startServer } = await import("../../src/serve.ts");
 const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
 const port = reservation.port;
@@ -68,6 +83,7 @@ try {
                   true,
                   "POST response retains SQL",
                 );
+                assert.equal(mcpClosed, false, "POST tool stream retains MCP until EOF");
                 controller.enqueue(new TextEncoder().encode("finished"));
                 controller.close();
               },
