@@ -400,7 +400,12 @@ export function createSqlData(sql: Sql): DataSource {
         let fence = "";
         // Only an explicit send/resume may cancel an in-flight stop. Other
         // workspace operations must not mutate data covered by its receipt.
-        if (patch.advanceGeneration && patch.activityToken && patch.stopRequested === undefined)
+        if (
+          patch.advanceGeneration &&
+          patch.activityToken &&
+          patch.stopRequested === undefined &&
+          !patch.deleteRequested
+        )
           fence += " and s.stop_requested_at is null";
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);

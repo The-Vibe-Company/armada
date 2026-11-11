@@ -69,7 +69,10 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
         )
       ).rows[0]!.seconds;
     const id = await insert();
-    await db.query("update sandboxes set usage_runtime_seconds=42 where id=$1", [id]);
+    // Status can confirm provider closure before reconciliation clears this stop flag.
+    await db.query("update sandboxes set usage_runtime_seconds=42,stop_requested_at=clock_timestamp() where id=$1", [
+      id,
+    ]);
     await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
       id,
       new Uint8Array([1]),
