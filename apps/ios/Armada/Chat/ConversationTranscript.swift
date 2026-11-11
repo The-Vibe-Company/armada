@@ -8,7 +8,7 @@ struct PendingBubble: Identifiable, Hashable {
         case sending
         /// Accepted by the server; waits for its event to appear in the conversation.
         case accepted
-        /// Outcome unknown: retrying resends the same request with the same key.
+        /// Outcome unknown: check the conversation before sending again.
         case unconfirmed
     }
 
@@ -20,7 +20,7 @@ struct PendingBubble: Identifiable, Hashable {
     var status: Status
 }
 
-/// The conversation surface shared by orchestrators and sandboxes, with Companion's transcript
+/// The conversation surface for sandboxes, with Companion's transcript
 /// behavior: initial placement at the bottom, following the tail only while the reader is near it,
 /// a jump-to-latest control otherwise, and interactive keyboard dismissal. The latest messages are
 /// read first; reaching the top reads older history (`onLoadOlder`) and keeps the reader's place.
@@ -168,8 +168,6 @@ struct ConversationTranscript: View {
             }
         case .outcome(let status, let reason):
             OutcomeRow(status: status, reason: reason)
-        case .notice(let notice):
-            NoticeRow(notice: notice)
         }
     }
 
@@ -249,60 +247,5 @@ private struct OutcomeRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-    }
-}
-
-private struct NoticeRow: View {
-    let notice: ConversationNotice
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Rectangle().fill(ArmadaTheme.separator).frame(height: 0.5)
-            Label(text, systemImage: symbol)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(tint)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            Rectangle().fill(ArmadaTheme.separator).frame(height: 0.5)
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(text)
-    }
-
-    private var text: String {
-        switch notice {
-        case .stopped: "Stopped. The conversation is kept."
-        case .resumed: "Resumed"
-        case .blocked: "Needs attention"
-        case .continuityLost: "The saved conversation was lost"
-        case .operationFailed(let kind, let code):
-            code.map { "\(kind.label) failed. " + ArmadaKit.OrchestratorExplanation.text(for: $0) } ?? "\(kind.label) failed"
-        case .operationUncertain(let kind): "\(kind.label) not confirmed yet"
-        case .childLaunched(let sandboxID): "Launched worker \(sandboxID.prefix(8))"
-        case .waiting(let kind, let reason, _): "Waiting on \(kind): \(reason)"
-        case .waitExpired(let kind, let reason): "Wait on \(kind) expired: \(reason)"
-        }
-    }
-
-    private var symbol: String {
-        switch notice {
-        case .stopped: "stop.circle"
-        case .resumed: "play.circle"
-        case .blocked, .continuityLost, .operationFailed: "exclamationmark.triangle"
-        case .operationUncertain: "questionmark.circle"
-        case .childLaunched: "arrow.triangle.branch"
-        case .waiting: "hourglass"
-        case .waitExpired: "hourglass.bottomhalf.filled"
-        }
-    }
-
-    private var tint: Color {
-        switch notice {
-        case .blocked, .continuityLost, .operationFailed: ArmadaTheme.dangerText
-        case .operationUncertain, .waitExpired: ArmadaTheme.warningText
-        case .stopped, .resumed, .childLaunched, .waiting: ArmadaTheme.textSecondary
-        }
     }
 }

@@ -77,7 +77,7 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     await #expect(throws: ArmadaError.forbidden) { _ = try await client.sandboxDetail(id: sandboxID) }
     await #expect(throws: ArmadaError.http(404)) { _ = try await client.sandboxEvents(id: sandboxID) }
     // A malformed id is refused before any request leaves the device.
-    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sandboxDetail(id: "../orchestrators") }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sandboxDetail(id: "../outside") }
     #expect(await transport.requests.count == 4)
 }
 

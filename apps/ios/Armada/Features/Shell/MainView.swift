@@ -1,16 +1,9 @@
 import SwiftUI
 
-/// Orchestrators first; sandboxes second.
+/// The signed-in sandbox workspace.
 struct MainView: View {
     var body: some View {
-        TabView {
-            Tab("Orchestrators", systemImage: "point.3.connected.trianglepath.dotted") {
-                OrchestratorListView()
-            }
-            Tab("Sandboxes", systemImage: "shippingbox") {
-                SandboxListView()
-            }
-        }
+        SandboxListView()
         .tint(ArmadaTheme.textPrimary)
     }
 }
