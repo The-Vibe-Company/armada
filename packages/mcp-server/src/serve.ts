@@ -87,6 +87,7 @@ export async function startServer(
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
+    deferBackground: true,
     githubRuntimeEnabled: config.githubRuntimeEnabled,
     githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
     github: { store, app: githubApp, encryptionKey: config.encryptionKey },
@@ -297,6 +298,7 @@ export async function startServer(
     ],
     ...(options.logError ? { log: options.logError } : {}),
   });
+  mcp.startBackground();
   const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {
     workerDone: Promise.resolve(),
   });

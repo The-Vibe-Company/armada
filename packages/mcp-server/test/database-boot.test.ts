@@ -1,5 +1,7 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { createSqlAuthStore } from "@armada/auth";
 import { retryDatabaseBoot } from "../src/database-boot.ts";
+import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 
 afterEach(() => jest.restoreAllMocks());
 
@@ -12,7 +14,9 @@ test("boot survives admission pressure with capped backoff and redacted diagnost
   const logs: string[] = [];
   await retryDatabaseBoot(
     async () => {
-      if (++attempts < 9) throw Object.assign(new Error("secret connection string"), { errno: "EMAXCONNSESSION" });
+      const states = ["EMAXCONNSESSION", "08000", "08003", "08006", "57P01", "53300", "57P03", "EMAXCONNSESSION"];
+      const state = states[attempts++];
+      if (state) throw Object.assign(new Error("secret connection string"), { errno: state });
     },
     (line) => logs.push(line),
   );
@@ -43,4 +47,27 @@ test("boot fails promptly on permanent SQL errors and stops retrying after its d
     }, log),
   ).rejects.toBe(full);
   expect(attempts).toBe(2);
+});
+
+test("deferred MCP startup leaves background SQL idle until boot admission succeeds", async () => {
+  const sql = { query: async <T>() => ({ rows: [] as T[] }) };
+  const interval = spyOn(globalThis, "setInterval");
+  const mcp = createMcpHttpIntegration({
+    sql,
+    authStore: createSqlAuthStore(sql),
+    deferBackground: true,
+    encryptionKey: undefined,
+    publicUrl: "https://gateway.example",
+    supabase: { supabaseUrl: "https://auth.example", anonKey: "public" },
+  });
+  try {
+    expect(interval).not.toHaveBeenCalled();
+    await mcp.drainInvalidations();
+    expect(interval).not.toHaveBeenCalled();
+    mcp.startBackground();
+    mcp.startBackground();
+    expect(interval).toHaveBeenCalledTimes(1);
+  } finally {
+    await mcp.close();
+  }
 });

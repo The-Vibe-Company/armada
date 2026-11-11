@@ -14,6 +14,10 @@ export async function retryDatabaseBoot(initialize: () => Promise<void>, log: (l
         [
           "EMAXCONNSESSION",
           "53300",
+          "08000",
+          "08003",
+          "08006",
+          "57P01",
           "57P03",
           "ERR_POSTGRES_CONNECTION_REFUSED",
           "ERR_POSTGRES_CONNECTION_FAILED",
