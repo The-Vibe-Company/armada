@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Python 3.9+, macOS/Linux. Run from repo root after bun install --frozen-lockfile.
 STAGING_URL=https://... STAGING_ORG=UUID ARMADA_TOKEN=... python3 scripts/perf/staging.py
-Requires an existing ready Modal golden and a working Codex credential/default.
-One disposable launch (billable), no retries of launch/send. Only read operations
+Requires a snapshotted golden and working model credential/default for selected pair.
+One selected provider x harness disposable launch (billable), no retries of launch/send. Only read operations
 are sampled repeatedly. No response bodies, child output or tokens are printed.
 """
 import argparse
@@ -22,7 +22,9 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--samples", type=int, default=20)
-parser.add_argument("--golden", help="Existing Modal golden name; otherwise first ready name")
+parser.add_argument("--golden", help="Existing golden for the selected provider; otherwise first snapshotted name")
+parser.add_argument("--provider", choices=["modal", "boat"], default="modal")
+parser.add_argument("--harness", choices=["codex", "claude"], default="codex")
 parser.add_argument("--cli", help="Compiled armada executable; default: Bun source CLI")
 args = parser.parse_args()
 if not 5 <= args.samples <= 100:
@@ -42,12 +44,13 @@ if not org or not token:
     parser.error("STAGING_ORG and ARMADA_TOKEN are required")
 origin = urllib.parse.urlunsplit((url.scheme, url.netloc, "", "", ""))
 report = {
+    "provider": args.provider, "harness": args.harness,
     "schema": 2, "python": platform.python_version(), "host": platform.platform(),
     "samples": args.samples, "api": [], "cli": [], "phases": [],
     "limits": [
         "Client wall time, not server-only time; payload bytes are decoded HTTP body bytes.",
         "Server-Timing reports instrumented server wall phases only; nested phases overlap and must not be summed.",
-        "Missing server phases are unavailable, not zero. SQL trip counts and internal launch phases are still unmeasured.",
+        "Missing server phases are unavailable, not zero. SQL trip counts remain unmeasured.",
         "One Modal x Codex lifecycle sample is not a p50/p95 distribution.",
         "No dashboard paint/navigation, phone or long-session open measurement in this script.",
         "No user-facing before/after claim until run consistently against both revisions.",
@@ -70,6 +73,11 @@ opener = urllib.request.build_opener(NoRedirect())
 
 # Fixed allowlist: do not print arbitrary server headers (or reflected secret strings).
 SERVER_PHASES = {
+    "launch_authorize", "launch_provider", "launch_lookup", "launch_defaults",
+    "launch_connections", "launch_credentials", "launch_claim", "launch_admission",
+    "launch_fork", "launch_register", "launch_bind", "launch_ready", "launch_hydrate",
+    "launch_github", "launch_pull", "launch_init", "launch_cwd", "launch_skills",
+    "launch_mcp", "launch_before_start", "launch_probe", "launch_prompt",
     "auth", "dispatch", "provider", "stored_provider", "sandbox_read",
     "logs_target", "events", "state", "prompt",
     "send_credentials", "send_state", "send_turn_auth", "send_submit",
@@ -171,17 +179,17 @@ try:
         cli(command)
     goldens, _, _, _, _ = api("golden/list", {})
     candidates = sorted(
-        (g for g in goldens["goldens"] if g.get("provider") == "modal"
+        (g for g in goldens["goldens"] if g.get("provider") == args.provider
          and g.get("providerSnapshotId") and (not args.golden or g["name"] == args.golden)),
         key=lambda g: g["name"],
     )
     if not candidates:
-        raise Failure("No snapshotted Modal golden available")
+        raise Failure("No snapshotted golden available for selected provider")
     sample("golden/list", {})
     sample("sandbox/list", {"limit": 25, "page": 1})
     # Idle launch exposes launch-to-ready separately from prompt admission/output.
     launched = phase("launch_to_ready_including_auth_fork_init", "sandbox/launch", {
-        "golden": candidates[0]["name"], "provider": "modal", "harness": "codex",
+        "golden": candidates[0]["name"], "provider": args.provider, "harness": args.harness,
         "ttlSeconds": 600, "connections": [],
     })
     sandbox_id = launched.get("sandbox", {}).get("id")

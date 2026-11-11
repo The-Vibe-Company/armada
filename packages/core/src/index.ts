@@ -152,6 +152,7 @@ export {
   type GitHubLaunchInfo,
   type LaunchCredentialResolver,
   type LaunchOptions,
+  type LaunchPhase,
   type LaunchRequest,
   type LaunchResult,
   type LaunchStores,

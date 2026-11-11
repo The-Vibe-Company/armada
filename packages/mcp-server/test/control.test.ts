@@ -487,6 +487,61 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("launch exposes provider-independent phases and preserves the configured observer", async () => {
+    await withServer(async ({ options, db }) => {
+      const org = await options.store.createOrg("Launch phases", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+        await encryptSecret("fixture-provider", KEY),
+        org.id,
+      ]);
+      await options.store.upsertCredential("user", STAN, "anthropic", await encryptSecret("fixture-model", KEY));
+      await db.query(
+        "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'timed','org',$2,$3,$4::jsonb)",
+        [
+          org.id,
+          STAN,
+          "a".repeat(63),
+          JSON.stringify({
+            repos: [{ url: "https://github.com/example/timed.git", branch: "main", dir: "fixture" }],
+            init: [],
+          }),
+        ],
+      );
+      const boat = fakeBoat();
+      const observed: string[] = [];
+      const configured: ControlOptions = {
+        ...options,
+        providerFor: () => boat.provider,
+        launch: {
+          sleep: async () => {},
+          measure: async (phase, work) => {
+            observed.push(phase);
+            return work();
+          },
+        },
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ org: org.id, golden: "timed", harness: "claude", connections: [] }),
+        }),
+        configured,
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({ sandbox: { status: "ready" }, promptId: null });
+      const header = response?.headers.get("server-timing") ?? "";
+      for (const phase of ["launch_provider", "launch_fork", "launch_ready", "launch_pull"])
+        expect(header).toContain(`${phase};dur=`);
+      expect(header).not.toContain("launch_prompt;dur=");
+      expect(observed).toContain("launch_fork");
+      expect(observed).toContain("launch_ready");
+    });
+  });
+
   test("Modal detail selects stored observations after authorization, not the live provider", async () => {
     await withServer(async ({ options, db }) => {
       const org = await options.store.createOrg("Stored reads", STAN);

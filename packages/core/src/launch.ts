@@ -155,7 +155,31 @@ export interface LaunchResult {
   promptId?: string;
 }
 
+export type LaunchPhase =
+  | "launch_lookup"
+  | "launch_defaults"
+  | "launch_connections"
+  | "launch_credentials"
+  | "launch_claim"
+  | "launch_admission"
+  | "launch_fork"
+  | "launch_register"
+  | "launch_bind"
+  | "launch_ready"
+  | "launch_hydrate"
+  | "launch_github"
+  | "launch_pull"
+  | "launch_init"
+  | "launch_cwd"
+  | "launch_skills"
+  | "launch_mcp"
+  | "launch_before_start"
+  | "launch_probe"
+  | "launch_prompt";
+
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted server diagnostics only. Names never include repo, credential or command values. */
+  measure?<T>(phase: LaunchPhase, work: () => Promise<T>): Promise<T>;
   /** Trusted server policy: extra physical Modal seconds reserved for extension. */
   extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
@@ -191,6 +215,7 @@ export async function launchSandbox(
   request: LaunchRequest,
   options: LaunchOptions = {},
 ): Promise<LaunchResult> {
+  const measure: NonNullable<LaunchOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   try {
     validateSkillPins(request.skills ?? []);
   } catch {
@@ -205,8 +230,12 @@ export async function launchSandbox(
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
-  const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
-  const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
+  const golden = await measure("launch_lookup", () =>
+    goldenForLaunch(stores.goldens, actor, request.golden, request.provider),
+  );
+  const defaults = !request.skipSkillDefaults
+    ? await measure("launch_defaults", async () => stores.skillDefaults?.resolve(actor, golden))
+    : undefined;
   try {
     request = {
       ...request,
@@ -268,117 +297,130 @@ export async function launchSandbox(
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
-  const connectionIds = [
-    ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
-  ];
-  if (connectionIds.length && !stores.connections)
-    throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
-  await stores.connections?.validate(actor, connectionIds, visibility);
+  const connectionIds = await measure("launch_connections", async () => {
+    const connectionIds = [
+      ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
+    ];
+    if (connectionIds.length && !stores.connections)
+      throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
+    await stores.connections?.validate(actor, connectionIds, visibility);
+    return connectionIds;
+  });
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
+  const credentials = await measure("launch_credentials", () =>
+    stores.credentials.resolve(actor, harness, request.credentialId),
+  );
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
   const connected = github.status === "connected" ? github : null;
   const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
-    kind: "launch",
-    snapshotId: golden.providerSnapshotId,
-    sandboxId: golden.providerSandboxId,
-  });
+  const releaseOperation = await measure("launch_claim", async () =>
+    stores.goldens.beginOperation?.(golden.id, {
+      kind: "launch",
+      snapshotId: golden.providerSnapshotId,
+      sandboxId: golden.providerSandboxId,
+    }),
+  );
   let childRecorded = false;
   let noAllocation = true;
   let failed = false;
   try {
-    await stores.credentials.admit?.(actor, credentials, id);
-    await options.beforeFork?.(id);
+    await measure("launch_admission", async () => {
+      await stores.credentials.admit?.(actor, credentials, id);
+      await options.beforeFork?.(id);
+    });
     noAllocation = false;
-    const forked = await provider
-      .fork({
-        from: snapshot,
-        ...(machineSize.effective ? { size: machineSize.effective } : {}),
-        noEnv: true,
-        env,
-        // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
-        ttlSeconds: options.privateParent
-          ? ttlSeconds
-          : golden.provider === "modal"
-            ? Math.min(
-                PROVIDER_LIMITS.modal.maxTtlSeconds,
-                ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS + extensionHeadroom,
-              )
-            : Math.min(PROVIDER_LIMITS.boat.maxTtlSeconds, ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS),
-        labels: {
-          armada: "sandbox",
-          sandbox: id,
-          org: actor.orgId,
-          owner: actor.userId,
-          golden: golden.name,
-          visibility,
-          harness,
-          ...(credentials.binding
-            ? {
-                credentialId: credentials.binding.credentialId,
-                credentialVersion: String(credentials.binding.credentialVersion),
-              }
-            : {}),
-        },
-      })
-      .catch((error) => {
-        noAllocation = isNonMutatingProviderRefusal(error);
-        if (!noAllocation)
-          throw new LaunchError(
-            "outcome_unknown",
-            "The provider fork outcome is unknown. Check sandbox status before retrying.",
-            { cause: error },
-          );
-        throw error;
-      });
+    const forked = await measure("launch_fork", () =>
+      provider
+        .fork({
+          from: snapshot,
+          ...(machineSize.effective ? { size: machineSize.effective } : {}),
+          noEnv: true,
+          env,
+          // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
+          ttlSeconds: options.privateParent
+            ? ttlSeconds
+            : golden.provider === "modal"
+              ? Math.min(
+                  PROVIDER_LIMITS.modal.maxTtlSeconds,
+                  ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS + extensionHeadroom,
+                )
+              : Math.min(PROVIDER_LIMITS.boat.maxTtlSeconds, ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS),
+          labels: {
+            armada: "sandbox",
+            sandbox: id,
+            org: actor.orgId,
+            owner: actor.userId,
+            golden: golden.name,
+            visibility,
+            harness,
+            ...(credentials.binding
+              ? {
+                  credentialId: credentials.binding.credentialId,
+                  credentialVersion: String(credentials.binding.credentialVersion),
+                }
+              : {}),
+          },
+        })
+        .catch((error) => {
+          noAllocation = isNonMutatingProviderRefusal(error);
+          if (!noAllocation)
+            throw new LaunchError(
+              "outcome_unknown",
+              "The provider fork outcome is unknown. Check sandbox status before retrying.",
+              { cause: error },
+            );
+          throw error;
+        }),
+    );
 
     const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
     try {
-      record = await stores.sandboxes.insert({
-        ...credentials.binding,
-        id,
-        provider: golden.provider,
-        providerSandboxId: forked.id,
-        goldenId: golden.id,
-        orgId: golden.orgId,
-        ownerId: actor.userId,
-        harness,
-        status: "starting",
-        ...(activityLeaseId ? { activityLeaseId } : {}),
-        repositoryDir,
-        machineSize,
-        ...(resourceProject
-          ? {
-              resourceProject: {
-                version: 1 as const,
-                url: resourceProject.url,
-                branch: resourceProject.branch,
-                dir: resourceProject.dir,
-              },
-            }
-          : {}),
-        ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
-        effectiveTtlSeconds: ttlSeconds,
-        ...(!options.privateParent && forked.expiresAt
-          ? {
-              expiresAt: new Date(
-                Math.min(
-                  Date.now() + ttlSeconds * 1000,
-                  forked.expiresAt.getTime() - SANDBOX_STOP_MARGIN_SECONDS * 1000,
-                ),
-              ).toISOString(),
-            }
-          : {}),
-        model: choice.model,
-        reasoningEffort: choice.reasoningEffort,
-        visibility,
-      });
+      record = await measure("launch_register", () =>
+        stores.sandboxes.insert({
+          ...credentials.binding,
+          id,
+          provider: golden.provider,
+          providerSandboxId: forked.id,
+          goldenId: golden.id,
+          orgId: golden.orgId,
+          ownerId: actor.userId,
+          harness,
+          status: "starting",
+          ...(activityLeaseId ? { activityLeaseId } : {}),
+          repositoryDir,
+          machineSize,
+          ...(resourceProject
+            ? {
+                resourceProject: {
+                  version: 1 as const,
+                  url: resourceProject.url,
+                  branch: resourceProject.branch,
+                  dir: resourceProject.dir,
+                },
+              }
+            : {}),
+          ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
+          effectiveTtlSeconds: ttlSeconds,
+          ...(!options.privateParent && forked.expiresAt
+            ? {
+                expiresAt: new Date(
+                  Math.min(
+                    Date.now() + ttlSeconds * 1000,
+                    forked.expiresAt.getTime() - SANDBOX_STOP_MARGIN_SECONDS * 1000,
+                  ),
+                ).toISOString(),
+              }
+            : {}),
+          model: choice.model,
+          reasoningEffort: choice.reasoningEffort,
+          visibility,
+        }),
+      );
       childRecorded = true;
     } catch (error) {
       await quietly(() => provider.delete({ sandboxId: forked.id }));
@@ -402,88 +444,98 @@ export async function launchSandbox(
         );
       }
       progress("initialization_bind");
-      await stores.connections?.bind(record.id, connectionIds);
+      await measure("launch_bind", async () => stores.connections?.bind(record.id, connectionIds));
       progress("initialization_ready");
-      const ready = await waitReady(provider, forked.id, options);
+      const ready = await measure("launch_ready", () => waitReady(provider, forked.id, options));
       progress("initialization_hydrate");
-      if (
-        credentials.codexAuthJson &&
-        !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
-      )
-        await writeCodexAuth(provider, ready.id, secrets);
+      await measure("launch_hydrate", async () => {
+        if (
+          credentials.codexAuthJson &&
+          !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
+        )
+          await writeCodexAuth(provider, ready.id, secrets);
+      });
       progress("initialization_github");
-      const launchGithub: GitHubLaunchInfo =
+      const launchGithub: GitHubLaunchInfo = await measure("launch_github", async () =>
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
-          : { status: github.status, message: github.message };
+          : { status: github.status, message: github.message },
+      );
       if (github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
+      await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep, measure);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
-        await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
-      if (request.skills?.length) {
-        const receipts = [];
-        let privateKey: string | null | undefined;
-        for (const skill of request.skills) {
-          const projectDir = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
-          if (!skill.includes("/")) {
-            if (!stores.credentials.installPrivateSkill)
-              throw new PrivateSkillError("skillpack_transport_failed", "transport");
-            if (privateKey === undefined) privateKey = (await stores.credentials.skillpackKey?.(actor)) ?? null;
-            receipts.push(
-              await stores.credentials.installPrivateSkill(provider, {
-                sandboxId: ready.id,
-                projectDir,
-                reference: skill,
-                harness,
-                key: privateKey,
-                ...(golden.buildWarnings ? { buildWarnings: golden.buildWarnings } : {}),
+        await measure("launch_cwd", () =>
+          prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` }),
+        );
+      const skills = request.skills;
+      if (skills?.length) {
+        await measure("launch_skills", async () => {
+          const receipts = [];
+          let privateKey: string | null | undefined;
+          for (const skill of skills) {
+            const projectDir = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
+            if (!skill.includes("/")) {
+              if (!stores.credentials.installPrivateSkill)
+                throw new PrivateSkillError("skillpack_transport_failed", "transport");
+              if (privateKey === undefined) privateKey = (await stores.credentials.skillpackKey?.(actor)) ?? null;
+              receipts.push(
+                await stores.credentials.installPrivateSkill(provider, {
+                  sandboxId: ready.id,
+                  projectDir,
+                  reference: skill,
+                  harness,
+                  key: privateKey,
+                  ...(golden.buildWarnings ? { buildWarnings: golden.buildWarnings } : {}),
+                }),
+              );
+            } else
+              receipts.push(await installSkill(provider, ready.id, projectDir, harness, skill, golden.buildWarnings));
+          }
+          if (repositoryDir !== null) {
+            // Local Git metadata only: do not stage third-party launch skills with worker changes.
+            const paths = [
+              "/.companion/skills.lock.json",
+              "/.companion/skills.lock.json.lock",
+              ...skills.flatMap((skill) => {
+                const slug = skill.split("@")[0]!.split("/").at(-1);
+                return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
               }),
-            );
-          } else
-            receipts.push(await installSkill(provider, ready.id, projectDir, harness, skill, golden.buildWarnings));
-        }
-        if (repositoryDir !== null) {
-          // Local Git metadata only: do not stage third-party launch skills with worker changes.
-          const paths = [
-            "/.companion/skills.lock.json",
-            "/.companion/skills.lock.json.lock",
-            ...request.skills.flatMap((skill) => {
-              const slug = skill.split("@")[0]!.split("/").at(-1);
-              return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
-            }),
-          ];
-          const excluded = await provider.exec({
-            sandboxId: ready.id,
-            cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
-            timeoutSeconds: 30,
-            command: `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
-          });
-          if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
-            throw new Error("Skillpack checkout exclusions could not be prepared.");
-        }
-        await stores.sandboxes.recordSkills!(record.id, receipts);
-        record.skills = receipts;
+            ];
+            const excluded = await provider.exec({
+              sandboxId: ready.id,
+              cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
+              timeoutSeconds: 30,
+              command: `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
+            });
+            if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
+              throw new Error("Skillpack checkout exclusions could not be prepared.");
+          }
+          await stores.sandboxes.recordSkills!(record.id, receipts);
+          record.skills = receipts;
+        });
       }
       progress("initialization_mcp");
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
-      await stores.connections?.prepare?.(provider, record, actor);
-      await options.beforeStart?.(provider, record);
+      await measure("launch_mcp", async () => stores.connections?.prepare?.(provider, record, actor));
+      await measure("launch_before_start", async () => options.beforeStart?.(provider, record));
       // Boat goldens carry the native CLI. A restored fork can be ready while its
       // executable cannot even boot; probe the installed wrapper (including its
       // harness-only readable environment) without creating a session or model turn.
       // Modal validates its separately distributed native runtime at installation.
       if (provider.id === "boat") {
         try {
-          const health = await provider.exec({
-            sandboxId: ready.id,
-            command: `${harness} --version >/dev/null 2>&1`,
-            cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
-            timeoutSeconds: 15,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
-          });
+          const health = await measure("launch_probe", () =>
+            provider.exec({
+              sandboxId: ready.id,
+              command: `${harness} --version >/dev/null 2>&1`,
+              cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
+              timeoutSeconds: 15,
+              signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+            }),
+          );
           if (health.detached || health.timedOut || health.truncated || health.exitCode !== 0)
             throw new Error("harness_health_failed");
         } catch {
@@ -512,9 +564,8 @@ export async function launchSandbox(
           ),
         };
       }
-      const receipt = await provider
-        .prompt({ sandboxId: ready.id, harness, text: prompt, signal, ...choice })
-        .catch((error: unknown) => {
+      const receipt = await measure("launch_prompt", () =>
+        provider.prompt({ sandboxId: ready.id, harness, text: prompt, signal, ...choice }).catch((error: unknown) => {
           throw new LaunchError(
             "prompt_failed",
             `The agent could not be started: ${redact(messageOf(error), secrets)}`,
@@ -522,7 +573,8 @@ export async function launchSandbox(
               cause: error,
             },
           );
-        });
+        }),
+      );
       try {
         await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
       } catch {
@@ -627,18 +679,23 @@ async function setup(
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
   sleep: (ms: number) => Promise<void> = delay,
+  measure: NonNullable<LaunchOptions["measure"]>,
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
-      dir: repo.dir,
-      sandboxId: armadaSandboxId,
-      sleep,
-    });
+    await measure("launch_pull", () =>
+      run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
+        dir: repo.dir,
+        sandboxId: armadaSandboxId,
+        sleep,
+      }),
+    );
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
-    await run(provider, sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
+    await measure("launch_init", () =>
+      run(provider, sandboxId, initCommand(command), `init command ${index + 1}`, secrets),
+    );
   }
 }
 

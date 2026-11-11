@@ -1,5 +1,10 @@
+import type { LaunchPhase } from "@armada/core/server";
+
 /** Fixed, secret-free server phase names. Durations overlap: dispatch contains its subphases. */
 export type TimingPhase =
+  | LaunchPhase
+  | "launch_authorize"
+  | "launch_provider"
   | "auth"
   | "dispatch"
   | "provider"

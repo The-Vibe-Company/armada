@@ -249,7 +249,16 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   const timing = new RequestTiming();
-  options = { ...options, timing };
+  const previousLaunch = options.launch;
+  options = {
+    ...options,
+    timing,
+    launch: {
+      ...previousLaunch,
+      measure: (phase, work) =>
+        timing.measure(phase, () => (previousLaunch?.measure ? previousLaunch.measure(phase, work) : work())),
+    },
+  };
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
@@ -1361,12 +1370,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, optional(body, "org"));
-  const golden = await goldenForLaunch(
-    data.goldens,
-    actor,
-    name,
-    optional(body, "provider") as "boat" | "modal" | undefined,
+  const actor = await measured(options, "launch_authorize", () =>
+    launchActor(data, caller, name, optional(body, "org")),
+  );
+  const golden = await measured(options, "launch_lookup", () =>
+    goldenForLaunch(data.goldens, actor, name, optional(body, "provider") as "boat" | "modal" | undefined),
   );
   resolveRepositoryDir(golden, optional(body, "repo"));
   if (
@@ -1374,7 +1382,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
   )
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  const provider = await providerForGolden(options, caller, golden);
+  const provider = await measured(options, "launch_provider", () => providerForGolden(options, caller, golden));
   const result = await launchSandbox(
     provider,
     {

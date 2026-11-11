@@ -173,14 +173,29 @@ describe("launch", () => {
 
   test("forks the stored snapshot with only this harness's credentials, pulls and inits, then prompts", async () => {
     const world = setup({ golden: golden("org") });
+    const phases: string[] = [];
     const result = await launchSandbox(
       world.provider,
       world.stores,
       owner,
       { golden: "web", harness: "claude", prompt: "Fix the build", ttlSeconds: 7200 },
-      { newId: () => "sbx-1" },
+      {
+        newId: () => "sbx-1",
+        measure: async (phase, work) => {
+          phases.push(`${phase}:start`);
+          try {
+            return await work();
+          } finally {
+            phases.push(`${phase}:end`);
+          }
+        },
+      },
     );
 
+    expect(phases.indexOf("launch_fork:end")).toBeLessThan(phases.indexOf("launch_ready:start"));
+    expect(phases.indexOf("launch_ready:end")).toBeLessThan(phases.indexOf("launch_pull:start"));
+    expect(phases.indexOf("launch_init:end")).toBeLessThan(phases.indexOf("launch_prompt:start"));
+    expect(phases.filter((phase) => phase === "launch_pull:start")).toHaveLength(2);
     expect(world.forks).toHaveLength(1);
     expect(world.forks[0]).toEqual({
       from: SNAPSHOT,
@@ -228,17 +243,41 @@ describe("launch", () => {
     expect(JSON.stringify(world.execs)).not.toContain(CLAUDE_TOKEN);
   });
 
-  test("without a prompt the sandbox is ready, has no conversation and no prompt was sent", async () => {
-    const world = setup({ golden: golden("org") });
-    const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
-    expect(world.prompts).toEqual([]);
-    expect(result.sandbox).toMatchObject({ status: "ready", conversationIds: [] });
-    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "claude-opus-5-5", reasoningEffort: "medium" });
-    expect(result.conversationId).toBeUndefined();
-    expect(result.ttlSeconds).toBe(14_400);
-    expect(world.forks[0]?.ttlSeconds).toBe(14_700);
-    expect([...world.rows.values()][0]).toMatchObject({ status: "ready", conversationIds: [] });
-  });
+  test.each(["boat", "modal"] as const)(
+    "without a prompt the sandbox is ready, has no conversation and no prompt was sent (%s)",
+    async (backend) => {
+      const source: GoldenRecord = {
+        ...golden("org"),
+        provider: backend,
+        modal: backend === "modal" ? { workspace: "fixture", environment: "main", appId: "ap_fixture" } : null,
+      };
+      const world = setup({ golden: source });
+      const phases: string[] = [];
+      const result = await launchSandbox(
+        { ...world.provider, id: backend },
+        world.stores,
+        owner,
+        { golden: "web", harness: "claude", provider: backend },
+        {
+          measure: async (phase, work) => {
+            phases.push(phase);
+            return work();
+          },
+        },
+      );
+      expect(phases).toContain("launch_fork");
+      expect(phases).toContain("launch_ready");
+      expect(phases).toContain("launch_init");
+      expect(phases).not.toContain("launch_prompt");
+      expect(world.prompts).toEqual([]);
+      expect(result.sandbox).toMatchObject({ status: "ready", conversationIds: [] });
+      expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "claude-opus-5-5", reasoningEffort: "medium" });
+      expect(result.conversationId).toBeUndefined();
+      expect(result.ttlSeconds).toBe(14_400);
+      if (backend === "boat") expect(world.forks[0]?.ttlSeconds).toBe(14_700);
+      expect([...world.rows.values()][0]).toMatchObject({ status: "ready", conversationIds: [] });
+    },
+  );
 
   test("explicit selectors are validated after authorization and before allocation", async () => {
     const manifest = golden("org");
@@ -442,13 +481,25 @@ exit 1
           ? { exitCode: 1, stderr: `ERR_PNPM token ${CLAUDE_TOKEN} rejected\nmissing lockfile`, stdout: "" }
           : { exitCode: 0 },
     });
+    const phases: string[] = [];
     const error = await launchSandbox(
       world.provider,
       world.stores,
       owner,
       { golden: "web", harness: "claude", prompt: "go" },
-      { newId: () => "sbx-2" },
+      {
+        newId: () => "sbx-2",
+        measure: async (phase, work) => {
+          try {
+            return await work();
+          } finally {
+            phases.push(phase);
+          }
+        },
+      },
     ).catch((caught: unknown) => caught);
+    expect(phases).toContain("launch_init");
+    expect(phases).not.toContain("launch_prompt");
     expect(error).toBeInstanceOf(LaunchError);
     const failure = error as LaunchError;
     expect(failure.code).toBe("init_failed");
