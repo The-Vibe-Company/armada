@@ -50,6 +50,8 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
   const legacyCode = status === 403 || (wasInterior && status === 404) ? "conflict" : "unavailable";
   // These immutable-binding refusals are fixed server-owned strings, never guest text.
   const bindingReasons: Record<string, string> = {
+    "This sandbox is already bound; its account cannot change.":
+      "This sandbox is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
     "The Modal workspace is already bound; its account cannot change.":
       "The Modal workspace is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
     "The workspace was bound concurrently; no account change was made.":
