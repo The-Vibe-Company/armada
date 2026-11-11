@@ -3,14 +3,13 @@ import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import {
   configFromFlags,
-  createGolden,
   createSqlGoldenStore,
   type GoldenActor,
   goldenForLaunch,
   type Provider,
   type SandboxInfo,
-  snapshotGolden,
 } from "../src/index.ts";
+import { createGolden, snapshotGolden } from "../src/server.ts";
 import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
 const WEB = "https://github.com/example/web.git";

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { sandbox } from "../../provider-boat/test/support.ts";
 import { handleControlRequest } from "../src/control.ts";

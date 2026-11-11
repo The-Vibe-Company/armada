@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createSqlGoldenStore, createSqlVaultStore, parseGoldenConfig } from "@armada/core";
+import { createSqlGoldenStore, parseGoldenConfig } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";

@@ -150,7 +150,8 @@ test("registry separates personal grants, fences leases on revoke, and refuses s
 test("control DTOs never echo authentication and report an unconfigured broker honestly", async () => {
   const { db, people: p } = await database();
   try {
-    const { createSqlVaultStore, decryptSecret } = await import("@armada/core");
+    const { decryptSecret } = await import("@armada/core");
+    const { createSqlVaultStore } = await import("@armada/core/server");
     const { handleControlRequest } = await import("../src/control.ts");
     const options = {
       authStore: createSqlAuthStore(db),
@@ -402,7 +403,8 @@ test("durable invalidations reach every replica independently and roll back with
 test("authenticated browser callback delegates without client org and binds to the pending actor", async () => {
   const { db, people: p } = await database();
   try {
-    const { createSqlMcpPendingOAuthPort, createSqlVaultStore, VaultError } = await import("@armada/core");
+    const { createSqlMcpPendingOAuthPort, VaultError } = await import("@armada/core");
+    const { createSqlVaultStore } = await import("@armada/core/server");
     const { handleControlRequest } = await import("../src/control.ts");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
     const pending = createSqlMcpPendingOAuthPort(db, ENCRYPTION_KEY);
@@ -781,6 +783,7 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
   const { db, people: p } = await database();
   try {
     const { createSqlVaultStore } = await import("@armada/core");
+    const { createSqlVaultStore } = await import("@armada/core/server");
     const { handleControlRequest } = await import("../src/control.ts");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
     const call = async (action: string, body: Record<string, unknown>) => {
