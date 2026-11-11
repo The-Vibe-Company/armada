@@ -53,7 +53,7 @@ test.each([
   const failure = JSON.parse(err).error;
   expect(failure.code).toBe("not_found");
   expect(failure.legacyCode).toBe(
-    ["recovery", "advice", "report", "bind-credential"].includes(args[0]!) ? "unavailable" : "conflict",
+    ["recovery", "advice", "report", "bind-credential"].includes(args[0] ?? "") ? "unavailable" : "conflict",
   );
   expect(failure.message).toContain("not found or not accessible");
   expect(failure.message).toContain("armada list --json");

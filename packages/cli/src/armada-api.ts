@@ -8,8 +8,8 @@ import {
   type InvitationErrorReason,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
-import type { SessionStore } from "./session.ts";
 import { sandboxFailure } from "./sandbox-errors.ts";
+import type { SessionStore } from "./session.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;
