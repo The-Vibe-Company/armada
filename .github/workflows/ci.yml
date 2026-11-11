@@ -113,29 +113,20 @@ jobs:
   # The dashboard runs as a production build against a mock of Supabase and the Armada server.
   e2e:
     name: Dashboard e2e
-    # Stay on Playwright's supported LTS instead of ubuntu-latest's moving release.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Use the image for pre-baked Noble system libraries, not its bundled browsers.
+    # Install the lockfile-selected Chromium below so browser/package revisions match.
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble@sha256:f1e7e01021efd65dd1a2c56064be399f3e4de00fd021ac561325f2bfbb2b837a
+      options: --ipc=host
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # Retry only mirror-sensitive setup, never the tests themselves.
-      - name: Install Chromium system dependencies
-        working-directory: apps/dashboard
-        timeout-minutes: 6
-        run: |
-          for attempt in 1 2 3; do
-            if bunx playwright install-deps chromium; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "::error::Chromium dependency installation failed after 3 attempts"
-              exit 1
-            fi
-            echo "::warning::Chromium dependency installation failed (attempt $attempt/3); retrying in 15 seconds"
-            sleep 15
-          done
       - name: Install Chromium
         run: bunx playwright install chromium
         working-directory: apps/dashboard
