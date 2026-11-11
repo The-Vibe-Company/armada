@@ -119,7 +119,24 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - run: bunx playwright install --with-deps chromium
+      # Retry only mirror-sensitive setup, never the tests themselves.
+      - name: Install Chromium system dependencies
+        working-directory: apps/dashboard
+        timeout-minutes: 6
+        run: |
+          for attempt in 1 2 3; do
+            if bunx playwright install-deps chromium; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Chromium dependency installation failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::Chromium dependency installation failed (attempt $attempt/3); retrying in 15 seconds"
+            sleep 15
+          done
+      - name: Install Chromium
+        run: bunx playwright install chromium
         working-directory: apps/dashboard
       - run: bun run e2e
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
