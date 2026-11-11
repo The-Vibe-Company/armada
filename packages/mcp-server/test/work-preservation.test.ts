@@ -260,6 +260,10 @@ test.each(["observe", "quiesce", "capture", "known_capture"])(
         await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
       ).rows[0];
       if (stage === "known_capture") expect(row?.preservation_note).toContain("(capture_timeout)");
+      else if (stage === "capture")
+        expect(row?.preservation_note).toBe(
+          "could not check for unpushed work (capture_timeout). If this sandbox had local work, resume it and push or copy it before stopping again.",
+        );
       else expect(row?.preservation_note ?? null).toBeNull();
       expect(interrupts).toBe(stage === "observe" ? 0 : 1);
       expect(execs).toBe(stage === "known_capture" ? 2 : stage === "capture" ? 1 : 0);
@@ -322,7 +326,7 @@ test("confirmed work at risk records a closed stage/reason and owner action", as
 });
 
 test.each(["get", "quiesce", "exec"] as const)(
-  "unknown work after %s failure is logged without an owner banner",
+  "unknown work after %s failure keeps an informational owner notice",
   async (method) => {
     await withPreservationRow(async ({ db, id, sql, provider }) => {
       const log = spyOn(console, "warn").mockImplementation(() => {});
@@ -352,7 +356,7 @@ test.each(["get", "quiesce", "exec"] as const)(
               [id],
             )
           ).rows[0]?.preservation_note,
-        ).toBeNull();
+        ).toContain("could not check for unpushed work (");
         const line = String(log.mock.calls.at(-1)?.[0]);
         expect(JSON.parse(line)).toMatchObject({
           event: "work_preservation_failed",
@@ -366,3 +370,47 @@ test.each(["get", "quiesce", "exec"] as const)(
     });
   },
 );
+
+test("refused collector exec preserves conditional guidance when risk cannot be checked", async () => {
+  await withPreservationRow(async ({ db, id, sql, provider }) => {
+    await preserveBeforeStop(
+      sql,
+      {
+        ...provider,
+        exec: async () => {
+          throw new ProviderError({
+            provider: "boat",
+            code: "sandbox_not_ready",
+            retryable: false,
+            message: "PRIVATE_PROVIDER_TEXT",
+          });
+        },
+      },
+      id,
+      "bx_policy",
+    );
+    const row = (
+      await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [id])
+    ).rows[0];
+    expect(row?.preservation_note).toBe(
+      "could not check for unpushed work (collect_exec_not_ready). If this sandbox had local work, resume it and push or copy it before stopping again.",
+    );
+  });
+});
+
+test("a successful clean check stays silent if clearing the receipt must be retried", async () => {
+  await withPreservationRow(async ({ db, id, boat, provider }) => {
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const sql = bunLikeSql(db, (text) => {
+      if (text.includes("preservation_note=null")) throw new Error("Synthetic cleanup failure");
+    });
+    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    expect(
+      (
+        await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [
+          id,
+        ])
+      ).rows[0]?.preservation_note,
+    ).toBeNull();
+  });
+});

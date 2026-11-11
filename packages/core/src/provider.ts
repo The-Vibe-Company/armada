@@ -223,13 +223,9 @@ export interface HarnessCapabilities {
   approvals: boolean;
 }
 
-export type SandboxState =
-  | "starting" // machine being created or prepared; commands wait for it
-  | "ready" // accepts commands and prompts
-  | "running" // an agent turn is in progress
-  | "stopping" // the disk is being saved
-  | "stopped" // machine removed, disk kept
-  | "failed";
+/** Canonical provider-neutral compute states; shared by types and safe diagnostics. */
+export const SANDBOX_STATES = ["starting", "ready", "running", "stopping", "stopped", "failed"] as const;
+export type SandboxState = (typeof SANDBOX_STATES)[number];
 
 export interface SandboxInfo {
   id: string;

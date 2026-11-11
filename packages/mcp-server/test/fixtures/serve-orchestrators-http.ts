@@ -621,8 +621,7 @@ try {
     assert.equal(row.status, "stopped");
     assert.equal(
       row.preservation_note,
-      null,
-      "A refused/unverified capture is diagnostic-only, not confirmed work at risk",
+      `could not check for unpushed work (${reason === "unavailable" ? "collect_exec_failed" : reason === "timeout" ? "collect_exec_timeout" : `capture_${reason}`}). If this sandbox had local work, resume it and push or copy it before stopping again.`,
     );
   }
   const epochsBeforeFailure = effects.epochInstalls;

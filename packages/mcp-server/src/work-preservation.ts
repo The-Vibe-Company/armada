@@ -4,6 +4,7 @@ import {
   type Provider,
   ProviderError,
   preserveWork,
+  SANDBOX_STATES,
   type Sql,
   workPreservationError,
 } from "@armada/core/server";
@@ -13,6 +14,19 @@ function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<ty
 }
 function failureNote(reason: string): string {
   return `unpushed work could not be preserved (${reason}). Resume the sandbox and push or copy any local work before stopping again.`;
+}
+
+function ownerReason(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
+  const cause =
+    diagnostic?.errorClass === "provider_sandbox_not_ready"
+      ? "not_ready"
+      : stage.endsWith("_exec") && reason.startsWith("exec_")
+        ? reason.slice(5)
+        : reason;
+  return `${stage}_${cause}`;
+}
+function unknownNote(reason: string): string {
+  return `could not check for unpushed work (${reason}). If this sandbox had local work, resume it and push or copy it before stopping again.`;
 }
 
 type StopSource = "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
@@ -36,7 +50,7 @@ export async function preserveBeforeStop(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   const controller = new AbortController();
-  const progress = { stage: "observe", workAtRisk: false };
+  const progress = { stage: "observe", workAtRisk: false, checkedClean: false };
   try {
     return await Promise.race([
       captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal, source),
@@ -53,7 +67,7 @@ export async function preserveBeforeStop(
               sandboxId: id,
               stage: progress.stage,
               reason,
-              workRisk: progress.workAtRisk ? "confirmed" : "unknown",
+              workRisk: progress.workAtRisk ? "confirmed" : progress.checkedClean ? "clean" : "unknown",
               ...diagnostic,
             }),
           );
@@ -64,7 +78,11 @@ export async function preserveBeforeStop(
           void sql
             .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
               id,
-              progress.workAtRisk ? failureNote(`${progress.stage}_timeout`) : null,
+              progress.workAtRisk
+                ? failureNote(`${progress.stage}_timeout`)
+                : progress.checkedClean
+                  ? null
+                  : unknownNote(`${progress.stage}_timeout`),
             ])
             .catch(() => {});
           resolve();
@@ -83,7 +101,7 @@ async function captureAndStore(
   id: string,
   providerId: string,
   expired: () => boolean,
-  progress: { stage: string; workAtRisk: boolean },
+  progress: { stage: string; workAtRisk: boolean; checkedClean: boolean },
   signal: AbortSignal,
   source: StopSource,
 ): Promise<"pending" | void> {
@@ -102,9 +120,7 @@ async function captureAndStore(
           source,
           ...(state
             ? {
-                state: ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"].includes(state)
-                  ? state
-                  : "unrecognized",
+                state: (SANDBOX_STATES as readonly string[]).includes(state) ? state : "unrecognized",
               }
             : {}),
         }),
@@ -148,6 +164,7 @@ async function captureAndStore(
       );
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
     } else if (result.status === "clean") {
+      progress.checkedClean = true;
       stage = progress.stage = "storage";
       reason = "failed";
       // A clean stop has no current work at risk; historical archives remain retrievable.
@@ -160,7 +177,9 @@ async function captureAndStore(
         diagnostic = result.diagnostic;
       }
       progress.workAtRisk = result.workAtRisk === true;
-      note = progress.workAtRisk ? failureNote(`${stage}_${reason}`) : null;
+      note = progress.workAtRisk
+        ? failureNote(ownerReason(stage, reason, diagnostic))
+        : unknownNote(ownerReason(stage, reason, diagnostic));
       reason = closedFailure(stage, reason, diagnostic);
     }
   } catch (error) {
@@ -176,7 +195,11 @@ async function captureAndStore(
       return "pending";
     }
     diagnostic = workPreservationError(error);
-    note = progress.workAtRisk ? failureNote(`${stage}_failed`) : null;
+    note = progress.workAtRisk
+      ? failureNote(`${stage}_failed`)
+      : progress.checkedClean
+        ? null
+        : unknownNote(ownerReason(stage, "failed", diagnostic));
     reason = closedFailure(stage, reason, diagnostic);
   }
   if (expired()) return;
@@ -187,7 +210,7 @@ async function captureAndStore(
         sandboxId: id,
         stage,
         reason,
-        workRisk: progress.workAtRisk ? "confirmed" : "unknown",
+        workRisk: progress.workAtRisk ? "confirmed" : progress.checkedClean ? "clean" : "unknown",
         ...diagnostic,
       }),
     );

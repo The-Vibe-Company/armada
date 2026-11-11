@@ -460,10 +460,13 @@ try {
           "A two-minute Modal launch must have only the configured 30-minute headroom plus five-minute preservation margin, not a 24h timer",
         );
       const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
-      const deniedBefore = effects.length;
+      // Prior scenarios may be stopping in the real background worker. This
+      // denied request must not mutate its own target; unrelated cleanup is valid.
+      const targetEffects = () => effects.filter((item) => item.id === before.provider_sandbox_id).length;
+      const deniedBefore = targetEffects();
       const denied = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 600 }, 403, memberId);
       assert.equal(denied.error.code, "extension_not_allowed");
-      assert.equal(effects.length, deniedBefore, "Denied member must not mutate provider state");
+      assert.equal(targetEffects(), deniedBefore, "Denied member must not mutate the target provider state");
       let conversation: string | null = null;
       if (active)
         conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
@@ -586,7 +589,10 @@ try {
     const stopped = await row(scenario.id);
     assert.equal(stopped.status, "stopped", JSON.stringify({ scenario, stopped, logs, effects }));
     assert.equal(stopped.status_reason, "expired");
-    assert.equal(stopped.preservation_note, null, "Missing collector runtime cannot establish work at risk");
+    assert.equal(
+      stopped.preservation_note,
+      "could not check for unpushed work (capture_missing_bun). If this sandbox had local work, resume it and push or copy it before stopping again.",
+    );
     const operations = effects
       .slice(expirationStart)
       .filter((item) => item.id === scenario.nativeId)

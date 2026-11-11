@@ -1,4 +1,4 @@
-import { ArchiveIcon, GitPullRequestIcon, OctagonPauseIcon, TriangleAlertIcon } from "lucide-react";
+import { ArchiveIcon, GitPullRequestIcon, InfoIcon, OctagonPauseIcon, TriangleAlertIcon } from "lucide-react";
 import { CopyButton } from "@/components/copy-button";
 import type { OutcomeView, PreservationView } from "@/lib/outcome";
 import { TONE_BADGE } from "@/lib/status-tone";
@@ -69,7 +69,7 @@ export function PreservationNotice({
   className?: string;
 }) {
   const failed = preservation.kind === "failed";
-  const Icon = failed ? TriangleAlertIcon : ArchiveIcon;
+  const Icon = failed ? TriangleAlertIcon : preservation.kind === "unknown" ? InfoIcon : ArchiveIcon;
   return (
     <div
       data-preservation={preservation.kind}

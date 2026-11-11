@@ -219,6 +219,7 @@ export {
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,
+  SANDBOX_STATES,
   type SandboxInfo,
   type SandboxState,
   type SnapshotInfo,

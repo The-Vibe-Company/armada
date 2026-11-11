@@ -14,9 +14,9 @@
 - A clean capture clears the current preservation note; historical recovery
   archives remain retrievable. Failure notes require confirmed unpublished or
   dirty work (or a completed archive whose retrieval/storage failed). Failed
-  inspection alone is **unknown**, not evidence of work at risk: it is logged
-  without an owner-facing preservation banner. This deliberately trades a banner
-  for operational diagnostics when inspection itself is unavailable.
+  inspection alone is **unknown**, not evidence of work at risk: it keeps a
+  lower-severity “could not check” notice with a closed stage/reason and conditional
+  resume/push advice. Unknown must never silently look like a successful clean check.
 - Owner failure notes use a short closed stage/reason and an action. Detailed
   provider status, state admission and caller-order evidence remain in logs.
 
