@@ -143,6 +143,7 @@ test("a new revision starts from the current one; the old revision stays and the
   await expect(dialog.getByLabel("Reasoning effort")).toHaveValue("high");
   await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
   await expect(dialog.getByRole("checkbox", { name: /APP_REGION/ })).toBeChecked();
+  await expect(dialog.locator('[data-pick="variables"]')).toContainText("as DEPLOY_REGION");
   await dialog.getByRole("button", { name: "Publish revision 2" }).click();
   // Its pinned model account has moved on: the refusal says how to go on, and nothing is published.
   await expect(dialog.getByRole("alert")).toContainText("Untick “Keep its pinned model account”");
@@ -157,6 +158,10 @@ test("a new revision starts from the current one; the old revision stays and the
   expect(revisions.map((r) => r.revision)).toEqual([1, 2]);
   expect(revisions.map((r) => (r.definition.variables as { version: number }[])[0]?.version)).toEqual([2, 3]);
   expect(revisions[1]?.definition).not.toHaveProperty("modelAccount");
+  // The aliased binding keeps its key: only its version moves.
+  expect(revisions[1]?.definition.variables).toEqual([
+    { key: "DEPLOY_REGION", variableId: "00000000-0000-4000-8000-000000000080", version: 3 },
+  ]);
   const publish = state.templateCalls.find((call) => call.route === "templates/publish");
   expect(publish?.body.expectedRevision).toBe(1);
 });
@@ -289,4 +294,21 @@ test("a retry after an unknown outcome sends the same size, and no launch manife
   expect(second?.body).toEqual(first?.body);
   await expect(dialog.getByRole("alert")).toContainText("could not confirm");
   expect(await page.content()).not.toContain("manifest-canary-5e1d");
+});
+
+test("a new revision cannot be published while its tools cannot be read: nothing is dropped silently", async ({
+  page,
+}) => {
+  await fetch(`${MOCK}/__test/fail-connection-list`, { method: "POST" });
+  await signIn(page, "alice@example.com", "/templates");
+  const shown = await panel(page, "Backend with docs");
+  await shown.getByRole("button", { name: "New revision" }).click();
+  const dialog = page.getByRole("dialog", { name: "New revision of Backend with docs" });
+  await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
+  await expect(dialog.locator("[data-template-lost]")).toHaveText(/this revision's tools would be lost/);
+  await expect(dialog.getByRole("button", { name: "Publish revision 3" })).toBeDisabled();
+  // Enter cannot publish either, and the server action refuses on its own.
+  await dialog.getByRole("button", { name: "Back" }).click();
+  await dialog.getByLabel("Environment").press("Enter");
+  expect((await mockState()).templateCalls.filter((call) => call.route === "templates/publish")).toHaveLength(0);
 });

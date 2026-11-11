@@ -227,7 +227,14 @@ type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
  * refusal is said in words before sending (the server's own is a generic "Invalid template request."). An org
  * template may only use org resources; the server checks every reference again.
  */
-export function templateRequest(fields: TemplateFormFields, lookups: TemplateLookups): Parsed<TemplateRequest> {
+export function templateRequest(
+  fields: TemplateFormFields,
+  lookups: TemplateLookups,
+  /** The revision a new one starts from: its unreadable selections block, its variable keys are kept. */
+  previous?: Pick<TemplateDefinition, "connections" | "variables">,
+): Parsed<TemplateRequest> {
+  const lost = previous ? unreadableSelections(previous, lookups) : null;
+  if (lost) return { ok: false, error: lost };
   const name = fields.name.trim();
   if (!name) return { ok: false, error: "Name the template." };
   if (name.length > MAX_TEMPLATE_NAME) return { ok: false, error: `Use at most ${MAX_TEMPLATE_NAME} characters.` };
@@ -268,9 +275,11 @@ export function templateRequest(fields: TemplateFormFields, lookups: TemplateLoo
         ok: false,
         error: `${variable.name} is personal: an organization template uses organization variables only.`,
       };
-    if (variables.some((binding) => binding.key === variable.name))
-      return { ok: false, error: `Two chosen variables are named ${variable.name}: keep one.` };
-    variables.push({ key: variable.name, variableId: variable.id, version: variable.version });
+    // A variable the revision already binds keeps its key, even when it differs from the variable's name.
+    const key = previous?.variables.find((binding) => binding.variableId === id)?.key ?? variable.name;
+    if (variables.some((binding) => binding.key === key))
+      return { ok: false, error: `Two chosen variables would both be ${key}: keep one.` };
+    variables.push({ key, variableId: variable.id, version: variable.version });
   }
 
   return {
@@ -289,6 +298,21 @@ export function templateRequest(fields: TemplateFormFields, lookups: TemplateLoo
       },
     },
   };
+}
+
+/**
+ * Why a new revision cannot be published from this page now: a list it needs could not be read, so the tools or
+ * variables the current revision uses would be dropped without the person seeing them. Null when nothing is lost.
+ */
+export function unreadableSelections(
+  previous: Pick<TemplateDefinition, "connections" | "variables">,
+  lookups: Pick<TemplateLookups, "connections" | "variables">,
+): string | null {
+  if (previous.connections.length > 0 && !lookups.connections)
+    return "Tools could not be read, so this revision's tools would be lost. Refresh and try again.";
+  if (previous.variables.length > 0 && !lookups.variables)
+    return "Variables could not be read, so this revision's variables would be lost. Refresh and try again.";
+  return null;
 }
 
 /** Why a launch was refused, in words, from the server's value-free reason code. */

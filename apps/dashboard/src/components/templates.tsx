@@ -66,6 +66,7 @@ import {
   type TemplateLookups,
   type TemplateScope,
   ttlOptions,
+  unreadableSelections,
 } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 
@@ -211,6 +212,8 @@ function TemplateForm({
     root.current?.querySelector<HTMLElement>(`[data-template-step="${step}"] [data-step-heading]`)?.focus();
   }, [step]);
 
+  // A list that could not be read would silently drop what the current revision chose from it: no publication.
+  const lost = editing ? unreadableSelections(editing.definition, lookups) : null;
   const environments = lookups.goldens.filter((row) => scope === "personal" || row.visibility === "org");
   const chosen = lookups.goldens.find((row) => row.id === golden);
   const goldenProblem =
@@ -425,17 +428,27 @@ function TemplateForm({
           }
           options={(lookups.variables ?? [])
             .filter((row) => row.status === "active" && (scope === "personal" || row.scope === "org"))
-            .map((row) => ({ id: row.id, label: row.name, note: row.scope === "org" ? "Org" : "Personal" }))}
+            .map((row) => {
+              // A binding under another key than the variable's name keeps that key: say which.
+              const key = editing?.definition.variables.find((binding) => binding.variableId === row.id)?.key;
+              const scopeLabel = row.scope === "org" ? "Org" : "Personal";
+              return { id: row.id, label: row.name, note: key && key !== row.name ? `as ${key}` : scopeLabel };
+            })}
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
-          hint="Each value is copied into the sandbox at launch, under its own name. Publishing uses its current version."
+          hint="Each value is copied into the sandbox at launch, under its own name unless the revision named it otherwise. Publishing uses its current version."
         />
         <NoSecretsNote />
+        {lost && (
+          <p role="alert" className="text-sm text-destructive" data-template-lost>
+            {lost}
+          </p>
+        )}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button type="button" variant="ghost" onClick={() => setStep(1)}>
             <ArrowLeftIcon /> Back
           </Button>
           <div className="flex flex-col items-stretch gap-1 sm:items-end">
-            <SubmitButton data-template-publish>
+            <SubmitButton data-template-publish {...(lost ? { disabled: true } : {})}>
               {editing ? `Publish revision ${editing.revision + 1}` : "Publish template"}
             </SubmitButton>
             <p className="text-xs text-muted-foreground">

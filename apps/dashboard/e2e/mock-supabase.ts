@@ -233,7 +233,8 @@ function seed(): State {
         goldenId: id(26),
         provider: "modal",
         harness: "codex",
-        variables: [{ key: "APP_REGION", variableId: id(80), version: 2 }],
+        // Bound under another key than the variable's name (set over the API).
+        variables: [{ key: "DEPLOY_REGION", variableId: id(80), version: 2 }],
         // Pinned over the API at a version the account has since left.
         modelAccount: { id: id(40), version: 9 },
       }),

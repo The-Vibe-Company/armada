@@ -188,6 +188,33 @@ describe("template form", () => {
   });
 });
 
+describe("template revision from the form", () => {
+  const previous = {
+    connections: [DOCS],
+    variables: [{ key: "DEPLOY_REGION", variableId: REGION, version: 2 }],
+  };
+
+  test("a variable the revision binds under another key keeps that key; a new one takes its name", () => {
+    const parsed = templateRequest(form({ connections: [DOCS], variables: [REGION, NOTES] }), lookups, previous);
+    expect(parsed.ok && parsed.value.definition.variables).toEqual([
+      { key: "DEPLOY_REGION", variableId: REGION, version: 3 },
+      { key: "NOTES_URL", variableId: NOTES, version: 1 },
+    ]);
+  });
+
+  test("a list that cannot be read blocks the revision instead of dropping its selections", () => {
+    const tools = templateRequest(form({ variables: [REGION] }), { ...lookups, connections: null }, previous);
+    expect(tools).toEqual({
+      ok: false,
+      error: "Tools could not be read, so this revision's tools would be lost. Refresh and try again.",
+    });
+    const variables = templateRequest(form({ connections: [DOCS] }), { ...lookups, variables: null }, previous);
+    expect(variables.ok ? null : variables.error).toContain("variables would be lost");
+    // A new template has nothing to lose.
+    expect(templateRequest(form(), { ...lookups, connections: null, variables: null }).ok).toBe(true);
+  });
+});
+
 describe("template launch", () => {
   test("refusals are said in words, a pending launch keeps its meaning", () => {
     expect(templateFailure(409, "Template launch refused: variable_version_changed.")).toContain(

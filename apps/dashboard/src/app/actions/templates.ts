@@ -13,7 +13,14 @@ import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
-import { launchReason, REQUEST_KEY, templateFailure, templateRequest, ttlChoice } from "@/lib/templates";
+import {
+  launchReason,
+  REQUEST_KEY,
+  type TemplateDefinition,
+  templateFailure,
+  templateRequest,
+  ttlChoice,
+} from "@/lib/templates";
 
 /**
  * The Templates page's writes and launch (#949), each one control API call as the signed-in viewer. The server
@@ -56,7 +63,7 @@ async function guarded(run: (context: Context) => Promise<ActionResult>, data: F
 }
 
 /** The form's four choices against what the viewer can see now. */
-async function request(data: FormData, scope: string) {
+async function request(data: FormData, scope: string, previous?: TemplateDefinition) {
   return templateRequest(
     {
       name: formString(data, "name"),
@@ -70,6 +77,7 @@ async function request(data: FormData, scope: string) {
       variables: data.getAll("variables").map(String),
     },
     await templateLookups(),
+    previous,
   );
 }
 
@@ -88,14 +96,15 @@ export async function publishTemplate(_previous: ActionResult | null, data: Form
   return guarded(async ({ templates, org }) => {
     const current = target(data);
     if (!current) return fail("That request is not valid.");
-    // The scope never changes: the revision is checked against the template's own.
-    const parsed = await request(data, formString(data, "scope"));
-    if (!parsed.ok) return fail(parsed.error);
     // A publication replaces the whole definition: skill pins (set over the API, not shown here) carry over from
-    // the revision it starts from. A pinned model account carries over only while the person keeps it ticked; an
-    // account pinned for another agent cannot run the new one, so it goes with the agent change.
+    // the revision it starts from, and so do its variable keys. A pinned model account carries over only while the
+    // person keeps it ticked; an account pinned for another agent cannot run the new one, so it goes with the agent
+    // change.
     const { revision: previous } = await templates.get({ org, id: current.id, revision: current.expectedRevision });
     const kept = previous.definition;
+    // The scope never changes: the revision is checked against the template's own.
+    const parsed = await request(data, formString(data, "scope"), kept);
+    if (!parsed.ok) return fail(parsed.error);
     const keepAccount =
       kept.modelAccount &&
       kept.harness === parsed.value.definition.harness &&
