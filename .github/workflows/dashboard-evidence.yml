@@ -77,7 +77,7 @@ jobs:
           mock_pid=$!
           for phase in before after; do
             if [[ "$phase" == before ]]; then
-              git show "$BASE_SHA:apps/dashboard/$component" > "$component"
+              git -c safe.directory="$GITHUB_WORKSPACE" show "$BASE_SHA:apps/dashboard/$component" > "$component"
             else
               cp "$original" "$component"
             fi
