@@ -45,6 +45,7 @@ import { operation, parseTtl } from "./operations.ts";
 import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
+import { skillDefaultsCommand } from "./skill-default-commands.ts";
 import { skillCommand } from "./skill-install.ts";
 import { templateCommand } from "./template-commands.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
@@ -117,8 +118,11 @@ Usage:
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
-                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
+                [--no-default-skills] [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
+                Skills merge environment < organization < personal < template < explicit pins by slug.
+                --no-default-skills skips stored defaults, not explicit --skill pins.
+                Public skills: org/slug@exact-version; private workspace skills: slug@exact-version.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
@@ -193,6 +197,7 @@ Usage:
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada skills defaults get|set --help    Read or replace personal, org or environment default skill pins
   armada template --help                   Create, publish, list, get, delete and launch immutable templates
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
@@ -402,6 +407,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return logout(rest, io, deps);
     case "org":
       return orgCommand(rest, vaultIo(io, deps));
+    case "skills":
+      return skillDefaultsCommand(rest, vaultIo(io, deps));
     case "template":
       return templateCommand(rest, vaultIo(io, deps, true));
     case "vars":
@@ -816,7 +823,13 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv, ["--size", "--skill", "--max-active-children"], ["--sized", "--armada-access"]);
+  const args = parseArgs(
+    argv,
+    ["--size", "--skill", "--max-active-children"],
+    ["--sized", "--armada-access", "--no-default-skills"],
+  );
+  if (argv.filter((arg) => arg === "--no-default-skills").length > 1)
+    throw new GoldenError("invalid_config", "--no-default-skills can only be set once.");
   const maxActiveChildren = single(args, "--max-active-children");
   if (
     maxActiveChildren !== undefined &&
@@ -875,6 +888,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+          ...(flag(args, "--no-default-skills") ? { skipSkillDefaults: true } : {}),
           ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
           ...(connections === undefined ? {} : { connections: connections.split(",") }),
           ...(flag(args, "--armada-access")

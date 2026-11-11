@@ -311,3 +311,51 @@ for (const visibility of [undefined, "private", "org"]) {
     });
   }
 }
+
+test("launch skips only default skills when explicitly requested, preserving pins on normal and sized routes", async () => {
+  for (const sized of [false, true]) {
+    for (const skip of [false, true]) {
+      const calls: Request[] = [];
+      const code = await run(
+        [
+          "launch",
+          "web",
+          "--agent",
+          "codex",
+          "--skill",
+          "review-code@2.1.0",
+          "--json",
+          ...(sized ? ["--sized"] : []),
+          ...(skip ? ["--no-default-skills"] : []),
+        ],
+        { out: () => {}, err: () => {} },
+        {
+          auth: {
+            out: () => {},
+            err: () => {},
+            env: { ARMADA_TOKEN: token },
+            session: memorySessionStore(),
+            now: () => new Date(),
+            open: () => {},
+            fetch: async (input, init) => {
+              calls.push(input instanceof Request ? new Request(input, init) : new Request(String(input), init));
+              return Response.json({
+                ...response,
+                sandbox: {
+                  ...response.sandbox,
+                  ...(sized ? { machineSize: null } : {}),
+                },
+              });
+            },
+          },
+        },
+      );
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(1);
+      const body = (await calls[0]?.json()) as Record<string, unknown>;
+      expect(body.skills).toEqual(["review-code@2.1.0"]);
+      if (skip) expect(body.skipSkillDefaults).toBe(true);
+      else expect(body).not.toHaveProperty("skipSkillDefaults");
+    }
+  }
+});
