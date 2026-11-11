@@ -3,9 +3,6 @@ import {
   boatSnapshotName,
   configFromFlags,
   connectGolden,
-  createGolden,
-  GOLDEN_BUILD_TTL_SECONDS,
-  GOLDEN_ROOT,
   type GoldenActor,
   GoldenError,
   type GoldenRecord,
@@ -95,74 +92,11 @@ describe("golden config", () => {
 });
 
 describe("golden workflow", () => {
-  test("create clones every repo and runs init, with no account environment", async () => {
-    const rows: GoldenRecord[] = [];
-    const boat = scripted();
-    const created = await createGolden(boat.provider, memory(rows, admin), admin, {
-      name: "web",
-      visibility: "org",
-      config: configFromFlags([`${WEB}@main`, `${API}@release`], ["pnpm i"]),
-    });
-    expect(created.sandboxId).toBe("bx_23456789");
-    expect(created.snapshotName).toHaveLength(63);
-    expect(boat.create).toEqual([
-      {
-        name: "web",
-        ttlSeconds: GOLDEN_BUILD_TTL_SECONDS,
-        idempotencyKey: created.golden.id,
-        labels: {
-          armada: "golden",
-          org: ORG,
-          owner: ADMIN,
-          visibility: "org",
-          golden: "web",
-          snapshot: created.snapshotName,
-        },
-      },
-    ]);
-    expect(JSON.stringify(boat.create)).not.toMatch(/env|ANTHROPIC|api_key/i);
-    expect(boat.exec.map((call) => call.command)).toEqual([
-      expect.stringContaining(WEB),
-      expect.stringContaining(API),
-      "pnpm i",
-    ]);
-    expect(boat.exec.every((call) => call.cwd === GOLDEN_ROOT)).toBe(true);
-    expect(boat.exec[0]?.command).toContain("credential.helper=");
-    expect(boat.exec[0]?.command).not.toContain("ANTHROPIC");
-    expect(rows[0]?.providerSandboxId).toBe("bx_23456789");
-    expect(rows[0]?.providerSnapshotId).toBeNull();
-  });
-
-  test("a failed init leaves the sandbox recorded and does not snapshot", async () => {
-    const rows: GoldenRecord[] = [];
-    const boat = scripted({ execCode: 1 });
-    await expect(
-      createGolden(boat.provider, memory(rows, owner), owner, {
-        name: "web",
-        visibility: "private",
-        config: configFromFlags([WEB], ["pnpm i"]),
-      }),
-    ).rejects.toMatchObject({ code: "setup_failed" });
-    expect(rows[0]?.providerSandboxId).toBe("bx_23456789");
-    expect(boat.snapshots).toHaveLength(0);
-  });
-
-  test("a lost sandbox id is retried with the same idempotency key", async () => {
-    const rows: GoldenRecord[] = [];
-    const boat = scripted({ failCreates: 1 });
-    const store = memory(rows, owner);
-    const input = { name: "web", visibility: "private" as const, config: configFromFlags([WEB], []) };
-    await expect(createGolden(boat.provider, store, owner, input)).rejects.toBeInstanceOf(ProviderError);
-    const created = await createGolden(boat.provider, store, owner, input);
-    expect(boat.create.map((call) => call.idempotencyKey)).toEqual([created.golden.id, created.golden.id]);
-    expect(rows).toHaveLength(1);
-  });
-
   test("snapshot polls until the save is ready and records the namespaced name", async () => {
     const rows: GoldenRecord[] = [];
     const boat = scripted({ snapshotStatuses: ["saving", "ready"] });
     const store = memory(rows, owner);
-    const created = await createGolden(boat.provider, store, owner, {
+    await seedGolden(store, owner, {
       name: "web",
       visibility: "private",
       config: configFromFlags([WEB, API], ["pnpm i"]),
@@ -174,7 +108,9 @@ describe("golden workflow", () => {
       },
       snapshotPolls: 5,
     });
-    expect(saved.snapshotName).toBe(created.snapshotName);
+    expect(saved.snapshotName).toBe(
+      boatSnapshotName({ orgId: ORG, ownerId: OWNER, visibility: "private", name: "web" }),
+    );
     expect(rows[0]?.providerSnapshotId).toBe(saved.snapshotName);
     expect(waits).toBe(1);
     const launch = await goldenForLaunch(store, owner, "web");
@@ -194,7 +130,7 @@ describe("golden workflow", () => {
       }),
     });
     const store = memory(rows, owner);
-    await createGolden(boat.provider, store, owner, {
+    await seedGolden(store, owner, {
       name: "web",
       visibility: "private",
       config: configFromFlags([WEB], []),
@@ -204,22 +140,14 @@ describe("golden workflow", () => {
     expect(boat.snapshots).toHaveLength(1);
   });
 
-  test("only an admin creates or changes an org golden, and a member can launch it", async () => {
+  test("only an admin changes an org golden, and a member can launch it", async () => {
     const rows: GoldenRecord[] = [];
     const boat = scripted({ snapshotStatuses: ["ready"] });
-    await createGolden(boat.provider, memory(rows, admin), admin, {
+    await seedGolden(memory(rows, admin), admin, {
       name: "shared",
       visibility: "org",
       config: configFromFlags([WEB], []),
     });
-    await expect(
-      createGolden(boat.provider, memory(rows, member), member, {
-        name: "other",
-        visibility: "org",
-        config: configFromFlags([WEB], []),
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(rows.map((row) => row.name)).toEqual(["shared"]);
     await expect(snapshotGolden(boat.provider, memory(rows, member), member, "shared")).rejects.toMatchObject({
       code: "forbidden",
     });
@@ -233,7 +161,7 @@ describe("golden workflow", () => {
   test("a private golden is visible to its owner and absent for everyone else", async () => {
     const rows: GoldenRecord[] = [];
     const boat = scripted({ snapshotStatuses: ["ready"] });
-    await createGolden(boat.provider, memory(rows, owner), owner, {
+    await seedGolden(memory(rows, owner), owner, {
       name: "kept",
       visibility: "private",
       config: configFromFlags([WEB], []),
@@ -256,7 +184,7 @@ describe("golden workflow", () => {
     const rows: GoldenRecord[] = [];
     const boat = scripted();
     const store = memory(rows, owner);
-    await createGolden(boat.provider, store, owner, {
+    await seedGolden(store, owner, {
       name: "web",
       visibility: "private",
       config: configFromFlags([WEB], []),
@@ -269,6 +197,21 @@ describe("golden workflow", () => {
     expect(connected.golden.config.repos[0]?.dir).toBe("web");
   });
 });
+
+async function seedGolden(
+  store: GoldenStore,
+  actor: GoldenActor,
+  input: Pick<GoldenRecord, "name" | "visibility" | "config">,
+): Promise<void> {
+  const golden = await store.insert({
+    ...input,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    provider: "boat",
+    modal: null,
+  });
+  await store.setSandbox(golden.id, "bx_23456789");
+}
 
 function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
   const visible = (row: GoldenRecord) =>
@@ -334,13 +277,8 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
   };
 }
 
-function scripted(
-  options: { execCode?: number; failCreates?: number; snapshotStatuses?: string[]; snapshotError?: Error } = {},
-) {
-  const create: { name: string; ttlSeconds: number; idempotencyKey: string; labels: Record<string, string> }[] = [];
-  const exec: { command: string; cwd?: string }[] = [];
+function scripted(options: { snapshotStatuses?: string[]; snapshotError?: Error } = {}) {
   const snapshots: unknown[] = [];
-  let createsLeft = options.failCreates ?? 0;
   const statuses = [...(options.snapshotStatuses ?? ["ready"])];
   const sandbox = (state: SandboxInfo["state"]): SandboxInfo => ({
     id: "bx_23456789",
@@ -353,32 +291,8 @@ function scripted(
     id: "boat",
     harnesses: ["claude", "codex"],
     capabilities: { claude: caps(), codex: caps() },
-    async createGolden(request: {
-      name: string;
-      ttlSeconds: number;
-      idempotencyKey: string;
-      labels: Record<string, string>;
-    }) {
-      create.push(request);
-      if (createsLeft > 0) {
-        createsLeft -= 1;
-        throw new ProviderError({ provider: "fake", code: "unavailable", message: "lost response", retryable: true });
-      }
-      return sandbox("starting");
-    },
     async get() {
       return sandbox("ready");
-    },
-    async exec(request: { command: string; cwd?: string }) {
-      exec.push({ command: request.command, ...(request.cwd ? { cwd: request.cwd } : {}) });
-      return {
-        detached: false as const,
-        exitCode: options.execCode ?? 0,
-        stdout: "",
-        stderr: options.execCode ? "missing package" : "",
-        timedOut: false,
-        truncated: false,
-      };
     },
     async snapshot(request: unknown) {
       snapshots.push(request);
@@ -392,7 +306,7 @@ function scripted(
       return { name: "pending", status: "ready" as const };
     },
   };
-  return { provider: provider as unknown as Provider, create, exec, snapshots };
+  return { provider: provider as unknown as Provider, snapshots };
 }
 
 function caps() {
@@ -522,8 +436,5 @@ test("core mutations reject an out-of-org row even if a privileged store returns
   };
   await expect(connectGolden(provider, store, admin, "web")).rejects.toMatchObject({ code: "not_found" });
   await expect(snapshotGolden(provider, store, admin, "web")).rejects.toMatchObject({ code: "not_found" });
-  await expect(
-    createGolden(provider, store, admin, { name: "web", visibility: "org", config: row.config }),
-  ).rejects.toMatchObject({ code: "not_found" });
   expect(effects).toBe(0);
 });
