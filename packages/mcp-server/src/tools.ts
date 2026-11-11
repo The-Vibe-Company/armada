@@ -1722,6 +1722,9 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   }
   return {
     isError: true,
+    ...(error instanceof LaunchError && error.reason
+      ? { structuredContent: { code, reason: error.reason, action: error.action } }
+      : {}),
     content: [
       { type: "text", text: message },
       { type: "text", text: `error code: ${code}` },

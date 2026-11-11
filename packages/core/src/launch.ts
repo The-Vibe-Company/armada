@@ -198,6 +198,12 @@ export async function launchSandbox(
     throw new LaunchError(
       "unsupported",
       "Helper capability unsupported. Rebuild the golden with armada golden update; this server supports diagnose only.",
+      {
+        helperRefusal:
+          helper.status === "unsupported"
+            ? helper
+            : { reason: "helper_capability_unsupported", action: "rebuild_golden" },
+      },
     );
   // The provider comes from the golden. The one the caller passed must be that backend, never another.
   assertProviderOf(provider, golden.provider);

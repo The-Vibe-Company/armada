@@ -771,6 +771,20 @@ describe("control API", () => {
           expect(boat.forks).toHaveLength(0);
           expect(boat.preparations).toEqual([]);
         }
+        if (repo === undefined) {
+          for (const reason of ["helper_missing", "helper_receipt_invalid"]) {
+            if (reason === "helper_receipt_invalid")
+              await db.query(
+                `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='web'`,
+              );
+            const refused = await launch({ helperCapabilities: ["diagnose"] });
+            expect(refused?.status).toBe(400);
+            expect(await refused!.json()).toMatchObject({
+              error: { code: "unsupported", reason, action: "rebuild_golden" },
+            });
+            expect(boat.forks).toHaveLength(0);
+          }
+        }
         const response = await launch(repo === undefined ? {} : { repo });
         if (!response) throw new Error("missing response");
         expect(response.status).toBe(200);

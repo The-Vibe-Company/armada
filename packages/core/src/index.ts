@@ -138,7 +138,7 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
-export { type HelperNegotiation, type HelperReceipt, negotiateHelper } from "./helper.ts";
+export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,

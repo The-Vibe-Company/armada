@@ -443,6 +443,21 @@ describe("tools", () => {
 
   test("launch forks with noEnv, the caller's Armada credential and the org boat key, and returns no secret", async () => {
     const { token, client, people, boat, db } = await start();
+    const helperClient = await client(await token(people.member));
+    for (const reason of ["helper_missing", "helper_receipt_invalid"]) {
+      if (reason === "helper_receipt_invalid")
+        await db.query(
+          `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='shared'`,
+        );
+      const refused = await call(helperClient, "launch", {
+        golden: "shared",
+        harness: "claude",
+        helperCapabilities: ["diagnose"],
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.data).toMatchObject({ code: "unsupported", reason, action: "rebuild_golden" });
+      expect(boat.forks).toHaveLength(0);
+    }
     await db.query(
       `update goldens set helper_receipt = jsonb_build_object(
       'version','0.1.0','protocol',1,'platform','x86_64','digest',$1::text,

@@ -52,3 +52,38 @@ the negotiated helper status; no helper job, GitHub or usage grant is issued.
 Apply `20261111020000_golden_helper_receipt.sql` before deploying this server.
 This adds nullable, public-readable, server-written receipt metadata only;
 existing rows remain null. No migration or deployment was performed here.
+
+### Reproducing the release manifest
+
+The original Linux x86_64 build used Ubuntu Clang **18.1.3** (`1ubuntu1`)
+and the **LLD 22.1.6** bundled with the preinstalled Rust **1.97.1** toolchain,
+not an unversioned system `ld`. Its full version identifies LLVM commit
+`dcc3606807c989700e0ac1cac18c31741bcd40d9` (build path
+`/checkout/src/llvm-project/llvm`). Rust distributes that linker under
+`lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld`.
+
+On a Linux x86_64 machine with that Rust toolchain and Clang installed:
+
+```sh
+# If needed, obtain the exact Rust toolchain with rustup (not required at golden build time):
+rustup toolchain install 1.97.1 --profile minimal
+RUST_BIN=$(dirname "$(rustup which --toolchain 1.97.1 rustc)")
+export LLD="$RUST_BIN/../lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld"
+export CLANG=/usr/bin/clang
+"$CLANG" --version  # must report 18.1.3
+"$LLD" --version   # must report 22.1.6 and the LLVM commit above
+python3 packages/core/helper/build.py
+git diff --exit-code -- packages/core/helper/manifest.json packages/core/helper/digests.json
+```
+
+The original build was reproduced locally with those exact preinstalled tools;
+no golden needs the compiler, linker or Rust. `build.py` emits both the server-only
+binary manifest and its digest-only browser contract; commit both on a pin update.
+A different linker build can embed a different `.comment` section and therefore
+produce a different digest even when its version number matches.
+
+Required helper refusals expose typed `reason` (`helper_missing`,
+`helper_receipt_invalid`, or `helper_capability_unsupported`) and
+`action: rebuild_golden` in HTTP error objects and MCP error structured content.
+The latter reason covers a valid installation that cannot perform the requested
+capability. Clients do not need to parse the explanatory English message.

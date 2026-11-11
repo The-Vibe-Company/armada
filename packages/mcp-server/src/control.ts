@@ -319,7 +319,8 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       );
     }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(400, error.code, error.message, error.reason ? { reason: error.reason, action: error.action } : {});
     if (error instanceof InvitationError)
       return Response.json(
         {
@@ -506,7 +507,8 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(400, error.code, error.message, error.reason ? { reason: error.reason, action: error.action } : {});
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Login exchange was refused.");
   }
@@ -566,7 +568,8 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(400, error.code, error.message, error.reason ? { reason: error.reason, action: error.action } : {});
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Refresh token was refused.");
   }
@@ -1395,8 +1398,13 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(status: number, code: string, message: string): Response {
-  return Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store" } });
+function fail(
+  status: number,
+  code: string,
+  message: string,
+  details: { reason?: LaunchError["reason"]; action?: LaunchError["action"] } = {},
+): Response {
+  return Response.json({ error: { code, message, ...details } }, { status, headers: { "cache-control": "no-store" } });
 }
 
 /**

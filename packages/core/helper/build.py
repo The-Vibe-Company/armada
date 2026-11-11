@@ -1,5 +1,6 @@
 """Reproduce the inert Linux ELF pins; needs clang 18.1.3 and LLVM lld 22.1.6.
 
+Toolchain provenance and exact reproduction commands: docs/golden-helper.md.
 Set CLANG and LLD when the tools are not on PATH. No network/download step.
 The helper has one operation: print its version/protocol/capabilities then exit.
 """
@@ -25,3 +26,4 @@ with tempfile.TemporaryDirectory() as tmp:
         manifest[target] = {'digest': hashlib.sha256(data).hexdigest(),
                             'base64': base64.b64encode(data).decode()}
 (root/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+(root/'digests.json').write_text(json.dumps({k: v['digest'] for k, v in manifest.items()}, indent=2)+'\n')

@@ -1,4 +1,4 @@
-import manifest from "../helper/manifest.json";
+import digests from "../helper/digests.json";
 /** Closed slice-0 protocol. A receipt is evidence of installation, never guest authority. */
 export interface HelperReceipt {
   version: string;
@@ -7,6 +7,10 @@ export interface HelperReceipt {
   platform: "x86_64" | "aarch64";
   capabilities: string[];
   snapshotId: string;
+}
+export interface HelperRefusal {
+  reason: "helper_missing" | "helper_receipt_invalid" | "helper_capability_unsupported";
+  action: "rebuild_golden";
 }
 export type HelperNegotiation =
   | { status: "supported"; protocol: 1; capabilities: ["diagnose"] }
@@ -24,7 +28,7 @@ export function negotiateHelper(
     receipt.snapshotId.length === 0 ||
     receipt.snapshotId !== snapshotId ||
     !["x86_64", "aarch64"].includes(receipt.platform) ||
-    (receipt.platform in manifest && receipt.digest !== manifest[receipt.platform].digest) ||
+    (receipt.platform in digests && receipt.digest !== digests[receipt.platform]) ||
     !Array.isArray(receipt.capabilities) ||
     receipt.capabilities.length !== 1 ||
     receipt.capabilities[0] !== "diagnose"

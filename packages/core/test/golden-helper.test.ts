@@ -62,3 +62,15 @@ test.skipIf(process.platform !== "linux" || process.arch !== "x64")(
     }
   },
 );
+
+test("browser core entry excludes native payloads while sharing release digests", async () => {
+  const digests = (await import("../helper/digests.json")).default;
+  for (const platform of ["x86_64", "aarch64"] as const) expect(digests[platform]).toBe(manifest[platform].digest);
+  const build = await Bun.build({
+    entrypoints: [join(import.meta.dir, "../src/index.ts")],
+    target: "browser",
+  });
+  expect(build.success).toBe(true);
+  const bundle = await build.outputs[0]!.text();
+  for (const platform of ["x86_64", "aarch64"] as const) expect(bundle).not.toContain(manifest[platform].base64);
+});

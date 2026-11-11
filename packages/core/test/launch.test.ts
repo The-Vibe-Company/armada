@@ -1149,6 +1149,13 @@ test("helper admission preserves legacy launches and refuses missing, stale or u
     } else {
       await expect(launchSandbox(world.provider, world.stores, owner, request)).rejects.toMatchObject({
         code: "unsupported",
+        reason:
+          variant === "missing"
+            ? "helper_missing"
+            : variant === "unknown"
+              ? "helper_capability_unsupported"
+              : "helper_receipt_invalid",
+        action: "rebuild_golden",
       });
       expect(world.forks).toEqual([]);
     }
