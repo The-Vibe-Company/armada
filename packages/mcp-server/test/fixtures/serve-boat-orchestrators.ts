@@ -146,7 +146,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   const suffix = match[2];
   if (!suffix) return json({ sandbox: machine });
   if (suffix === "/commands") {
-    if (body.command.includes("python3 -c 'import json,os,signal,stat,subprocess,threading,uuid'"))
+    if (body.command.includes("python3 -I -c 'import json,os,signal,stat,subprocess,threading,uuid'"))
       managedWrapperInstalls.set(machine.id, (managedWrapperInstalls.get(machine.id) ?? 0) + 1);
     if (JSON.stringify(body).includes("git rev-parse --git-path info/exclude")) skillLaunchOrder.push("exclude");
     if (JSON.stringify(body).includes("skillpack install")) skillLaunchOrder.push("install");
