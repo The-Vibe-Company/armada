@@ -1190,14 +1190,14 @@ function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
       deps.readFile ??
       (async (path) =>
         strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true }).decode(await Bun.file(path).arrayBuffer())
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
           : Bun.file(path).text()),
     readStdin:
       deps.readStdin ??
       (async () => {
         if (process.stdin.isTTY) throw new Error("stdin is a terminal");
         return strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true }).decode(await Bun.stdin.arrayBuffer())
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
           : Bun.stdin.text();
       }),
   };

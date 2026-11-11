@@ -78,13 +78,15 @@ async function invoke(
         if (options.inputError) throw new Error(canary);
         return options.input ?? canary;
       },
-      readFile: options.realFile
-        ? undefined
-        : async (path) => {
-            inputSources.push(path);
-            if (options.inputError) throw new Error(canary);
-            return options.input ?? canary;
-          },
+      ...(options.realFile
+        ? {}
+        : {
+            readFile: async (path: string) => {
+              inputSources.push(path);
+              if (options.inputError) throw new Error(canary);
+              return options.input ?? canary;
+            },
+          }),
     },
   );
   return { code, out, err, requests, inputSources };
@@ -228,7 +230,7 @@ test("vault help documents secure input, scope and metadata-only JSON without au
   }
 });
 
-test("vault file input rejects malformed UTF-8 before any API mutation", async () => {
+test("vault file input rejects malformed UTF-8 and preserves valid BOM and multiline bytes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-vault-"));
   const path = join(directory, "input");
   try {
@@ -238,6 +240,12 @@ test("vault file input rejects malformed UTF-8 before any API mutation", async (
     expect(result.requests).toHaveLength(0);
     expect(result.err).toContain("Could not read value");
     expect(result.err).not.toContain(path);
+    const valid = "\ufeffconfiguration\nsecond line\n";
+    await Bun.write(path, valid);
+    const accepted = await invoke(["vars", "set", item.name, "--file", path], { realFile: true });
+    expect(accepted.code).toBe(0);
+    expect(await accepted.requests[0]?.json()).toEqual({ org, scope: "personal", name: item.name, value: valid });
+    expect(accepted.out).not.toContain(valid);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
