@@ -133,9 +133,11 @@ field can opt into or out of this policy.
   image IDs remain cleanup metadata, never restore authority. Repeated stop and
   recreated providers cannot turn that machine back into a resumable checkpoint.
 - **Modal authority outage:** unknown policy cannot authorize a snapshot or restore.
-  Stop conservatively disables recovery and terminates without preserving local
-  work, with generated warning `application_secret_retention_disabled_disk_not_retained`.
-  This can lose unpushed work during a database authority outage. Known native
+  If native state remains writable, a retention-lookup failure makes stop persist
+  disabled recovery and terminate without preserving local work, with generated
+  warning `application_secret_retention_disabled_disk_not_retained`. This can
+  lose unpushed work. A total native SQL outage prevents lease/save and therefore
+  prevents provider mutation; termination is not guaranteed in that case. Known native
   disabled recovery stays disabled even if the callback is later unavailable.
   Managed checkpoint-and-stop still terminates compute but refuses to fabricate a
   native checkpoint/session-success receipt; its operation may remain unverified.
@@ -146,6 +148,11 @@ field can opt into or out of this policy.
   the trusted managed adapter boundary, not a restriction on provider-key holders
   calling Boat directly. Boat stop can still retain a provider-owned disk; we do
   not claim provider erasure. Its retention/deletion evidence gate stays closed.
+
+Use matching control/provider code on every replica. Older provider code does not
+understand the sticky native downgrade; do not roll it back or erase that marker
+for affected machines. No runner payload change, migration or new environment
+configuration is required; raw delivery remains disabled throughout rollout.
 
 Fresh builder/allocation cleanup may precede registration in `sandboxes`; absence
 of a row is not treated as proof of a delivered secret. Golden eligibility is
