@@ -25,6 +25,42 @@ already recorded versions. The automatic path never resets the database, repairs
 includes seeds. Manual repair is a separate guarded operation. The version tables before and after the push and the pending
 plan are in Actions logs. Any failing command fails the job and emits an error.
 
+## Migration author checklist
+
+Before opening a PR, and again against current main before merge:
+
+- Name each new file `<14-digit-version>_<description>.sql`. The version must
+  be unique across `supabase/migrations` and strictly newer than the largest
+  version on current `origin/main`, not just the branch's original base.
+- Fetch current main and compare its migration versions with your additions:
+
+  ```sh
+  git fetch origin main
+  git ls-tree -r --name-only origin/main -- supabase/migrations | sort
+  ```
+
+  Run this duplicate-prefix check from the repository root; no output means no
+  duplicate versions (it does not validate filename format or ordering):
+
+  ```sh
+  find supabase/migrations -maxdepth 1 -name '*.sql' -printf '%f\n' |
+    cut -d_ -f1 | sort | uniq -d
+  ```
+
+- Fresh/disposable SQL tests establish that SQL applies in filename order;
+  they do **not** verify remote migration history or remote deployability.
+  [PR #1039](https://github.com/The-Vibe-Company/armada/pull/1039) proposes a
+  CI check for filename format, duplicate versions and new versions strictly
+  greater than the current base's maximum. Until it lands, do not assume that
+  check is present. Even a passing check is not merge serialization, enforced
+  branch protection or a deployment gate; recheck the current base before merge.
+- Correct a collision by renaming only a **confirmed-unapplied** migration,
+  after checking relevant migration histories with an authorized operator.
+  Never rename or edit an applied version. Uncertain or applied-history
+  discrepancies belong to the existing
+  [operator-only reconciliation runbook](#reconcile-hand-applied-history-operator-only),
+  not an author-side repair or automatic replay.
+
 ## One-time repository administrator setup
 
 Create the GitHub Actions environment named **production**. Restrict deployment
