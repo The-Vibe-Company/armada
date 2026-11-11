@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
+  createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
   createSqlVaultStore,
@@ -903,6 +904,67 @@ test("template skills retain verified receipts and closed refusals without repla
     expect(unavailable.reason).toBe("skillpack_skill_unavailable");
     expect(JSON.stringify(unavailable)).not.toContain("untrusted guest output");
     expect(f.boat.prompts).toHaveLength(1);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template admission freezes merged defaults and explicit overrides; opt-out excludes only defaults", async () => {
+  const f = await fixture();
+  try {
+    const defaults = createSkillDefaultsService(f.sql);
+    await defaults.command(f.actor(f.people.admin), "set", {
+      org: f.people.org,
+      scope: "org",
+      skills: ["shared@2.0.0", "org-only@1.0.0"],
+    });
+    await defaults.command(f.actor(f.people.admin), "set", {
+      org: f.people.org,
+      scope: "golden",
+      goldenId: f.goldenId,
+      skills: ["shared@1.0.0", "environment@1.0.0"],
+    });
+    await defaults.command(f.actor(), "set", {
+      org: f.people.org,
+      scope: "personal",
+      skills: ["shared@3.0.0", "personal@1.0.0"],
+    });
+    const installed: string[] = [];
+    f.runtime.stores.credentials.installPrivateSkill = async (_provider, input) => {
+      installed.push(input.reference);
+      return {
+        reference: input.reference,
+        version: input.reference.split("@")[1]!,
+        skillId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        workspaceId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        checksum: `sha256:${"a".repeat(64)}`,
+        origin: "https://skillpack.app/v1",
+      };
+    };
+    const t = (await f.create(undefined, undefined, { ...f.definition, skills: ["shared@4.0.0", "template@1.0.0"] }))
+      .item as LaunchTemplate;
+    const result = await f.launch(t.id, "merged", { skills: ["shared@5.0.0"] });
+    expect(result.state).toBe("succeeded");
+    const expected = ["shared@5.0.0", "environment@1.0.0", "org-only@1.0.0", "personal@1.0.0", "template@1.0.0"];
+    expect(installed).toEqual(expected);
+    expect(result.manifest).toMatchObject({
+      resolvedSkills: expected,
+      definition: { skills: ["shared@4.0.0", "template@1.0.0"] },
+    });
+    await defaults.command(f.actor(), "set", { org: f.people.org, scope: "personal", skills: ["changed@1.0.0"] });
+    expect(await f.launch(t.id, "merged", { skills: ["shared@5.0.0"] })).toEqual(result);
+    expect(installed).toHaveLength(5);
+    installed.length = 0;
+    const optedOut = await f.launch(t.id, "opt-out", { skipSkillDefaults: true, skills: ["explicit@1.0.0"] });
+    expect(optedOut.state).toBe("succeeded");
+    expect(installed).toEqual(["shared@4.0.0", "template@1.0.0", "explicit@1.0.0"]);
+    await expect(f.launch(t.id, "bad-opt-out", { skipSkillDefaults: "true" })).rejects.toMatchObject({
+      code: "invalid",
+    });
+    await expect(f.launch(t.id, "bad-pins", { skills: ["floating@latest"] })).rejects.toMatchObject({
+      code: "invalid",
+    });
+    expect(f.boat.forks).toHaveLength(2);
   } finally {
     await f.db.close();
   }

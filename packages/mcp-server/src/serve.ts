@@ -3,6 +3,7 @@ import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
   createApplicationVault,
   createGoldenAdoption,
+  createSkillDefaultsService,
   createSqlVaultStore,
   createTemplateService,
   GoldenBuildJobs,
@@ -208,6 +209,7 @@ export async function startServer(
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
     templates,
+    skillDefaults: createSkillDefaultsService(sql),
     applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
@@ -293,6 +295,7 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
     templates,
+    skillDefaults: createSkillDefaultsService(sql),
     ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,

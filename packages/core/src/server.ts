@@ -52,6 +52,8 @@ export {
 } from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
+export * from "./skill-defaults.ts";
+export { mergeSkillPins } from "./skill-merge.ts";
 export * from "./skillpack.ts";
 export {
   type SshExecDeps,

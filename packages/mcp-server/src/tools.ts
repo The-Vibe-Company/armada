@@ -32,6 +32,7 @@ import {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStatus,
+  type SkillDefaultsService,
   scanGoldenSandbox,
   snapshotGolden,
   type TemplateService,
@@ -70,6 +71,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
   templates?: TemplateService;
+  skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
@@ -396,6 +398,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       skills: z.array(z.string()).max(20).optional(),
     })
     .strict();
+  for (const operation of ["get", "set"] as const) {
+    server.registerTool(
+      `skill_defaults_${operation}`,
+      {
+        description:
+          "Read or replace exact personal, org or golden default skill pins. Org and shared golden writes require admin. Empty skills clears defaults.",
+        inputSchema: z
+          .object({
+            org: z.string().uuid(),
+            scope: z.enum(["personal", "org", "golden"]),
+            goldenId: z.string().uuid().optional(),
+            ...(operation === "set" ? { skills: z.array(z.string()).max(20) } : {}),
+          })
+          .strict(),
+        outputSchema: z.object({ skills: z.array(z.string()) }),
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          if (!context.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
+          const result = await context.skillDefaults.command(caller, operation, args);
+          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: error instanceof VaultError ? error.message : "Skill defaults unavailable.",
+              },
+              {
+                type: "text" as const,
+                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
+              },
+            ],
+          };
+        }
+      },
+    );
+  }
   const templateInputs = {
     create: z
       .object({
@@ -430,6 +471,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         ttlSeconds: z.number().int().positive().optional(),
         size: z.enum(MACHINE_SIZES).optional(),
         repo: z.string().optional(),
+        skills: z.array(z.string()).max(20).optional(),
+        skipSkillDefaults: z.boolean().optional(),
       })
       .strict(),
   };
@@ -930,6 +973,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
+          skipSkillDefaults: z.boolean().optional(),
           helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
           connections: z.array(z.string().uuid()).max(100).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
@@ -1007,6 +1051,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         const result = await launchSandbox(
           provider,
           {
+            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
             goldens: data.goldens,
             sandboxes: data.sandboxes,
             credentials: context.launchCredentials,
@@ -1021,6 +1066,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
             ...(args.skills === undefined ? {} : { skills: args.skills }),
             ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),

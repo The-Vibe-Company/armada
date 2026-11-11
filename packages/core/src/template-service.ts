@@ -9,6 +9,8 @@ import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
+import { createSkillDefaultsService } from "./skill-defaults.ts";
+import { mergeSkillPins } from "./skill-merge.ts";
 import { validateSkillPins } from "./skillpack.ts";
 import type { LaunchTemplate, TemplateDefinition } from "./templates.ts";
 import { VaultError } from "./vault-error.ts";
@@ -38,6 +40,8 @@ type Manifest = {
   revisionHash: string;
   golden: GoldenRecord;
   definition: TemplateDefinition;
+  /** Frozen effective pins; absent on historical manifests. */
+  resolvedSkills?: string[];
   connections: { id: string; version: number; generation: number }[];
   variables: Record<string, string>;
   variableProvenance: TemplateDefinition["variables"];
@@ -347,7 +351,18 @@ export function createTemplateService(sql: Sql) {
       get: ["org", "id", "revision"],
       publish: ["org", "id", "expectedRevision", "definition"],
       delete: ["org", "id", "expectedRevision"],
-      launch: ["org", "id", "revision", "requestKey", "prompt", "ttlSeconds", "size", "repo"],
+      launch: [
+        "org",
+        "id",
+        "revision",
+        "requestKey",
+        "prompt",
+        "ttlSeconds",
+        "size",
+        "repo",
+        "skills",
+        "skipSkillDefaults",
+      ],
     };
     if (!allowed[operation]) invalid();
     fields(input, allowed[operation]!);
@@ -423,6 +438,12 @@ export function createTemplateService(sql: Sql) {
     if (input.prompt !== undefined) text(input.prompt, 100000);
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
     if (input.repo !== undefined) text(input.repo);
+    if (input.skipSkillDefaults !== undefined && typeof input.skipSkillDefaults !== "boolean") invalid();
+    try {
+      validateSkillPins(input.skills ?? []);
+    } catch {
+      invalid();
+    }
     const size = input.size === undefined ? undefined : parseMachineSize(input.size);
     const bodyDigest = digest(input);
     // Resolve a model account before the claim, then revalidate that binding inside admission.
@@ -486,6 +507,21 @@ export function createTemplateService(sql: Sql) {
         },
         false,
       );
+      const defaults = input.skipSkillDefaults
+        ? undefined
+        : await createSkillDefaultsService(tx).resolveInTransaction(a, resolved.golden);
+      let resolvedSkills: string[];
+      try {
+        resolvedSkills = mergeSkillPins(
+          defaults?.environment ?? [],
+          defaults?.org ?? [],
+          defaults?.personal ?? [],
+          def.skills,
+          (input.skills ?? []) as string[],
+        );
+      } catch {
+        invalid();
+      }
       const manifest: Manifest = {
         version: 1,
         templateId: h.id,
@@ -494,6 +530,7 @@ export function createTemplateService(sql: Sql) {
         revisionHash: r.digest,
         golden: resolved.golden,
         definition: def,
+        resolvedSkills,
         connections: resolved.connections,
         variables: resolved.variables,
         variableProvenance: def.variables,
@@ -584,7 +621,8 @@ export function createTemplateService(sql: Sql) {
           model: def.model,
           reasoningEffort: def.reasoningEffort,
           connections: def.connections,
-          skills: def.skills,
+          skills: m.resolvedSkills ?? def.skills,
+          skipSkillDefaults: true,
           ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
           ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
           ...(size === undefined ? {} : { size }),

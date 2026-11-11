@@ -30,6 +30,7 @@ import {
   createApplicationVault,
   createGoldenAdoption,
   createOrg,
+  createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
   createSqlVaultStore,
@@ -74,6 +75,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  type SkillDefaultsService,
   scanGoldenSandbox,
   setCredential,
   setMemberRole,
@@ -126,6 +128,7 @@ import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 export interface ControlOptions {
   sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
+  skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
@@ -240,13 +243,19 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   try {
     const caller = await authenticatedCaller(request, options);
     if (
-      (route.startsWith("templates/") || route.startsWith("variables/") || route.startsWith("secrets/")) &&
+      (route.startsWith("skills/defaults/") ||
+        route.startsWith("templates/") ||
+        route.startsWith("variables/") ||
+        route.startsWith("secrets/")) &&
       url.search
     )
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("templates/") || route.startsWith("variables/") || route.startsWith("secrets/")
+      : route.startsWith("skills/defaults/") ||
+          route.startsWith("templates/") ||
+          route.startsWith("variables/") ||
+          route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
     if (route === "account/logout") {
@@ -643,6 +652,10 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("skills/defaults/")) {
+    if (!options.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
+    return options.skillDefaults.command(caller, route.slice("skills/defaults/".length), body);
+  }
   if (route.startsWith("templates/")) {
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     const stores = options.data?.(caller);
@@ -1298,6 +1311,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
   const result = await launchSandbox(
     provider,
     {
+      ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
       goldens: data.goldens,
       sandboxes: data.sandboxes,
       ...(options.connections ? { connections: options.connections } : {}),
@@ -1321,6 +1335,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
       ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
       ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
@@ -1597,6 +1612,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     templates,
+    skillDefaults: createSkillDefaultsService(sql),
     applicationVault: createApplicationVault(sql, encryptionKey),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),

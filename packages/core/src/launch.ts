@@ -31,6 +31,7 @@ import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { mergeSkillPins } from "./skill-merge.ts";
 import { installSkill, validateSkillPins } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
@@ -46,6 +47,8 @@ export interface LaunchRequest {
   /** Explicit admission requirement; slice 0 supports diagnose only. */
   helperCapabilities?: string[];
   skills?: string[];
+  /** Ignore environment, org and personal defaults, not explicit/template pins. */
+  skipSkillDefaults?: boolean;
   credentialId?: string;
   size?: MachineSize;
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
@@ -108,6 +111,12 @@ export interface LaunchCredentialResolver {
 }
 
 export interface LaunchStores {
+  skillDefaults?: {
+    resolve(
+      actor: GoldenActor,
+      golden: GoldenRecord,
+    ): Promise<{ environment: string[]; org: string[]; personal: string[] }>;
+  };
   goldens: GoldenStore;
   sandboxes: SandboxStore;
   credentials: LaunchCredentialResolver;
@@ -190,13 +199,30 @@ export async function launchSandbox(
       "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
     );
   }
-  if (request.skills?.length && !stores.sandboxes.recordSkills)
-    throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
+  if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
+    throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   const harness = checkHarness(provider, request.harness);
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
+  const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
+  try {
+    request = {
+      ...request,
+      skills: mergeSkillPins(
+        defaults?.environment ?? [],
+        defaults?.org ?? [],
+        defaults?.personal ?? [],
+        request.skills ?? [],
+      ),
+    };
+  } catch {
+    throw new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins.");
+  }
+  if (request.skills?.length && !stores.sandboxes.recordSkills)
+    throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
+
   const helper = negotiateHelper(golden.helperReceipt, golden.providerSnapshotId);
   const requestedHelper = request.helperCapabilities;
   if (
