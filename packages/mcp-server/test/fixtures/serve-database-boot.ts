@@ -15,22 +15,21 @@ const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
 }) as typeof Bun.sleep);
 const clock = spyOn(Date, "now").mockImplementation(() => now);
 Bun.SQL = class {
+  pool: { max: number; closed: number };
   constructor(_url: string, options: { max: number }) {
-    const pool = { max: options.max, closed: 0 };
-    pools.push(pool);
-    return {
-      async unsafe() {
-        if (++attempts <= failUntil)
-          throw Object.assign(new Error("(EMAXCONNSESSION) max clients reached; private connection detail"), {
-            code: "ERR_POSTGRES_SERVER_ERROR",
-            errno: "XX000",
-          });
-        return [];
-      },
-      async close() {
-        pool.closed++;
-      },
-    };
+    this.pool = { max: options.max, closed: 0 };
+    pools.push(this.pool);
+  }
+  async unsafe() {
+    if (++attempts <= failUntil)
+      throw Object.assign(new Error("(EMAXCONNSESSION) max clients reached; private connection detail"), {
+        code: "ERR_POSTGRES_SERVER_ERROR",
+        errno: "XX000",
+      });
+    return [];
+  }
+  async close() {
+    this.pool.closed++;
   }
 } as unknown as typeof Bun.SQL;
 // Use the real adapter over fake physical pools, so close assertions cover both clients.

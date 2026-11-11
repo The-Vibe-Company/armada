@@ -697,24 +697,13 @@ describe("GitHub connections", () => {
     });
   });
 
-  test("a refresh transaction holds its scoped callback until work settles and releases after errors", async () => {
+  test("a local refresh queue serializes scoped callbacks without a database transaction", async () => {
     await withVault(async ({ db, people }) => {
-      let tail = Promise.resolve();
       const serialSql: Sql = {
         query: db.query.bind(db),
         autonomousQuery: db.query.bind(db),
-        transaction: async <T>(work: (sql: Sql) => Promise<T>) => {
-          const previous = tail;
-          let release!: () => void;
-          tail = new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          await previous;
-          try {
-            return await work(serialSql);
-          } finally {
-            release();
-          }
+        transaction: async () => {
+          throw new Error("HTTP refresh must not reserve a transaction");
         },
       };
       const first = createSqlVaultStore(serialSql);
