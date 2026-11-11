@@ -11,7 +11,7 @@ private func message(
                body: .message(text: text, partial: partial, messageID: messageID, textMode: mode, model: model, tools: tools))
 }
 
-@Test func snapshotsAndDeltasPreserveOrderMetadataToolsAndLegacyMessages() {
+@Test func snapshotsAndDeltasPreserveOrderMetadataToolsAndLegacyMessages() throws {
     let call = ToolCall(id: "read", name: "Read", input: .object(["path": .string("README.md")]), result: nil)
     let result = ToolCall(id: "read", name: "tool_result", input: nil, result: ToolResult(output: .string("done"), isError: false))
     let events = [
@@ -26,9 +26,10 @@ private func message(
                    body: .prompt(text: "", status: .finished, reason: nil)),
         message("legacy-part", text: "obsolete", messageID: nil),
         message("legacy-final", text: "legacy final", messageID: nil, partial: false),
-        AgentEvent(id: "technical", at: .now, conversationID: "c", promptID: "p", body: .other(type: "checkpoint"))
+        AgentEvent(id: "technical", at: .distantFuture, conversationID: "c", promptID: "p", body: .other(type: "checkpoint"))
     ]
     let projection = ConversationProjection.project(events)
+    try #require(projection.items.count == 5)
     #expect(projection.items.map(\.key) == ["prompt:p", "message:c:p:reply", "tool:read", "message:c:p:other", "event:legacy-final"])
     #expect(projection.items[0].kind == .user(text: "Make it clear", status: .finished, reason: nil))
     #expect(projection.items[1].kind == .assistant(text: "replacement tail", streaming: false, model: "updated"))
@@ -75,7 +76,7 @@ private func message(
     let expected = SHA256.hash(data: Data(String(repeating: fragment, count: count).utf8))
     for projection in projections {
         #expect(projection.items.count == 1)
-        guard case .assistant(let text, let streaming, let model) = projection.items.first?.kind else {
+        guard let item = projection.items.first, case .assistant(let text, let streaming, let model) = item.kind else {
             Issue.record("Expected one complete assistant message"); return
         }
         #expect(SHA256.hash(data: Data(text.utf8)) == expected)
