@@ -114,7 +114,7 @@ public final class ConversationCache<Event: Identifiable & Equatable & Sendable>
         }
         let version = versions[key]
         let value = await build(events)
-        if !Task.isCancelled, let version, versions[key] == version, entries[key]?.events == events {
+        if let version, versions[key] == version, entries[key]?.events == events {
             presentations[key] = value
         }
         return value
