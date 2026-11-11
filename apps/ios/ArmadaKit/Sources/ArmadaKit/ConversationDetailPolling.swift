@@ -11,6 +11,7 @@ public struct ConversationDetailPolling: Sendable {
     public mutating func failed() { failures = min(4, failures + 1) }
 
     public func delay(busy: Bool) -> Duration {
-        .seconds(busy ? 3 : 15)
+        let normal = busy ? 3 : 15
+        return .seconds(min(30, normal * (1 << failures)))
     }
 }

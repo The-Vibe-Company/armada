@@ -35,6 +35,9 @@ final class ConversationFeed {
     private(set) var connection: Connection = .connecting
     /// Something is shown: this session's earlier read of the conversation, or the latest page.
     private(set) var hasLoaded = false
+    /// Available before asynchronous projection first publishes: an offline detail failure
+    /// must not remove the transcript task before it can show this cached window.
+    var hasCachedHistory: Bool { loader.snapshot.hasTail }
     /// Older history exists above what is shown.
     private(set) var hasOlder = false
     private(set) var isLoadingOlder = false
@@ -46,16 +49,40 @@ final class ConversationFeed {
     @ObservationIgnored private var cache: [String: CachedMarkdownDocument] = [:]
     /// Orders projections that finish out of order: only the latest stream is shown.
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var lifetime = 0
 
     init(key: String, memory: ConversationMemory?) {
         loader = ConversationLoader(key: key, cache: memory)
     }
 
     /// Reads what is new now (pull to refresh) up to the newest event. Safe beside `follow`:
-    /// events are applied once by id, so overlapping reads change nothing.
-    func refresh(_ fetch: @escaping Fetch) async throws(ServiceFailure) {
+    /// events are applied once by id, so overlapping reads change nothing. Returns whether
+    /// the caller should restart follow after recovering a stopped/backing-off stream.
+    func refresh(_ fetch: @escaping Fetch) async throws(ServiceFailure) -> Bool {
+        let startedAt = lifetime
         await loader.showCached(show)
-        try await loader.catchUp(Self.read(fetch), show: show)
+        do throws(ServiceFailure) {
+            try await loader.catchUp(Self.read(fetch), show: show)
+        } catch {
+            if !Task.isCancelled, lifetime == startedAt {
+                switch error.category {
+                case .offline, .uncertain:
+                    // A stopped follow has no retry task until a refresh actually succeeds.
+                    if case .stopped = connection { connection = .stopped(error) }
+                    else { connection = .reconnecting(error.message) }
+                default: break
+                }
+            }
+            throw error
+        }
+        guard !Task.isCancelled, lifetime == startedAt, loader.snapshot.hasTail else { return false }
+        let restart: Bool
+        switch connection {
+        case .stopped, .reconnecting: restart = true
+        case .connecting, .live: restart = false
+        }
+        connection = .live
+        return restart
     }
 
     /// Shows what is known, reads the latest page, then follows forward until the calling task is
@@ -88,17 +115,27 @@ final class ConversationFeed {
     func loadOlder(_ fetch: @escaping Fetch) async throws(ServiceFailure) {
         guard loader.hasOlder, !loader.isLoadingOlder else { return }
         isLoadingOlder = true
+        let startedAt = lifetime
         defer {
             isLoadingOlder = false
-            hasOlder = loader.hasOlder
+            if lifetime == startedAt { hasOlder = loader.hasOlder }
         }
         try await loader.loadOlder(Self.read(fetch), show: show)
-        olderPagesRead += 1
+        if !Task.isCancelled, lifetime == startedAt { olderPagesRead += 1 }
     }
 
     /// Forgets what this session kept of the conversation, after its access was refused.
     func forget() {
+        generation += 1
+        lifetime += 1
         loader.forget()
+        conversation = Conversation(items: [], activeTurns: [:], technicalCount: 0)
+        documents = [:]
+        cache = [:]
+        hasLoaded = false
+        hasOlder = false
+        isLoadingOlder = false
+        olderPagesRead = 0
     }
 
     private static func read(
