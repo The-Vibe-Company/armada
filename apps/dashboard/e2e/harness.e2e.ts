@@ -6,7 +6,7 @@ test.beforeEach(reset);
 const OPENAI_KEY = "sk-proj-e2e-harness-openai-key";
 
 test("the old Credentials address lands on Harness, and the navigation names it", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/fleet");
+  await signIn(page, "alice@example.com", "/sandboxes");
   for (const old of ["/credentials", "/credentials/anything"]) {
     await page.goto(old);
     await expect(page).toHaveURL(/\/harness$/);

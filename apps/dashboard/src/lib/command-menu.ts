@@ -34,7 +34,6 @@ export const COMMANDS: readonly Command[] = [
     group: "Actions",
     keywords: ["boat", "modal", "hosting", "key"],
   },
-  { id: "fleet", label: "Fleet", href: "/fleet", group: "Go to", keywords: ["board", "agents", "needs"] },
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   {
     id: "environments",
