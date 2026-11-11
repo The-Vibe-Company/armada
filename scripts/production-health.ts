@@ -9,8 +9,16 @@ export async function checkProductionHealth(origin: string) {
     headers: { "cache-control": "no-cache" },
   });
   if (!response.ok) throw new Error("Production health returned a non-success status");
-  const body = await response.json();
-  if (body?.ok !== true || typeof body.version !== "string" || !body.version)
+  const body: unknown = await response.json();
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !("ok" in body) ||
+    body.ok !== true ||
+    !("version" in body) ||
+    typeof body.version !== "string" ||
+    !body.version
+  )
     throw new Error("Production health response is not Armada readiness");
 }
 

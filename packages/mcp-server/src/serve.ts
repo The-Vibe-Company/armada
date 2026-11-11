@@ -13,6 +13,7 @@ import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
+import { retryDatabaseBoot } from "./database-boot.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -35,7 +36,6 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
-import { retryDatabaseBoot } from "./database-boot.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
