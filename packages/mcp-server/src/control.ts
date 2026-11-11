@@ -828,6 +828,18 @@ async function dispatch(
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
+    case "skillpack/connection": {
+      // Reuse vault visibility, including live membership and token org scoping.
+      const credentials = await listCredentials(store, userId, org);
+      return {
+        authorization: { available: false, reason: "delegated_key_flow_unavailable" },
+        user: credentials.user.filter((credential) => credential.kind === "skillpack"),
+        orgs: credentials.orgs.map((entry) => ({
+          ...entry,
+          credentials: entry.credentials.filter((credential) => credential.kind === "skillpack"),
+        })),
+      };
+    }
     case "org/create":
       return { org: await createOrg(store, userId, required(body, "name")) };
     case "org/list":
