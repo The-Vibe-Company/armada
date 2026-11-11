@@ -26,6 +26,8 @@ export type LaunchArgs = {
   connections?: string[];
   /** Additional exact Skillpack pins; omitted keeps the server’s configured defaults. */
   skills?: string[];
+  /** True only when the person explicitly turns off environment, org and personal defaults. */
+  skipSkillDefaults?: boolean;
   /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
   repo?: string;
   /**
@@ -59,8 +61,11 @@ export function launchArgs(
     prompt: string;
     repo?: string;
     size?: string;
+    skipSkillDefaults?: string;
   } & ModelFields,
 ): Parsed<Omit<LaunchArgs, "connections">> {
+  if (fields.skipSkillDefaults !== undefined && !["", "false", "true"].includes(fields.skipSkillDefaults))
+    return { ok: false, error: "Choose whether to apply default skills." };
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
   if (!harness) return { ok: false, error: "Choose Claude Code or Codex." };
   if (!fields.golden.trim() || !fields.org.trim() || !isSandboxProvider(fields.provider)) {
@@ -82,6 +87,7 @@ export function launchArgs(
       provider,
       org: fields.org,
       harness,
+      ...(fields.skipSkillDefaults === "true" ? { skipSkillDefaults: true } : {}),
       ...(repo ? { repo } : {}),
       ...(size ? { size: size as MachineSize } : {}),
       model: choice.args.model,

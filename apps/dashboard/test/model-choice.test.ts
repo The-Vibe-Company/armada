@@ -84,3 +84,28 @@ describe("the launch machine size", () => {
     });
   });
 });
+
+test("launch defaults opt-out is explicit and invalid form values are not silently interpreted", () => {
+  const fields = {
+    golden: "web",
+    provider: "boat",
+    org: "org",
+    harness: "claude",
+    prompt: "",
+    model: "",
+    otherModel: "",
+    reasoningEffort: "",
+  };
+  expect(launchArgs({ ...fields, skipSkillDefaults: "true" })).toMatchObject({
+    ok: true,
+    args: { skipSkillDefaults: true },
+  });
+  for (const skipSkillDefaults of [undefined, "false", ""]) {
+    const parsed = launchArgs({ ...fields, ...(skipSkillDefaults === undefined ? {} : { skipSkillDefaults }) });
+    expect(parsed.ok && parsed.args).not.toHaveProperty("skipSkillDefaults");
+  }
+  expect(launchArgs({ ...fields, skipSkillDefaults: "maybe" })).toEqual({
+    ok: false,
+    error: "Choose whether to apply default skills.",
+  });
+});

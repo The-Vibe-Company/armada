@@ -2,6 +2,7 @@ import { CircleAlertIcon, InfoIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
+import { SkillDefaultsCard } from "@/components/skill-defaults";
 import { SkillpackKeyView } from "@/components/skillpack-key";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,7 @@ export const metadata: Metadata = { title: "Skills" };
 export const dynamic = "force-dynamic";
 
 const TITLE = "Skills";
-const DESCRIPTION = "The Skillpack key that installs your private skills in the sandboxes Armada launches.";
+const DESCRIPTION = "Default skills for future launches, and the Skillpack key that installs private skills.";
 
 /**
  * Build > Skills (#957): where the Skillpack key is added, replaced and removed. Harness is about model
@@ -23,6 +24,26 @@ const DESCRIPTION = "The Skillpack key that installs your private skills in the 
 export default async function SkillsPage() {
   const [selected, list] = await Promise.all([selectedOrganization(), readSelectedSkillpackKeys()]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
+  const defaults = selected ? (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <SkillDefaultsCard
+        key={`${selected.org.id}-personal`}
+        orgId={selected.org.id}
+        scope="personal"
+        title="Your default skills"
+        description="Used for your launches across organizations. They override organization and environment pins for the same skill."
+        canManage
+      />
+      <SkillDefaultsCard
+        key={`${selected.org.id}-org`}
+        orgId={selected.org.id}
+        scope="org"
+        title="Organization default skills"
+        description={`Used for launches in ${selected.org.name}, overriding environment pins for the same skill.`}
+        canManage={selected.role === "admin"}
+      />
+    </div>
+  ) : null;
 
   if (!selected || list.state === "no-org")
     return (
@@ -46,6 +67,7 @@ export default async function SkillsPage() {
             The Armada server is not configured: the Skillpack key cannot be managed here.
           </AlertDescription>
         </Alert>
+        {defaults}
       </>
     );
   if (list.state === "error")
@@ -62,17 +84,21 @@ export default async function SkillsPage() {
             </Button>
           </AlertDescription>
         </Alert>
+        {defaults}
       </>
     );
 
   return (
-    <SkillpackKeyView
-      title={TITLE}
-      description={DESCRIPTION}
-      orgId={selected.org.id}
-      orgName={selected.org.name}
-      isAdmin={selected.role === "admin"}
-      keys={list.keys}
-    />
+    <>
+      <SkillpackKeyView
+        title={TITLE}
+        description={DESCRIPTION}
+        orgId={selected.org.id}
+        orgName={selected.org.name}
+        isAdmin={selected.role === "admin"}
+        keys={list.keys}
+      />
+      {defaults}
+    </>
   );
 }

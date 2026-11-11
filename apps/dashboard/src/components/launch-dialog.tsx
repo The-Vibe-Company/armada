@@ -167,6 +167,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
   const advanced = useRef<HTMLDivElement>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [skills, setSkills] = useState<string[]>([]);
+  const [applyDefaultSkills, setApplyDefaultSkills] = useState(true);
   useVisibleViewport(root);
 
   useEffect(() => {
@@ -255,6 +256,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
         <input type="hidden" name="golden" value={golden} />
         <input type="hidden" name="provider" value={provider} />
         <input type="hidden" name="org" value={orgId} />
+        <input type="hidden" name="skip_skill_defaults" value={applyDefaultSkills ? "false" : "true"} />
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
@@ -327,6 +329,20 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent forceMount className="space-y-4 border-t p-3 data-[state=closed]:hidden">
+              <div className="space-y-1.5">
+                <Label htmlFor={`${id}-default-skills`} className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${id}-default-skills`}
+                    checked={applyDefaultSkills}
+                    onCheckedChange={(checked) => setApplyDefaultSkills(checked === true)}
+                  />
+                  Apply default skills
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Environment, organization and personal defaults. Your additional skills still install when this is
+                  off.
+                </p>
+              </div>
               <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} onChoice={onChoice} />
               {repositories.length === 1 && (
                 <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />

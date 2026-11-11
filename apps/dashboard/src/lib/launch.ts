@@ -29,6 +29,7 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
       model: args.model,
       reasoningEffort: args.reasoning_effort,
       ...(args.skills?.length ? { skills: args.skills } : {}),
+      ...(args.skipSkillDefaults === true ? { skipSkillDefaults: true } : {}),
       ...(args.connections === undefined ? {} : { connections: args.connections }),
       ...(args.repo === undefined ? {} : { repo: args.repo }),
       ...(args.credentialId === undefined ? {} : { credentialId: args.credentialId }),

@@ -25,6 +25,7 @@ import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
 import { ResourceBrowser, type ResourceRow, SelectItem } from "@/components/resource-browser";
 import { SizeDefaults } from "@/components/size-defaults";
+import { SkillDefaultsCard } from "@/components/skill-defaults";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -592,6 +593,14 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
           </pre>
         </PanelSection>
       )}
+      <SkillDefaultsCard
+        orgId={golden.org_id}
+        scope="golden"
+        goldenId={golden.id}
+        title="Environment default skills"
+        description="Installed on future launches from this environment, before organization, personal and explicit skill choices."
+        canManage={golden.visibility === "org" ? isAdmin : golden.owner_id === context.viewerId}
+      />
       <PanelSection title="Details">
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Snapshot</dt>

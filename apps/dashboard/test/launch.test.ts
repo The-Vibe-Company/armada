@@ -85,3 +85,24 @@ test("the chosen model account is pinned on every launch route, sized or not, al
     ["/api/v1/sandbox/launch", expect.objectContaining({ credentialId, skills })],
   ]);
 });
+
+test("turning off defaults preserves explicit skills and emits the opt-out only when requested on either launch route", async () => {
+  const calls: string[] = [];
+  const skills = ["review-code@2.1.0"];
+  for (const size of [undefined, "large"] as const) {
+    for (const skipSkillDefaults of [undefined, false, true]) {
+      await launchSandbox(answeringAt(calls, { sandbox: { id: "s1" } }), {
+        ...args,
+        skills,
+        ...(size ? { size } : {}),
+        ...(skipSkillDefaults === undefined ? {} : { skipSkillDefaults }),
+      });
+    }
+  }
+  for (const [index, call] of calls.entries()) {
+    const body = JSON.parse(call.slice(call.indexOf(" ") + 1));
+    expect(body.skills).toEqual(["review-code@2.1.0"]);
+    if (index % 3 === 2) expect(body.skipSkillDefaults).toBe(true);
+    else expect(body).not.toHaveProperty("skipSkillDefaults");
+  }
+});

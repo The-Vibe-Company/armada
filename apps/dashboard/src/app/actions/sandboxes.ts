@@ -139,6 +139,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     prompt: formString(data, "prompt"),
     repo: formString(data, "repo"),
     size: formString(data, "size"),
+    skipSkillDefaults: formString(data, "skip_skill_defaults"),
     ...modelFields(data),
   });
   if (!parsed.ok) return fail(parsed.error);

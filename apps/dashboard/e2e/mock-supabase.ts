@@ -53,6 +53,9 @@ type State = {
   launchRoutes: string[];
   skillCatalogUnavailable?: boolean;
   skillCatalogMalformed?: boolean;
+  skillDefaultRecords?: Record<string, string[]>;
+  skillDefaultCalls?: { route: string; body: Row; user: string }[];
+  skillDefaultsReadFailure?: boolean;
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -1063,6 +1066,34 @@ function bindCredential(body: Row, userId: string | null): Response {
  * exactly one of its `config.repos[].dir`, and every named connection is the caller's to use in the org, personal or
  * org, and connected (#681: the legacy visibility plays no part). The sandbox row records what was launched.
  */
+/** Defaults are a separate metadata control boundary, not a mock installer. */
+function skillDefaultsRoute(route: string, body: Row, request: Request): Response {
+  const user = viewer(request);
+  if (!user) return controlFail(401, "unauthorized", "Sign in again.");
+  if (!isMember(body.org, user)) return controlFail(404, "not_found", "No such organization.");
+  if (!["personal", "org", "golden"].includes(String(body.scope))) return controlFail(400, "invalid", "Invalid scope.");
+  const golden =
+    body.scope === "golden"
+      ? liveGoldens(user).find((row) => row.id === body.goldenId && row.org_id === body.org)
+      : undefined;
+  if (body.scope === "golden" && !golden) return controlFail(404, "not_found", "No such environment.");
+  if (route.endsWith("/set") && (body.scope === "org" || golden?.visibility === "org") && !isAdmin(body.org, user))
+    return controlFail(403, "forbidden", "Only an administrator changes these defaults.");
+  const key =
+    String(body.scope) + ":" + (body.scope === "personal" ? user : body.scope === "org" ? body.org : body.goldenId);
+  state.skillDefaultRecords ??= {};
+  const records = state.skillDefaultRecords;
+  state.skillDefaultCalls ??= [];
+  state.skillDefaultCalls.push({ route, body, user });
+  if (route.endsWith("/get") && state.skillDefaultsReadFailure)
+    return controlFail(503, "unavailable", "Default skills could not be read.");
+  if (route.endsWith("/set")) {
+    if (!Array.isArray(body.skills)) return controlFail(400, "invalid", "Exact skills required.");
+    records[key] = [...body.skills] as string[];
+  }
+  return json({ skills: records[key] ?? [] });
+}
+
 /** Remote metadata boundary only: installs remain the launch service's contract. */
 function skillCatalogRoute(route: string, body: Row, request: Request): Response {
   const user = viewer(request);
@@ -2784,6 +2815,10 @@ function control(url: URL, body: Row): Response {
     });
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/skill-defaults-read-failure") {
+    state.skillDefaultsReadFailure = body.enabled === true;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/skill-catalog-malformed") {
     state.skillCatalogMalformed = body.malformed === true;
     return json({ ok: true });
@@ -2917,6 +2952,8 @@ function control(url: URL, body: Row): Response {
       sizePolicyCalls: state.sizePolicyCalls,
       sizedRefusals: state.sizedRefusals,
       launchRoutes: state.launchRoutes,
+      skillDefaultCalls: state.skillDefaultCalls ?? [],
+      skillDefaultRecords: state.skillDefaultRecords ?? {},
       capabilityCalls: state.capabilityCalls,
       githubCliCalls: state.githubCliCalls,
       controlCalls: state.controlCalls,
@@ -2971,6 +3008,8 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
+      if (route === "skills/defaults/get" || route === "skills/defaults/set")
+        return skillDefaultsRoute(route, body, request);
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
