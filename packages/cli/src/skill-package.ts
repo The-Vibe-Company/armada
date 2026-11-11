@@ -1,8 +1,7 @@
-/** Public package selection shared by installation and local discovery.
- * Replace this legacy bundle with the authored tool skill once its pinned package is available.
- */
+/** Reviewed public tool-knowledge package shared by installation and local discovery. */
 export const SKILL_PACKAGE = {
-  names: ["armada-manager", "ship-pr-dev", "review-code-dev", "capture-learning-tools"],
+  names: ["armada"],
+  revision: "e188088162039ebf48588f36b2e23d854d8b174b",
   sourceDirectory: ".agents/skills",
   discoveryRoots: [".agents/skills", ".claude/skills", ".codex/skills"],
 } as const;

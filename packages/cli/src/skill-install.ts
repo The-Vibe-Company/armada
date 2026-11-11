@@ -11,12 +11,12 @@ import { SKILL_PACKAGE } from "./skill-package.ts";
 const SOURCE = "https://github.com/The-Vibe-Company/armada";
 const SKILLS = SKILL_PACKAGE.names;
 const HELP = `Usage: armada skill install (--project <directory> | --global) --yes [--revision <40-character commit>]
-Install armada-manager and its review dependencies from public GitHub for Codex and Claude Code.
+Install the Armada tool-knowledge skill and its references from public GitHub for Codex and Claude Code.
 Requires Git, not Armada login or Node 22. Never overwrites existing skill directories.
 Project roots: <directory>/.agents/skills and <directory>/.claude/skills.
 Global roots: ~/.agents/skills and ~/.claude/skills (native agent defaults).
 --yes explicitly approves a noninteractive install; no prompts are ever opened.
-Default source: The-Vibe-Company/armada main, resolved to a commit before copying.
+Default source: The-Vibe-Company/armada at reviewed commit ${SKILL_PACKAGE.revision}.
 `;
 
 async function git(args: string[], cwd: string): Promise<string> {
@@ -129,7 +129,7 @@ export async function skillCommand(argv: readonly string[], io: Io): Promise<num
     await safeParents(base);
     temp = await realpath(await mkdtemp(join(tmpdir(), "armada-skills-")));
     await git(["init", "--quiet"], temp);
-    await git(["fetch", "--quiet", "--depth=1", `${SOURCE}.git`, revision ?? "refs/heads/main"], temp);
+    await git(["fetch", "--quiet", "--depth=1", `${SOURCE}.git`, revision ?? SKILL_PACKAGE.revision], temp);
     const commit = await git(["rev-parse", "FETCH_HEAD"], temp);
     if (!/^[a-f0-9]{40}$/.test(commit) || (revision && revision !== commit))
       throw new Error("Source revision verification failed.");
