@@ -419,7 +419,7 @@ try {
     "failed",
   );
   // This deliberately unclaimed path reproduces the observed CLI fallback family;
-  // registered owner paths above must never be mistaken for that bare 404.
+  // registered owner paths above must never be mistaken for an undeployed route.
   const api = await createArmadaApiClient(
     { env: { ARMADA_URL: origin, ARMADA_TOKEN: token.token }, fetch: auditedFetch, session: memorySessionStore() },
     { preserveServerErrors: true },
@@ -430,7 +430,7 @@ try {
       error instanceof ArmadaApiError &&
       error.status === 404 &&
       error.serverCode === "unavailable" &&
-      error.message.includes("Armada server request failed (404)"),
+      error.message.includes(`This Armada deployment at ${origin} does not serve /not-an-armada-route;`),
   );
   assert.equal(routes.at(-1)?.status, 404);
   assert.equal(routes.at(-1)?.code, null);

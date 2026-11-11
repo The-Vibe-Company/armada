@@ -290,7 +290,11 @@ test("unstructured HTTP failures identify the actual origin without relaying ups
     ]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.err)).toEqual({
-      error: { code: "unavailable", message: "Armada server request failed (404) at https://armada.test." },
+      error: {
+        code: "unavailable",
+        message:
+          "This Armada deployment at https://armada.test does not serve /api/v1/orchestrators/parent-1/recover; the dashboard or server may be out of date. Ask an administrator to verify the deployment.",
+      },
     });
     expect(result.err).not.toContain("private-upstream");
     expect(result.err).not.toContain("test-armada-bearer");

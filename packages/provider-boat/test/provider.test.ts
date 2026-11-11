@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderError } from "@armada/core";
-import { GoldenCreateService, type GoldenRecord, scanGoldenSandbox } from "@armada/core/server";
+import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -835,4 +835,84 @@ test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Bo
           ["GET", `/api/v1/sandboxes/${ID}/conversations`],
         ]),
   ]);
+});
+
+// The SDK boundary owns refusal classification/retry safety. Capture must finish
+// before stop, and a 409 refusal is safe to retry unlike an ambiguous 502.
+test("capture waits through Boat startup and not-ready after quiescence before stop", async () => {
+  const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
+  const boat = fakeBoat(
+    { body: { ok: true, conversations: [] } },
+    { body: { ok: true, sandbox: sandbox({ state: "provisioning" }) } },
+    ready,
+    errorBody(409, "sandbox_not_ready", "Not ready", { retryable: false }),
+    ready,
+    {
+      body: {
+        ok: true,
+        type: "command.finished",
+        success: true,
+        exitCode: 0,
+        stdout: '{"status":"clean"}',
+        stderr: "",
+        timedOut: false,
+      },
+    },
+    { body: { ok: true } },
+  );
+  if (!boat.provider.quiesce) throw new Error("Missing quiescence");
+  await boat.provider.quiesce({ sandboxId: ID });
+  expect(await preserveWork(boat.provider, ID)).toEqual({ status: "clean" });
+  await boat.provider.stop({ sandboxId: ID });
+  expect(boat.sleeps).toEqual([1000, 1000]);
+  expect(boat.requests.map(({ method, path }) => [method, path.split("/").at(-1)])).toEqual([
+    ["GET", "conversations"],
+    ["GET", ID],
+    ["GET", ID],
+    ["POST", "commands"],
+    ["GET", ID],
+    ["POST", "commands"],
+    ["POST", "stop"],
+  ]);
+});
+
+test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat execution safely", async (outcome) => {
+  const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
+  const refused = errorBody(409, "sandbox_not_ready", "Not ready");
+  const replies =
+    outcome === "exhausted"
+      ? Array.from({ length: 5 }, () => [ready, refused]).flat()
+      : outcome === "stopped"
+        ? [ready, refused, { body: { ok: true, sandbox: sandbox({ state: "archived" }) } }]
+        : [ready, errorBody(502, "boat_direct_failed", "Command may have run")];
+  const boat = fakeBoat(...replies);
+  await expect(boat.provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true })).rejects.toMatchObject({
+    code: outcome === "ambiguous" ? "unavailable" : "sandbox_not_ready",
+    status: outcome === "stopped" ? undefined : outcome === "exhausted" ? 409 : 502,
+  });
+  expect(boat.requests.filter((r) => r.path.endsWith("/commands"))).toHaveLength(outcome === "exhausted" ? 5 : 1);
+  expect(boat.sleeps).toHaveLength(outcome === "exhausted" ? 4 : outcome === "stopped" ? 1 : 0);
+  expect(boat.requests.some((r) => r.path.endsWith("/resume") || r.path.endsWith("/stop"))).toBe(false);
+});
+
+test("capture cancellation during a readiness wait cannot admit a later command", async () => {
+  const controller = new AbortController();
+  const paths: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    sleep: async () => {
+      controller.abort();
+    },
+    fetch: (async (input) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return path.endsWith("/commands")
+        ? Response.json(errorBody(409, "sandbox_not_ready", "Not ready").body, { status: 409 })
+        : Response.json({ ok: true, sandbox: sandbox({ state: "ready" }) });
+    }) as typeof fetch,
+  });
+  await expect(
+    provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true, signal: controller.signal }),
+  ).rejects.toBeDefined();
+  expect(paths).toEqual([`/api/v1/sandboxes/${ID}`, `/api/v1/sandboxes/${ID}/commands`]);
 });

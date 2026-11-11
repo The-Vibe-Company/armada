@@ -202,7 +202,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         expect(row?.last_observed_at).not.toBeNull();
         expect(row?.lifecycle_error).toBeNull();
         expect(methods).toEqual(
-          observation === "expired" ? ["GET", "GET", "GET", "GET", "POST", "POST", "GET"] : ["GET"],
+          observation === "expired" ? ["GET", "GET", "GET", "GET", "GET", "POST", "POST", "GET"] : ["GET"],
         );
       }
       // Re-due historical failures: only unknown outcomes may consume provider work again.
