@@ -227,7 +227,7 @@ raw install output into a shared log.
 Coordinator staging evidence confirmed the #897 cause: `smoke-modal` was built
 before private skills support and `skillpack` was absent from the SSH user's PATH.
 Node v22.23.4, Bash and `flock` were present. Authentication was never reached;
-key scope remains unverified. This now returns `skillpack_cli_unavailable` at
+key authentication remains unverified. This now returns `skillpack_cli_unavailable` at
 `skills_auth`, directing the owner to rebuild the golden. The failed operation
 settles as `failed`; the parent becomes `stopped` only after confirmed cleanup.
 
@@ -242,7 +242,7 @@ receipt and server diagnostics use the same codes):
 | `skillpack_cli_unavailable` | Rebuild the golden with the trusted native CLI executable on PATH; check its permissions/version. |
 | `skillpack_auth_unavailable` | Check registry connectivity and CLI/API compatibility during auth status. |
 | `skillpack_protocol_invalid` | Update the trusted native CLI/API; auth status did not return the supported workspace contract. |
-| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's workspace access; secret-projecting skills are not supported. |
+| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's read permission/workspace access. |
 | `skillpack_install_conflict` | Inspect project lock/install state in a disposable sandbox; rebuild a clean golden. |
 | `skillpack_request_rejected` | Check the requested version/tool and update CLI/API compatibility. |
 | `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
