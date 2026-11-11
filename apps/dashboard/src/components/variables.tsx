@@ -202,9 +202,10 @@ function AddVaultForm({
       </Choice>
       <NameField id={id} kind={kind} value={name} onChange={setName} />
       {kind === "secret" ? (
-        <ValueField id={id} kind="secret" />
+        // Keyed per kind: a variable's text must never carry over, hidden, into the secret it becomes.
+        <ValueField key="secret" id={id} kind="secret" />
       ) : (
-        <ValueField id={id} kind="variable" value={value} onValue={setValue} />
+        <ValueField key="variable" id={id} kind="variable" value={value} onValue={setValue} />
       )}
       <Choice legend="Who can use it">
         <ChoiceCard
@@ -292,7 +293,7 @@ function ValueField(
       )}
       <p id={`${id}-value-hint`} className="text-xs text-muted-foreground">
         {kind === "secret"
-          ? "Masked as you type; line breaks are kept. After saving, nobody can read it back, admins included."
+          ? "Line breaks are kept. After saving, nobody can read it back, admins included."
           : `Up to ${MAX_VALUE_BYTES / 1024} KiB. May be empty.`}
       </p>
     </div>

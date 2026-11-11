@@ -77,7 +77,10 @@ test("a secret is stored once and never shown again: replace, revoke and delete 
 }) => {
   await signIn(page, "alice@example.com", "/variables");
   const dialog = await openAdd(page);
+  // Text typed for a variable never carries over, hidden, into a secret.
+  await dialog.getByLabel("Value").fill("typed-as-a-variable");
   await dialog.getByRole("radio", { name: /Secret/ }).check();
+  await expect(dialog.getByLabel("Secret value")).toHaveValue("");
   // Names are written the way an environment expects them; a reserved one is refused before sending.
   await dialog.getByLabel("Name").fill("github token");
   await expect(dialog.getByLabel("Name")).toHaveValue("GITHUB_TOKEN");

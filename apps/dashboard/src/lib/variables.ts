@@ -123,13 +123,13 @@ export function nameProblem(name: string, kind: VaultKind): string | null {
   return null;
 }
 
-/** Why the server would refuse this value, or null. Never quotes the value. */
 /**
  * A submitted value as typed: a browser sends a textarea's line breaks as CRLF, which would change a key or a
  * certificate the person pasted with LF.
  */
 export const normalizeValue = (value: string) => value.replace(/\r\n?/g, "\n");
 
+/** Why the server would refuse this value, or null. Never quotes the value. */
 export function valueProblem(value: string, kind: VaultKind, name: string): string | null {
   if (kind === "secret" && !value) return "Enter the secret value.";
   if (value.includes("\0")) return "The value cannot contain a NUL character.";
