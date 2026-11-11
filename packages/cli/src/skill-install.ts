@@ -6,16 +6,17 @@ import { dirname, join, resolve } from "node:path";
 import { GoldenError } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
 import type { Io } from "./run.ts";
+import { SKILL_PACKAGE } from "./skill-package.ts";
 
 const SOURCE = "https://github.com/The-Vibe-Company/armada";
-const SKILLS = ["armada-manager", "ship-pr-dev", "review-code-dev", "capture-learning-tools"];
+const SKILLS = SKILL_PACKAGE.names;
 const HELP = `Usage: armada skill install (--project <directory> | --global) --yes [--revision <40-character commit>]
-Install armada-manager and its review dependencies from public GitHub for Codex and Claude Code.
+Install the Armada tool-knowledge skill and its references from public GitHub for Codex and Claude Code.
 Requires Git, not Armada login or Node 22. Never overwrites existing skill directories.
 Project roots: <directory>/.agents/skills and <directory>/.claude/skills.
 Global roots: ~/.agents/skills and ~/.claude/skills (native agent defaults).
 --yes explicitly approves a noninteractive install; no prompts are ever opened.
-Default source: The-Vibe-Company/armada main, resolved to a commit before copying.
+Default source: The-Vibe-Company/armada at reviewed commit ${SKILL_PACKAGE.revision}.
 `;
 
 async function git(args: string[], cwd: string): Promise<string> {
@@ -72,7 +73,7 @@ export async function copySkillPackages(checkout: string, base: string): Promise
   const plans: { source: string; destination: string; entries: string[] }[] = [];
   for (const root of [".agents", ".claude"]) {
     for (const name of SKILLS) {
-      const source = join(checkout, ".agents", "skills", name);
+      const source = join(checkout, SKILL_PACKAGE.sourceDirectory, name);
       await safeParents(source);
       if (!(await readFile(join(source, "SKILL.md"), "utf8")).startsWith("---")) {
         throw new Error(`Missing skill metadata: ${name}`);
@@ -128,11 +129,11 @@ export async function skillCommand(argv: readonly string[], io: Io): Promise<num
     await safeParents(base);
     temp = await realpath(await mkdtemp(join(tmpdir(), "armada-skills-")));
     await git(["init", "--quiet"], temp);
-    await git(["fetch", "--quiet", "--depth=1", `${SOURCE}.git`, revision ?? "refs/heads/main"], temp);
+    await git(["fetch", "--quiet", "--depth=1", `${SOURCE}.git`, revision ?? SKILL_PACKAGE.revision], temp);
     const commit = await git(["rev-parse", "FETCH_HEAD"], temp);
     if (!/^[a-f0-9]{40}$/.test(commit) || (revision && revision !== commit))
       throw new Error("Source revision verification failed.");
-    await git(["checkout", "--quiet", commit, "--", ".agents/skills"], temp);
+    await git(["checkout", "--quiet", commit, "--", SKILL_PACKAGE.sourceDirectory], temp);
     const destinations = await copySkillPackages(temp, base);
     io.out(`Source: ${SOURCE}/tree/${commit}/.agents/skills\n`);
     for (const destination of destinations) io.out(`Installed: ${destination}\n`);

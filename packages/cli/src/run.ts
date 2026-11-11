@@ -84,7 +84,7 @@ Usage:
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
-                                           Public GitHub manager + review skills; no login. See skill --help.
+                                           Public GitHub Armada tool-knowledge skill; no login. See skill --help.
   armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Server-orchestrated: builds, scans and snapshots the golden on the
