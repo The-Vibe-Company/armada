@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { hkdfSync } from "node:crypto";
 import { createSqlVaultStore, encryptSecret, type ProviderTarget } from "@armada/core/server";
 import {
@@ -8,6 +8,7 @@ import {
   type Scope,
   scopeKey,
 } from "@armada/provider-modal";
+import { AppService } from "modal";
 import { createSqlData } from "../src/data.ts";
 import { createModalIntegration, MODAL_INGEST_PATH } from "../src/modal-integration.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
@@ -72,6 +73,9 @@ test("server ingest survives restart, commits once in SQL, and fences the previo
 
 test("private image org-fallback provenance survives adding a personal key, rotation and removal", async () => {
   const { db, people } = await database();
+  const apps = spyOn(AppService.prototype, "fromName").mockImplementation(async () => {
+    throw new Error("Stored observations must not perform SDK App lookups");
+  });
   try {
     const binding = { workspace: "app:ap-org", appId: "ap-org", environment: "main" };
     await db.query(
@@ -107,6 +111,24 @@ test("private image org-fallback provenance survives adding a personal key, rota
       modal: binding,
     };
     const caller = { userId: people.owner };
+    const scope: Scope = { orgId: people.org, userId: people.owner, visibility: "private", binding };
+    const machine: Machine = {
+      info: { id: "stored-private", name: "private", state: "ready", labels: {} },
+      phase: "active",
+      generation: 1,
+      golden: false,
+      ttlSeconds: 60,
+      physicalName: "private",
+      managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },
+      sourceImage: { scopeKey: scopeKey(scope), name: "source", imageId: "im-source" },
+    };
+    await createSqlModalStore(db, scope).reserve("stored-private", machine);
+    const reader = await integration.storedProviderFor(target, caller);
+    expect(await reader.get(machine.info.id)).toMatchObject({ id: machine.info.id, state: "ready" });
+    expect(() => reader.stop({ sandboxId: machine.info.id })).toThrow(
+      "Stored observations cannot perform live operations",
+    );
+    expect(apps).not.toHaveBeenCalled();
     expect(await integration.modalTokensFor(target, caller)).toEqual({
       tokenId: pair("original").token_id,
       tokenSecret: pair("original").token_secret,
@@ -117,6 +139,7 @@ test("private image org-fallback provenance survives adding a personal key, rota
     await db.query("delete from credentials where scope='org' and owner_id=$1 and kind='modal'", [people.org]);
     await expect(integration.modalTokensFor(target, caller)).rejects.toMatchObject({ code: "missing_credential" });
   } finally {
+    apps.mockRestore();
     await db.close();
   }
 });
