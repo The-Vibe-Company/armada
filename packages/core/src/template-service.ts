@@ -617,10 +617,14 @@ export function createTemplateService(sql: Sql) {
         status: result.sandbox.status,
         manifest: m,
       };
-      await sql.query(
-        "update public.template_launch_requests set state='succeeded',result=$2::text::jsonb,updated_at=now() where id=$1",
-        [request.id, JSON.stringify(output)],
-      );
+      // The launch has returned a receipt. Only this deterministic publication is
+      // safe to retry: never fork or prompt again after an uncertain response.
+      const publish = () =>
+        sql.query(
+          "update public.template_launch_requests set state='succeeded',result=$2::text::jsonb,updated_at=now() where id=$1",
+          [request.id, JSON.stringify(output)],
+        );
+      await publish().catch(publish);
       return output;
     } catch (error) {
       // Before adoption no provider mutation is possible. After adoption launchSandbox
@@ -629,11 +633,12 @@ export function createTemplateService(sql: Sql) {
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const state = allocating ? "reconciling" : "failed";
       const safeReason = refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable");
-      await sql.query("update public.template_launch_requests set state=$2,reason=$3,updated_at=now() where id=$1", [
-        request.id,
-        state,
-        safeReason,
-      ]);
+      // A publication may have committed even if both acknowledgements were lost.
+      // Keep its durable success intact; same-key replay reads the saved receipt.
+      await sql.query(
+        "update public.template_launch_requests set state=$2,reason=$3,updated_at=now() where id=$1 and result is null",
+        [request.id, state, safeReason],
+      );
       return { requestId: request.id, state, id: request.sandbox_id, reason: safeReason, manifest: m };
     }
   }
