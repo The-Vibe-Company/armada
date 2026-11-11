@@ -1,3 +1,4 @@
+export { BodyTooLargeError, readBoundedText } from "./bounded-body.ts";
 export { assertHash, bearerKind, generateToken, sha256Hex } from "./codec.ts";
 export { AuthError } from "./errors.ts";
 export { createHttpAuthStore, createServiceStore, createUserStore } from "./http.ts";

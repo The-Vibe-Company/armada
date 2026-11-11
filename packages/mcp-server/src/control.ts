@@ -1,5 +1,7 @@
 import {
   type AuthStore,
+  BodyTooLargeError,
+  readBoundedText,
   assertEmail,
   assertEmailCode,
   assertProvider,
@@ -310,6 +312,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const failureCode = apiFailureCode(error);
     if (failureCode)
       return Response.json(
@@ -423,7 +426,8 @@ async function tokenRevokeRoute(request: Request, options: ControlOptions): Prom
       now: (options.now ?? (() => new Date()))(),
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return fail(403, "forbidden", "Token revocation was refused.");
   }
 }
@@ -459,7 +463,8 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
       { id: created.id, label: created.label, orgName: created.orgName, token: created.token },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return fail(401, "unauthorized", "Token creation was refused.");
   }
 }
@@ -505,7 +510,8 @@ async function emailVerifyRoute(request: Request, options: ControlOptions): Prom
       { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return fail(401, "unauthorized", "Email code was refused.");
   }
 }
@@ -541,6 +547,7 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
     return fail(
       status,
@@ -563,6 +570,7 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
       : await nativeExchange(options, code, verifier);
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -629,6 +637,7 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -1522,8 +1531,7 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
 }
 
 async function readBody(request: Request): Promise<Record<string, unknown>> {
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) throw new VaultError("invalid", "The request is too large.");
+  const text = await readBoundedText(request, MAX_BODY_BYTES);
   if (text.trim() === "") return {};
   let parsed: unknown;
   try {
