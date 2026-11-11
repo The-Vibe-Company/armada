@@ -1,11 +1,12 @@
+import type { Golden } from "@armada/core";
 import { ControlError, createTemplateControl } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 import type { TemplateItem, TemplateLookups } from "@/lib/templates";
-import { listSelectedConnections } from "./connections";
+import { type ConnectionList, listSelectedConnections } from "./connections";
 import { listGoldens } from "./goldens";
 import { selectedOrganization } from "./selected-org";
-import { listSelectedVault } from "./variables";
+import { listSelectedVault, type VaultList } from "./variables";
 import { requireViewer } from "./viewer";
 
 /** The template client acting as the signed-in viewer, or null when no Armada server is configured. */
@@ -66,6 +67,14 @@ export async function templateLookups(): Promise<TemplateLookups> {
     listSelectedConnections(),
     listSelectedVault(),
   ]);
+  return lookupsFrom(goldens, connections, vault);
+}
+
+export function lookupsFrom(
+  goldens: readonly Golden[],
+  connections: ConnectionList,
+  vault: VaultList,
+): TemplateLookups {
   return {
     goldens: goldens.map((golden) => ({
       id: golden.id,

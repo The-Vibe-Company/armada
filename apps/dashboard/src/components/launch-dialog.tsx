@@ -427,7 +427,7 @@ function AccountField({
 }
 
 /** The shortcut Launch answers to, on the button itself; hidden from its accessible name. */
-function LaunchShortcut() {
+export function LaunchShortcut() {
   return (
     <Kbd
       aria-hidden="true"
@@ -454,7 +454,7 @@ function optionLabel(account: ModelAccount, now: number, orgName: string): strin
 }
 
 /** A compact radio group: every option visible, one choice, arrow keys move between them. */
-function Segmented<T extends string>({
+export function Segmented<T extends string>({
   legend,
   name,
   value,
@@ -496,7 +496,7 @@ function Segmented<T extends string>({
  * The configured checkout the agent starts in. A golden with one repository starts there; with several, in the
  * default directory until one is chosen. Every repository stays available either way.
  */
-function RepositoryField({
+export function RepositoryField({
   idPrefix,
   repositories,
   onChange,

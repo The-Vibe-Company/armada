@@ -148,7 +148,7 @@ export function templateProblems(definition: TemplateDefinition, lookups: Templa
   if (lookups.variables)
     for (const binding of definition.variables) {
       const variable = lookups.variables.find((row) => row.id === binding.variableId);
-      if (!variable || variable.status !== "active")
+      if (variable?.status !== "active")
         problems.push({ kind: "variable", text: `${binding.key} was revoked or deleted.` });
       else if (variable.version !== binding.version)
         problems.push({
@@ -255,7 +255,7 @@ export function templateRequest(fields: TemplateFormFields, lookups: TemplateLoo
   const variables: TemplateVariableBinding[] = [];
   for (const id of ids) {
     const variable = lookups.variables?.find((row) => row.id === id);
-    if (!variable || variable.status !== "active")
+    if (variable?.status !== "active")
       return { ok: false, error: "A chosen variable is no longer available. Refresh and try again." };
     if (scope === "org" && variable.scope !== "org")
       return {
@@ -341,7 +341,8 @@ export type LaunchOutcome =
 export function parseLaunchOutcome(value: unknown): LaunchOutcome | null {
   if (!isRecord(value)) return null;
   if (value.state === "succeeded" && isId(value.id)) return { state: "succeeded", id: value.id };
-  if (value.state === "failed") return { state: "failed", reason: typeof value.reason === "string" ? value.reason : "" };
+  if (value.state === "failed")
+    return { state: "failed", reason: typeof value.reason === "string" ? value.reason : "" };
   // Claimed, allocating or reconciling: a sandbox may exist. Never reported as a failure that invites a new launch.
   if (typeof value.state === "string") return { state: "reconciling", id: isId(value.id) ? value.id : null };
   return null;

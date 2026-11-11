@@ -11,6 +11,7 @@ export type ModelCatalog = Readonly<Record<Harness, HarnessModels>>;
 
 /** Must match `OTHER_MODEL` in `@/lib/model-choice`, which reads the form on the server. */
 const OTHER_MODEL = "other";
+
 export { EFFORT_LABEL };
 
 /**
