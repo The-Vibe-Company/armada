@@ -63,4 +63,6 @@ export {
 } from "./ssh-executor.ts";
 export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
+export { sshReadableVariables } from "./ssh-readable-variables.ts";
+export { createTemplateService, type TemplateRuntime, type TemplateService } from "./template-service.ts";
 export { preserveWork, type WorkPreservation, workPreservationError } from "./work-preservation.ts";

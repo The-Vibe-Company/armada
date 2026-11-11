@@ -13,6 +13,7 @@ import {
   initCommand,
   parseGoldenName,
 } from "./golden-config.ts";
+import type { HelperReceipt } from "./helper.ts";
 import type { MachineSizePolicy } from "./machine-size.ts";
 import {
   isNonMutatingProviderRefusal,
@@ -31,6 +32,7 @@ export interface GoldenActor {
 
 /** A golden the caller is allowed to see. `config` is the parsed, secret-free file. */
 export interface GoldenRecord {
+  helperReceipt?: HelperReceipt | null;
   buildWarnings?: GoldenBuildWarning[];
   sizePolicy?: MachineSizePolicy | null;
   id: string;

@@ -84,6 +84,8 @@ export type DriverResumeContext = Omit<DriverContext, "request" | "session" | "e
   sessionId: string;
 };
 export interface Driver {
+  /** Trusted bootstrap: only future native workload processes receive these values. */
+  configureReadableVariables?(variables: Record<string, string>): void;
   /** Optional only when the native SDK can verify an existing session without a turn. */
   resumeSession?(context: DriverResumeContext): Promise<{ sessionId: string }>;
   start(context: DriverContext): Turn;
@@ -105,6 +107,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       expectedSessionId: string;
       input: Omit<RuntimePromptRequest, "text">;
     }
+  | { op: "configureReadableVariables"; harness: "claude" | "codex"; variables: Record<string, string> }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
   | ConfigureMcpRequest

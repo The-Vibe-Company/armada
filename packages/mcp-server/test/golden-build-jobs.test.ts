@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { createSqlGoldenStore, createSqlVaultStore, type GoldenBuildStatus, ProviderError } from "@armada/core/server";
+import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./support.ts";
@@ -7,6 +8,13 @@ import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./su
 async function fixture() {
   const server = await harness();
   const { boat, people } = server;
+  const exec = boat.provider.exec;
+  boat.provider.exec = async (request) => {
+    const result = await exec(request);
+    return request.command.includes("/helper/0.1.0/armada-helper") && !result.detached
+      ? { ...result, stdout: goldenHelperReport }
+      : result;
+  };
   let allocations = 0;
   boat.provider.createGolden = async () => {
     allocations++;
@@ -197,7 +205,10 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
         { golden_id: (before as { id: string }).id, build_id: null },
       ]);
       expect((await s.builds.status(s.people.admin, job.jobId)).phase).toBe(phase);
-      expect(s.boat.execs.at(-1)?.timeoutSeconds).toBe(600);
+      // The scanner owns its 600-second bound; helper verification may follow it.
+      expect(
+        s.boat.execs.find((request) => request.command.includes("cat-file --batch-all-objects"))?.timeoutSeconds,
+      ).toBe(600);
       expect(s.deleted).not.toContain((before as { provider_snapshot_id: string }).provider_snapshot_id);
       expect((await s.db.query("select id from golden_snapshot_retirements")).rows).toEqual([]);
       if (failure === "persist")

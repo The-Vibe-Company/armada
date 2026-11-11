@@ -1123,7 +1123,10 @@ export class OrchestratorRuntimeStore {
     });
   }
 
-  async preparing(reservation: RuntimeReservation): Promise<RuntimeIdentity> {
+  async preparing(
+    reservation: RuntimeReservation,
+    { publishReady = true }: { publishReady?: boolean } = {},
+  ): Promise<RuntimeIdentity> {
     return this.transaction(async (tx) => {
       const identity = await this.read(
         reservation.identity.ownerId,
@@ -1154,6 +1157,15 @@ export class OrchestratorRuntimeStore {
           identity.sandboxId !== reservation.identity.sandboxId ||
           identity.providerSandboxId !== reservation.identity.providerSandboxId ||
           identity.generation !== reservation.identity.generation)
+      )
+        throw new OrchestratorRuntimeError("conflict");
+      if (!publishReady) return identity;
+      // Epoch installation requires ready, but a requested skill must already
+      // have its verified receipt before any reader can observe that state.
+      if (
+        reservation.operation.kind === "create" &&
+        identity.configuration.skill &&
+        identity.skillReceipt?.reference !== identity.configuration.skill
       )
         throw new OrchestratorRuntimeError("conflict");
       await tx.query(`update public.orchestrators set state='ready' where id=$1`, [identity.id]);

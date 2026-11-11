@@ -67,6 +67,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (m.method === "thread/start" || m.method === "thread/resume") {
     if (process.env.OPENAI_API_KEY && !loggedIn) throw Error("API-key login must precede thread operations");
     if (m.method === "thread/resume") thread = m.params.threadId;
+    if (process.env.ARMADA_READABLE_INSPECTION)
+      writeFileSync(
+        process.env.ARMADA_READABLE_INSPECTION,
+        JSON.stringify({ region: process.env.APP_REGION, empty: process.env.APP_EMPTY }),
+      );
     if (process.env.ARMADA_MCP_INSPECTION) {
       const header = "mcp-header-fixture-sensitive",
         stdio = "mcp-env-fixture-sensitive";

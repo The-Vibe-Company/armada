@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import * as core from "@armada/core/server";
+import { catalogLock, catalogReceipt, catalogReference } from "../../core/test/support/skillpack-catalog.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { launchOrchestratorParent } from "../src/orchestrator-launch.ts";
-import { LifecycleRuntimeStore } from "../src/orchestrator-lifecycle-integration.ts";
+import { LifecycleRuntimeStore, lifecycleDetail } from "../src/orchestrator-lifecycle-integration.ts";
 import { OrchestratorRuntime } from "../src/orchestrator-runtime.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -13,7 +14,7 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-async function fixture() {
+async function fixture(skillpackKey?: () => Promise<string | null>) {
   const { db, people: p } = await database();
   const sql: core.Sql = {
     query: (q, v) => db.query(q, v),
@@ -61,6 +62,8 @@ async function fixture() {
   const diagnostics: string[] = [];
   const runtime = new OrchestratorRuntime({
     diagnosticLog: (line) => diagnostics.push(line),
+    lifecycleDetail: lifecycleDetail(sql),
+    ...(skillpackKey ? { skillpackKey } : {}),
     store,
     authority,
     skillRevision: "a".repeat(40),
@@ -294,3 +297,74 @@ test.each([false, true])(
     }
   },
 );
+
+// Owner detail/list must expose the logical preparation phase, not the already
+// running physical worker. Hold the actual async skill boundary without sleeps.
+test.each(["refused", "succeeded"])("requested skill readiness stays creating until %s", async (outcome) => {
+  const installing = deferred<void>(),
+    release = deferred<void>();
+  const f = await fixture(async () => {
+    installing.resolve();
+    await release.promise;
+    throw new core.PrivateSkillError("skillpack_scope_refused", "auth");
+  });
+  const originalGet = f.provider.provider.get;
+  f.provider.provider.get = async (id) => ({ ...(await originalGet(id)), physicalGeneration: "1" });
+  f.provider.provider.installOrchestratorEpoch = async () => ({ acknowledged: true });
+  f.provider.provider.scrubOrchestratorEpoch = async () => ({ acknowledged: true });
+  f.provider.provider.exec = async (request) => {
+    if (request.command.includes("skillpack install")) {
+      installing.resolve();
+      await release.promise;
+    }
+    return {
+      detached: false,
+      exitCode: 0,
+      stdout: request.command.includes("skillpack install") ? catalogLock("claude-code") : "",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    };
+  };
+  try {
+    const operation = await f.runtime.create(
+      f.caller,
+      { ...f.configuration, skill: outcome === "refused" ? "notes@1.0.0" : catalogReference },
+      "skill-readiness",
+    );
+    f.gate.resolve();
+    await installing.promise;
+    const detail = await f.runtime.detail(f.caller, f.p.org, operation.orchestratorId);
+    expect(detail.orchestrator.state).toBe("creating");
+    expect(detail.orchestrator.skillReceipt).toBeNull();
+    expect(detail.operations.find((item) => item.id === operation.id)?.state).toBe("pending");
+    expect(
+      (await f.runtime.list(f.caller, f.p.org)).items.find((item) => item.id === operation.orchestratorId)?.state,
+    ).toBe("creating");
+    expect(f.provider.sandbox("bx_1").info.state).toBe("ready");
+    await expect(
+      f.runtime.mutate(f.caller, {
+        orgId: f.p.org,
+        id: operation.orchestratorId,
+        action: "message",
+        key: "early-message",
+        expectedRevision: detail.orchestrator.revision,
+        text: "Do not run before skill readiness",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    release.resolve();
+    await f.runtime.createWorker.drain();
+    const final = await f.runtime.detail(f.caller, f.p.org, operation.orchestratorId);
+    expect(final.operations.find((item) => item.id === operation.id)?.state).toBe(
+      outcome === "refused" ? "failed" : "succeeded",
+    );
+    expect(final.orchestrator.state).toBe(outcome === "refused" ? "stopped" : "ready");
+    expect(final.orchestrator.skillReceipt).toEqual(outcome === "refused" ? null : catalogReceipt);
+    if (outcome === "refused") expect(final.orchestrator.blockedReason).toBe("skillpack_scope_refused");
+  } finally {
+    f.gate.resolve();
+    release.resolve();
+    await f.runtime.createWorker.drain();
+    await f.db.close();
+  }
+});

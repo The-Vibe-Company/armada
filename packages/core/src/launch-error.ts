@@ -1,3 +1,4 @@
+import type { HelperRefusal } from "./helper.ts";
 export const LAUNCH_INITIALIZATION_STAGES = [
   "initialization_bind",
   "initialization_ready",
@@ -25,6 +26,7 @@ import type { ApiFailureCode } from "./api-failure.ts";
 export type LaunchErrorCode =
   | ApiFailureCode
   | "invalid_request"
+  | "unsupported"
   /** The harness has no credential for the caller or the org. */
   | "no_credentials"
   /** The sandbox failed to start, or a provider call failed while launching. */
@@ -40,15 +42,19 @@ export class LaunchError extends Error {
   /** Armada's id of the sandbox that was recorded before the failure, when there was one. */
   readonly sandboxId: string | undefined;
   readonly safeReason: LaunchFailureReason | undefined;
+  readonly reason: HelperRefusal["reason"] | undefined;
+  readonly action: HelperRefusal["action"] | undefined;
 
   constructor(
     code: LaunchErrorCode,
     message: string,
-    options?: { cause?: unknown; sandboxId?: string; safeReason?: LaunchFailureReason },
+    options?: { cause?: unknown; sandboxId?: string; safeReason?: LaunchFailureReason; helperRefusal?: HelperRefusal },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.sandboxId = options?.sandboxId;
     this.safeReason = options?.safeReason;
+    this.reason = options?.helperRefusal?.reason;
+    this.action = options?.helperRefusal?.action;
   }
 }

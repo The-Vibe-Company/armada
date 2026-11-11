@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   CreateGoldenRequest,
   DeleteReceipt,
@@ -25,7 +26,15 @@ import type {
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";
-import { buildEventPage, eventPageOptions, MACHINE_SIZE_CATALOG, ProviderError, parseMachineSize } from "@armada/core";
+import {
+  buildEventPage,
+  eventPageOptions,
+  MACHINE_SIZE_CATALOG,
+  ProviderError,
+  parseMachineSize,
+  validateReadableVariables,
+} from "@armada/core";
+import { sshReadableVariables } from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
@@ -453,6 +462,30 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
     },
 
+    async configureReadableVariables({ sandboxId, harness, variables }) {
+      variables = validateReadableVariables(variables);
+      if (harness !== "claude" && harness !== "codex") throw invalidRequest("Invalid readable variable harness.");
+      const digest = createHash("sha256")
+        .update(JSON.stringify(Object.entries(variables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
+        .digest("hex");
+      // Live VM receipt, not a process-local cache: missing /run state always rehydrates.
+      const present = await provider.exec({
+        sandboxId,
+        timeoutSeconds: 30,
+        command: `/usr/bin/python3 -I -c '${READABLE_VARIABLE_PROBE}' ${harness}`,
+      });
+      if (!present.detached && !present.timedOut && present.exitCode === 0 && present.stdout.trim() === digest) return;
+      await installNativeCwdWrapper(
+        async (request) => {
+          const result = await provider.exec(request);
+          if (result.detached || result.exitCode !== 0 || result.timedOut)
+            throw invalidRequest("Native variable wrapper unavailable.");
+        },
+        sandboxId,
+        harness,
+      );
+      await sshReadableVariables(provider, sandboxId, harness, variables);
+    },
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
       let resumed = false;
       const workflow = AbortSignal.timeout(90_000);
@@ -805,3 +838,24 @@ function isRestoring(details: unknown): boolean {
     (details as Record<string, unknown>).message === RESTORING
   );
 }
+
+// Fixed read-only probe. No values/desired digest enter exec arguments or command journals.
+const READABLE_VARIABLE_PROBE = `import os,sys,json,stat,hashlib
+try:
+ h=sys.argv[1]
+ assert h in ("claude","codex")
+ root="/run/armada-readable-variables"
+ d=os.lstat(root)
+ assert stat.S_ISDIR(d.st_mode) and d.st_uid==0 and not d.st_mode&0o022
+ wrapper="/usr/local/bin/"+h+".armada-wrapper"
+ assert os.path.realpath("/usr/local/bin/"+h)==wrapper
+ w=os.lstat(wrapper)
+ assert stat.S_ISREG(w.st_mode) and w.st_uid==0 and not w.st_mode&0o022
+ with open(wrapper) as f: assert "/run/armada-readable-variables/" in f.read()
+ fd=os.open(root+"/"+h+".json",os.O_RDONLY|os.O_NOFOLLOW)
+ with os.fdopen(fd) as f:
+  s=os.fstat(f.fileno())
+  assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and not s.st_mode&0o022 and s.st_size<=1048576
+  values=json.load(f)
+ print(hashlib.sha256(json.dumps(sorted(values.items()),ensure_ascii=False,separators=(",",":")).encode()).hexdigest())
+except Exception: print("missing")`;

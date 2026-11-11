@@ -4,6 +4,7 @@ import {
   createApplicationVault,
   createGoldenAdoption,
   createSqlVaultStore,
+  createTemplateService,
   GoldenBuildJobs,
   GoldenSnapshotRetirements,
   githubAppFromEnv,
@@ -87,7 +88,9 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
+  const templates = createTemplateService(sql);
   const mcp = createMcpHttpIntegration({
+    prepareReadableVariables: templates.prepare,
     deferBackground: true,
     githubRuntimeEnabled: config.githubRuntimeEnabled,
     githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
@@ -190,6 +193,7 @@ export async function startServer(
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
+    templates,
     applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
@@ -272,6 +276,7 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
+    templates,
     ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,

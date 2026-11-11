@@ -18,8 +18,9 @@ Set creates a new entry; duplicate names conflict. With --org, set requires expl
 --scope personal|org. Without --org, set defaults to personal in the organization
 selected by armada org use.
 Lists include your personal entries and visible organization entries; IDs determine mutation scope.
-Only vars read prints the readable value (without adding a newline). --json always emits
-metadata only, including for vars read. Secrets have no read/reveal/export operation.
+Only vars read prints the readable value (without adding a newline); vars read --json includes the value
+alongside item metadata. Lists, writes and all secret output remain metadata only.
+Secrets have no read/reveal/export operation.
 Org members can read; only admins can mutate org entries. Revoke is terminal; delete
 before reusing a revoked name. No sandbox delivery or upstream rotation is performed.
 `;
@@ -74,9 +75,11 @@ export async function applicationVaultCommand(
           ? `${items.map(format).join("\n")}\n`
           : "No entries.\n",
     );
-  } else if (input.action === "read" && !input.json) {
+  } else if (input.action === "read") {
     if (typeof result.value !== "string") throw new VaultError("unavailable", "Variable value unavailable.");
-    io.auth.out(result.value);
+    io.auth.out(
+      input.json ? `${JSON.stringify({ item: metadata(result.item ?? {}), value: result.value })}\n` : result.value,
+    );
   } else {
     const item = metadata(result.item ?? {});
     io.auth.out(input.json ? `${JSON.stringify({ item })}\n` : `${format(item)}\n`);

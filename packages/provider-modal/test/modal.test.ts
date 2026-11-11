@@ -1889,14 +1889,25 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
     const observed: string[] = [];
+    const hydrated: { generation: number; variables: unknown }[] = [];
     const f = fixture(scope, db, async (provider, id) => {
       const info = await provider.get(id);
       expect(info.state).toBe("ready");
       observed.push(info.physicalGeneration ?? "missing");
+      await provider.configureReadableVariables!({
+        sandboxId: id,
+        harness: "codex",
+        variables: { APP_REGION: "frozen" },
+      });
       await provider.configureMcp({
         sandboxId: id,
         configuration: { revision: `generation-${info.physicalGeneration}`, servers: {} },
       });
+    });
+    f.onRpc(async (machine, op, input) => {
+      if (op !== "configureReadableVariables") return undefined;
+      hydrated.push({ generation: machine.generation, variables: (input as { variables: unknown }).variables });
+      return { acknowledged: true };
     });
     const row = await runningFork(f);
     await Promise.all(
@@ -1909,6 +1920,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.stop({ sandboxId: row.id });
     await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "restore before hook" });
     expect(observed.at(-1)).toBe("2");
+    expect(hydrated).toEqual([
+      { generation: 1, variables: { APP_REGION: "frozen" } },
+      { generation: 1, variables: { APP_REGION: "frozen" } },
+      { generation: 2, variables: { APP_REGION: "frozen" } },
+    ]);
+    expect(f.log.lastIndexOf("configureReadableVariables")).toBeLessThan(f.log.lastIndexOf("prompt"));
   });
   test("beforePrompt failure or an intervening checkpoint/restore refuses submission; goldens never call the hook", async () => {
     let fail = true,

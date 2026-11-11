@@ -7,6 +7,7 @@ import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
+import helperManifest from "../helper/manifest.json";
 import {
   connectGolden,
   createGoldenCreateService,
@@ -238,13 +239,21 @@ describe("createGoldenCreateService, wired to a real database", () => {
           boat_sandbox_id: string;
           config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
         }>(
-          "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config from goldens where name = 'web'",
+          "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config, helper_receipt from goldens where name = 'web'",
         );
         expect(row.rows[0]).toMatchObject({
           visibility: "org",
           provider: providerId,
           modal_app_id: providerId === "modal" ? modal.appId : null,
           provider_snapshot_id: "golden-bx-1",
+          helper_receipt: {
+            version: "0.1.0",
+            protocol: 1,
+            digest: helperManifest.x86_64.digest,
+            platform: "x86_64",
+            capabilities: ["diagnose"],
+            snapshotId: "golden-bx-1",
+          },
           provider_sandbox_id: null,
           boat_snapshot_id: providerId === "boat" ? "golden-bx-1" : null,
           boat_sandbox_id: null,
@@ -497,10 +506,10 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
         if (!artifact || artifact.status !== "ready") throw new Error("unusable snapshot");
         return start(artifact.content);
       },
-      exec: async () => ({
+      exec: async ({ command }) => ({
         detached: false,
         exitCode: failure === "scan" ? 97 : 0,
-        stdout: "",
+        stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
         stderr: "",
         timedOut: false,
         truncated: false,
@@ -780,7 +789,8 @@ function readyProvider(): Provider {
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},
     sshKey: async () => ({ sshEndpoint: "ssh.test:22", hostKey: "ssh-ed25519 AAAA" }),
-    exec: async () => ok,
+    exec: async ({ command }) =>
+      command.includes("/helper/0.1.0/armada-helper") ? { ...ok, stdout: helperOutput } : ok,
     events: async () => ({ events: [], hasMore: false }),
     stop: async () => {},
     delete: async () => ({ status: "pending" }),
@@ -1164,3 +1174,5 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
     }
   },
 );
+
+const helperOutput = `x86_64\n${helperManifest.x86_64.digest}  /home/user/.local/share/armada/helper/0.1.0/armada-helper\n{"version":"0.1.0","protocol":1,"capabilities":["diagnose"]}\n`;

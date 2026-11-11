@@ -921,6 +921,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return { acknowledged: true };
       });
     },
+    async configureReadableVariables({ sandboxId, harness, variables }) {
+      await admit(sandboxId, async (row, save) => {
+        if (row.golden) throw refusal("invalid_request", "Golden builders cannot receive variables.");
+        const active = await healthyAdmission(row, save);
+        const result = await runner.call<{ acknowledged?: boolean }>(active, "configureReadableVariables", {
+          harness,
+          variables,
+        });
+        if (result.acknowledged !== true) throw refusal("unavailable", "Readable variable bootstrap unavailable.");
+      });
+    },
     async configureMcp({ sandboxId, configuration }) {
       if (
         !configuration ||

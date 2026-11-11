@@ -16,3 +16,6 @@ When setting an entry with `--org`, explicitly choose `--scope personal` or
 `--scope org`; choosing organization context alone never opts into sharing.
 Without `--org`, set defaults to personal scope in the selected organization.
 Both `armada vars --help` and `armada vars set --help` show usage (likewise secrets).
+
+Explicit `armada vars read <id> --json` returns `{ item, value }`, including empty
+values. Variable lists/writes and every secret response remain metadata-only.
