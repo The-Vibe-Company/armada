@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -763,33 +763,35 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
 });
 
 // Exercises the smoke's verdict, not the product collector (covered in core).
-test("preservation checks both providers and rejects missing, wrong or overwritten recovery without leaking material", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "armada-smoke-fixture-"));
-  function git(...args: string[]) {
-    const result = Bun.spawnSync(["git", "-C", directory, ...args], {
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: "Smoke",
-        GIT_AUTHOR_EMAIL: "smoke@example.invalid",
-        GIT_COMMITTER_NAME: "Smoke",
-        GIT_COMMITTER_EMAIL: "smoke@example.invalid",
-      },
-    });
-    if (result.exitCode !== 0) throw new Error("Fixture Git failed");
-    return result.stdout;
-  }
+describe("preservation checks", () => {
   let commit: string;
   let bundle: Buffer;
-  try {
-    git("init", "--quiet");
-    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base");
-    const base = git("rev-parse", "HEAD").toString().trim();
-    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unpushed");
-    commit = git("rev-parse", "HEAD").toString().trim();
-    bundle = git("bundle", "create", "-", "HEAD", `^${base}`);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+  beforeAll(() => {
+    const directory = mkdtempSync(join(tmpdir(), "armada-smoke-fixture-"));
+    function git(...args: string[]) {
+      const result = Bun.spawnSync(["git", "-C", directory, ...args], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Smoke",
+          GIT_AUTHOR_EMAIL: "smoke@example.invalid",
+          GIT_COMMITTER_NAME: "Smoke",
+          GIT_COMMITTER_EMAIL: "smoke@example.invalid",
+        },
+      });
+      if (result.exitCode !== 0) throw new Error("Fixture Git failed");
+      return result.stdout;
+    }
+    try {
+      git("init", "--quiet");
+      git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base");
+      const base = git("rev-parse", "HEAD").toString().trim();
+      git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unpushed");
+      commit = git("rev-parse", "HEAD").toString().trim();
+      bundle = git("bundle", "create", "-", "HEAD", `^${base}`);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   function archive(head: string, corruptPack = false) {
     const files = {
       "manifest.json": Buffer.from(
@@ -812,7 +814,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
     ).toString("base64");
   }
   for (const provider of ["boat", "modal"]) {
-    for (const fault of [
+    test.each([
       "none",
       "missing",
       "wrong",
@@ -821,7 +823,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
       "clean_note",
       "clean_archive",
       "overwritten",
-    ] as const) {
+    ] as const)(`provider=${provider} fault=%s validates recovery without leaking material`, async (fault) => {
       let launches = 0;
       let stopping = false;
       const fake = fixture((call) => {
@@ -879,7 +881,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
       expect(fake.lines.join("")).not.toContain("secret");
       if (fault !== "none")
         expect(fake.receipts()).toContainEqual(expect.objectContaining({ pass: false, code: "preservation_failed" }));
-    }
+    });
   }
 });
 
