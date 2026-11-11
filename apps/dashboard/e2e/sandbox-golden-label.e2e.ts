@@ -51,7 +51,7 @@ globalThis.fetch = async (input, init) => {
   await expect
     .poll(async () =>
       fetch(`${origin}/login`)
-        .then((r) => r.status())
+        .then((r) => r.status)
         .catch(() => 0),
     )
     .toBe(200);
@@ -71,7 +71,7 @@ for (const [mode, label] of [
   ["live", "shared-golden"],
   ["removed", "shared-golden (removed)"],
   ["unreadable", "Unknown"],
-]) {
+] as const) {
   test(`authorized detail reads only its golden label: ${mode}`, async ({ page }) => {
     await writeFile(join(directory, "mode"), mode);
     await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
