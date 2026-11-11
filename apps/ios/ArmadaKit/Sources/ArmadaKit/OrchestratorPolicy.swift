@@ -73,9 +73,7 @@ public struct OrchestratorControls: Sendable, Equatable {
     }
 
     /// Failed creates the server settles by recovery (it marks them as having forked nothing).
-    static let recoverableCreateFailures: Set<String> = [
-        "create_preallocation_failed", "create_authority_revoked", "provider_payment_required",
-    ]
+    static let recoverableCreateFailures: Set<String> = ["create_preallocation_failed", "create_authority_revoked"]
 
     public init(detail: OrchestratorDetail, agentWorking: Bool) {
         self.init(state: detail.orchestrator.state.rawValue, continuity: detail.orchestrator.continuity.rawValue,
@@ -93,7 +91,10 @@ public struct OrchestratorControls: Sendable, Equatable {
             return "Armada couldn't confirm the last \(open.kind) and is still checking; nothing is repeated meanwhile. "
                 + "Come back later, or start a new orchestrator to keep working now."
         }
-        if let open { return open.kind == "create" ? "Starting. You can write once it is ready." : "Waiting for the \(open.kind) to finish." }
+        if let open {
+            return open.kind == "create" ? "Starting. You can write once it is ready."
+                : "Waiting for the \(open.kind.replacingOccurrences(of: "_", with: " ")) to finish."
+        }
         if let createFailure { return "Creation failed. " + createFailure }
         switch phase {
         case .creating: return "Starting. You can write once it is ready."
@@ -192,7 +193,7 @@ public enum OrchestratorExplanation {
         "dependency_unavailable": "An Armada server dependency is unavailable. Try again later.",
         "outcome_unknown": "Armada couldn't confirm whether this started. Check its status before retrying.",
         // Provider refusals (#919).
-        "provider_payment_required": "The sandbox provider refused to start a machine because of the account's billing or credits. Settle it with the provider, recover this orchestrator, then create a new one.",
+        "provider_payment_required": "The sandbox provider refused to start a machine because of the account's billing or credits. Settle it with the provider, then create a new orchestrator.",
         // Capabilities and pairs.
         "native_conformance_required": "Orchestrators are off on this server until each provider passes its native checks.",
         "server_setting_off": "This provider and agent pair isn't turned on for this server.",

@@ -454,20 +454,23 @@ private actor Sleeps {
     #expect(read.operations.map(\.kind.rawValue) == ["create", "connections_add", "connections_remove"])
     #expect(OrchestratorCreateProgress(detail: read) == .ready)
     #expect(OrchestratorControls(detail: read, agentWorking: false).canMessage)
+    let changing = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil, revision: 4,
+                                        operations: [("connections_add", "pending", 4, nil)], agentWorking: false)
+    #expect(changing.composerNote == "Waiting for the connections add to finish.")
     let page = try await client.orchestratorEvents(id: "orch-new", backward: true)
     #expect(page.events.count == 2)
     guard case .operation(let operation) = page.events[1].body else { Issue.record("operation event"); return }
     #expect(operation.kind.rawValue == "connections_add")
 }
 
-// #941: a create the provider refused for billing (#919) says why, in words, and can be recovered
-// (the server records it as having started no machine).
-@Test func aCreateRefusedByTheProviderSaysWhyAndCanBeRecovered() {
+// #941: a create the provider refused for billing (#919) says why, in words. Only Boat refuses so,
+// and Boat recovery settles no create, so recovery is not offered.
+@Test func aCreateRefusedByTheProviderSaysWhyInWords() {
     let refused = OrchestratorControls(state: "blocked", continuity: "not_started", blockedReason: "provider_payment_required",
                                        revision: 1, operations: [("create", "failed", 1, "provider_payment_required")], agentWorking: false)
     let reason = OrchestratorExplanation.text(for: "provider_payment_required")
     #expect(!reason.contains("_") && !reason.contains("did not explain"))
-    #expect(refused.canRecover && refused.composerNote == "Creation failed. " + reason)
+    #expect(!refused.canRecover && refused.canStop && refused.composerNote == "Creation failed. " + reason)
     #expect(OrchestratorCreateProgress(state: "blocked", operations: [("create", "failed", "provider_payment_required")],
                                        blockedReason: "provider_payment_required") == .failed(reason))
     // A create whose machine was stopped after it failed says why it failed, not only that it stopped.
