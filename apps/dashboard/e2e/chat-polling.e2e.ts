@@ -158,6 +158,8 @@ test("caps retries and offers a manual retry", async ({ page: browser }) => {
   ).toBeVisible();
   await expect(browser.getByRole("button", { name: "Retry" })).toBeVisible();
   expect(reads).toBe(6);
+  await browser.clock.runFor(60_000);
+  expect(reads).toBe(6);
 
   await browser.getByRole("button", { name: "Retry" }).click();
   await expect(browser.getByRole("log", { name: "Messages" })).toContainText("Manual retry recovered");
@@ -167,6 +169,10 @@ test("caps retries and offers a manual retry", async ({ page: browser }) => {
 test("a held read is aborted on cleanup and cannot block a fresh polling effect", async ({ page: browser }) => {
   await browser.clock.install();
   let reads = 0;
+  let aborted = false;
+  browser.on("requestfailed", (request) => {
+    if (request.url().includes(`/api/sandboxes/${IDS.running}/events`)) aborted = true;
+  });
   let release!: () => void;
   let started!: () => void;
   const held = new Promise<void>((resolve) => {
@@ -197,6 +203,7 @@ test("a held read is aborted on cleanup and cannot block a fresh polling effect"
   await startedReading;
   await browser.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Sandboxes" }).click();
   await expect(browser.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await expect.poll(() => aborted).toBe(true);
   release();
   await browser.getByRole("link", { name: LABELS.running }).click();
   await browser.waitForURL(`**/sandboxes/${IDS.running}`);

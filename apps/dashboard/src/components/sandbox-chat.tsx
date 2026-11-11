@@ -124,10 +124,10 @@ function isSandboxStatus(value: unknown): value is SandboxStatus {
 function isSuccessfulPage(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
   if (!isSandboxStatus(value.status)) return false;
-  if (typeof value.usageRevision !== "string") return false;
-  if (typeof value.configured !== "boolean") return false;
+  if (value.usageRevision !== undefined && typeof value.usageRevision !== "string") return false;
+  if (value.configured !== undefined && typeof value.configured !== "boolean") return false;
   if (!Array.isArray(value.events)) return false;
-  if (value.cursor !== null && typeof value.cursor !== "string") return false;
+  if (value.cursor !== undefined && value.cursor !== null && typeof value.cursor !== "string") return false;
   if (typeof value.hasMore !== "boolean") return false;
   if ("error" in value) return false;
   return value.prompt === undefined || value.prompt === null || isRecord(value.prompt);
