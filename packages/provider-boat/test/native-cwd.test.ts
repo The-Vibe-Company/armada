@@ -161,6 +161,9 @@ for line in sys.stdin.buffer:
         msg = json.loads(line)
     except ValueError:
         sys.stdout.buffer.write(line); sys.stdout.buffer.flush(); continue
+    if isinstance(msg, dict) and msg.get("method") == "initialize":
+        print(json.dumps({"id":msg["id"], "result":{}}), flush=True)
+        continue
     if isinstance(msg, dict) and msg.get("method") in ("thread/start", "thread/resume", "turn/start"):
         msg["proof"] = subprocess.check_output(["pwd"], cwd=msg["params"]["cwd"], text=True).strip()
     print(json.dumps(msg), flush=True)
@@ -225,7 +228,11 @@ sys.exit(23)
     expect(lines.pop()).toBe("not-json");
     expect(lines.map((line) => JSON.parse(line))).toEqual(
       messages.map((m) =>
-        m && "params" in m && m.method !== "initialize" ? { ...m, params: { ...m.params, cwd }, proof: cwd } : m,
+        m && "params" in m
+          ? m.method === "initialize"
+            ? { id: m.id, result: {} }
+            : { ...m, params: { ...m.params, cwd }, proof: cwd }
+          : m,
       ),
     );
   } finally {
@@ -524,3 +531,145 @@ if os.environ.get("ARMADA_ORPHAN_PROOF"):
     }
   },
 );
+
+test("Codex bridge refuses a second message until the first turn/start replies, then recovers", async () => {
+  const base = mkdtempSync(join(tmpdir(), "armada-codex-start-"));
+  const path = join(base, "codex");
+  const native = join(base, "native");
+  // A protocol barrier, not a timer: only release replies to the pending start.
+  // Overlap models the native failure; the wrapper must prevent it reaching Codex.
+  writeFileSync(
+    native,
+    `#!/usr/bin/python3
+import json, sys
+pending = None
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("method") == "turn/start":
+        if pending is not None:
+            sys.exit(99)
+        pending = m["id"]
+        print(json.dumps({"method":"test/starting"}), flush=True)
+    elif m.get("method") == "release":
+        print(json.dumps({"id":pending,"result":{"turn":{"id":"native-turn"}}}), flush=True)
+        pending = None
+    elif m.get("method") == "turn/steer":
+        print(json.dumps({"id":m["id"],"result":{}}), flush=True)
+`,
+  );
+  chmodSync(native, 0o755);
+  symlinkSync(native, path);
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    expect(installProtocolFixture(path, base).status).toBe(0);
+    child = spawn(path, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
+    const { createInterface } = await import("node:readline");
+    const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+    const read = async () => {
+      const next = await lines.next();
+      expect(next.done).toBe(false);
+      return JSON.parse(next.value!);
+    };
+    const send = (id: number, method: string) =>
+      child!.stdin!.write(`${JSON.stringify({ id, method, params: { threadId: "thread", input: [] } })}\n`);
+    send(1, "turn/start");
+    expect(await read()).toEqual({ method: "test/starting" });
+    for (const [id, method] of [
+      [2, "turn/start"],
+      [3, "turn/steer"],
+    ] as const) {
+      send(id, method);
+      const reply = await read();
+      expect(reply.id).toBe(id);
+      expect(reply.error.message).toContain("turn_starting");
+    }
+    send(4, "release");
+    expect(await read()).toEqual({ id: 1, result: { turn: { id: "native-turn" } } });
+    send(5, "turn/steer");
+    expect(await read()).toEqual({ id: 5, result: {} });
+    send(6, "turn/start");
+    expect(await read()).toEqual({ method: "test/starting" });
+    send(7, "release");
+    expect(await read()).toEqual({ id: 6, result: { turn: { id: "native-turn" } } });
+    child.stdin!.end();
+    const code = await new Promise<number | null>((resolve) => child!.once("exit", resolve));
+    expect(code).toBe(0);
+  } finally {
+    child?.kill("SIGKILL");
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test.each(["abort", "exit"] as const)(
+  "Codex lone startup %s returns readable relaunch guidance on the pending RPC",
+  async (failure) => {
+    const base = mkdtempSync(join(tmpdir(), "armada-codex-boot-"));
+    const path = join(base, "codex");
+    const native = join(base, "native");
+    try {
+      writeFileSync(
+        native,
+        `#!/usr/bin/python3
+import json, os, signal, sys
+json.loads(sys.stdin.readline())
+print("sanitized native boot diagnostic", file=sys.stderr, flush=True)
+${failure === "abort" ? "os.kill(os.getpid(), signal.SIGABRT)" : "sys.exit(1)"}
+`,
+        { mode: 0o755 },
+      );
+      symlinkSync(native, path);
+      expect(installProtocolFixture(path, base).status).toBe(0);
+      const result = spawnSync(path, ["app-server"], {
+        input: JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "boat" } } }) + "\n",
+        encoding: "utf8",
+        timeout: 5000,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      });
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toEqual({
+        id: 1,
+        error: {
+          code: -32603,
+          message: "The agent runtime could not start in this sandbox. Relaunch in a new sandbox.",
+        },
+      });
+      expect(result.stderr).toContain("sanitized native boot diagnostic");
+      expect(result.stderr).toContain("Relaunch in a new sandbox.");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+test("Codex boot abort before initialize still answers the later first request", async () => {
+  const base = mkdtempSync(join(tmpdir(), "armada-codex-early-boot-"));
+  const path = join(base, "codex");
+  const native = join(base, "native");
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    writeFileSync(native, "#!/usr/bin/python3\nimport os, signal\nos.kill(os.getpid(), signal.SIGABRT)\n", {
+      mode: 0o755,
+    });
+    symlinkSync(native, path);
+    expect(installProtocolFixture(path, base).status).toBe(0);
+    child = spawn(path, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
+    const { createInterface } = await import("node:readline");
+    const stderr = createInterface({ input: child.stderr! })[Symbol.asyncIterator]();
+    const stdout = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+    // This diagnosis is emitted only AFTER child.wait: no request can reach native.
+    expect((await stderr.next()).value).toContain("The agent runtime could not start");
+    child.stdin!.end(JSON.stringify({ id: "late-init", method: "initialize", params: {} }) + "\n");
+    const reply = await stdout.next();
+    expect(reply.done).toBe(false);
+    expect(JSON.parse(reply.value!)).toEqual({
+      id: "late-init",
+      error: { code: -32603, message: "The agent runtime could not start in this sandbox. Relaunch in a new sandbox." },
+    });
+    const code = await new Promise<number | null>((resolve) => child!.once("exit", resolve));
+    expect(code).toBe(1);
+  } finally {
+    child?.kill("SIGKILL");
+    rmSync(base, { recursive: true, force: true });
+  }
+});

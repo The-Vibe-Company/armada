@@ -253,15 +253,19 @@ for (const outcome of ["error", "unconfirmed"] as const)
 test("initial launch preserves sequential 600-second setup command budgets", async () => {
   const f = await fixture();
   const budgets: number[] = [];
+  const healthBudgets: number[] = [];
   const provider = createBoatProvider({
     apiKey: "test-key",
     fetch: (async (input: Request | string | URL, init?: RequestInit) => {
       const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
       if (new URL(request.url).pathname.endsWith("/commands")) {
-        const body = (await request.json()) as { timeoutSeconds: number };
-        budgets.push(body.timeoutSeconds);
-        // Each SDK command takes six minutes, within its existing 600s budget.
-        jest.advanceTimersByTime(6 * 60_000);
+        const body = (await request.json()) as { command: string; timeoutSeconds: number };
+        if (body.command === "claude --version >/dev/null 2>&1") healthBudgets.push(body.timeoutSeconds);
+        else {
+          budgets.push(body.timeoutSeconds);
+          // Each setup command takes six minutes, within its existing 600s budget.
+          jest.advanceTimersByTime(6 * 60_000);
+        }
         return Response.json({
           ok: true,
           type: "command.finished",
@@ -294,6 +298,7 @@ test("initial launch preserves sequential 600-second setup command budgets", asy
       { newId: () => f.id, sleep: async () => {} },
     );
     expect(budgets).toEqual([600, 600]);
+    expect(healthBudgets).toEqual([15]);
     expect(result.sandbox.status).toBe("ready");
     expect((await f.scoped.sandboxes.get(f.id))?.status).toBe("ready");
   } finally {
