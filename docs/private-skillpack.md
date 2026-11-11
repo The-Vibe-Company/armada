@@ -1,5 +1,16 @@
 # Private Skillpack installation
 
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
 Skillpack automation uses a separate workspace-bound personal access token:
 `cmp_pat_` followed by 48 lowercase hexadecimal digits (24 random bytes).
 The native service defaults to a 90-day lifetime and refuses a longer lifetime;
@@ -73,7 +84,7 @@ are outside this first credential/install slice. No live credential or productio
 install is used in verification; fake SSH/CLI tests execute the actual guest
 script and check receipt validation, error sanitization and command-local auth.
 
-## Required post-merge staging check (not run by this PR)
+## Historical orchestrator-based staging check (not a current rollout requirement)
 
 Run **`private-skillpack-staging-boat-modal`** on the deployed **staging** server
 only, once for Boat Codex and once for Modal Codex, after its normal approved
@@ -102,9 +113,9 @@ Set `ARMADA_URL` to the staging origin. For **each** `PLACEMENT=boat` and
 ```bash
 set -euo pipefail
 PATTERN=$(bun -e 'import {SKILLPACK_TOKEN_PATTERN} from "./packages/core/src/skillpack-token.ts"; console.log(SKILLPACK_TOKEN_PATTERN)')
-armada orchestrator capabilities --json  # both requested staging pairs must be enabled
+armada_legacy orchestrator capabilities --json  # both requested staging pairs must be enabled
 armada creds set skillpack --file "$SKILLPACK_READ_FILE"
-armada orchestrator create "private-skillpack-${PLACEMENT}-$(date +%s)" \
+armada_legacy orchestrator create "private-skillpack-${PLACEMENT}-$(date +%s)" \
   --org "$ORG_ID" --golden "$GOLDEN_ID" --provider "$PLACEMENT" --agent codex \
   --model "$MODEL" --model-account "$MODEL_ACCOUNT_ID" \
   --skill "$SKILL_SLUG@$SKILL_VERSION" --idempotency-key "$(uuidgen)" --json > /tmp/skill-create.json
@@ -112,7 +123,7 @@ ID=$(jq -r .orchestratorId /tmp/skill-create.json)
 # Poll (at most 5 minutes); fail on blocked/archived rather than assuming create admission is success.
 deadline=$((SECONDS+300))
 while :; do
-  armada orchestrator detail "$ID" --org "$ORG_ID" --json > /tmp/skill-detail.json
+  armada_legacy orchestrator detail "$ID" --org "$ORG_ID" --json > /tmp/skill-detail.json
   state=$(jq -r .orchestrator.state /tmp/skill-detail.json)
   [ "$state" != blocked ] && [ "$state" != archived ]
   [ "$state" != ready ] || break
@@ -124,9 +135,9 @@ jq -e --arg ref "$SKILL_SLUG@$SKILL_VERSION" --arg ver "$SKILL_VERSION" \
    .workspaceId==$workspace and .checksum==$checksum and
    .origin=="https://skillpack.app/v1" and (.skillId|type)=="string"' /tmp/skill-detail.json
 REV=$(jq -r .orchestrator.revision /tmp/skill-detail.json)
-armada orchestrator send "$ID" "Read the installed $SKILL_SLUG SKILL.md and return its known staging marker only; do not display credentials." \
+armada_legacy orchestrator send "$ID" "Read the installed $SKILL_SLUG SKILL.md and return its known staging marker only; do not display credentials." \
   --org "$ORG_ID" --expected-revision "$REV" --idempotency-key "$(uuidgen)" --json
-armada orchestrator events "$ID" --org "$ORG_ID" --all --json
+armada_legacy orchestrator events "$ID" --org "$ORG_ID" --all --json
 ```
 
 Expected: create reaches `ready`, receipt exactly matches the private pin and
@@ -216,7 +227,7 @@ Also repeat with a known nonexistent private slug: expect
 value, output value, fixture or log.
 
 After recording only sanitized receipt/status/check results, stop each disposable
-parent with `armada orchestrator stop "$ID" --org "$ORG_ID" --expected-revision
+parent with `armada_legacy orchestrator stop "$ID" --org "$ORG_ID" --expected-revision
 "$REV" --idempotency-key "$(uuidgen)" --json` using a fresh detail revision, and
 retire staging resources through the normal operator cleanup. Do not claim this
 check passed until both providers and both key-scope cases actually pass.

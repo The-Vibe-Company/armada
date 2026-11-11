@@ -1,5 +1,16 @@
 # Orchestrator create failures and uncertain receipts
 
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
 An admitted `create` returning `runtime_uncertain` is not proof of allocation,
 non-allocation, or an agent/model failure. The receipt is durable; its original
 key must not be replaced to work around uncertainty. Ordinary `armada list`
@@ -11,9 +22,9 @@ Use the owner orchestrator endpoints instead.
 With the existing owner session or `ARMADA_TOKEN` already in the host environment:
 
 ```sh
-armada orchestrator detail ID --org ORG --json
-armada orchestrator events ID --org ORG --json
-armada orchestrator capabilities --json
+armada_legacy orchestrator detail ID --org ORG --json
+armada_legacy orchestrator events ID --org ORG --json
+armada_legacy orchestrator capabilities --json
 armada golden list --org ORG --json
 armada creds list --org ORG
 ```
@@ -80,7 +91,7 @@ specific Modal first-create case with **no conversation** and a pending/uncertai
 create (with or without an already registered sandbox), the owner can explicitly recover through Armada:
 
 ```sh
-armada orchestrator recover ID --org ORG --expected-revision ORIGINAL_REVISION \
+armada_legacy orchestrator recover ID --org ORG --expected-revision ORIGINAL_REVISION \
   --idempotency-key RECOVERY_KEY --json
 ```
 
@@ -186,8 +197,8 @@ An export in one short-lived tool shell is not inherited by a later shell. Prefi
 the origin on **each** invocation when running separate tool commands:
 
 ```sh
-ARMADA_URL=https://CONTROL_ORIGIN armada orchestrator detail ID --org ORG --json
-ARMADA_URL=https://CONTROL_ORIGIN armada orchestrator recover ID --org ORG \
+ARMADA_URL=https://CONTROL_ORIGIN armada_legacy orchestrator detail ID --org ORG --json
+ARMADA_URL=https://CONTROL_ORIGIN armada_legacy orchestrator recover ID --org ORG \
   --expected-revision ORIGINAL_REVISION --idempotency-key RECOVERY_KEY --json
 ```
 
@@ -234,8 +245,8 @@ An owner can retire a Boat parent blocked by an uncertain stop, including after
 resume. Read detail first and use that revision with a fresh recovery key:
 
 ```sh
-armada orchestrator detail ID --org ORG --json
-armada orchestrator recover ID --org ORG --expected-revision REVISION \
+armada_legacy orchestrator detail ID --org ORG --json
+armada_legacy orchestrator recover ID --org ORG --expected-revision REVISION \
   --idempotency-key RETIREMENT_KEY --json
 ```
 
@@ -327,10 +338,10 @@ For the parent reported in #785 (revision 5), the operator may run the following
 organization and using its owner's existing Armada login/token:
 
 ```sh
-armada orchestrator recover 1fa43284-ee2f-4602-bead-21101278e879 \
+armada_legacy orchestrator recover 1fa43284-ee2f-4602-bead-21101278e879 \
   --org "$ORG_ID" --expected-revision 5 \
   --idempotency-key issue-785-retire-revision-5 --json
-armada orchestrator detail 1fa43284-ee2f-4602-bead-21101278e879 --org "$ORG_ID" --json
+armada_legacy orchestrator detail 1fa43284-ee2f-4602-bead-21101278e879 --org "$ORG_ID" --json
 ```
 
 Check for a succeeded stop receipt and a stopped parent. If uncertain, retry the

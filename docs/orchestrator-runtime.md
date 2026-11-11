@@ -1,5 +1,16 @@
 # Persistent orchestrator runtime (#662)
 
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
 ## Release and deployment boundary
 
 ## Boat best-effort and Modal native continuity (#752)
@@ -80,14 +91,14 @@ API-key account can launch children under its normal policy. Keep the caller's
 GitHub connection valid when the golden requires it.
 
 Restart the server through the normal deployment process, then authenticate as
-the owning member and check `armada orchestrator capabilities --json` against its
+the owning member and check `armada_legacy orchestrator capabilities --json` against its
 origin. Only explicitly selected supported pairs report `enabled: true`; Boat pairs
 report best-effort continuity and Modal × Claude remains unavailable. This reports real configured adapter availability, **not** a
 claim that operator live conformance has already passed. Owner create/detail/
 send/steer/events/stop/resume use the shared `/api/v1` runtime across CLI,
 dashboard and iOS. Delegated waits stay denied and are not required for this flow.
 
-### Approved live postflight and rollback
+### Historical live postflight; retained cleanup constraints
 
 The coordinator—not the implementation session—runs postflight against production
 with the owner's account immediately after enabling. No separate nonproduction
