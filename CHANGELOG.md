@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.19.0](https://github.com/The-Vibe-Company/armada/compare/v2.18.0...v2.19.0) (2026-11-11)
+
+
+### Features
+
+* **orchestrators:** manage coordinator MCP connections ([#806](https://github.com/The-Vibe-Company/armada/issues/806)) ([68cc809](https://github.com/The-Vibe-Company/armada/commit/68cc80917af35599863c1d82f3372acf6e1bb25a))
+* **vault:** add readable variables and write-only application secrets ([#921](https://github.com/The-Vibe-Company/armada/issues/921)) ([4ce8a6b](https://github.com/The-Vibe-Company/armada/commit/4ce8a6b9b0535f92c8950b9e5689e427a3714721))
+
+
+### Bug Fixes
+
+* **boat:** retry preservation exec while compute becomes ready ([#915](https://github.com/The-Vibe-Company/armada/issues/915)) ([545b6d2](https://github.com/The-Vibe-Company/armada/commit/545b6d25ac48f0a5c0e6d317d3e91523daa29feb))
+* **dashboard:** create an environment in a dialog, not a side panel ([#901](https://github.com/The-Vibe-Company/armada/issues/901)) ([dcd0749](https://github.com/The-Vibe-Company/armada/commit/dcd07495b033f335ee99ddfddadf546738402122))
+* **github:** forward credential refresh through dashboard proxy ([#911](https://github.com/The-Vibe-Company/armada/issues/911)) ([1bfd0df](https://github.com/The-Vibe-Company/armada/commit/1bfd0dfba5b96af9f3bf1b06255c0a20e2aba28e))
+* **golden:** surface Boat payment refusals without phantom recovery ([#919](https://github.com/The-Vibe-Company/armada/issues/919)) ([420f3bd](https://github.com/The-Vibe-Company/armada/commit/420f3bd67dba529afbe5a94afa26502b5d78e141))
+* **launch:** delay and log ownership retry outcomes ([#913](https://github.com/The-Vibe-Company/armada/issues/913)) ([276a2f0](https://github.com/The-Vibe-Company/armada/commit/276a2f0caf6c51d1c4b155e1629cf4a8d02ba14b))
+* **skillpack:** authorize the private install key on Modal without root login ([#930](https://github.com/The-Vibe-Company/armada/issues/930)) ([cccdaa4](https://github.com/The-Vibe-Company/armada/commit/cccdaa461d47c9dcb0515d94d4c6ff4e6596f6ef))
+* **skillpack:** diagnose Modal private SSH transport and settle failed creates ([#916](https://github.com/The-Vibe-Company/armada/issues/916)) ([a2fc32e](https://github.com/The-Vibe-Company/armada/commit/a2fc32ea99c8e425bc286d2bf9b3ef6d54b95e0d))
+
 ## [2.18.0](https://github.com/The-Vibe-Company/armada/compare/v2.17.0...v2.18.0) (2026-11-10)
 
 
