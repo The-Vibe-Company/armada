@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,7 @@ test.each([
   "unreadable key",
   "bad reference",
   "install nonzero",
+  "unsafe lock",
 ])("private installer %s", (mode) => {
   const root = mkdtempSync(join(tmpdir(), "private-skill-"));
   const originalKeys = "# unrelated authorization\nssh-ed25519 AAAA existing\n";
@@ -31,6 +32,8 @@ test.each([
       mkdirSync(join(home, ".ssh"), { recursive: true });
       writeFileSync(join(home, ".ssh/authorized_keys"), originalKeys, { mode: 0o600 });
     }
+    if (mode === "unsafe lock")
+      symlinkSync(join(root, ".ssh/authorized_keys"), join(root, ".ssh/authorized_keys.armada.lock"));
     const fake = `#!/usr/bin/env node
 const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');
 const kind=path.basename(process.argv[1]);
@@ -94,9 +97,14 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
                   "unreadable key": "skillpack_credential_unreadable",
                   "bad reference": "skillpack_request_rejected",
                   "install nonzero": "skillpack_install_nonzero",
+                  "unsafe lock": "skillpack_ssh_key_cleanup_failed",
                 }[mode],
       );
-    for (const home of homes) expect(readFileSync(join(home, ".ssh/authorized_keys"), "utf8")).toBe(originalKeys);
+    for (const home of homes) {
+      const contents = readFileSync(join(home, ".ssh/authorized_keys"), "utf8");
+      if (mode === "unsafe lock") expect(contents).toStartWith(originalKeys);
+      else expect(contents).toBe(originalKeys);
+    }
     for (const path of readdirSync(root, { recursive: true })) {
       try {
         expect(readFileSync(join(root, String(path)), "utf8")).not.toContain("cmp_pat_" + "a".repeat(48));

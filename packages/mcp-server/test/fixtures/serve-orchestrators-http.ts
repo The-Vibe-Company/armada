@@ -10,15 +10,13 @@ import { ArmadaApiError, createArmadaApiClient } from "../../../cli/src/armada-a
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
+import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
 import { checkSandboxSkillLaunch } from "./sandbox-skill-launch.ts";
 import { catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
-const sql: core.Sql = {
-  query: (q, values) => db.query(q, values),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, values) => tx.query(q, values) })),
-};
+const sql = fixtureSql(db);
 const key = Buffer.alloc(32, 17).toString("base64");
 const ownerId = crypto.randomUUID(),
   orgId = crypto.randomUUID(),
@@ -442,6 +440,34 @@ try {
   assert.equal(routes.at(-1)?.code, null);
   // Actual async CREATE through serve+proxy, with actual default-zero managed
   // MCP preparation. The external allocation cannot finish before admission.
+  const selected = await connectionFixture(sql, key, ownerId, orgId);
+  const forbiddenCreate = await socketFetch(`${origin}/api/v1/orchestrators`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token.token}`,
+      "content-type": "application/json",
+      "idempotency-key": "forbidden-parent-create",
+    },
+    body: JSON.stringify({
+      ...configuration,
+      name: "Forbidden connection parent",
+      connections: [selected.forbidden.id],
+    }),
+  });
+  assert.equal(forbiddenCreate.status, 404);
+  assert.equal(((await forbiddenCreate.json()) as { error: { code: string } }).error.code, "not_found");
+  assert.equal(effects.allocationAttempts, 0, "Forbidden connection selection must be refused before async admission");
+  assert.equal(
+    (
+      await sql.query(
+        "select orchestrator_id from public.orchestrator_runtime_create_keys where owner_id=$1 and org_id=$2 and idempotency_key='forbidden-parent-create'",
+        [ownerId, orgId],
+      )
+    ).rows.length,
+    0,
+    "Denied selection must not reserve an async create",
+  );
+  fake.expectConnections(1);
   const admitted = await cli(
     [
       "create",
@@ -462,6 +488,8 @@ try {
       modelId,
       "--idempotency-key",
       "serve-actual-create",
+      "--connections",
+      selected.first.id,
     ],
     202,
   );
@@ -478,13 +506,38 @@ try {
   assert.equal(effects.allocationAttempts, 1);
   assert.equal(effects.allocations, 1);
   assert.equal(effects.modelCalls, 0);
-  assert.equal(effects.mcpConfigurations, 0, "Default-zero keeps the real lifecycle's no-prior-bootstrap fast path.");
+  assert.equal(effects.mcpConfigurations, 1, "Explicit parent selection must configure MCP before authority.");
   assert.equal(effects.epochInstalls, 1);
   await assert.rejects(
     core.createSqlMcpRegistry(sql, key).sandboxConnections(ownerId, orgId, initialized.detail.orchestrator.sandboxId),
     (error: unknown) => error instanceof core.VaultError && error.code === "not_found",
   );
-  let turnRevision = initialized.detail.orchestrator.revision;
+  const parentProviderId = (
+    await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+      initialized.detail.orchestrator.sandboxId,
+    ])
+  ).rows[0]!.provider_sandbox_id;
+  await exerciseConnections({
+    detail: initialized.detail,
+    selected,
+    request: async (path, body, key) => {
+      const response = await socketFetch(`${origin}${path}`, {
+        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
+        headers: {
+          authorization: `Bearer ${token.token}`,
+          "content-type": "application/json",
+          ...(key ? { "idempotency-key": key } : {}),
+        },
+      });
+      return { status: response.status, value: await response.json() };
+    },
+    running: fake.running,
+    expectServers: (ids) => fake.expectConnections(ids.length, parentProviderId),
+    sawPrompt: (ids) =>
+      assert.deepEqual(fake.lastPromptServers(), ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
+  });
+  fake.expectConnections(0);
+  let turnRevision = (await cli(["detail", admitted.orchestratorId, "--org", orgId], 200)).orchestrator.revision;
   async function turn(action: string, text: string, requestKey: string) {
     const result = await cli(
       [
@@ -538,6 +591,60 @@ try {
   assert(childReceipt.result.sandboxId);
   assert.equal(effects.allocations, 2);
   assert.equal(effects.epochInstalls, 1, "Child must not install a parent epoch.");
+  // The child has served its composition proof. Retire it through its actual
+  // delegated owner lane rather than leaving an unrelated worker live while the
+  // remaining parent-connection scenarios run (child startup lease audit: #864).
+  const childStopped = await socketFetch(`${origin}/api/v1/orchestrator-tools/stop`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${epochToken}`,
+      "content-type": "application/json",
+      "idempotency-key": "serve-child-stop",
+    },
+    body: JSON.stringify({ sandboxId: childReceipt.result.sandboxId }),
+  });
+  assert.equal(childStopped.status, 200);
+  assert.equal(((await childStopped.json()) as { result: { state: string } }).result.state, "succeeded");
+  const stoppedChild = (
+    await sql.query<{ status: string; physical_id: string }>(
+      `select s.status::text,m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+     on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.id=$1`,
+      [childReceipt.result.sandboxId],
+    )
+  ).rows[0];
+  assert.equal(stoppedChild?.status, "stopped");
+  assert(stoppedChild?.physical_id);
+  const explicitNone = await cli(
+    [
+      "create",
+      "explicit-none-parent",
+      "--org",
+      orgId,
+      "--golden",
+      golden.id,
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-6.1-sol",
+      "--model-account",
+      modelId,
+      "--no-connections",
+      "--idempotency-key",
+      "explicit-none-parent",
+    ],
+    202,
+  );
+  const emptyInitialized = await waitForOperation(explicitNone.orchestratorId, explicitNone.id);
+  assert.equal(emptyInitialized.operation.state, "succeeded", JSON.stringify(emptyInitialized));
+  assert.deepEqual(emptyInitialized.detail.connections, []);
+  const emptyProviderId = (
+    await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+      emptyInitialized.detail.orchestrator.sandboxId,
+    ])
+  ).rows[0]!.provider_sandbox_id;
+  assert(fake.hasEpoch(emptyProviderId), "Explicit none must retain internal orchestration authority");
   for (const secret of [token.token, modalId, modalSecret, modelSecret, key, ...fake.privateTokens])
     assert(!logs.join("\n").includes(secret));
   // Ordinary stop survives collector failure notes and transport/receipt failures.
@@ -578,6 +685,7 @@ try {
     "output_truncated",
     "decrypt",
   ];
+  const expectedPhysicalExits = new Set<string>([native.physicalId!, stoppedChild.physical_id]);
   for (const reason of failures) {
     fake.failPreservation(reason);
     const launched = await ordinary("launch", {
@@ -591,14 +699,19 @@ try {
     const sandboxId = launched.sandbox.id;
     assert(sandboxId, JSON.stringify(launched));
     // A live observation lease must be a closed retryable conflict, never a 503.
-    // Own both fields: an in-flight observer must not clear this fixture's
-    // deadline when it finishes under its previous lease token.
+    // Own the token as well as its deadline: an already-running background
+    // observation must not be able to clear this simulated other replica's lease.
+    const observationLease = crypto.randomUUID();
     await sql.query(
       "update sandboxes set reconcile_lease=$2,reconcile_lease_until=now()+interval '1 minute' where id=$1",
-      [sandboxId, crypto.randomUUID()],
+      [sandboxId, observationLease],
     );
     await ordinary("send", { id: sandboxId, prompt: "hello" }, 409);
-    await sql.query("update sandboxes set reconcile_lease=null,reconcile_lease_until=null where id=$1", [sandboxId]);
+    const released = await sql.query(
+      "update sandboxes set reconcile_lease=null,reconcile_lease_until=null where id=$1 and reconcile_lease=$2 returning id",
+      [sandboxId, observationLease],
+    );
+    assert.equal(released.rows.length, 1, "The conflicting send must preserve the observation owner's lease.");
     const sent = await ordinary("send", { id: sandboxId, prompt: "hello" });
     if (reason === failures[0]) {
       const refused = await ordinary(
@@ -627,6 +740,15 @@ try {
       row.preservation_note,
       `unpushed work could not be preserved (${reason === "unavailable" ? "exec_failed" : reason}). Resume the sandbox and push or copy any local work before stopping again.`,
     );
+    const physical = (
+      await sql.query<{ physical_id: string }>(
+        `select m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+       on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.id=$1`,
+        [sandboxId],
+      )
+    ).rows[0];
+    assert(physical?.physical_id, "A completed stop must retain its exact physical incarnation");
+    expectedPhysicalExits.add(physical.physical_id);
   }
   const epochsBeforeFailure = effects.epochInstalls;
   const callsBeforeFailure = effects.modelCalls;
@@ -659,6 +781,38 @@ try {
   assert.equal(blocked.detail.orchestrator.conversationId, null);
   assert.equal(effects.epochInstalls, epochsBeforeFailure, "No delegated authority after failed install");
   assert.equal(effects.modelCalls, callsBeforeFailure, "No first turn after failed install");
+  const failedStopped = await cli(
+    [
+      "recover",
+      failed.orchestratorId,
+      "--org",
+      orgId,
+      "--expected-revision",
+      String(blocked.detail.orchestrator.revision),
+      "--idempotency-key",
+      "cleanup-missing-method",
+    ],
+    202,
+  );
+  assert.equal(
+    failedStopped.state,
+    "succeeded",
+    "The failed installer VM must close through exact never-conversed create recovery",
+  );
+  const failedPhysical = (
+    await sql.query<{ physical_id: string }>(
+      `select m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+     on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.id=$1`,
+      [blocked.detail.orchestrator.sandboxId],
+    )
+  ).rows[0];
+  assert(failedPhysical?.physical_id);
+  expectedPhysicalExits.add(failedPhysical.physical_id);
+  const beforeSkillSandboxIds = new Set(
+    (await sql.query<{ id: string }>("select id from public.sandboxes where org_id=$1", [orgId])).rows.map(
+      (row) => row.id,
+    ),
+  );
   await checkSandboxSkillLaunch({
     sql,
     orgId,
@@ -683,8 +837,36 @@ try {
       return { status: response.status, body: await response.json() };
     },
   });
+  const skillSandboxes = (
+    await sql.query<{ id: string; physical_id: string }>(
+      `select s.id,m.record->>'physicalId' as physical_id from public.sandboxes s join public.modal_machines m
+     on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id where s.org_id=$1`,
+      [orgId],
+    )
+  ).rows.filter((row) => !beforeSkillSandboxIds.has(row.id));
+  assert.equal(skillSandboxes.length, 2, "Successful and failed skill launches must retain both allocated identities");
+  for (const sandbox of skillSandboxes) {
+    assert(sandbox.physical_id);
+    expectedPhysicalExits.add(sandbox.physical_id);
+  }
+  // Prove exact recovery/child/ordinary/failed-installer resource closure, not transport attempt
+  // counts. Missing stops or an accidental stop of either live parent must fail.
+  const physicalExits = fake.physicalExits();
+  const physicalInventory = (
+    await sql.query(`select s.id,s.status::text,s.status_reason,s.preservation_note,s.activity_until,s.expires_at,s.stop_requested_at,
+    m.record->>'physicalId' as physical_id,m.record->>'phase' as phase,
+    exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) as parent,
+    exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id) as child
+    from public.sandboxes s join public.modal_machines m on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id`)
+  ).rows;
+  assert.deepEqual(
+    physicalExits,
+    [...expectedPhysicalExits].sort(),
+    JSON.stringify({ physicalInventory, terminationAttempts: fake.terminationAttempts }),
+  );
+  assert.deepEqual([...new Set(fake.terminationAttempts)].sort(), physicalExits);
   console.log(
-    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", sandboxSkills: true, proxyRecovery: true, replayProviderReads, routes, effects })}`,
+    `SERVE_HTTP_ROUTE_RECEIPT ${JSON.stringify({ version: 1, baseline: "green", sandboxSkills: true, proxyRecovery: true, replayProviderReads, routes, effects, physicalExits, terminationAttempts: fake.terminationAttempts })}`,
   );
 } finally {
   fake.release();

@@ -214,10 +214,10 @@ export class Runner {
     }
   }
   private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
-    if (this.nativeEpoch?.active && !epochControl) throw Error("orchestrator_authority_managed");
     if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
     if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
-    const configuration = validateMcpConfiguration(value),
+    const validated = validateMcpConfiguration(value);
+    const configuration = !epochControl ? (this.nativeEpoch?.connections(validated) ?? validated) : validated,
       values = mcpSecretValues(configuration);
     if (this.credentialFreeBuilder && Object.keys(configuration.servers).length)
       throw Error("builder_credentials_forbidden");

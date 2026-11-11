@@ -244,7 +244,7 @@ receipt and server diagnostics use the same codes):
 | `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
 | `skillpack_timeout` | Check guest resources and registry connectivity; inspect before retrying. |
 | `skillpack_receipt_invalid` | Rebuild with a compatible native CLI; inspect project permissions and lockfile without exposing package contents. |
-| `skillpack_transport_failed` | Check SSH connectivity, Node, Bash, `flock`, home permissions and pinned-host access. |
+| `skillpack_transport_failed` | Public install provider-exec transport failed: check provider command availability/liveness. Private SSH uses the precise #914 sub-step reasons below. |
 | `skillpack_credential_unreadable` | Re-store the personal/org key with `armada creds set skillpack --file <private-file>`; check server encryption-key configuration if this persists. |
 | `skillpack_process_failed` | Check guest process limits and CLI execution resources; no registry response was obtained. |
 | `skillpack_install_nonzero` | The native installer exited with an unsupported status; check CLI version/permissions and report the closed install-stage reason. |
@@ -326,3 +326,78 @@ and `golden update` action, with distinct request/package/registry/receipt/trans
 classifications. It discovers the user-local executable too. Native install-stage
 usage exit (2) is `skillpack_request_rejected`, not a missing CLI; auth-status
 usage exit (2) signals an incompatible CLI.
+
+## Private SSH transport diagnostics (#914)
+
+Boat supplies a provider-pinned endpoint and user identity. Modal authorizes an
+Ed25519 key via its SDK, starts port 2222 behind a TCP tunnel and returns the
+actual host key: workers log in as `user`, golden builders as `root`. Do not
+switch workers to root or disable host-key checking. Modal's provider-managed
+SSH authorizations live in `/run/armada-ssh` and expire after 15 minutes, not in
+`~/.ssh`; the server's ephemeral private key is always destroyed after the
+exchange. The home-key cleanup script must not be mistaken for proof that this
+separate root-owned provider store was edited.
+
+Private installs now log a closed sub-step reason at `skills_transport`, never
+raw SSH stderr, credentials, endpoint details or the SDK exception:
+
+| Reason | Action |
+| --- | --- |
+| `skillpack_ssh_local_storage_failed` | Check server ephemeral directory/file permissions and cleanup; the transport could not manage its local SSH material. |
+| `skillpack_ssh_keygen_failed` | Check server ephemeral storage and `ssh-keygen` availability/permissions. |
+| `skillpack_ssh_authorization_failed` | Check provider key registration and active sandbox lifecycle; the guest was not reached. |
+| `skillpack_ssh_connection_failed` | SSH exited 255 without a more specific classification, or failed during key exchange/closed the connection. Check the Modal TCP tunnel and whether sshd is serving port 2222; this is not proof the guest command ran. |
+| `skillpack_ssh_connection_invalid` | Check provider-returned SSH username, endpoint and pinned host-key metadata. |
+| `skillpack_ssh_host_key_rejected` | Reconcile the provider's actual host key; do not disable pinning. |
+| `skillpack_ssh_authentication_failed` | Check provider authorization, worker user and key expiry. |
+| `skillpack_ssh_unreachable` | Check the provider tunnel and server egress to its SSH port. |
+| `skillpack_ssh_timeout` | Check SSH liveness and guest command completion. |
+| `skillpack_ssh_node_missing` | Rebuild with Node on the SSH user's PATH. |
+| `skillpack_ssh_flock_missing` | Rebuild with `flock` on the SSH user's PATH. |
+| `skillpack_ssh_home_unavailable` | Repair the worker home directory and traversal permissions. |
+| `skillpack_ssh_key_cleanup_failed` | Check the worker's `.ssh` directory and cleanup lock ownership; no private install ran. |
+| `skillpack_ssh_remote_failed` | The remote command failed without an accepted protocol marker; check guest shell prerequisites without forwarding raw output. |
+| `skillpack_ssh_output_invalid` | The private response was malformed, oversized or not a supported receipt; inspect guest startup-output pollution without sharing it. |
+
+Tests previously substituted both SSH executables and guest home paths, so they
+did not prove a real Modal worker SSH session. A local disposable Docker check
+with the actual Modal SSH preparation and NNP can reach private CLI scope
+validation as a non-root worker; this does not substitute for a staging rerun.
+The staging cause in #914 is not inferred from that local check.
+
+A failed private **create**, before authority installation or a conversation,
+disposes its fresh Modal allocation instead of attempting a native checkpoint.
+Only an acknowledged `deleted` receipt produces a terminal `stopped` parent and
+a deleted sandbox row. Pending/failed disposal remains visibly blocked with the
+original install reason; do not claim a terminal outcome without physical proof.
+Boat retains its confirmed-stop path. Existing conversations and resumes are
+never discarded by this cleanup path.
+
+The #914 investigation also found a concrete namespace mismatch: the initial
+orchestrator provider was resolved from the org golden, but the sandbox row was
+persisted private. Modal store namespaces include visibility. Re-resolving that
+sandbox for cleanup therefore selected a different store. New creates now bind
+the private working target from the outset, while retaining the original golden
+visibility for source credentials/App authority. Recovery already uses this
+split-source contract. The old scope-free provider fake hid the mismatch; the existing
+production resolver integration test now checks both working-target privacy and
+source authority at the factory boundary.
+
+This fixes new creates, not historical stranded allocations. Do not introduce a
+cross-scope fallback or delete older resources by name: use exact, fenced create
+recovery/management proof. The namespace mismatch explains failed cleanup, not
+the original live SSH failure; the staging transport sub-step still needs proof.
+
+Failed-create cleanup emits exactly one additional secret-free
+`orchestrator_create_cleanup_failure` record if it cannot confirm cleanup. Its
+closed `step` is `fence`, `resolve`, `revalidate`, `delete`, `stop` or `unconfirmed`.
+Its `reason` is the existing safe error-class vocabulary (or `cleanup_unconfirmed`
+when no deletion/stop receipt proves completion), never the exception message.
+The original install reason remains the operation errorCode/parent blockedReason;
+cleanup exceptions and provider messages are never forwarded. A pending delete
+is `unconfirmed`, not proof of deletion or grounds to publish a terminal parent.
+
+If Node/flock is absent, those prerequisite checks necessarily run before home-key
+cleanup. Boat can retain that ephemeral public authorization until owner cleanup;
+Modal authorizations expire in 15 minutes. The server still deletes its ephemeral
+private key. Do not interpret a prerequisite refusal as successful key cleanup.
