@@ -6,6 +6,7 @@ import { createSqlGoldenStore } from "../src/golden-store.ts";
 import type { Provider } from "../src/provider.ts";
 import type { ModalBinding, ProviderTarget } from "../src/sandbox-provider.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
+import { goldenHelperReport } from "./support/golden-helper.ts";
 
 const key = Buffer.alloc(32, 37).toString("base64");
 const binding: ModalBinding = { workspace: "verified-workspace", environment: "production", appId: "ap_pinned" };
@@ -59,7 +60,14 @@ async function fixture() {
       },
       getSnapshot: async (name) => ({ name, status: "ready" }),
       deleteSnapshot: async () => {},
-      exec: async () => ({ detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+      exec: async ({ command }) => ({
+        detached: false,
+        exitCode: 0,
+        stdout: command.includes("/helper/0.1.0/armada-helper") ? goldenHelperReport : "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
       findGoldenBuilder: async ({ requestKey }) => {
         const id = builders.get(requestKey);
         return id ? { sandboxId: id, disposition: "disposable" } : null;

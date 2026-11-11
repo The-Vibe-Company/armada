@@ -12,6 +12,7 @@ import {
 import { type ControlOptions, createSqlData, handleControlRequest } from "@armada/mcp-server";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
@@ -396,7 +397,8 @@ function fakeCreateProvider(): Provider {
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},
     sshKey: async () => ({ sshEndpoint: "ssh.test:22", hostKey: "ssh-ed25519 AAAA" }),
-    exec: async () => ok,
+    exec: async ({ command }) =>
+      command.includes("/helper/0.1.0/armada-helper") ? { ...ok, stdout: goldenHelperReport } : ok,
     events: async () => ({ events: [], hasMore: false }),
     stop: async () => {},
     delete: async () => ({ status: "pending" }),

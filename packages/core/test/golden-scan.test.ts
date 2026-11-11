@@ -75,7 +75,8 @@ function withIsolatedRoots(script: string, roots: { home: string; root: string; 
   return innerScript(script)
     .replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)
     .replace("    /root/*)", `    ${roots.root}/*)`)
-    .replaceAll("/home/user/.armada-helper", `${roots.home}/.armada-helper`)
+    .replaceAll("/home/user/.armada", `${roots.home}/.armada`)
+    .replaceAll("/root/.armada", `${roots.root}/.armada`)
     .replaceAll("/root/.prime/", `${roots.root}/.prime/`)
     .replaceAll("/home/user/.prime/", `${roots.home}/.prime/`);
 }
@@ -130,7 +131,7 @@ linuxScanTest(
   30_000,
 );
 
-linuxScanTest.each([`ghp_${"A".repeat(36)}`, `cmp_pat_${"a".repeat(48)}`])(
+linuxScanTest.each([`ghp_${"A".repeat(36)}`, `cmp_pat_${"a".repeat(48)}`, `armada_gh_${"a".repeat(64)}`])(
   "real shell: a realistically-shaped token in a plain file fails the build",
   async (token) => {
     const script = await capturedScript();
@@ -544,14 +545,17 @@ test("disposable Prime cleanup fails closed when removal is unavailable", () => 
   }
 });
 
-linuxScanTest("helper runtime state refuses snapshot even without token-shaped contents", async () => {
-  const world = sandbox();
-  try {
-    const script = await capturedScript();
-    expect(runAgainst(script, world.roots).status).toBe(0);
-    mkdirSync(join(world.roots.home, ".armada-helper", "spool"), { recursive: true });
-    expect(runAgainst(script, world.roots).status).toBe(97);
-  } finally {
-    rmSync(world.base, { recursive: true, force: true });
-  }
-});
+linuxScanTest.each([".armada-helper/spool", ".armada/github-generation", ".armada/github-socket"])(
+  "runtime state %s refuses snapshot even without token-shaped contents",
+  async (path) => {
+    const world = sandbox();
+    try {
+      const script = await capturedScript();
+      expect(runAgainst(script, world.roots).status).toBe(0);
+      mkdirSync(join(world.roots.home, path), { recursive: true });
+      expect(runAgainst(script, world.roots).status).toBe(97);
+    } finally {
+      rmSync(world.base, { recursive: true, force: true });
+    }
+  },
+);

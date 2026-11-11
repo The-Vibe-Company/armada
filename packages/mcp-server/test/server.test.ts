@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, mutateCredentialAccount, ProviderError } from "@armada/core/server";
+import helperManifest from "../../core/helper/manifest.json";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
@@ -438,15 +439,27 @@ describe("tools", () => {
   });
 
   test("launch forks with noEnv, the caller's Armada credential and the org boat key, and returns no secret", async () => {
-    const { token, client, people, boat } = await start();
+    const { token, client, people, boat, db } = await start();
+    await db.query(
+      `update goldens set helper_receipt = jsonb_build_object(
+      'version','0.1.0','protocol',1,'platform','x86_64','digest',$1::text,
+      'capabilities',jsonb_build_array('diagnose'),'snapshotId',provider_snapshot_id) where name='shared'`,
+      [helperManifest.x86_64.digest],
+    );
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "Fix the build" });
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "claude",
+      prompt: "Fix the build",
+      helperCapabilities: ["diagnose"],
+    });
     expect(launched.isError).toBe(false);
     expect(launched.data).toMatchObject({
       golden: "shared",
       harness: "claude",
       status: "running",
       promptId: "prompt_1",
+      helper: { status: "supported", protocol: 1, capabilities: ["diagnose"] },
     });
     expect(boat.forks[0]).toMatchObject({ noEnv: true, env: { CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude } });
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
