@@ -49,7 +49,7 @@ API and MCP. Any unsupported requirement fails before provider allocation with
 legacy goldens retain their existing behavior. The shared launch result carries
 the negotiated helper status; no helper job, GitHub or usage grant is issued.
 
-Apply `20261111020000_golden_helper_receipt.sql` before deploying this server.
+Apply `20261111090000_golden_helper_receipt.sql` before deploying this server.
 This adds nullable, public-readable, server-written receipt metadata only;
 existing rows remain null. No migration or deployment was performed here.
 
