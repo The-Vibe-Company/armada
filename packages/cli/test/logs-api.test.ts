@@ -111,7 +111,9 @@ describe("logs through the Armada API", () => {
       ["logs", id, mode],
       { out: (text) => (out += text), err: () => undefined },
       {
-        sleep: async (ms) => { delays.push(ms); },
+        sleep: async (ms) => {
+          delays.push(ms);
+        },
         auth: auth(async (input, init) => {
           const request = input instanceof Request ? input : new Request(String(input), init);
           bodies.push(await request.json());
