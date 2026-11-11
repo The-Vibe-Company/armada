@@ -1219,7 +1219,17 @@ test("lifecycle failures reject false receipts and report unknown launches or le
 });
 
 function githubAccessFixture(
-  fault: "none" | "native_denied" | "bad_receipt" | "refresh_unknown" | "refresh_identity" | "native_identity" = "none",
+  fault:
+    | "none"
+    | "native_denied"
+    | "bad_receipt"
+    | "refresh_unknown"
+    | "refresh_identity"
+    | "native_identity"
+    | "managed"
+    | "managed_denied"
+    | "managed_unknown"
+    | "generic_dependency" = "none",
   standalone = false,
 ) {
   let refreshes = 0;
@@ -1237,6 +1247,8 @@ function githubAccessFixture(
         const path = /> '([^']+)'$/.exec(prompt)?.[1];
         expect(path).toBeDefined();
         paths.push(path!);
+        if (fault === "managed_unknown" && paths.length === 2)
+          return json({ error: { code: "outcome_unknown", message: "secret admitted prompt" } }, 503);
       }
       if (call.path === "sandbox/exec" && String(call.body.command).startsWith("head -c 128 --")) {
         nativeReads++;
@@ -1249,7 +1261,7 @@ function githubAccessFixture(
           stdout:
             fault === "bad_receipt"
               ? "secret-remote-body"
-              : fault === "native_denied"
+              : fault === "native_denied" || (fault === "managed_denied" && nativeReads === 2)
                 ? "0 1\n"
                 : `0 0\n${fault === "native_identity" && nativeReads === 2 ? "other-user" : "smoke-user"}`,
         });
@@ -1258,6 +1270,19 @@ function githubAccessFixture(
         refreshes++;
         expect(call.body.org).toBe(selected.org);
         expect(call.body.id).toBe("life-1");
+        if (["managed", "managed_denied", "managed_unknown", "generic_dependency"].includes(fault))
+          return json(
+            {
+              error: {
+                code: "dependency_unavailable",
+                message:
+                  fault === "generic_dependency"
+                    ? "secret dependency outage"
+                    : "Use the next prompt to reconcile this provider's managed GitHub runtime.",
+              },
+            },
+            503,
+          );
         return fault === "refresh_unknown"
           ? json({ error: { code: "outcome_unknown", message: "secret remote detail" } }, 503)
           : json({
@@ -1311,5 +1336,40 @@ test("GitHub access rejects denied, malformed and switched identities and never 
     expect(summary.leftoverSandboxIds).toEqual([]);
     expect(fake.lines.join("")).not.toContain("secret");
     expect(fake.lines.join("")).not.toContain("other-user");
+  }
+});
+
+test("managed GitHub uses the shipped next-prompt reconciliation instruction twice on every pair", async () => {
+  for (const provider of ["boat", "modal"])
+    for (const harness of ["claude", "codex"]) {
+      const fake = githubAccessFixture("managed");
+      expect(await fake.run([{ ...selected, provider, harness }])).toBe(true);
+      expect(fake.refreshes()).toBe(1);
+      expect(new Set(fake.paths).size).toBe(4);
+      for (const attempt of [1, 2]) {
+        expect(fake.receipts()).toContainEqual({ case: 0, step: `github_refresh_${attempt}`, pass: true });
+        expect(fake.receipts()).toContainEqual({
+          case: 0,
+          step: "github_refresh_evidence",
+          pass: true,
+          attempt,
+          mechanism: "next_prompt",
+        });
+        expect(fake.receipts()).toContainEqual({ case: 0, step: `github_reconcile_${attempt}_access`, pass: true });
+      }
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(fake.lines.join("")).not.toContain("smoke-user");
+    }
+});
+
+test("managed reconciliation never masks generic dependency outages, native denial or unknown admitted prompts", async () => {
+  for (const fault of ["generic_dependency", "managed_denied", "managed_unknown"] as const) {
+    const fake = githubAccessFixture(fault);
+    expect(await fake.run()).toBe(false);
+    expect(fake.refreshes()).toBe(1);
+    expect(fake.paths).toHaveLength(fault === "generic_dependency" ? 1 : 2);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.lines.join("")).not.toContain("secret");
+    expect(fake.receipts()).toContainEqual(expect.objectContaining({ case: 0, step: "github_refresh_1", pass: false }));
   }
 });

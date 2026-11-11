@@ -47,7 +47,8 @@ type Code =
   | "steer_not_refused"
   | "list_status_mismatch"
   | "github_access_failed"
-  | "github_identity_mismatch";
+  | "github_identity_mismatch"
+  | "github_managed_refresh";
 const API_CODES = new Set<Code>([
   ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
@@ -289,8 +290,19 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         signal: AbortSignal.timeout(Math.min(timeoutMs, remaining)),
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
+        const payload = (await response.json().catch(() => null)) as {
+          error?: { code?: unknown; message?: unknown };
+        } | null;
         const code = payload?.error?.code;
+        // This exact shipped instruction is a mechanism switch, not a generic
+        // dependency-outage skip. Never forward arbitrary server text.
+        if (
+          path === "github/refresh" &&
+          response.status === 503 &&
+          code === "dependency_unavailable" &&
+          payload?.error?.message === "Use the next prompt to reconcile this provider's managed GitHub runtime."
+        )
+          throw new SmokeFailure("github_managed_refresh", response.status);
         throw new SmokeFailure(
           typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed",
           response.status,
@@ -607,11 +619,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         );
         if (readGitHub)
           await step(
-            phase === "resume"
-              ? "github_access_after_resume"
-              : second
-                ? "github_access_after_refresh"
-                : "github_access_at_launch",
+            phase?.startsWith("github_reconcile_")
+              ? `${phase}_access`
+              : phase === "resume"
+                ? "github_access_after_resume"
+                : second
+                  ? "github_access_after_refresh"
+                  : "github_access_at_launch",
             async () => {
               const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
                 id: sandboxId,
@@ -670,16 +684,38 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         );
       await nativeTurn(false);
       if (readGitHub) {
+        let managed = false;
         for (const attempt of [1, 2])
           await step(`github_refresh_${attempt}`, async () => {
-            const result = await request<{ id: string; status: string; login: string }>("github/refresh", {
-              org: item.org,
-              id: sandboxId,
-            });
-            if (result?.id !== sandboxId || result.status !== "connected") fail("invalid_response");
-            if (!githubLogin || result.login !== githubLogin) fail("github_identity_mismatch");
+            if (!managed) {
+              try {
+                const result = await request<{ id: string; status: string; login: string }>("github/refresh", {
+                  org: item.org,
+                  id: sandboxId,
+                });
+                if (result?.id !== sandboxId || result.status !== "connected") fail("invalid_response");
+                if (!githubLogin || result.login !== githubLogin) fail("github_identity_mismatch");
+              } catch (error) {
+                if (!(error instanceof SmokeFailure) || error.code !== "github_managed_refresh" || attempt !== 1)
+                  throw error;
+                managed = true;
+              }
+            }
+            // Modal and managed Boat explicitly reconcile at the next prompt.
+            // Repeat that shipped operation, rather than inventing an RPC or
+            // treating every dependency failure as an unsupported capability.
+            if (managed) await nativeTurn(true, `github_reconcile_${attempt}`);
+            io.out(
+              JSON.stringify({
+                case: index,
+                step: "github_refresh_evidence",
+                pass: true,
+                attempt,
+                mechanism: managed ? "next_prompt" : "legacy_api",
+              }),
+            );
           });
-        if (!lifecycle) await nativeTurn(true, "github_after_refresh");
+        if (!lifecycle && !managed) await nativeTurn(true, "github_after_refresh");
       }
       if (lifecycle && !dirty) {
         await step("list_ready", () => consistent("ready"));

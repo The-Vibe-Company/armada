@@ -372,20 +372,28 @@ exit receipts and the public login are read internally; neither command output,
 login nor credentials are logged. Receipt files are removed after reading.
 
 Named steps: `github_access_at_launch`, `github_refresh_1`,
-`github_refresh_2`, and `github_access_after_resume`. The two consecutive
-`github/refresh` calls use the same sandbox ID and must both report connected to
-the native-observed identity. After the existing lifecycle stop/resume, native
-Git/gh access must still work with that identity. This tests observable repair
-idempotency, not token byte equality or forced expiry/rotation. No remote pushes,
-writes, broker fault injection or new GitHub capability are introduced. The
-separate `--github-runtime` push diagnostic is unchanged and cannot be combined.
+`github_refresh_2`, and `github_access_after_resume`. Legacy Boat uses two
+consecutive `github/refresh` calls on the same sandbox ID; both must report the
+native-observed connected identity. Modal and managed Boat refuse that legacy
+RPC with a fixed instruction to reconcile at the next prompt. Only that exact
+HTTP503/dependency_unavailable instruction selects the managed path: two native
+turns then exercise the existing next-prompt preparation and verify authenticated
+Git/gh access with the same identity each time. Generic dependency errors still
+fail, never skip. `github_refresh_evidence` records `legacy_api` or `next_prompt`;
+managed turns also emit `github_reconcile_1_access` /
+`github_reconcile_2_access`. After lifecycle stop/resume, native access must still
+work. This proves repeated healthy repair/preparation, not forced expiry, token
+rotation/byte equality, or a managed manual-refresh RPC (none exists). No new
+server capability, remote writes or broker fault injection. The separate
+`--github-runtime` push diagnostic is unchanged and mutually exclusive.
 
-Standalone `--github-access` uses a second live turn after refresh instead of a
-physical resume, named `github_access_after_refresh`. Its ordinary-worker cleanup
-summary still reports leftover IDs or unknown launch outcomes. With the default
-lifecycle combination there are no extra allocations or model turns: its two
-existing turns perform the checks. Expect seconds of GitHub/API traffic plus
-model-tool latency, within the unchanged shared 35+5-minute deadline. Standalone
-adds one tiny model turn. Configured goldens need Git, gh, an accessible GitHub
-origin at `repo`, and the smoke user's staging GitHub connection. No new secrets
-or case fields. This mode also requires the exact staging origin.
+Standalone `--github-access` uses a second live turn after legacy refresh
+(`github_access_after_refresh`), or the two managed reconciliation turns, without
+a physical resume. Cleanup summaries still report leftover IDs or unknown launch
+outcomes. There are no extra logical allocations. With the default lifecycle
+combination, legacy uses the existing two turns; managed adds two tiny native
+turns (~1–4 minutes extra/pair, model/provider dependent). Standalone adds one
+legacy or two managed turns. GitHub read traffic/model latency fits the unchanged
+shared35+5-minute deadline; slow matrices fail closed. Goldens need Git, gh, an
+accessible GitHub origin at `repo`, and the smoke user's staging GitHub connection.
+No new secrets or case fields. Exact staging origin is required.
