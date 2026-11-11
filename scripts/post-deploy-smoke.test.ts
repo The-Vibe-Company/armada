@@ -888,3 +888,119 @@ test("preservation refuses non-staging origins before requests", async () => {
   expect(await postDeploySmoke(env, ["--work-preservation"], fake.io)).toBe(false);
   expect(fake.calls).toHaveLength(0);
 });
+
+test("template/skill smoke validates the entire staging case configuration before API calls", async () => {
+  const valid = { ...selected, publicSkill: "example/public@1.0.0", privateSkill: "private@1.0.0" };
+  for (const overrides of [
+    { ARMADA_URL: "https://production.invalid", ARMADA_SMOKE_CASES: JSON.stringify([valid]) },
+    ...[
+      { goldenId: undefined },
+      { publicSkill: "public@1.0.0" },
+      { publicSkill: "example/public@latest" },
+      { privateSkill: undefined },
+      { privateSkill: "example/private@1.0.0" },
+    ].map((invalid) => ({
+      ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+      ARMADA_SMOKE_CASES: JSON.stringify([valid, { ...valid, ...invalid }]),
+    })),
+  ]) {
+    const fake = fixture();
+    expect(await postDeploySmoke({ ...env, ...overrides }, ["--templates-skills"], fake.io)).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.receipts()).toEqual([{ case: 0, step: "configure", pass: false, code: "invalid_configuration" }]);
+  }
+});
+
+test("template mode runs through the API transport and cleans its worker without ordinary launch", async () => {
+  let value = "";
+  let stopped = false;
+  const receipt = {
+    reference: "example/public@1.0.0",
+    version: "1.0.0",
+    skillId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    checksum: `sha256:${"a".repeat(64)}`,
+    origin: "https://skillpack.app/v1",
+  };
+  const fake = fixture((call) => {
+    switch (call.path) {
+      case "creds/list":
+        return json({
+          user: [{ id: selected.modelAccountId, version: 1, kind: "openai" }],
+          orgs: [{ id: selected.org, credentials: [] }],
+        });
+      case "skillpack/connection":
+        return json({ user: [], orgs: [{ id: selected.org, credentials: [] }] });
+      case "variables/set":
+        value = String(call.body.value);
+        return json({ item: { id: "variable-id", version: 1 } });
+      case "templates/create":
+        return json({ item: { id: "template-id", currentRevision: 1 } });
+      case "templates/launch":
+        expect(String(call.body.prompt)).not.toContain(value);
+        return json({
+          state: "succeeded",
+          id: "sandbox-id",
+          provider: "boat",
+          promptId: "prompt-id",
+          manifest: { skillReceipts: [receipt] },
+        });
+      case "sandbox/logs":
+        return json({
+          events: [
+            {
+              id: "answer",
+              kind: "message",
+              promptId: "prompt-id",
+              text: value,
+              partial: false,
+              responseKind: "assistant",
+            },
+          ],
+          cursor: null,
+          hasMore: false,
+        });
+      case "sandbox/status":
+        return json({
+          status: stopped ? "stopped" : "ready",
+          providerState: stopped ? "archived" : "active",
+          skills: [receipt],
+        });
+      case "sandbox/stop":
+        stopped = true;
+        return json({ status: "stopping" });
+      case "templates/delete":
+      case "variables/delete":
+        return json({ item: { status: "deleted" } });
+    }
+  });
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke(
+      {
+        ...env,
+        ARMADA_URL: staging,
+        ARMADA_SMOKE_CASES: JSON.stringify([
+          { ...selected, publicSkill: receipt.reference, privateSkill: "private@1.0.0" },
+        ]),
+      },
+      ["--templates-skills"],
+      {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      },
+    ),
+  ).toBe(true);
+  expect(fake.calls.some((call) => call.path === "sandbox/launch")).toBe(false);
+  expect(fake.calls.map((call) => call.path).slice(-3)).toEqual([
+    "sandbox/status",
+    "templates/delete",
+    "variables/delete",
+  ]);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "private_skill",
+    skip: true,
+    reason: "skillpack_key_not_configured",
+  });
+  expect(fake.lines.join("")).not.toContain(value);
+});

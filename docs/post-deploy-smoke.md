@@ -267,3 +267,52 @@ environment binding. Installation receipts must match the requested exact pins.
 Private installation is skipped only when Skillpack connection metadata confirms
 no personal or matching-org key is configured; a configured but unusable key is
 a failure. Template, variable and sandbox cleanup runs even after a failed check.
+
+Both staging entrypoints pass `--templates-skills` in addition to
+`--work-preservation`. The new mode also refuses any origin other than the exact
+staging API origin before requests. It can be run independently with:
+
+```sh
+bun scripts/post-deploy-smoke.ts --templates-skills
+```
+
+For this mode every case additionally requires `goldenId`, `publicSkill`
+(`org/slug@exact-version`) and `privateSkill` (`slug@exact-version`). For example,
+add `"publicSkill": "your-catalog/public-smoke@1.0.0"` and
+`"privateSkill": "your-private-smoke@1.0.0"` to each existing case, using real
+accessible pins. There are no default pins. The private pin remains required
+even without a key, so adding a key cannot silently omit the check.
+The selected `modelAccountId` is pinned to its current metadata version through
+`creds/list`; no silent default-account substitution is used. The existing
+`repo` remains the absolute exec cwd, not a template repository selector;
+template launches use the golden's default native cwd.
+
+Cases are the explicit enabled provider × harness matrix, as in the baseline.
+There is still no ordinary sandbox capabilities API; a configured unsupported
+pair fails rather than silently skipping. Keep the staging cases current.
+The existing staging token needs readable-variable/template create/delete,
+credential metadata, launch, interior access and stop permissions. Provider/model
+keys and Skillpack keys remain in Armada's staging store, never in the cases.
+
+Per pair, the public-pin template carries the random variable; a second template
+launch checks the private pin if a key is configured. Both the completed launch
+manifest and sandbox status must carry matching receipts (reference, exact
+version, skill ID, SHA-256 checksum and registry origin). The agent answer must
+equal the random value exactly, and plain exec must see the variable as unset.
+A private-key skip is a separate structured `skip: true` receipt, not a pass.
+
+Budget: this adds one public and up to one private sandbox/model turn per pair,
+roughly 3–8 minutes extra per pair depending on install/provider/model latency.
+Combined with work preservation, expect three or four sandbox allocations and
+model turns per pair, plus Skillpack install traffic; compute/model charges are
+roughly three or four times the original one-worker baseline. The shared
+35-minute work deadline and five-minute cleanup reserve are unchanged; slow
+matrices fail closed rather than extending the run. Each new sandbox has a
+15-minute TTL. Stopped disks and tombstoned metadata use normal retention.
+
+Cleanup attempts every known sandbox, template and variable even if an earlier
+cleanup fails. Lost variable/template create responses are reconciled by their
+unique random names. An unknown launch response is never retried: without a
+cleanup handle the run reports `cleanup_unconfirmed` and requires operator
+reconciliation before rerunning. This remains a smoke, not a resource janitor.
+No live staging run or deployment is implied by the offline API tests.

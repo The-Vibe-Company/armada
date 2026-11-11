@@ -4,19 +4,20 @@
  * modelAccountId, repo, goldenId?, reasoningEffort?}. golden is a launch name;
  * repo is an absolute sandbox cwd for exec. goldenId is required with
  * --orchestrator, which runs the lifecycle for every selected case (only enabled
- * provider/harness pairs work). No defaults, provider credentials or DB access.
+ * provider/harness pairs work). --templates-skills additionally requires goldenId,
+ * publicSkill and privateSkill exact pins. No defaults, provider credentials or DB access.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
 import type {
   OrchestratorDetail,
   OrchestratorEventPage,
   OrchestratorOperation,
 } from "../packages/core/src/orchestrator.ts";
+import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 
 type Code =
   | ApiFailureCode
@@ -71,6 +72,8 @@ interface SmokeCase {
   goldenId?: string;
   reasoningEffort?: string;
   disposableRepository?: string;
+  publicSkill?: string;
+  privateSkill?: string;
 }
 interface SmokeIo {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -156,7 +159,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         ...(error === undefined
           ? {}
           : {
-              code: error instanceof SmokeFailure ? error.code : "invalid_response",
+              code:
+                error instanceof SmokeFailure || error instanceof TemplateSkillSmokeFailure
+                  ? error.code
+                  : "invalid_response",
             }),
       }),
     );
@@ -166,11 +172,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const orchestrator = args.includes("--orchestrator");
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
+  const templatesSkills = args.includes("--templates-skills");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (github && (orchestrator || preservation)) ||
-      args.some((arg) => arg !== "--orchestrator" && arg !== "--github-runtime" && arg !== "--work-preservation") ||
+      (github && (orchestrator || preservation || templatesSkills)) ||
+      args.some(
+        (arg) =>
+          arg !== "--orchestrator" &&
+          arg !== "--github-runtime" &&
+          arg !== "--work-preservation" &&
+          arg !== "--templates-skills",
+      ) ||
       !env.ARMADA_URL ||
       !env.ARMADA_TOKEN ||
       !env.ARMADA_SMOKE_CASES
@@ -180,7 +193,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
       fail("invalid_configuration");
     origin = url.origin;
-    if (preservation && origin !== "https://armada-mcp-staging.up.railway.app") fail("invalid_configuration");
+    if ((preservation || templatesSkills) && origin !== "https://armada-mcp-staging.up.railway.app")
+      fail("invalid_configuration");
     const parsed: unknown = JSON.parse(env.ARMADA_SMOKE_CASES);
     if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) fail("invalid_configuration");
     for (const item of parsed) {
@@ -198,6 +212,19 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         (orchestrator && (typeof item.goldenId !== "string" || !item.goldenId.trim()))
       )
         fail("invalid_configuration");
+    }
+    if (templatesSkills) {
+      for (const item of parsed) {
+        if (
+          typeof item.goldenId !== "string" ||
+          !item.goldenId.trim() ||
+          typeof item.publicSkill !== "string" ||
+          !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.publicSkill) ||
+          typeof item.privateSkill !== "string" ||
+          !/^[A-Za-z0-9_-]+@\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.privateSkill)
+        )
+          fail("invalid_configuration");
+      }
     }
     if (github) {
       if (
@@ -265,6 +292,57 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     fail("poll_limit_exceeded");
   }
+  let templateSkillsPassed = true;
+  if (templatesSkills) {
+    for (const [index, item] of cases.entries()) {
+      const ok = await runTemplateSkillCase(
+        { ...item, goldenId: item.goldenId!, publicSkill: item.publicSkill!, privateSkill: item.privateSkill! },
+        {
+          request: (path, body) => request(path, body, undefined, path === "templates/launch" ? 600_000 : 120_000),
+          poll,
+          step: async (name, action) => {
+            try {
+              const value = await action();
+              report(index, name);
+              return value;
+            } catch (error) {
+              report(index, name, error);
+              throw error;
+            }
+          },
+          out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
+          withCleanup: async (action) => {
+            cleaning = true;
+            try {
+              return await action();
+            } finally {
+              cleaning = false;
+            }
+          },
+          stopSandbox: async (id) => {
+            try {
+              await request("sandbox/stop", { org: item.org, id });
+            } catch (error) {
+              if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+            }
+            await poll(
+              () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
+              (result) => {
+                if (result.status !== "stopped" && result.status !== "failed") return false;
+                if (result.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
+                  fail("provider_not_stopped");
+                return true;
+              },
+            );
+          },
+        },
+      );
+      if (!ok) templateSkillsPassed = false;
+    }
+    // This mode is independently runnable; combined staging runs keep the existing
+    // preservation baseline as well, under the same shared deadline.
+    if (!preservation) return templateSkillsPassed;
+  }
   // Validate the entire selected matrix before any billable mutation. A later
   // disabled case must not be discovered after earlier cases have allocated.
   if (orchestrator) {
@@ -293,7 +371,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       return false;
     }
   }
-  let passed = true;
+  let passed = templateSkillsPassed;
   for (const { index, item, dirty } of cases.flatMap((item, index) =>
     (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
   )) {
