@@ -190,7 +190,11 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             </AlertDescription>
           </Alert>
         )}
-        {target && <div className="pt-1">{<TemplateLaunchDialog target={target} />}</div>}
+        {target && !blocker && (
+          <div className="pt-1">
+            <TemplateLaunchDialog target={target} />
+          </div>
+        )}
       </div>
       {definition && target ? (
         <>

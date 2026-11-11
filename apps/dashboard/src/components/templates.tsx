@@ -451,7 +451,7 @@ function TemplateForm({
 /** The two steps of the form, as a sequence: where the person is, and what comes next. */
 function Steps({ step }: { step: 1 | 2 }) {
   const items = [
-    { n: 1, label: "Environment and agent" },
+    { n: 1, label: "Basics" },
     { n: 2, label: "Tools and variables" },
   ] as const;
   return (
