@@ -1,10 +1,7 @@
 /** Retry only connection admission failures, never arbitrary SQL or configuration errors.
  * No transaction/body replay is exposed to request handlers.
  */
-export async function retryDatabaseBoot(
-  initialize: () => Promise<void>,
-  log: (line: string) => void,
-) {
+export async function retryDatabaseBoot(initialize: () => Promise<void>, log: (line: string) => void) {
   const deadline = Date.now() + 120_000;
   let delay = 250;
   for (;;) {
@@ -15,9 +12,13 @@ export async function retryDatabaseBoot(
       const fields = error as { code?: unknown; errno?: unknown };
       const retryable = [fields?.code, fields?.errno].some((code) =>
         [
-          "EMAXCONNSESSION", "53300", "57P03",
-          "ERR_POSTGRES_CONNECTION_REFUSED", "ERR_POSTGRES_CONNECTION_FAILED",
-          "ERR_POSTGRES_CONNECTION_CLOSED", "ERR_POSTGRES_CONNECTION_TIMEOUT",
+          "EMAXCONNSESSION",
+          "53300",
+          "57P03",
+          "ERR_POSTGRES_CONNECTION_REFUSED",
+          "ERR_POSTGRES_CONNECTION_FAILED",
+          "ERR_POSTGRES_CONNECTION_CLOSED",
+          "ERR_POSTGRES_CONNECTION_TIMEOUT",
         ].includes(String(code)),
       );
       if (!retryable || Date.now() + delay >= deadline) throw error;
