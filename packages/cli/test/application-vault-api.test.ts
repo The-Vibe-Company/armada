@@ -112,7 +112,6 @@ test("vault CLI uses authenticated body-only API contracts and projects metadata
       body: { org: otherOrg, scope: "personal", name: item.name, value: canary },
       input: "stdin",
     },
-    { argv: ["vars", "read", item.id], route: "variables/read", body: { org, id: item.id } },
     ...["vars", "secrets"].map((resource) => ({
       argv: [resource, "list"],
       route: `${resource === "vars" ? "variables" : resource}/list`,
@@ -143,7 +142,16 @@ test("vault CLI uses authenticated body-only API contracts and projects metadata
   }
 });
 
-test("only explicit non-JSON variable reads print readable bytes, while writes never echo and allow empty variables", async () => {
+test("explicit variable reads return readable bytes in plain and JSON output, while writes never echo", async () => {
+  for (const value of [canary, ""]) {
+    const result = await invoke(["vars", "read", item.id, "--json"], {
+      response: { item: { ...item, value_enc: canary }, value },
+    });
+    expect(result.code).toBe(0);
+    expect(result.err).toBe("");
+    expect(JSON.parse(result.out)).toEqual({ item, value });
+    expect(await result.requests[0]?.json()).toEqual({ org, id: item.id });
+  }
   expect((await invoke(["vars", "read", item.id])).out).toBe(canary);
   const empty = await invoke(["vars", "set", item.name], { input: "" });
   expect(empty.code).toBe(0);
@@ -244,7 +252,7 @@ test("vault help documents secure input, scope and metadata-only JSON without au
       expect(result.code).toBe(0);
       expect(result.out).toContain("piped stdin or --file");
       expect(result.out).toContain("--scope personal|org");
-      expect(result.out).toContain("--json always emits\nmetadata only");
+      expect(result.out).toContain("vars read --json includes the value");
       expect(result.requests).toHaveLength(0);
     }
   }
