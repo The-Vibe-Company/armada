@@ -524,7 +524,7 @@ private actor Sleeps {
 
     // #962: a 400 code this build does not know is still a refusal, never an unknown outcome.
     let later = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
-    await #expect(throws: ArmadaError.refused(code: "name_reserved")) { _ = try await client.submitOrchestratorOperation(later.id) }
+    await #expect(throws: ArmadaError.refused(code: "name_reserved", message: "That name is reserved.")) { _ = try await client.submitOrchestratorOperation(later.id) }
     #expect(try #require(await client.pendingOperations.first { $0.id == later.id }).canDiscard)
     try await client.discardOrchestratorOperation(later.id)
 
