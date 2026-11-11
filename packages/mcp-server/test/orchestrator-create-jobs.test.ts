@@ -205,9 +205,6 @@ test("only queued tagged work dispatches; expired dispatched work becomes uncert
     expect(await f.runtime.createWorker.reconcileOne()).toBe(true);
     expect((await f.store.operations(f.p.owner, f.p.org, queued.identity.id))[0]?.state).toBe("uncertain");
     expect((await f.store.operations(f.p.owner, f.p.org, legacy.identity.id))[0]?.state).toBe("pending");
-    expect(
-      (await f.sql.query("select state,sandbox_id from orchestrators where id=$1", [queued.identity.id])).rows,
-    ).toEqual([{ state: "stopped", sandbox_id: null }]);
     expect(f.diagnostics.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         stage: "create_reconciliation",
@@ -242,6 +239,10 @@ test("revoked membership fails only tagged queued intent, emits a correlated fai
       (await f.sql.query("select state,error_code from orchestrator_operations where id=$1", [queued.operation.id]))
         .rows,
     ).toEqual([{ state: "failed", error_code: "create_authority_revoked" }]);
+    expect(
+      (await f.sql.query("select state,sandbox_id from orchestrators where id=$1", [queued.identity.id])).rows,
+    ).toEqual([{ state: "stopped", sandbox_id: null }]);
+
     expect(f.diagnostics.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         stage: "create_reconciliation",

@@ -1652,13 +1652,18 @@ test.each(["claude", "codex"] as const)(
 );
 
 test("HTTP launch keeps build-5 refusal code and adds the busy account reason", async () => {
-  await withServer(async ({ options, cli, db }) => {
-    await cli(STAN).run(["org", "create", "Busy"]);
-    const org = (await options.store.memberships(STAN))[0]!;
+  await withServer(async ({ options, db }) => {
+    const org = await options.store.createOrg("Busy", STAN);
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
     await db.query(
       "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'busy','org','snapshot',$3::jsonb)",
-      [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+      [
+        org.id,
+        STAN,
+        JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+      ],
     );
+    options.providerFor = () => fakeBoat().provider;
     options.providers = {
       resolve: async () => {
         throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
