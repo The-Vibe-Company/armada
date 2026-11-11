@@ -46,6 +46,7 @@ import type { ActionResult } from "@/lib/action";
 import { cn } from "@/lib/utils";
 import {
   audience,
+  expiryLabel,
   MAX_VALUE_BYTES,
   nameProblem,
   type VaultItem,
@@ -170,6 +171,7 @@ function AddVaultForm({
   const [kind, setKind] = useState<VaultKind>("variable");
   const [scope, setScope] = useState<VaultScope>("personal");
   const [name, setName] = useState("");
+  const [value, setValue] = useState("");
   const id = useId();
   useEffect(() => {
     if (state?.ok) onDone(state.message);
@@ -199,7 +201,11 @@ function AddVaultForm({
         />
       </Choice>
       <NameField id={id} kind={kind} value={name} onChange={setName} />
-      <ValueField id={id} kind={kind} />
+      {kind === "secret" ? (
+        <ValueField id={id} kind="secret" />
+      ) : (
+        <ValueField id={id} kind="variable" value={value} onValue={setValue} />
+      )}
       <Choice legend="Who can use it">
         <ChoiceCard
           name={`${id}-scope`}
@@ -242,29 +248,40 @@ function Choice({ legend, children }: { legend: string; children: ReactNode }) {
   );
 }
 
-/** The value: a textarea for a variable, an uncontrolled password field for a secret. */
-function ValueField({ id, kind, defaultValue }: { id: string; kind: VaultKind; defaultValue?: string }) {
+/**
+ * The value. A variable's is controlled, so a refused submission keeps what was typed. A secret's is uncontrolled
+ * and masked: React empties it after every submission, and it is kept nowhere else. Both are multi-line, so a key or
+ * a certificate keeps its line breaks.
+ */
+function ValueField(
+  props: { id: string } & ({ kind: "secret" } | { kind: "variable"; value: string; onValue: (value: string) => void }),
+) {
+  const { id, kind } = props;
   return (
     <div className="space-y-2">
       <Label htmlFor={`${id}-value`}>{kind === "secret" ? "Secret value" : "Value"}</Label>
-      {kind === "secret" ? (
-        <Input
+      {props.kind === "secret" ? (
+        <Textarea
           id={`${id}-value`}
           name="value"
-          type="password"
           required
+          rows={2}
           autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
           spellCheck={false}
           placeholder="Paste the value"
           aria-describedby={`${id}-value-hint`}
-          className="font-mono"
+          className="max-h-40 font-mono [-webkit-text-security:disc]"
           data-1p-ignore
+          data-secret-value
         />
       ) : (
         <Textarea
           id={`${id}-value`}
           name="value"
-          defaultValue={defaultValue}
+          value={props.value}
+          onChange={(event) => props.onValue(event.target.value)}
           rows={2}
           spellCheck={false}
           autoComplete="off"
@@ -275,7 +292,7 @@ function ValueField({ id, kind, defaultValue }: { id: string; kind: VaultKind; d
       )}
       <p id={`${id}-value-hint`} className="text-xs text-muted-foreground">
         {kind === "secret"
-          ? "Shown once, as you type it here. After saving, nobody can read it back, admins included."
+          ? "Masked as you type; line breaks are kept. After saving, nobody can read it back, admins included."
           : `Up to ${MAX_VALUE_BYTES / 1024} KiB. May be empty.`}
       </p>
     </div>
@@ -312,15 +329,28 @@ export function VaultPanel({
   };
   const value = useVariableValue(item);
 
+  const toast = useToast();
   const opener = useRef<HTMLElement | null>(null);
+  // A dialog closes back onto the button that opened it. A revoke removes that button and a delete the whole panel:
+  // the focus then goes to the panel's title, or to the page's Add button.
   const restoreFocus = useCallback((event: Event) => {
     event.preventDefault();
-    opener.current?.focus();
+    if (opener.current?.isConnected) return opener.current.focus();
+    const title = document.getElementById("resource-panel-title");
+    if (title && !title.closest("[hidden]")) return title.focus();
+    document.querySelector<HTMLElement>("[data-add-vault]")?.focus();
   }, []);
   const close = useCallback((next: boolean) => {
     if (!next) setDialog(null);
   }, []);
   const onResult = useCallback((next: ActionResult) => setResult(next), []);
+  // The panel goes away with the item, so a deletion is confirmed where it stays visible.
+  const onDeleted = useCallback(
+    (next: ActionResult) => {
+      if (next.ok) toast({ tone: "success", title: next.message });
+    },
+    [toast],
+  );
   function open(next: PanelDialog) {
     return (event: { currentTarget: HTMLElement }) => {
       opener.current = event.currentTarget;
@@ -353,9 +383,7 @@ export function VaultPanel({
         {item.expiresAt && (
           <>
             <dt className="text-muted-foreground">Expires</dt>
-            <dd>
-              <CreatedAt iso={item.expiresAt} now={now} />
-            </dd>
+            <dd>{expiryLabel(item.expiresAt, now)}</dd>
           </>
         )}
       </dl>
@@ -454,7 +482,7 @@ export function VaultPanel({
             open={dialog === "delete"}
             onOpenChange={close}
             onCloseAutoFocus={restoreFocus}
-            onResult={onResult}
+            onResult={onDeleted}
             action={deleteVaultItem}
             fields={fields}
             title={`Delete ${item.name}?`}
@@ -537,12 +565,20 @@ type Controlled = {
 
 /** Closes the dialog on a success and reports it on the panel; a failure stays in the dialog to retry. */
 function useDialogAction(action: Action, { onResult, onOpenChange }: Pick<Controlled, "onResult" | "onOpenChange">) {
-  const [state, formAction] = useActionState(action, null);
-  useEffect(() => {
-    if (!state?.ok) return;
-    onResult(state);
-    onOpenChange(false);
-  }, [state, onResult, onOpenChange]);
+  // Reported by the action, not by an effect on its state: the refresh that follows may unmount this dialog (a
+  // deletion removes the whole panel).
+  const run = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const next = await action(previous, data);
+      if (next.ok) {
+        onResult(next);
+        onOpenChange(false);
+      }
+      return next;
+    },
+    [action, onResult, onOpenChange],
+  );
+  const [state, formAction] = useActionState(run, null);
   return [state, formAction] as const;
 }
 
@@ -571,12 +607,13 @@ function EditVariableForm({ value, fields, onResult, onOpenChange }: Controlled 
   const [state, formAction] = useDialogAction(updateVariable, { onResult, onOpenChange });
   const { name: current = "", ...target } = fields;
   const [name, setName] = useState(current);
+  const [edited, setEdited] = useState(value);
   const id = useId();
   return (
     <form action={formAction} className="space-y-4">
       <Hidden fields={target} />
       <NameField id={id} kind="variable" value={name} onChange={setName} />
-      <ValueField id={id} kind="variable" defaultValue={value} />
+      <ValueField id={id} kind="variable" value={edited} onValue={setEdited} />
       {state && !state.ok && <ResultLine result={state} />}
       <div className="flex justify-end">
         <SubmitButton>Save changes</SubmitButton>

@@ -120,6 +120,9 @@ test("a secret is stored once and never shown again: replace, revoke and delete 
   await secret.getByRole("button", { name: "Delete" }).click();
   await page.getByRole("alertdialog", { name: "Delete SENTRY_DSN?" }).getByRole("button", { name: "Delete" }).click();
   await expect(row(page, "SENTRY_DSN")).toHaveCount(0);
+  // The panel went with it: the toast confirms, and the focus lands on Add rather than on nothing.
+  await expect(page.getByText("SENTRY_DSN is deleted.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add", exact: true })).toBeFocused();
 });
 
 test("a variable's value is read on request and edited as a new version", async ({ page }) => {
@@ -156,8 +159,13 @@ test("a member reads org entries without controls and adds personal ones only", 
 
   const dialog = await openAdd(page);
   await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeDisabled();
-  await dialog.getByLabel("Name").fill("BOB_REGION");
+  // A refused name keeps what was typed, so only the name needs fixing.
+  await dialog.getByLabel("Name").fill("BOB_NOTES_URL");
   await dialog.getByLabel("Value").fill("eu-west-3");
+  await dialog.getByRole("button", { name: "Save variable" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(/name is already used/);
+  await expect(dialog.getByLabel("Value")).toHaveValue("eu-west-3");
+  await dialog.getByLabel("Name").fill("BOB_REGION");
   await dialog.getByRole("button", { name: "Save variable" }).click();
   await expect(dialog).toBeHidden();
   await expect(row(page, "BOB_REGION")).toContainText("Personal");

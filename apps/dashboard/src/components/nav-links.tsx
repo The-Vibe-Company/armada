@@ -99,7 +99,7 @@ export function NavLinks({ className }: { className?: string }) {
                 <LinkPendingIcon>
                   <Icon />
                 </LinkPendingIcon>
-                {/* A phone's four columns take a shorter word where the full one would be cut. */}
+                {/* A phone's five columns take a shorter word where the full one would be cut. */}
                 <span className="truncate md:hidden">
                   {short}
                   {/* The visible word starts the accessible name (label in name), the full one follows. */}

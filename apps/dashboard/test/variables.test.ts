@@ -3,7 +3,9 @@ import { ControlError, createVaultControl } from "../src/lib/control.ts";
 import {
   audience,
   canManage,
+  expiryLabel,
   nameProblem,
+  normalizeValue,
   parseVaultItem,
   valueProblem,
   vaultFailure,
@@ -97,6 +99,18 @@ describe("the server's rules, said before sending", () => {
     expect(valueProblem("x".repeat(8192), "secret", "X_KEY")).toBeNull();
     for (const value of ["s3cr3t-canary", "a\0canary"])
       expect(valueProblem(value, "secret", "APP_TOKEN") ?? "").not.toContain("canary");
+  });
+
+  test("a pasted key keeps its LF line breaks, whatever the browser sent", () => {
+    expect(normalizeValue("-----BEGIN KEY-----\r\nabc\r\n-----END KEY-----\r")).toBe(
+      "-----BEGIN KEY-----\nabc\n-----END KEY-----\n",
+    );
+  });
+
+  test("a stored expiry is a UTC day; a passed one is said, not flagged", () => {
+    const now = Date.parse("2026-11-11T12:00:00Z");
+    expect(expiryLabel("2026-12-01T00:00:00.000Z", now)).toBe("2026-12-01 (UTC)");
+    expect(expiryLabel("2026-11-01T00:00:00.000Z", now)).toBe("2026-11-01 (UTC), date passed");
   });
 
   test("a refusal is said for this page, not in the vault's generic words", () => {

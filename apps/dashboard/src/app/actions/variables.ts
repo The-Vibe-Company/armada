@@ -5,7 +5,7 @@ import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action"
 import { ControlError } from "@/lib/control";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerVault } from "@/lib/data/variables";
-import { nameProblem, type VaultKind, valueProblem, vaultFailure } from "@/lib/variables";
+import { nameProblem, normalizeValue, type VaultKind, valueProblem, vaultFailure } from "@/lib/variables";
 
 /**
  * The Variables page's writes (#935), each one control API call as the signed-in viewer. A submitted value goes to
@@ -60,7 +60,7 @@ export async function addVaultItem(_previous: ActionResult | null, data: FormDat
     if (scope !== "personal" && scope !== "org") return fail("Choose who can use it.");
     if (scope === "org" && !admin) return fail("Only an admin adds organization variables and secrets.");
     const name = formString(data, "name").trim();
-    const value = formString(data, "value");
+    const value = normalizeValue(formString(data, "value"));
     const problem = nameProblem(name, kind) ?? valueProblem(value, kind, name);
     if (problem) return fail(problem);
     const item = await vault.create(kind, { org, scope, name, value });
@@ -75,7 +75,7 @@ export async function updateVariable(_previous: ActionResult | null, data: FormD
     const current = target(data);
     if (!current) return fail("That request is not valid.");
     const name = formString(data, "name").trim();
-    const value = formString(data, "value");
+    const value = normalizeValue(formString(data, "value"));
     const problem = nameProblem(name, "variable") ?? valueProblem(value, "variable", name);
     if (problem) return fail(problem);
     const item = await vault.updateVariable({ org, ...current, name, value });
@@ -87,7 +87,7 @@ export async function replaceSecret(_previous: ActionResult | null, data: FormDa
   return guarded(async ({ vault, org }) => {
     const current = target(data);
     if (!current) return fail("That request is not valid.");
-    const value = formString(data, "value");
+    const value = normalizeValue(formString(data, "value"));
     const problem = valueProblem(value, "secret", formString(data, "name"));
     if (problem) return fail(problem);
     const item = await vault.rotateSecret({ org, ...current, value });

@@ -124,6 +124,12 @@ export function nameProblem(name: string, kind: VaultKind): string | null {
 }
 
 /** Why the server would refuse this value, or null. Never quotes the value. */
+/**
+ * A submitted value as typed: a browser sends a textarea's line breaks as CRLF, which would change a key or a
+ * certificate the person pasted with LF.
+ */
+export const normalizeValue = (value: string) => value.replace(/\r\n?/g, "\n");
+
 export function valueProblem(value: string, kind: VaultKind, name: string): string | null {
   if (kind === "secret" && !value) return "Enter the secret value.";
   if (value.includes("\0")) return "The value cannot contain a NUL character.";
@@ -131,6 +137,15 @@ export function valueProblem(value: string, kind: VaultKind, name: string): stri
   // The server refuses a secret whose name contains it: the name is shown everywhere, the value nowhere.
   if (kind === "secret" && name.includes(value)) return "The secret value cannot appear in its name.";
   return null;
+}
+
+/**
+ * A secret's stored expiry date, as a calendar day in UTC (the same on the server's render and in the browser). This
+ * slice stores it without enforcing it, so a passed date is said plainly, not as a fault.
+ */
+export function expiryLabel(iso: string, now: number): string {
+  const day = `${new Date(iso).toISOString().slice(0, 10)} (UTC)`;
+  return Date.parse(iso) <= now ? `${day}, date passed` : day;
 }
 
 /** An item's state: an active one is ready; a revoked one is not a fault, just no longer usable. */
