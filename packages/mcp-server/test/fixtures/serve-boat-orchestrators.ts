@@ -15,8 +15,12 @@ const sql: core.Sql = {
   query: (q, v) => db.query(q, v),
   transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 const boots = new Map<string, string>();
 const sshCalls: string[] = [];
 mock.module("@armada/core/server", () => ({

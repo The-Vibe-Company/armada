@@ -20,8 +20,12 @@ const sql: core.Sql = {
   query: (q, values) => db.query(q, values),
   transaction: (work) => db.transaction((tx) => work({ query: (q, values) => tx.query(q, values) })),
 };
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 const key = Buffer.alloc(32, 19).toString("base64");
 // Work preservation uses the process environment, just as the deployed server does.
 process.env.ARMADA_ENCRYPTION_KEY = key;
