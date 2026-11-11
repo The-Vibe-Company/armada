@@ -140,7 +140,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
                 return Self.operation(receipt)
             }
             let receipt = try await client.submitOrchestratorOperation(id)
-            if receipt.state == .uncertain { throw ServiceFailure.uncertain }
+            if receipt.state != .pending && receipt.state != .succeeded && receipt.state != .failed { throw ServiceFailure.uncertain }
             // Keep terminal knowledge available to concurrent same-handle callers.
             // It does not block preparing a new command; explicit cleanup is separate.
             return Self.operation(receipt)

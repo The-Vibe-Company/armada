@@ -216,9 +216,14 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
     #expect(!lost.canMessage && lost.composerNote?.contains("lost") == true)
     let future = OrchestratorControls(state: "hibernating", continuity: "native", blockedReason: nil, revision: 3, operations: [], agentWorking: false)
     #expect(future.phase == .unknown("hibernating") && !future.canMessage && !future.canStop)
+    let futureReceipt = OrchestratorControls(state: "ready", continuity: "native", blockedReason: nil,
+        revision: 3, operations: [("message", "future_state", 3, nil)], agentWorking: true)
+    #expect(!futureReceipt.canMessage && !futureReceipt.canStop && futureReceipt.open?.uncertain == true)
 }
 
 @Test func createProgressSettlesOnlyOnTheServersReceipt() {
+    #expect(OrchestratorCreateProgress(state: "future_state", operations: [("create", "succeeded", nil)], blockedReason: nil) == .creating)
+    #expect(OrchestratorCreateProgress(state: "ready", operations: [("create", "future_state", nil)], blockedReason: nil) == .creating)
     #expect(OrchestratorCreateProgress(state: "creating", operations: [("create", "pending", nil)], blockedReason: nil) == .creating)
     #expect(OrchestratorCreateProgress(state: "ready", operations: [("create", "uncertain", nil)], blockedReason: nil) == .creating)
     #expect(OrchestratorCreateProgress(state: "ready", operations: [("create", "succeeded", nil)], blockedReason: nil) == .ready)
@@ -473,6 +478,13 @@ private actor Sleeps {
     #expect(!refused.canRecover && refused.composerNote == "Creation failed. " + reason)
     #expect(OrchestratorCreateProgress(state: "blocked", operations: [("create", "failed", "provider_payment_required")],
                                        blockedReason: "provider_payment_required") == .failed(reason))
+    let preallocation = OrchestratorControls(state: "stopped", continuity: "not_started",
+        blockedReason: "provider_payment_required", revision: 1,
+        operations: [("create", "failed", 1, nil)], agentWorking: false)
+    #expect(preallocation.composerNote == "Creation failed. " + reason)
+    #expect(!preallocation.canRecover && !preallocation.canStop && !preallocation.canResume)
+    #expect(OrchestratorCreateProgress(state: "stopped", operations: [("create", "failed", nil)],
+        blockedReason: "provider_payment_required") == .failed(reason))
     // A create whose machine was stopped after it failed says why it failed, not only that it stopped.
     let stopped = OrchestratorControls(state: "stopped", continuity: "not_started", blockedReason: nil, revision: 1,
                                        operations: [("create", "failed", 1, "skillpack_install_nonzero")], agentWorking: false)
@@ -488,6 +500,8 @@ private actor Sleeps {
     let (client, _, _) = try await signedIn([
         (200, enabled),
         (422, #"{"error":{"code":"credential_refused","message":"credential_refused"}}"#),
+        (200, enabled),
+        (400, #"{"error":{"code":"name_reserved","message":"That name is reserved."}}"#),
         (200, enabled),
         (503, #"{"error":{"code":"outcome_unknown","message":"outcome_unknown","admission":"unknown"}}"#),
     ])
@@ -507,6 +521,12 @@ private actor Sleeps {
     let saved = try #require(await client.pendingOperations.first { $0.id == refused.id })
     #expect(saved.rejectedBeforeAdmission && saved.canDiscard)
     try await client.discardOrchestratorOperation(refused.id)
+
+    // #962: a 400 code this build does not know is still a refusal, never an unknown outcome.
+    let later = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    await #expect(throws: ArmadaError.refused(code: "name_reserved", message: "That name is reserved.")) { _ = try await client.submitOrchestratorOperation(later.id) }
+    #expect(try #require(await client.pendingOperations.first { $0.id == later.id }).canDiscard)
+    try await client.discardOrchestratorOperation(later.id)
 
     let unknown = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
     await #expect(throws: ArmadaError.unavailable) { _ = try await client.submitOrchestratorOperation(unknown.id) }

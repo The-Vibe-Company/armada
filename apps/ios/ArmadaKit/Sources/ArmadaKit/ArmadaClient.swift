@@ -17,7 +17,7 @@ public struct Organization: Codable, Sendable, Identifiable {
 }
 private struct Organizations: Decodable, Sendable { let orgs: [Organization] }
 private struct ArmadaFailureEnvelope: Decodable {
-    struct Detail: Decodable { let code: String }
+    struct Detail: Decodable { let code: String; let message: String? }
     let error: Detail
 }
 private struct StoredSession: Codable {
@@ -227,6 +227,9 @@ public actor ArmadaClient {
             let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
             if route == "orchestrators" || route.hasPrefix("orchestrators/") {
                 if code == "invalid_request" { throw ArmadaError.invalidRequest }
+                // The orchestrator handler answers a 4xx only before admission (an unknown outcome is
+                // `outcome_unknown`, a 503), so a code this build does not know is still a refusal.
+                if let code, OrchestratorExplanation.isClosedCode(code) { throw orchestratorRefusal(code: code, data: data) }
             } else if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
                 throw ArmadaError.invalidRequest
             }
@@ -238,7 +241,7 @@ public actor ArmadaClient {
             // Keep the server's closed reason (422 `credential_refused`) so it can be explained.
             if let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code,
                OrchestratorExplanation.isClosedCode(code) {
-                throw ArmadaError.refused(code: code)
+                throw orchestratorRefusal(code: code, data: data)
             }
             throw ArmadaError.http(response.statusCode)
         default: throw ArmadaError.http(response.statusCode)
@@ -246,4 +249,11 @@ public actor ArmadaClient {
         do { return try JSONDecoder().decode(Response.self, from: data) }
         catch { throw ArmadaError.invalidResponse }
     }
+}
+
+/// Preserve a future refusal's human-readable reason, never raw multiline/unbounded server text.
+private func orchestratorRefusal(code: String, data: Data) -> ArmadaError {
+    let message = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.message
+    let detail = OrchestratorExplanation.known[code] == nil ? message.flatMap(SandboxLaunchFailure.oneLine) : nil
+    return .refused(code: code, message: detail)
 }

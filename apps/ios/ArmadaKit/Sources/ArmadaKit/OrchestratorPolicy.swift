@@ -40,8 +40,8 @@ public struct OrchestratorControls: Sendable, Equatable {
     /// `agentWorking`: a turn of its conversation is queued or running (steer joins it).
     public init(state: String, continuity: String, blockedReason: String?, revision: Int,
                 operations: [(kind: String, state: String, revision: Int, errorCode: String?)], agentWorking: Bool) {
-        let openOperation = operations.first { $0.state == "pending" || $0.state == "uncertain" }
-        open = openOperation.map { OpenOperation(kind: $0.kind, uncertain: $0.state == "uncertain") }
+        let openOperation = operations.first { $0.state != "succeeded" && $0.state != "failed" }
+        open = openOperation.map { OpenOperation(kind: $0.kind, uncertain: $0.state != "pending") }
         let lost = continuity == "lost"
         switch state {
         case "creating": phase = .creating
@@ -66,7 +66,7 @@ public struct OrchestratorControls: Sendable, Equatable {
         }) || (state == "creating" && current.contains { $0.kind == "create" && $0.state == "uncertain" })
         // Why its own create failed, for a stopped or blocked orchestrator that never became ready.
         let createFailure = current.last { $0.kind == "create" }.flatMap { create in
-            create.state == "failed" ? OrchestratorExplanation.text(for: create.errorCode ?? "create_failed") : nil
+            create.state == "failed" ? OrchestratorExplanation.text(for: create.errorCode ?? blockedReason ?? "create_failed") : nil
         }
         composerNote = Self.note(state: state, continuity: continuity, open: open, canMessage: canMessage,
                                  canResume: canResume, phase: phase, createFailure: createFailure)
@@ -121,15 +121,17 @@ public enum OrchestratorCreateProgress: Sendable, Equatable {
     public init(state: String, operations: [(kind: String, state: String, errorCode: String?)], blockedReason: String?) {
         let create = operations.last { $0.kind == "create" }
         if let create, create.state == "failed" {
-            self = .failed(OrchestratorExplanation.text(for: create.errorCode ?? "create_failed"))
+            self = .failed(OrchestratorExplanation.text(for: create.errorCode ?? blockedReason ?? "create_failed"))
         } else if state == "blocked" {
             self = .failed(OrchestratorExplanation.text(for: blockedReason ?? "blocked"))
-        } else if let create, create.state == "pending" || create.state == "uncertain" {
+        } else if let create, create.state != "succeeded" {
             self = .creating
         } else if state == "creating" {
             self = .creating
-        } else {
+        } else if state == "ready", create?.state == "succeeded" {
             self = .ready
+        } else {
+            self = .creating
         }
     }
 
@@ -210,9 +212,9 @@ public enum OrchestratorExplanation {
         "native_continuity_lost": "The saved conversation was lost. Start a new orchestrator to continue.",
         "boat_conversation_unavailable": "The provider couldn't open this orchestrator's conversation. Start a new orchestrator to continue.",
         "previous_conversation_not_continued": "It resumed with a new conversation; the previous one could not be continued.",
-        "create_preallocation_failed": "Armada couldn't prepare the machine for this orchestrator. Recover it, then create a new one.",
-        "create_authority_revoked": "Your access changed while it was being created. Recover it, then create a new one.",
-        "create_worker_interrupted": "Creation was interrupted before it finished. Recover it, then try again.",
+        "create_preallocation_failed": "Armada couldn't prepare the machine for this orchestrator. Create a new orchestrator to try again.",
+        "create_authority_revoked": "Your access changed while it was being created. Create a new orchestrator to try again.",
+        "create_worker_interrupted": "Creation was interrupted before it finished. Check its latest status before trying again.",
         "create_publication_fenced": "Creation was superseded by a newer change. Reload to see the latest state.",
         "create_recovery_unconfirmed": "Armada couldn't confirm the recovery yet. Retry recovery; it repeats the same request.",
         "create_aborted_before_fork": "Creation was stopped before any machine started.",
