@@ -35,8 +35,14 @@ credential wins over the org's, and a refused personal key never silently falls
 back to wider org authority. Storage uses the existing AES-GCM encrypted vault;
 a user JWT cannot read `value_enc`. The value is never an argument.
 
-Orchestrator create accepts `--skill notes@1.0.0`. It resolves the key only after normal owner/org authorization and
-installs before delegated authority or the first turn. Qualified references
+Ordinary sandbox launch accepts `armada launch <golden> --agent codex --skill notes@1.0.0`
+(and repeated `--skill` flags). The API `skills` array accepts both private
+`slug@exact-version` and public `org/slug@exact-version` pins, as do template and
+delegated child launches. Distinct pins must have distinct installed slugs.
+Orchestrator create retains the same private installation path. A key is resolved
+lazily only for private pins, after normal owner/org authorization, with user over
+org priority and no fallback after a refused personal key. Installation and receipt
+persistence precede the first turn; the key never enters the harness environment. Qualified references
 remain anonymous; the private key is not resolved or sent for those installs.
 The receipt records the exact reference, version, skill UUID, checksum and fixed
 origin plus the authenticated `workspaceId` (public receipts omit this field).
@@ -44,11 +50,14 @@ Missing key, refused key, unavailable/inaccessible skill, and general
 installation failure have separate closed diagnostic reasons. Provider/tool
 output is never forwarded.
 
-The server-only `installPrivateSkill` function is the shared integration point
-for #867's launch/golden work, not a second provider environment mechanism.
-Those call sites are not present on main yet. Golden callers must install before
-the existing snapshot scan; its PAT pattern now includes Skillpack tokens. This
-PR does not add golden skill configuration or ordinary launch flags.
+The server-only `installPrivateSkill` function is shared by ordinary launch and
+orchestrator bootstrap, not a second provider environment mechanism. Ordinary
+launch failures expose the closed `reason` and `stage` through the API; the CLI
+reports the same closed classification in its error message, without forwarding
+installer or provider output. Receipts are
+returned in the existing sandbox `skills` field, including private `workspaceId`.
+Golden skill configuration is unchanged; future golden callers must install
+before the existing snapshot scan, whose PAT pattern includes Skillpack tokens.
 
 Transport uses pinned-host SSH stdin. The key is passed only in child process
 environment to `skillpack auth status` and `skillpack install`, then discarded;
@@ -435,3 +444,14 @@ requested to confirm this exact cause is only
 reproducer establishes this failure mode, not the still-unreported staging mode.
 A successful live private Skillpack receipt still requires the coordinator's
 post-deployment rerun and a valid Skillpack key (read-only recommended).
+
+
+## Ordinary launch staging parity (#983)
+
+After approved staging deployment, run the ordinary `armada launch` command above
+for Boat Codex and Modal Codex with a staging private pin and a configured
+Skillpack credential. Check `--json` output `skills[]` for the exact reference,
+version, checksum, fixed origin and expected workspaceId; ask the first turn to
+read a known installed marker. Confirm missing/revoked private credentials fail
+with a closed reason before any prompt, and a public-only launch never requires
+a Skillpack credential. This PR performs no deployment or live-provider install.
