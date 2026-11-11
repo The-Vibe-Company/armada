@@ -316,11 +316,14 @@ sessions. Claude has no verified equivalent: Modal × Claude and native-continui
 claims for Boat × Claude remain disabled until a real driver supplies one.
 Boat × Claude is available only under the best-effort policy above.
 
-## Operator live-conformance evidence checklist
+## Historical live-conformance evidence checklist
 
-For the approved Modal × Codex rollout, the coordinator uses a newly owned
-production fixture after enabling, never the historical stopped Modal App. Any
-future pair needs its own native evidence:
+The original Modal × Codex rollout required a newly owned production fixture,
+never the historical stopped Modal App. This checklist is retained as evidence
+context, not a current rollout procedure or permission to allocate a managed
+parent. Any future native validation requires separate coordinator authorization;
+new work uses ordinary sandboxes with scoped Armada access. The original
+evidence requirements were:
 
 1. Install the reviewed pinned public skills before first prompt; record source
    revision/provenance and prove unrelated files survive/conflicts fail clearly.
@@ -340,8 +343,10 @@ future pair needs its own native evidence:
 
 Existing account/foundation, runtime215, native-binding216 and lifecycle217
 schema must already be deployed in migration order; this PR adds no migration.
-Modal × Codex is opt-in under the approved operator postflight procedure above;
-Boat pairs are separately opt-in best-effort; Modal × Claude remains disabled. Rollback retains identity/history/native state.
+Historically, Modal × Codex was opt-in under that operator postflight procedure;
+Boat pairs were separately opt-in best-effort; Modal × Claude remained disabled.
+These historical settings are not a new enablement instruction. Existing-compute
+rollback retains identity/history/native state.
 
 ## Skill selection
 
