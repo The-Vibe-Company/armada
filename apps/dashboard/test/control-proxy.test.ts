@@ -16,10 +16,18 @@ test("forwards allowed control paths with the bearer and preserves status/body",
     ["golden", "list"],
     async (input, init) => {
       seen.push(new Request(input, init));
-      return Response.json({ goldens: [] }, { status: 201 });
+      return Response.json(
+        { goldens: [] },
+        {
+          status: 201,
+          headers: { "server-timing": "auth;dur=1.25, dispatch;dur=2.50", "set-cookie": "private=must-not-forward" },
+        },
+      );
     },
   );
   expect(response.status).toBe(201);
+  expect(response.headers.get("server-timing")).toBe("auth;dur=1.25, dispatch;dur=2.50");
+  expect(response.headers.get("set-cookie")).toBeNull();
   expect(await response.json()).toEqual({ goldens: [] });
   expect(seen[0]?.url).toBe("https://armada.test/api/v1/golden/list");
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");

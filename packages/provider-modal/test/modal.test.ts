@@ -306,7 +306,29 @@ test("stored composition reads ingested turns without any live SDK, runner or li
     text: "work",
     status: "finished" as const,
   };
-  await appendModalEvents(db, scope, row.id, "1", [{ sequence: 1, event }]);
+  const history: AgentEvent[] = [
+    { ...event, status: "running" },
+    ...Array.from(
+      { length: 1001 },
+      (_, i): AgentEvent => ({ id: `other-${i}`, at: i + 2, kind: "other", type: "historical", data: {} }),
+    ),
+    { ...event, id: "terminal-final", at: 2000 },
+  ];
+  await appendModalEvents(
+    db,
+    scope,
+    row.id,
+    "1",
+    history.map((event, i) => ({ sequence: i + 1, event })),
+  );
+  let queries = 0;
+  const tracedSql: Sql = {
+    query: (text, params) => {
+      queries++;
+      return db.query(text, params);
+    },
+    transaction: (work) => db.transaction!(work),
+  };
   f.client.apps.fromName = async () => {
     throw new Error("No live App lookup on stored reads");
   };
@@ -315,6 +337,7 @@ test("stored composition reads ingested turns without any live SDK, runner or li
   };
   const stored = await createComposedModalProvider({
     ...compositionOptions(f),
+    sql: tracedSql,
     storedReads: true,
     fetcher: Object.assign(
       async () => {
@@ -329,18 +352,22 @@ test("stored composition reads ingested turns without any live SDK, runner or li
   });
   try {
     expect(await stored.provider.get(row.id)).toMatchObject({ id: row.id, state: "ready" });
-    expect((await stored.provider.events({ sandboxId: row.id })).events).toEqual([event]);
+    expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
+    const beforePrompt = queries;
     expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "stored-turn" })).toMatchObject({
       status: "finished",
       done: true,
     });
+    expect(queries - beforePrompt).toBeLessThanOrEqual(5);
+    const beforeMissing = queries;
     expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "not-ingested-yet" })).toMatchObject({
       status: "queued",
       done: false,
     });
+    expect(queries - beforeMissing).toBeLessThanOrEqual(5);
     // An exclusive writer does not block history; membership and source guards remain live.
     await f.store.lease(row.id, async () => {
-      expect((await stored.provider.events({ sandboxId: row.id })).events).toEqual([event]);
+      expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
     });
     await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [
       scope.orgId,

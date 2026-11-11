@@ -19,7 +19,8 @@ did not remove those network dependencies.
 Modal `sandbox/detail`/`sandbox/status` and logs now use a server-selected stored
 observation adapter, including dashboard MCP status/logs. Composition/get/events
 skip live App calls in this adapter; get reads the stored machine, getPrompt
-reads the ingested journal. Fresh membership, immutable source scope and
+reads one latest prompt transition with a scoped SQL query, not a transcript replay.
+Fresh membership, immutable source scope and
 management provenance checks remain, including deleted-machine refusals.
 Provider credential resolution is still fresh/local; nothing caches authorization.
 No read acquires an activity/lifecycle lease, queries the native runner, polls
@@ -42,7 +43,8 @@ live providers. No migration or new worker/service. Orchestrators are excluded.
 
 Successful authenticated control API replies include fixed-name `Server-Timing`
 durations (milliseconds); no token, SQL text, ID, URL, prompt or header value is
-copied into metric names. Unauthenticated/error replies do not expose timings.
+copied into metric names. The dashboard control proxy preserves this header from
+its fixed trusted Armada upstream. Unauthenticated/error replies do not expose timings.
 The unchanged client wall/payload measurements are still recorded by:
 
 ```sh
@@ -93,5 +95,6 @@ unavailable, including while another lifecycle writer holds the lease; live
 membership removal still refuses the next read. Existing source/deleted tests
 remain. A stored terminal status projection does not publish state or collect
 usage; its regression fails on the original live-read code. The HTTP boundary
-checks authorized stored-provider selection and fixed secret-free timing
+checks authorized stored-provider selection, a bounded SQL-trip budget for prompt
+lookup across a multi-page history, and fixed secret-free timing
 headers. No wall-clock thresholds or network-dependent tests were added.

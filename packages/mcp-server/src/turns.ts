@@ -207,7 +207,7 @@ export async function readStatus(
         : null;
   // Stored projections never acquire activity/lifecycle leases or publish over a
   // concurrent admission. The existing lifecycle worker refreshes physical state.
-  if (options.stored) return report(sandbox, next, info, prompt, info.expiresAt ?? null);
+  if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,

@@ -1229,6 +1229,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       assertMachineSource(row);
       // Observation must never use ready(): a stop racing this read must not activate a new generation.
       if (row.phase === "active" && !options.storedReads) return runner.call(row, "getPrompt", r);
+      if (options.storedReads) {
+        if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
+        const latest = await store.latestPrompt(r.sandboxId, r.promptId);
+        if (!latest) {
+          if (row.phase === "active") return { promptId: r.promptId, status: "queued", done: false };
+          throw refusal("not_found", "No durable prompt observation found.");
+        }
+        return {
+          promptId: r.promptId,
+          ...(latest.conversationId ? { conversationId: latest.conversationId } : {}),
+          status: latest.status,
+          done: !["queued", "running"].includes(latest.status),
+        };
+      }
       let cursor: string | undefined;
       let latest: import("@armada/core").AgentEvent | undefined;
       for (;;) {
@@ -1239,10 +1253,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("unavailable", "Prompt event cursor did not advance.");
         cursor = page.cursor;
       }
-      // A just-admitted turn can precede async journal ingestion. Absence is not
-      // evidence of completion, especially on a stored-only observation.
-      if (latest?.kind !== "prompt" && options.storedReads && row.phase === "active")
-        return { promptId: r.promptId, status: "queued", done: false };
       if (latest?.kind !== "prompt") throw refusal("not_found", "No durable prompt observation found.");
       return {
         promptId: r.promptId,
