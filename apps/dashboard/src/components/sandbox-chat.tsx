@@ -100,7 +100,15 @@ export function SandboxChat(props: Props) {
   const [chosen, setChosen] = useState<string | null>(null);
   const cursor = useRef<string | null>(null);
   const known = useRef(initialStatus);
-  const knownUsage = useRef(props.initialUsageRevision);
+  const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
+  const refreshing = useRef(false);
+  const [refreshPending, startRefresh] = useTransition();
+  useLayoutEffect(() => {
+    rendered.current = { status: initialStatus, usage: props.initialUsageRevision };
+  }, [initialStatus, props.initialUsageRevision]);
+  useLayoutEffect(() => {
+    refreshing.current = refreshPending;
+  }, [refreshPending]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reading = useRef(false);
   const mounted = useRef(true);
@@ -119,14 +127,17 @@ export function SandboxChat(props: Props) {
     if (typeof body.prompt === "object" && body.prompt !== null) setTurnModel(body.prompt);
     const next = typeof body.status === "string" ? (body.status as SandboxStatus) : known.current;
     const statusChanged = next !== known.current;
-    const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== knownUsage.current;
+    const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
     if (statusChanged) {
       known.current = next;
       setStatus(next);
     }
-    if (typeof body.usageRevision === "string") knownUsage.current = body.usageRevision;
-    // Terminal counters can arrive after running -> ready has already rendered.
-    if (statusChanged || usageChanged) router.refresh();
+    // Only committed page props acknowledge the card's revision. A discarded or
+    // stale RSC refresh must remain retryable on the next successful poll.
+    const refreshNeeded = next !== rendered.current.status || usageChanged;
+    if (!refreshing.current && refreshNeeded) {
+      startRefresh(() => router.refresh());
+    }
     const error = typeof body.error === "string" ? body.error : null;
     const configured = body.configured !== false;
     setPoll((current) =>
@@ -137,10 +148,10 @@ export function SandboxChat(props: Props) {
     if (page.cursor) cursor.current = page.cursor;
     if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
     setHasMore(page.hasMore);
-    return { more: page.hasMore, active: isActiveStatus(next) };
-  }, [sandboxId, router]);
+    return { more: page.hasMore, active: isActiveStatus(next) || refreshNeeded };
+  }, [sandboxId, router, startRefresh]);
 
-  /** Reads now, then keeps reading while there is more or the sandbox is active. One loop at a time. */
+  /** Read until drained, inactive and rendered metadata is acknowledged. One loop at a time. */
   const tick = useCallback(async () => {
     if (reading.current) return;
     reading.current = true;

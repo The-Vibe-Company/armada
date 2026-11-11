@@ -958,6 +958,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
         },
       });
     case "logs": {
+      if (target.test_logs_unavailable) return text("Logs unavailable", true);
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
@@ -2617,9 +2618,11 @@ function control(url: URL, body: Row): Response {
         target.usage_turns = target.test_delayed_usage;
         delete target.test_delayed_usage;
       }
+      if (body.stopped) target.status = "stopped";
       target.test_status_read_unavailable = body.failStatus === true;
+      target.test_logs_unavailable = body.failLogs === true;
     } else {
-      target.status = "ready";
+      target.status = body.running ? "running" : "ready";
       target.harness = "codex";
       target.usage_turns = { turnCount: 1, turns: [] };
       for (const event of state.events.get(String(target.id)) ?? [])

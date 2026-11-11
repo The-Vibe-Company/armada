@@ -88,38 +88,90 @@ test("partial token reporting stays Not reported in the card and per-turn table"
   await page.screenshot({ path: "test-results/sandbox-cost-missing-counters.png", animations: "disabled" });
 });
 
-test("delayed usage refreshes a ready session's card without a status transition or repeated refreshes", async ({
+test("delayed usage refreshes a ready session's card and retries a stale refresh without looping", async ({
   page,
   request,
 }) => {
-  expect((await request.post(`${MOCK}/__test/delayed-usage`, { data: {} })).ok()).toBe(true);
+  expect((await request.post(`${MOCK}/__test/delayed-usage`, { data: { running: true } })).ok()).toBe(true);
+  const screen = `/sandboxes/${IDS.running}`;
   const eventsPath = `/api/sandboxes/${IDS.running}/events`;
-  const firstPoll = page.waitForResponse((response) => new URL(response.url()).pathname === eventsPath);
-  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
-  expect((await (await firstPoll).json()).status).toBe("ready");
+  const isPoll = (response: import("@playwright/test").Response) => new URL(response.url()).pathname === eventsPath;
+  const firstPoll = page.waitForResponse(isPoll);
+  await signIn(page, "alice@example.com", screen);
+  expect((await (await firstPoll).json()).status).toBe("running");
   const card = page.locator("[data-sandbox-cost]");
   await expect(card).toContainText("Tokens not reported");
+
+  // Capture a real refresh response after the machine settles, still without
+  // counters. A proxy may later serve this stale RSC response successfully.
+  const readyRefresh = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === screen && response.request().headers().rsc === "1",
+  );
+  expect((await request.post(`${MOCK}/__test/delayed-usage`, { data: {} })).ok()).toBe(true);
+  const ready = await readyRefresh;
+  const stale = await ready.body();
+  const headers = ready.headers();
+  for (const key of ["content-encoding", "content-length", "transfer-encoding"]) delete headers[key];
+  expect((await (await page.waitForResponse(isPoll)).json()).status).toBe("ready");
   let refreshes = 0;
-  page.on("request", (sent) => {
-    if (new URL(sent.url()).pathname === `/sandboxes/${IDS.running}` && sent.headers().rsc === "1") refreshes++;
+  let replayed = false;
+  let terminalReplay = false;
+  let release = () => {};
+  let intercepted = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
   });
+  const observed = new Promise<void>((resolve) => {
+    intercepted = resolve;
+  });
+  await page.route(
+    (url) => url.pathname === screen,
+    async (route) => {
+      if (route.request().headers().rsc !== "1") return route.continue();
+      refreshes++;
+      if (terminalReplay) {
+        terminalReplay = false;
+        return route.fulfill({ status: ready.status(), headers, body: stale });
+      }
+      if (replayed) return route.continue();
+      replayed = true;
+      intercepted();
+      await held;
+      await route.fulfill({ status: ready.status(), headers, body: stale });
+    },
+  );
   expect((await request.post(`${MOCK}/__test/delayed-usage`, { data: { collect: true } })).ok()).toBe(true);
-  await expect(
-    card
-      .locator("dl > div")
-      .filter({ has: page.getByText("Input", { exact: true }) })
-      .locator("dd"),
-  ).toHaveText("13.1K");
-  await expect(card.locator("p[title]")).toHaveText("$0.03");
-  const refreshed = refreshes;
-  expect(refreshed).toBeGreaterThan(0);
-  for (let i = 0; i < 2; i++) {
-    const poll = await page.waitForResponse((response) => new URL(response.url()).pathname === eventsPath);
-    expect((await poll.json()).status).toBe("ready");
+  await observed;
+  try {
+    for (let i = 0; i < 2; i++) await page.waitForResponse(isPoll);
+    expect(refreshes).toBe(1); // Do not cancel a slow refresh with overlapping retries.
+  } finally {
+    release();
   }
+  const input = card
+    .locator("dl > div")
+    .filter({ has: page.getByText("Input", { exact: true }) })
+    .locator("dd");
+  await expect(input).toHaveText("13.1K");
+  await expect(card.locator("p[title]")).toHaveText("$0.03");
+  expect(replayed).toBe(true);
+  expect(refreshes).toBeGreaterThanOrEqual(2);
+  const refreshed = refreshes;
+  for (let i = 0; i < 2; i++) expect((await (await page.waitForResponse(isPoll)).json()).status).toBe("ready");
   expect(refreshes).toBe(refreshed);
+
+  // A broken log lane must not prevent the independent status collector.
+  expect(
+    (
+      await request.post(`${MOCK}/__test/delayed-usage`, {
+        data: { collect: true, failLogs: true, inputTokens: 20000 },
+      })
+    ).ok(),
+  ).toBe(true);
+  await expect(input).toHaveText("20K");
+  await expect(card.locator("p[title]")).toHaveText("$0.04");
+
   // Another collector persisted usage while optional status telemetry is down.
-  // Successful logs must still carry the row's new observation to the card.
   expect(
     (
       await request.post(`${MOCK}/__test/delayed-usage`, {
@@ -127,12 +179,23 @@ test("delayed usage refreshes a ready session's card without a status transition
       })
     ).ok(),
   ).toBe(true);
-  await expect(
-    card
-      .locator("dl > div")
-      .filter({ has: page.getByText("Input", { exact: true }) })
-      .locator("dd"),
-  ).toHaveText("26.3K");
+  await expect(input).toHaveText("26.3K");
   await expect(card.locator("p[title]")).toHaveText("$0.05");
+  // Inactive machines must finish acknowledging the last observation too.
+  terminalReplay = true;
+  const beforeStop = refreshes;
+  const stopped = page.waitForResponse(
+    async (response) => isPoll(response) && (await response.json()).status === "stopped",
+  );
+  expect(
+    (
+      await request.post(`${MOCK}/__test/delayed-usage`, { data: { collect: true, stopped: true, inputTokens: 39408 } })
+    ).ok(),
+  ).toBe(true);
+  await stopped;
+  await expect(input).toHaveText("39.4K");
+  await expect(card.locator("p[title]")).toHaveText("$0.08");
+  expect(terminalReplay).toBe(false);
+  expect(refreshes).toBeGreaterThanOrEqual(beforeStop + 2);
   await page.screenshot({ path: "test-results/sandbox-cost-delayed-collection.png", animations: "disabled" });
 });

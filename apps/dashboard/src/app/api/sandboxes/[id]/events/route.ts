@@ -34,27 +34,25 @@ export async function GET(request: Request, context: Context) {
   }
 
   const cursor = new URL(request.url).searchParams.get("cursor");
-  try {
-    const page = await readLogPages(gateway.logs, id, cursor);
-    // Status is optional telemetry. A failed status read must not discard successful logs.
-    const detail = (await gateway.status(id).catch(() => ({}))) as {
-      status?: string;
-      prompt?: unknown;
-      usage?: unknown;
-    };
-    return NextResponse.json({
+  // A broken log lane must not prevent status from collecting delayed usage.
+  const statusRead = gateway.status(id).catch(() => ({}));
+  const metadata = async () => {
+    const detail = (await statusRead) as { status?: string; prompt?: unknown; usage?: unknown };
+    return {
       status: detail.status ?? sandbox.status,
       prompt: detail.prompt ?? null,
-      // Use the post-collection status projection, not the row read before it.
       usageRevision: detail.usage === undefined ? persistedRevision : usageRevision(detail.usage),
+    };
+  };
+  try {
+    const page = await readLogPages(gateway.logs, id, cursor);
+    return NextResponse.json({
+      ...(await metadata()),
       configured: true,
       ...page,
     });
   } catch (error) {
     const message = error instanceof GatewayError ? error.message : "The logs could not be read.";
-    return NextResponse.json(
-      { status: sandbox.status, usageRevision: persistedRevision, configured: true, error: message },
-      { status: 502 },
-    );
+    return NextResponse.json({ ...(await metadata()), configured: true, error: message }, { status: 502 });
   }
 }
