@@ -9,8 +9,8 @@ It is not an orchestrator, workflow engine, or privileged service identity.
    read isolation and authorization. No timer, launch, or enabling endpoint is
    shipped. The API is a foundation, not completion of #1006.
 2. **Slice 2 (#1014):** server scheduler, durable run history/claims, pause/resume and cost guards.
-3. **This slice:** API-only `armada routine …` commands and a bounded coordinator staging check.
-4. Dashboard Run > Routines using CreateDialog; optional read-only iPhone last.
+3. **Slice 3 (#1027):** API-only `armada routine …` commands and a bounded coordinator staging check.
+4. **This slice:** dashboard Run > Routines using CreateDialog; optional read-only iPhone last.
 
 ## Configuration and identity
 
@@ -149,7 +149,7 @@ are retained after cleanup. Agent-task failure does not affect launch-failure au
 ## Deployment order
 
 Apply `20261111150000_routine_scheduler.sql` after slice 1's
-`20261111140000_routines.sql`, through the coordinator's approved migration process,
+`20261111140500_routines.sql`, through the coordinator's approved migration process,
 **before** starting this scheduler-enabled server version. The new columns and
 history tables are required at startup; no new environment variables are needed.
 Existing routines remain paused after migration and require explicit enabling.
@@ -209,3 +209,25 @@ execute cleanup; rerun manual cleanup for the printed nonce in that situation.
 restart/replica idempotency, downtime catch-up behavior, revocation, daily cap and
 repeated-failure auto-pause. Use the longer/manual checklist above; do not infer
 those checks from a passing script. This worker has not executed staging checks.
+
+
+## Dashboard slice
+
+Run > Routines lists the selected organization's visible schedules. New opens the
+shared centered CreateDialog: choose a published template, enter a prompt and a
+whole-hour interval, and optionally set lifetime/daily limits. The selected
+immutable template revision is pinned; creation is paused, never an immediate
+launch. Personal routines run as their owner, while only admins manage shared
+organization routines. Readable prompts are not a place for secrets.
+
+Enable/pause use the displayed optimistic version. A conflict asks for a refresh,
+not an automatic retry. Pausing admits no new runs but already admitted work may
+finish; it does not stop a sandbox. Selected details load history on demand (not
+one request per list row), showing closed readable reasons and the original
+prompt outcome independently of launch success. Only sandbox links authorized by
+the API are rendered. Empty, unavailable, loading and permission states keep the
+same quiet list/create patterns as the rest of the dashboard.
+
+This UI uses the already-deployed routine API and existing tables. It introduces
+no migrations or staging/production credential requirements. Screenshot/browser
+verification uses the local mock API, not live scheduled launches.
