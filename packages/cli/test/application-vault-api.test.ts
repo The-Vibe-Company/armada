@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -20,7 +23,14 @@ const canary = "disposable-vault-input\nsecond line\n";
 
 async function invoke(
   argv: string[],
-  options: { response?: unknown; status?: number; input?: string; inputError?: boolean; selected?: string | null } = {},
+  options: {
+    response?: unknown;
+    status?: number;
+    input?: string;
+    inputError?: boolean;
+    selected?: string | null;
+    realFile?: boolean;
+  } = {},
 ) {
   let out = "",
     err = "";
@@ -68,11 +78,13 @@ async function invoke(
         if (options.inputError) throw new Error(canary);
         return options.input ?? canary;
       },
-      readFile: async (path) => {
-        inputSources.push(path);
-        if (options.inputError) throw new Error(canary);
-        return options.input ?? canary;
-      },
+      readFile: options.realFile
+        ? undefined
+        : async (path) => {
+            inputSources.push(path);
+            if (options.inputError) throw new Error(canary);
+            return options.input ?? canary;
+          },
     },
   );
   return { code, out, err, requests, inputSources };
@@ -213,5 +225,20 @@ test("vault help documents secure input, scope and metadata-only JSON without au
     expect(result.out).toContain("--scope personal|org");
     expect(result.out).toContain("--json always emits\nmetadata only");
     expect(result.requests).toHaveLength(0);
+  }
+});
+
+test("vault file input rejects malformed UTF-8 before any API mutation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-vault-"));
+  const path = join(directory, "input");
+  try {
+    await Bun.write(path, new Uint8Array([0xc3, 0x28]));
+    const result = await invoke(["secrets", "set", item.name, "--file", path], { realFile: true });
+    expect(result.code).toBe(2);
+    expect(result.requests).toHaveLength(0);
+    expect(result.err).toContain("Could not read value");
+    expect(result.err).not.toContain(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });

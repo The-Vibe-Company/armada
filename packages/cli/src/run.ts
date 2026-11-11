@@ -369,7 +369,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return orgCommand(rest, vaultIo(io, deps));
     case "vars":
     case "secrets":
-      return applicationVaultCommand(command, rest, vaultIo(io, deps));
+      return applicationVaultCommand(command, rest, vaultIo(io, deps, true));
     case "creds":
       return credsCommand(rest, vaultIo(io, deps));
     case "token":
@@ -1183,13 +1183,23 @@ function authOf(io: Io, deps: Deps): AuthIo {
   return deps.auth ?? productionAuthIo(io, deps.env ?? process.env);
 }
 
-function vaultIo(io: Io, deps: Deps): VaultIo {
+function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
   return {
     auth: authOf(io, deps),
-    readFile: deps.readFile ?? ((path) => Bun.file(path).text()),
+    readFile:
+      deps.readFile ??
+      (async (path) =>
+        strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true }).decode(await Bun.file(path).arrayBuffer())
+          : Bun.file(path).text()),
     readStdin:
       deps.readStdin ??
-      (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin is a terminal")) : Bun.stdin.text())),
+      (async () => {
+        if (process.stdin.isTTY) throw new Error("stdin is a terminal");
+        return strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true }).decode(await Bun.stdin.arrayBuffer())
+          : Bun.stdin.text();
+      }),
   };
 }
 
