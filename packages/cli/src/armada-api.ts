@@ -171,6 +171,55 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "Application vault unavailable. Check entry status before retrying.",
         );
       }
+      if (path.startsWith("/api/v1/templates/")) {
+        const known: Record<string, string> = {
+          "Template revision changed.":
+            "Template revision changed. Get the current revision and retry with --expected-revision.",
+          "Template revision unavailable.":
+            "Template revision unavailable. Get the template and choose an existing revision.",
+          "Template launch refused: template_revision_changed.":
+            "Template revision changed during admission. Get the current revision before retrying.",
+          "Template launch refused: reference_unavailable.":
+            "A template reference is missing or inaccessible. Check the template definition.",
+          "Template launch refused: environment_unavailable.":
+            "Template golden is removed, unavailable or inaccessible. Publish a revision with an eligible golden.",
+          "Template launch refused: connection_unavailable.":
+            "Template connection is unknown, disabled, disconnected or inaccessible. Check the exact connection ID.",
+          "Template launch refused: variable_unavailable.":
+            "Readable variable is missing or inaccessible. Check its reference.",
+          "Template launch refused: variable_version_changed.":
+            "Readable variable version changed. Publish a revision with its current version.",
+          "Template name or request key already exists.":
+            "Template name or request key already exists. Choose another template name or inspect the original launch request.",
+          "Request key already used with a different request.":
+            "Request key already used with a different request. Retry only the original key and body until its outcome is known.",
+        };
+        const fallback: Record<number, string> = {
+          400: "Invalid template request. Check the definition, IDs, versions and supported overrides. Secret bindings are not supported.",
+          401: "Run armada login or update ARMADA_TOKEN.",
+          403: "Template access denied. Current membership is required; only admins can mutate organization templates.",
+          404: "Template or revision not found or not visible.",
+          409: "Template reference changed or is unavailable. Check its golden, connections, variable and model-account versions before retrying.",
+        };
+        const message = apiMessage(payload, "");
+        throw new ArmadaApiError(
+          response.status === 400
+            ? "invalid"
+            : response.status === 401
+              ? "unauthorized"
+              : response.status === 403
+                ? "forbidden"
+                : response.status === 404
+                  ? "not_found"
+                  : response.status === 409
+                    ? "conflict"
+                    : "unavailable",
+          response.status,
+          (Object.hasOwn(known, message) ? known[message] : undefined) ??
+            fallback[response.status] ??
+            "Template operation unavailable. For launch, retain the original request key and body; its outcome may be unknown.",
+        );
+      }
       if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode)) {
         const phase =
           failureCode === "github_hydration_failed"

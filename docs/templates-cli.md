@@ -25,8 +25,10 @@ armada template delete TEMPLATE_ID --expected-revision 2
 ```
 
 Launch with `armada template launch NAME_OR_ID --request-key unique-run-1`.
-Keep that key and the exact same arguments to recover a lost response without
-allocating again. Do not invent a new key while an earlier outcome is unknown.
+For a name-based launch, the CLI prints its resolved template ID before submission.
+Retain that ID and key. To recover a lost response, retry with that ID and the same
+organization, revision and overrides (the same API body), without allocating again.
+Use the ID rather than the name even if the template was later renamed or deleted. Do not invent a new key while an earlier outcome is unknown.
 Only prompt, TTL, size and repository may override the preset; tools, model and
 readable-variable versions require publication. Use `--json` to inspect the
 returned frozen manifest; readable values may appear there.
