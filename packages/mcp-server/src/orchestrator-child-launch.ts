@@ -55,7 +55,7 @@ export async function launchOrchestratorChild(input: {
       const row = (
         await sql.query(
           `select c.id from public.orchestrator_child_operations c
-      join public.orchestrators o on o.id=c.orchestrator_id
+      join public.armada_access_parents o on o.id=c.orchestrator_id
       join public.sandboxes s on s.id=o.sandbox_id
       join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
       where c.id=$1 and c.target_id=$2 and c.owner_id=$3 and c.org_id=$4 and c.action='launch'

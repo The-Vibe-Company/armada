@@ -115,6 +115,7 @@ Usage:
   armada golden list [--provider boat|modal] [--json]
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
+                                           [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
                 [--skill org/slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
@@ -783,7 +784,18 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv, ["--size", "--skill"], ["--sized"]);
+  const args = parseArgs(argv, ["--size", "--skill", "--max-active-children"], ["--sized", "--armada-access"]);
+  const maxActiveChildren = single(args, "--max-active-children");
+  if (
+    maxActiveChildren !== undefined &&
+    (!flag(args, "--armada-access") || !/^[1-9][0-9]*$/.test(maxActiveChildren) || Number(maxActiveChildren) > 100)
+  )
+    throw new GoldenError(
+      "invalid_config",
+      "--max-active-children requires --armada-access and a limit from 1 to 100.",
+    );
+  if (flag(args, "--armada-access") && !single(args, "--credential-id"))
+    throw new GoldenError("invalid_config", "--armada-access requires --credential-id.");
   const rawSize = single(args, "--size");
   const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
@@ -820,30 +832,45 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   });
   const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
-    await client.request<LaunchWireResult>(sized ? SIZED_LAUNCH_ROUTE_V1 : "/api/v1/sandbox/launch", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-        ...(connections === undefined ? {} : { connections: connections.split(",") }),
-        credentialId: single(args, "--credential-id"),
-        golden: name,
-        ...(sized ? { sizePolicyVersion: 1 } : {}),
-        ...(size === undefined ? {} : { size }),
-        ...(repo === undefined ? {} : { repo }),
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-        harness,
-        ...resolveModelChoice(harness, {
-          model: single(args, "--model"),
-          reasoningEffort: single(args, "--reasoning-effort"),
+    await client.request<LaunchWireResult>(
+      flag(args, "--armada-access")
+        ? "/api/v1/sandbox/launch-access-v1"
+        : sized
+          ? SIZED_LAUNCH_ROUTE_V1
+          : "/api/v1/sandbox/launch",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+          ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
+          ...(connections === undefined ? {} : { connections: connections.split(",") }),
+          ...(flag(args, "--armada-access")
+            ? {
+                armadaAccessVersion: 1,
+                armadaAccess: {
+                  ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
+                },
+              }
+            : {}),
+          credentialId: single(args, "--credential-id"),
+          golden: name,
+          ...(sized ? { sizePolicyVersion: 1 } : {}),
+          ...(size === undefined ? {} : { size }),
+          ...(repo === undefined ? {} : { repo }),
+          ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+          harness,
+          ...resolveModelChoice(harness, {
+            model: single(args, "--model"),
+            reasoningEffort: single(args, "--reasoning-effort"),
+          }),
+          ...(prompt === undefined ? {} : { prompt }),
+          ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
         }),
-        ...(prompt === undefined ? {} : { prompt }),
-        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      }),
-      signal: AbortSignal.timeout(10 * 60_000),
-    }),
+        signal: AbortSignal.timeout(10 * 60_000),
+      },
+    ),
   );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result, auth.now()));
   if (

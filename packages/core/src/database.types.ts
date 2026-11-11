@@ -190,6 +190,64 @@ export type Database = {
           },
         ];
       };
+      armada_access_parents: {
+        Row: {
+          id: string;
+          kind: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id: string | null;
+          state: string;
+          authority_epoch: number;
+          golden_ids: string[];
+          credential_ids: string[];
+        };
+        Insert: {
+          id?: string;
+          kind: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id?: string | null;
+          state: string;
+          authority_epoch?: number;
+          golden_ids?: string[];
+          credential_ids?: string[];
+        };
+        Update: {
+          id?: string;
+          kind?: string;
+          org_id?: string;
+          owner_id?: string;
+          sandbox_id?: string | null;
+          state?: string;
+          authority_epoch?: number;
+          golden_ids?: string[];
+          credential_ids?: string[];
+        };
+        Relationships: [
+          {
+            foreignKeyName: "armada_access_parents_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "armada_access_parents_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "armada_access_parents_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       credentials: {
         Row: {
           id: string;
@@ -1995,17 +2053,10 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "orchestrator_child_operations_orchestrator_id_fkey";
-            columns: ["orchestrator_id"];
-            isOneToOne: false;
-            referencedRelation: "orchestrators";
-            referencedColumns: ["id"];
-          },
-          {
             foreignKeyName: "orchestrator_child_operations_orchestrator_id_org_id_owner_fkey";
             columns: ["orchestrator_id", "org_id", "owner_id"];
             isOneToOne: false;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id", "org_id", "owner_id"];
           },
           {
@@ -2048,7 +2099,7 @@ export type Database = {
             foreignKeyName: "orchestrator_children_orchestrator_id_org_id_owner_id_fkey";
             columns: ["orchestrator_id", "org_id", "owner_id"];
             isOneToOne: false;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id", "org_id", "owner_id"];
           },
           {
@@ -2111,7 +2162,7 @@ export type Database = {
             foreignKeyName: "orchestrator_delegations_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: false;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id"];
           },
         ];
@@ -2185,7 +2236,7 @@ export type Database = {
             foreignKeyName: "orchestrator_lifecycle_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: true;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id"];
           },
         ];
@@ -3128,6 +3179,7 @@ export type Database = {
 export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
 export type ApplicationSecretRow = Database["public"]["Tables"]["application_secrets"]["Row"];
 export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];
+export type ArmadaAccessParentRow = Database["public"]["Tables"]["armada_access_parents"]["Row"];
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
