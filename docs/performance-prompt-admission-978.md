@@ -53,6 +53,6 @@ python3 scripts/perf/staging.py --samples 20 --golden smoke-modal > /tmp/armada-
 
 Post deployed SHA and full JSON on #978 and confirm cleanup.deleted=true. One
 billable disposable Modal × Codex launch; no provider allocations in this coding
-session. The next small PR targets the separately observed ~0.2s API dispatch
-setup; launch phase breakdown and dashboard loading/bundle follow after that.
+session. The next small PR separates handler work from scaffolding within the inclusive
+API dispatch interval (~0.2s); launch phases and dashboard loading/bundle follow.
 Orchestrators remain excluded.
