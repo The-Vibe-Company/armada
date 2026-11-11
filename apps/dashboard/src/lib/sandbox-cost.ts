@@ -86,7 +86,11 @@ export function costFigure(cost: SandboxCost): CostFigure {
       kind: "unknown",
       text: cost.turns.some((turn) => turn.unknown === "price") ? "Price unknown" : "Tokens not reported",
     };
-  return { kind: "priced", text: formatUsd(cost.usd), partial: cost.unpricedTurns > 0 };
+  return {
+    kind: "priced",
+    text: formatUsd(cost.usd),
+    partial: cost.unpricedTurns > 0 || Object.values(cost.tokens).some((tokens) => tokens === null),
+  };
 }
 
 /** What a figure means, for a row's title: "Estimated cost" or "API-equivalent cost", with what it leaves out. */
@@ -94,7 +98,9 @@ export function costTitle(cost: SandboxCost): string {
   const figure = costFigure(cost);
   if (figure.kind !== "priced") return figure.text;
   const left = figure.partial
-    ? `, without ${cost.unpricedTurns} unpriced turn${cost.unpricedTurns === 1 ? "" : "s"}`
+    ? cost.unpricedTurns > 0
+      ? `, without ${cost.unpricedTurns} unpriced turn${cost.unpricedTurns === 1 ? "" : "s"}`
+      : ", incomplete usage coverage"
     : "";
   return `${cost.label}${left}`;
 }

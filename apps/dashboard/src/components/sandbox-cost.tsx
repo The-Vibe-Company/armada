@@ -43,8 +43,9 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
               </p>
               {figure.kind === "priced" && figure.partial && (
                 <p className="text-xs text-warning">
-                  Leaves out {cost.unpricedTurns} turn{cost.unpricedTurns === 1 ? "" : "s"} without complete token
-                  reporting or a known price.
+                  {cost.unpricedTurns > 0
+                    ? `Leaves out ${cost.unpricedTurns} turn${cost.unpricedTurns === 1 ? "" : "s"} without complete token reporting or a known price.`
+                    : "Usage coverage is incomplete; this is only the reported subtotal."}
                 </p>
               )}
             </div>

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { costFigure, costOfRow, formatTokens, formatUsd, usageFromRow } from "@/lib/sandbox-cost";
+import { costFigure, costOfRow, costTitle, formatTokens, formatUsd, usageFromRow } from "@/lib/sandbox-cost";
 
 const turns = (list: unknown[], turnCount: unknown = list.length) => ({ turnCount, turns: list });
 
@@ -80,6 +80,9 @@ describe("cost figure", () => {
       cacheWriteTokens: 1_000_000,
     };
     const cost = costOfRow({ harness: "claude", usage_turns: turns([reported]) }, "anthropic");
+    const subtotal = costOfRow({ harness: "claude", usage_turns: turns([reported], null) }, "anthropic");
+    expect(costFigure(subtotal)).toEqual({ kind: "priced", text: "$5.00", partial: true });
+    expect(costTitle(subtotal)).toContain("incomplete usage coverage");
     expect(cost.usd).toBe(5);
     expect(cost.tokens.cacheWrite).toBe(1_000_000);
     expect(formatTokens(null)).toBe("Not reported");
