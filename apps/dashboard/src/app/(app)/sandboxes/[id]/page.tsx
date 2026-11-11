@@ -52,8 +52,23 @@ export default async function SandboxPage({ params }: Props) {
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
-  const [sandbox, goldens, memberships, directory] = await Promise.all([
-    getSandbox(supabase, id),
+  // Interior metadata depends on the authorized row, not on the member directory
+  // or golden labels. Start it as soon as that row is available.
+  const interior = getSandbox(supabase, id).then(async (sandbox) => {
+    if (!sandbox) return null;
+    const recovery = needsAccountChoice(sandbox);
+    const owner = sandbox.owner_id === viewer.id;
+    const [applied, kinds, choices] = await Promise.all([
+      listSandboxConnections(sandbox),
+      credentialKinds(supabase, [sandbox.credential_id]),
+      recovery && owner && bindableStatus(sandbox.status) !== "failed"
+        ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+        : undefined,
+    ]);
+    return { sandbox, applied, kinds, choices, recovery, owner };
+  });
+  const [detail, goldens, memberships, directory] = await Promise.all([
+    interior,
     listGoldenHistory(supabase),
     pending,
     pending.then((items) =>
@@ -63,7 +78,7 @@ export default async function SandboxPage({ params }: Props) {
       ),
     ),
   ]);
-  if (!sandbox) {
+  if (!detail) {
     // The interior read is refused to a member who is neither the owner nor an admin (#680). Only then is the safe
     // metadata read, so nothing of the interior is fetched and hidden; a sandbox the server does not list is not found.
     const listed = await getSandboxMetadata(supabase, id);
@@ -71,23 +86,14 @@ export default async function SandboxPage({ params }: Props) {
     if (!listed || listed.canOpen) notFound();
     return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
   }
+  const { sandbox, applied, kinds, choices, recovery, owner } = detail;
   const golden = goldens.find((item) => item.id === sandbox.golden_id);
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
-  const [applied, kinds] = await Promise.all([
-    listSandboxConnections(sandbox),
-    credentialKinds(supabase, [sandbox.credential_id]),
-  ]);
   const cost = costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null);
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
-  const recovery = needsAccountChoice(sandbox);
-  const owner = sandbox.owner_id === viewer.id;
-  const choices =
-    recovery && owner && bindableStatus(sandbox.status) !== "failed"
-      ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
-      : undefined;
   const machineSize = describeEvidence(sandbox.provider, sandbox);
   // The interior row is returned only to a viewer who may open the sandbox, so the recovery command is theirs to run.
   const outcome = settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome));

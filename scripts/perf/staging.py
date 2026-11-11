@@ -22,6 +22,8 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--samples", type=int, default=20)
+parser.add_argument("--dashboard-url", help="Optional staging dashboard origin; browser probe runs after sandbox cleanup")
+parser.add_argument("--dashboard-path", default="/login", help="Read-only dashboard route; session via DASHBOARD_STORAGE_STATE file")
 parser.add_argument("--golden", help="Existing Modal golden name; otherwise first ready name")
 parser.add_argument("--cli", help="Compiled armada executable; default: Bun source CLI")
 args = parser.parse_args()
@@ -158,6 +160,65 @@ def cli(command):
                           "samples": len(times), "ms": stats(times)})
 
 
+# The browser helper reports only fixed numeric/boolean measurements, never page data.
+DASHBOARD_FIELDS = {
+    "schema", "samples", "warmups", "runtime", "platform", "browserVersion", "viewport", "width", "height", "mock", "bundle", "available", "js", "css", "assets", "raw", "gzip",
+    "login", "(app)/sandboxes", "(app)/sandboxes/[id]", "matchedRoute", "metrics",
+    "conversationReadyMs", "headingReadyMs", "responseStartMs", "responseEndMs", "domReadyMs", "loadMs",
+    "firstContentfulPaintMs", "scriptEncodedBytes", "scriptDecodedBytes", "p50", "p95",
+}
+
+
+def safe_dashboard(value, field=None):
+    if field in ("runtime", "browserVersion") and isinstance(value, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", value):
+        return value
+    if field == "platform" and value in ("linux", "darwin", "win32"):
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+        return value
+    if isinstance(value, dict) and all(key in DASHBOARD_FIELDS for key in value):
+        return {key: safe_dashboard(item, key) for key, item in value.items()}
+    raise Failure("Unsupported dashboard measurement data (details suppressed)")
+
+
+def validate_dashboard_target():
+    target = urllib.parse.urlsplit(args.dashboard_url)
+    if (target.scheme != "https" or not target.netloc or target.username or target.password
+            or target.query or target.fragment or target.path not in ("", "/")):
+        raise Failure("Dashboard URL must be an HTTPS staging origin")
+    if (target.hostname or "").rstrip(".").lower() in {
+        "armada.thevibecompany.co", "armada.thevibecompany.com", "armada-dashboard.vercel.app",
+        "armada-mcp-production.up.railway.app",
+    }:
+        raise Failure("Refusing known production dashboard")
+    if not re.fullmatch(r"/(?:login|sandboxes|environments|harness|tools|settings|skills|templates|variables|orgs)(?:/[a-z0-9-]+)?", args.dashboard_path, re.IGNORECASE):
+        raise Failure("Unsupported dashboard measurement route")
+    if os.environ.get("DASHBOARD_STORAGE_STATE") and not os.path.isfile(os.environ["DASHBOARD_STORAGE_STATE"]):
+        raise Failure("Dashboard session-state file is unavailable")
+
+
+def dashboard():
+    validate_dashboard_target()
+    # Do not forward service/model/provider environment credentials into the browser probe.
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH") if key in os.environ}
+    env.update(DASHBOARD_PERF_URL=args.dashboard_url, DASHBOARD_PERF_PATH=args.dashboard_path,
+               DASHBOARD_PERF_SAMPLES=str(args.samples))
+    if os.environ.get("DASHBOARD_STORAGE_STATE"):
+        env["DASHBOARD_STORAGE_STATE"] = os.environ["DASHBOARD_STORAGE_STATE"]
+    try:
+        result = subprocess.run(["bun", str(root / "scripts/perf/dashboard.ts")], cwd=root, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=180, check=False)
+        if result.returncode:
+            raise Failure("Dashboard probe failed; check staging session, path and installed browser")
+        return safe_dashboard(json.loads(result.stdout))
+    except Failure:
+        raise
+    except Exception:
+        raise Failure("Dashboard probe unavailable, invalid or timed out (details suppressed)") from None
+
+
 def interrupted(signum, frame):
     raise Failure("Interrupted; entering cleanup")
 
@@ -166,6 +227,8 @@ signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 exit_code = 0
 try:
+    if args.dashboard_url:
+        validate_dashboard_target()
     for command in [["--version"], ["--help"], ["list", "--org", org, "--json"],
                     ["golden", "list", "--org", org, "--json"]]:
         cli(command)
@@ -242,6 +305,13 @@ finally:
     else:
         report["cleanup"] = {"allocatedIdReceived": False,
                              "note": "If launch transport failed, inspect staging for an unacknowledged allocation; do not retry launch."}
+    if args.dashboard_url and exit_code == 0:
+        try:
+            report["dashboard"] = dashboard()
+        except Failure as error:
+            report["dashboard"] = {"available": False}
+            report["error"] = str(error)
+            exit_code = 1
     # Defense in depth: never emit an environment token, even if it equals a returned ID.
     print(json.dumps(report, indent=2).replace(token, "[REDACTED]"))
 sys.exit(exit_code)

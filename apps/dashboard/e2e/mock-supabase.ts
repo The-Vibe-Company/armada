@@ -15,6 +15,35 @@ type Fail = { status: number; code: string; message: string };
 const PORT = Number(process.env.MOCK_PORT ?? 54399);
 const CODE = "123456";
 
+// Controlled latency belongs only to this local benchmark fixture, never the app.
+const perfDelay = Number(process.env.DASHBOARD_PERF_DELAY_MS ?? 0);
+const perfDirectoryDelay = Number(process.env.DASHBOARD_PERF_DIRECTORY_MS ?? perfDelay);
+if (![perfDelay, perfDirectoryDelay].every((n) => Number.isInteger(n) && n >= 0 && n <= 1000))
+  throw new Error("Invalid local performance delay");
+const perfTables = new Map([
+  ["/rest/v1/orgs", "orgs"],
+  ["/rest/v1/members", "members"],
+  ["/rest/v1/sandboxes", "sandboxes"],
+  ["/rest/v1/goldens", "goldens"],
+  ["/rest/v1/credentials", "credentials"],
+  ["/rest/v1/rpc/org_members", "directory"],
+]);
+let perfEpoch = 0;
+const perfEvents: { table: string; startMs: number; durationMs: number }[] = [];
+async function measuredFixture<T>(table: string | undefined, work: () => T | Promise<T>): Promise<T> {
+  if (!table || (!perfDelay && !perfDirectoryDelay)) return work();
+  const epoch = perfEpoch,
+    startMs = performance.now();
+  try {
+    const delay = table === "directory" ? perfDirectoryDelay : perfDelay;
+    if (delay) await Bun.sleep(delay);
+    return await work();
+  } finally {
+    if (epoch === perfEpoch && perfEvents.length < 1000)
+      perfEvents.push({ table, startMs, durationMs: performance.now() - startMs });
+  }
+}
+
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const ALICE = id(1);
 const BOB = id(2);
@@ -2406,6 +2435,13 @@ function accounts(route: string, body: Row, request: Request): Response {
 }
 
 function control(url: URL, body: Row): Response {
+  if (url.pathname === "/__test/perf") {
+    if (body.reset === true) {
+      perfEpoch++;
+      perfEvents.length = 0;
+    }
+    return json({ delayMs: perfDelay, directoryDelayMs: perfDirectoryDelay, events: [...perfEvents] });
+  }
   if (url.pathname === "/__test/reset") {
     state = seed();
     pendingOAuth.clear();
@@ -2888,7 +2924,8 @@ const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.method !== "DELETE";
-    if (url.pathname.startsWith("/rest/v1/")) return rest(request, url);
+    if (url.pathname.startsWith("/rest/v1/"))
+      return measuredFixture(perfTables.get(url.pathname), () => rest(request, url));
     const text = hasBody ? await request.text() : "";
     const body = text ? (JSON.parse(text) as Row) : {};
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
@@ -2910,7 +2947,9 @@ const server = Bun.serve({
       return githubCliCallback(request, body);
     }
     if (url.pathname.startsWith("/api/v1/mcp/") && request.method === "POST") {
-      return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
+      return measuredFixture(url.pathname === "/api/v1/mcp/sandbox-connections" ? "connections" : undefined, () =>
+        mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request)),
+      );
     }
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
     if (url.pathname.startsWith("/api/v1/")) {
