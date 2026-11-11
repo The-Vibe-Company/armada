@@ -1327,6 +1327,54 @@ describe("tools", () => {
     },
   );
 
+  test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const id = launched.data.id;
+    const before = (
+      await db.query<{ lifecycle_generation: string | number | bigint }>(
+        "select lifecycle_generation from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0]?.lifecycle_generation;
+    const execute = boat.provider.exec;
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    boat.provider.exec = async (request) => {
+      if (request.command === "held command") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+          entered?.();
+        });
+      }
+      return execute(request);
+    };
+    const first = call(mcp, "exec", { id, command: "held command" });
+    await running;
+    let second: Awaited<ReturnType<typeof call>>;
+    try {
+      second = await call(mcp, "exec", { id, command: "parallel command" });
+    } finally {
+      release?.();
+    }
+    const completed = await first;
+    expect(second.isError).not.toBe(true);
+    expect(second.data.exitCode).toBe(0);
+    expect(completed.isError).not.toBe(true);
+    const after = (
+      await db.query<{ lifecycle_generation: string | number | bigint; activity_lease_id: string | null }>(
+        "select lifecycle_generation,activity_lease_id from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(after?.lifecycle_generation).toEqual(before);
+    expect(after?.activity_lease_id).toBeNull();
+  });
+
   test.each(["exec", "steer"])("pending successful stop blocks %s workspace mutation", async (tool) => {
     let preparations = 0;
     const { token, client, people, boat, db } = await start({
@@ -1488,6 +1536,7 @@ describe("tools", () => {
         "quiesce_finished",
         "capture_started",
         "capture_clean",
+        "capture_committed",
       ]);
       expect(events.at(-1)).toMatchObject({
         event: "sandbox_stop_dispatch",

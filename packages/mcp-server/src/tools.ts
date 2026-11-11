@@ -1503,7 +1503,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      await context.launchCredentials.assertExec?.(
+      const managedNative = await context.launchCredentials.assertExec?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
       );
@@ -1569,7 +1569,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           );
         }
       };
-      // Stop and workspace mutation must not interleave: a stop receipt sampled
+      if (!managedNative) {
+        // Admission-only check: already-running ordinary commands remain concurrent
+        // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
+        await data.sandboxes.assertExecAllowed?.(found.id);
+        return execute();
+      }
+      // Stop and native-file mutation must not interleave: a stop receipt sampled
       // before this command cannot authenticate output produced after auto-resume.
       return sandboxActivity(
         data.sandboxes,

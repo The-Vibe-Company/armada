@@ -151,6 +151,9 @@ async function captureAndStore(
     if (expired()) return;
     if (!stop) return "pending";
     stopLoaded = true;
+    // Null is intentional for managed-child stops: their core store does not
+    // create a stop generation, and their operation journal publishes stopped
+    // directly (no ordinary lifecycle recapture). These one-off calls stay uncached.
     progress.stopToken = stop.stop_token;
     if (stop.complete) {
       observed("capture_reused");
@@ -209,6 +212,7 @@ async function captureAndStore(
         [id, null, progress.stopToken],
       );
       if (!saved.rows.length) return "pending";
+      observed("capture_committed");
       return;
     } else {
       reason = result.reason;

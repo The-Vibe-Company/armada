@@ -39,6 +39,8 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxStore extends SandboxStore {
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
+  assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
@@ -332,6 +334,21 @@ export function createSqlData(sql: Sql): DataSource {
             and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
           [...scope, id, JSON.stringify(usage)],
         );
+      },
+      async assertExecAllowed(id) {
+        const row = (
+          await sql.query<{ stop_requested_at: unknown }>(
+            `select s.stop_requested_at from public.sandboxes s join public.goldens g on g.id=s.golden_id
+           where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new DataError("No such sandbox.");
+        if (row.stop_requested_at !== null)
+          throw new DataError(
+            "Sandbox is stopping; wait for stop or send explicit new work before exec.",
+            "sandbox_not_ready",
+          );
       },
       async preserveWork(id, provider, providerId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
