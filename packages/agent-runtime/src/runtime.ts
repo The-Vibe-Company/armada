@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult } from "@armada/core";
+import { validateReadableVariables } from "@armada/core";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
@@ -37,6 +38,7 @@ export class Runner {
   private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
   private resumingNative = false;
+  private readableDigests = new Map<string, string>();
   private configureGitHub: RunnerExecutionOptions["configureGitHub"];
   constructor(
     readonly journal: Journal,
@@ -150,6 +152,27 @@ export class Runner {
           headers: { "content-type": "application/json" },
         });
       }
+      if (r.op === "configureReadableVariables") {
+        if (
+          this.credentialFreeBuilder ||
+          this.barrier ||
+          this.journal.checkpointPending(this.grant) ||
+          !["claude", "codex"].includes(r.harness) ||
+          Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
+        )
+          throw Error("invalid_request");
+        const variables = validateReadableVariables(r.variables);
+        const digest = JSON.stringify(Object.entries(variables).sort());
+        const previous = this.readableDigests.get(r.harness);
+        if (previous !== undefined && previous !== digest) throw Error("invalid_request");
+        if (previous === digest)
+          return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
+        const bootstrap = this.drivers[r.harness].configureReadableVariables;
+        if (!bootstrap) throw Error("invalid_request");
+        bootstrap.call(this.drivers[r.harness], variables);
+        this.readableDigests.set(r.harness, digest);
+        return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
+      }
       if (r.op === "configureGitHub") {
         // Private configuration is never persisted in request receipts or returned to callers.
         if (
@@ -214,10 +237,10 @@ export class Runner {
     }
   }
   private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
-    if (this.nativeEpoch?.active && !epochControl) throw Error("orchestrator_authority_managed");
     if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
     if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
-    const configuration = validateMcpConfiguration(value),
+    const validated = validateMcpConfiguration(value);
+    const configuration = !epochControl ? (this.nativeEpoch?.connections(validated) ?? validated) : validated,
       values = mcpSecretValues(configuration);
     if (this.credentialFreeBuilder && Object.keys(configuration.servers).length)
       throw Error("builder_credentials_forbidden");
@@ -261,6 +284,7 @@ export class Runner {
         op:
           | "configureMcp"
           | "configureGitHub"
+          | "configureReadableVariables"
           | "resourceObservation"
           | "installOrchestratorEpoch"
           | "scrubOrchestratorEpoch";

@@ -33,7 +33,10 @@ enum OrchestratorState: Hashable, Sendable {
         case .stopped: "Stopped"
         case .resuming: "Resuming"
         case .blocked: "Needs attention"
-        case .other(let value): value.capitalized
+        // A kind this build does not name (`connections_add`): its words, sentence case.
+        case .other(let value):
+            value.replacingOccurrences(of: "_", with: " ").prefix(1).uppercased()
+                + value.replacingOccurrences(of: "_", with: " ").dropFirst()
         }
     }
 
@@ -201,7 +204,10 @@ enum OperationKind: Hashable, Sendable {
         case .stop: "Stop"
         case .resume: "Resume"
         case .recover: "Recovery"
-        case .other(let value): value.capitalized
+        // A kind this build does not name (`connections_add`): its words, sentence case.
+        case .other(let value):
+            value.replacingOccurrences(of: "_", with: " ").prefix(1).uppercased()
+                + value.replacingOccurrences(of: "_", with: " ").dropFirst()
         }
     }
 }
@@ -224,7 +230,8 @@ enum OperationState: Hashable, Sendable {
         }
     }
 
-    var isOpen: Bool { self == .pending || self == .uncertain }
+    var isOpen: Bool { self != .succeeded && self != .failed }
+    var isUncertain: Bool { isOpen && self != .pending }
 
     var rawValue: String {
         switch self {

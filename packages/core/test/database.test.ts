@@ -55,6 +55,9 @@ describe("database", () => {
         order by 1
       `);
       expect(tables.rows.map((row) => row.name)).toEqual([
+        "application_secret_uploads",
+        "application_secrets",
+        "application_vault_audit",
         "credentials",
         "github_authorizations",
         "github_connections",
@@ -68,6 +71,8 @@ describe("database", () => {
         "golden_snapshot_publications",
         "golden_snapshot_retirements",
         "goldens",
+        "launch_template_revisions",
+        "launch_templates",
         "mcp_actor_epochs",
         "mcp_bindings",
         "mcp_bootstraps",
@@ -104,11 +109,13 @@ describe("database", () => {
         "orchestrators",
         "organization_invitations",
         "orgs",
+        "readable_variables",
         "resource_observations",
         "sandbox_turn_models",
         "sandbox_work_recovery",
         "sandboxes",
         "service_tokens",
+        "template_launch_requests",
       ]);
 
       const unlocked = await db.query<{ name: string }>(`
@@ -182,6 +189,8 @@ describe("database", () => {
         order by 1
       `);
       expect(granted.rows.map((row) => row.grant)).toEqual([
+        "application_secrets SELECT(created_at,epoch,expires_at,id,name,org_id,owner_id,scope,status,updated_at,version)",
+        "application_vault_audit SELECT",
         "credentials DELETE",
         "credentials INSERT(created_at,id,kind,owner_id,scope,value_enc)",
         "credentials SELECT(created_at,expires_at,id,is_default,kind,name,owner_id,scope,status,updated_at,version)",
@@ -192,6 +201,8 @@ describe("database", () => {
         "goldens INSERT(boat_sandbox_id,boat_snapshot_id,config,created_at,id,modal_app_id,modal_environment,modal_workspace,name,org_id,owner_id,provider,provider_sandbox_id,provider_snapshot_id,removed_at,size_policy,visibility)",
         "goldens SELECT",
         "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name,provider_sandbox_id,provider_snapshot_id)",
+        "launch_template_revisions SELECT",
+        "launch_templates SELECT",
         "mcp_connections SELECT",
         "mcp_tokens DELETE",
         "mcp_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
@@ -214,12 +225,14 @@ describe("database", () => {
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
+        "readable_variables SELECT",
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
         "service_tokens INSERT",
         "service_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
         "service_tokens UPDATE(revoked_at)",
+        "template_launch_requests SELECT",
       ]);
 
       // Whatever else is granted, no SELECT grant of a user JWT names a secret column.
@@ -263,6 +276,15 @@ describe("database", () => {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
           continue;
         }
+        if (id === "sandboxes.application_secret_tainted") {
+          // Exposure metadata is a boolean, never a plaintext secret payload.
+          expect(column.data_type).toBe("boolean");
+          continue;
+        }
+        if (id === "application_secret_uploads.secret_expires_at") {
+          expect(column.data_type).toBe("timestamp with time zone");
+          continue;
+        }
         if (column.column_name === "hash") {
           expect(column.data_type).toBe("text");
           continue;
@@ -274,6 +296,8 @@ describe("database", () => {
         });
       }
       expect(ciphertext.sort()).toEqual([
+        "application_secret_uploads.value_enc",
+        "application_secrets.value_enc",
         "credentials.value_enc",
         "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",

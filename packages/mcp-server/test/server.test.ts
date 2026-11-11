@@ -1,11 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore, mutateCredentialAccount, ProviderError } from "@armada/core/server";
+import {
+  CREDENTIAL_BUSY_MESSAGE,
+  createSqlVaultStore,
+  mutateCredentialAccount,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import helperManifest from "../../core/helper/manifest.json";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
+import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
@@ -310,6 +319,9 @@ describe("tools", () => {
         "list",
         "logs",
         "orchestrator_capabilities",
+        "orchestrator_connections_list",
+        "orchestrator_connections_add",
+        "orchestrator_connections_remove",
         "orchestrator_create",
         "orchestrator_list",
         "orchestrator_detail",
@@ -320,6 +332,21 @@ describe("tools", () => {
         "orchestrator_resume",
         "orchestrator_recover",
         "orchestrator_reconcile",
+        "template_create",
+        "template_list",
+        "template_get",
+        "template_publish",
+        "template_delete",
+        "template_launch",
+        "variable_list",
+        "variable_read",
+        "variable_set",
+        "variable_update",
+        "variable_delete",
+        "secret_list",
+        "secret_commit",
+        "secret_revoke",
+        "secret_delete",
         "report",
         "resource_advice",
         "send",
@@ -330,6 +357,25 @@ describe("tools", () => {
       ].sort(),
     );
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+    const secretCommit = tools.find((tool) => tool.name === "secret_commit");
+    expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
+    expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });
+    const variableSet = tools.find((tool) => tool.name === "variable_set");
+    expect(variableSet?.inputSchema.required).toEqual(["org", "scope", "name", "value"]);
+    expect(variableSet?.inputSchema.properties?.scope).toMatchObject({ enum: ["personal", "org"] });
+    expect(variableSet?.inputSchema.properties?.value).toMatchObject({ type: "string" });
+    for (const name of ["variable_update", "variable_delete", "secret_revoke", "secret_delete"]) {
+      const schema = tools.find((tool) => tool.name === name)?.inputSchema;
+      expect(schema?.required).toEqual(["org", "id", "expectedVersion"]);
+      expect(schema?.properties?.expectedVersion).toMatchObject({ type: "integer", minimum: 1 });
+    }
+    for (const tool of tools.filter((tool) => /^(secret|variable)_/.test(tool.name))) {
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+      if (tool.name.startsWith("secret_")) {
+        expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value");
+        expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value_enc");
+      }
+    }
     const launch = tools.find((tool) => tool.name === "launch");
     expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
     expect(launch?.inputSchema.required ?? []).not.toContain("repo");
@@ -438,15 +484,44 @@ describe("tools", () => {
   });
 
   test("launch forks with noEnv, the caller's Armada credential and the org boat key, and returns no secret", async () => {
-    const { token, client, people, boat } = await start();
+    const { token, client, people, boat, db } = await start();
+    const helperClient = await client(await token(people.member));
+    for (const reason of ["helper_missing", "helper_receipt_invalid"]) {
+      if (reason === "helper_receipt_invalid")
+        await db.query(
+          `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='shared'`,
+        );
+      const refused = await call(helperClient, "launch", {
+        golden: "shared",
+        harness: "claude",
+        helperCapabilities: ["diagnose"],
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.data).toEqual({
+        error: { code: "unsupported", message: expect.any(String), details: { reason, action: "rebuild_golden" } },
+      });
+      expect(boat.forks).toHaveLength(0);
+    }
+    await db.query(
+      `update goldens set helper_receipt = jsonb_build_object(
+      'version','0.1.0','protocol',1,'platform','x86_64','digest',$1::text,
+      'capabilities',jsonb_build_array('diagnose'),'snapshotId',provider_snapshot_id) where name='shared'`,
+      [helperManifest.x86_64.digest],
+    );
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "Fix the build" });
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "claude",
+      prompt: "Fix the build",
+      helperCapabilities: ["diagnose"],
+    });
     expect(launched.isError).toBe(false);
     expect(launched.data).toMatchObject({
       golden: "shared",
       harness: "claude",
       status: "running",
       promptId: "prompt_1",
+      helper: { status: "supported", protocol: 1, capabilities: ["diagnose"] },
     });
     expect(boat.forks[0]).toMatchObject({ noEnv: true, env: { CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude } });
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
@@ -1259,6 +1334,227 @@ describe("tools", () => {
     },
   );
 
+  test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const id = launched.data.id;
+    const before = (
+      await db.query<{ lifecycle_generation: string | number | bigint }>(
+        "select lifecycle_generation from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0]?.lifecycle_generation;
+    const execute = boat.provider.exec;
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    boat.provider.exec = async (request) => {
+      if (request.command === "held command") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+          entered?.();
+        });
+      }
+      return execute(request);
+    };
+    const first = call(mcp, "exec", { id, command: "held command" });
+    await running;
+    let second: Awaited<ReturnType<typeof call>>;
+    try {
+      second = await call(mcp, "exec", { id, command: "parallel command" });
+    } finally {
+      release?.();
+    }
+    const completed = await first;
+    expect(second.isError).not.toBe(true);
+    expect(second.data.exitCode).toBe(0);
+    expect(completed.isError).not.toBe(true);
+    const after = (
+      await db.query<{ lifecycle_generation: string | number | bigint; activity_lease_id: string | null }>(
+        "select lifecycle_generation,activity_lease_id from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(after?.lifecycle_generation).toEqual(before);
+    expect(after?.activity_lease_id).toBeNull();
+  });
+
+  test.each(["exec", "steer"])("pending successful stop blocks %s workspace mutation", async (tool) => {
+    let preparations = 0;
+    const { token, client, people, boat, db } = await start({
+      connections: {
+        validate: async () => {},
+        bind: async () => {},
+        prepare: async () => {
+          preparations++;
+        },
+      },
+    });
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const id = launched.data.id;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    boat.provider.stop = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "unavailable",
+        retryable: true,
+        message: "Stop did not dispatch",
+      });
+    };
+    expect((await call(mcp, "stop", { id })).isError).toBe(true);
+    // Expire the retained unknown-outcome lease without a wall-clock wait.
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    const prepared = preparations;
+    const commands = boat.execs.length,
+      steers = boat.steers.length;
+    expect(
+      (
+        await call(
+          mcp,
+          tool,
+          tool === "exec" ? { id, command: "touch after-capture" } : { id, text: "change after capture" },
+        )
+      ).isError,
+    ).toBe(true);
+    expect(boat.execs).toHaveLength(commands);
+    expect(boat.steers).toHaveLength(steers);
+    expect(preparations).toBe(prepared);
+  });
+
+  test("explicit new work cancels a pending stop receipt before the next stop", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const id = launched.data.id;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const stop = boat.provider.stop;
+    boat.provider.stop = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "unavailable",
+        retryable: true,
+        message: "Stop did not dispatch",
+      });
+    };
+    expect((await call(mcp, "stop", { id })).isError).toBe(true);
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    const sent = await call(mcp, "send", { id, prompt: "new work" });
+    expect(sent.isError).not.toBe(true);
+    const promptId = sent.data.promptId;
+    if (typeof promptId !== "string") throw new Error("Missing accepted prompt id");
+    boat.finish("bx_1", promptId, "finished");
+    boat.provider.stop = stop;
+    const count = boat.execs.filter((r) => r.preservationStage === "collect_exec").length;
+    expect((await call(mcp, "stop", { id })).isError).not.toBe(true);
+    expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
+  });
+
+  test.each(["preserved", "clean"] as const)("user stop then lifecycle stop reuses its %s capture", async (result) => {
+    const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
+    process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
+    try {
+      const { token, client, people, boat, db } = await start();
+      const mcp = await client(await token(people.member));
+      const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+      const id = launched.data.id;
+      const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
+      boat.setExecOutput({ stdout: JSON.stringify({ status: result }) });
+      const capture = encryptedRecoveryExec(() => archive, boat.provider.exec);
+      let captures = 0;
+      boat.provider.exec = async (request) => {
+        if (request.preservationStage === "collect_exec") captures++;
+        if (boat.sandbox("bx_1").info.state !== "ready")
+          throw new ProviderError({
+            provider: "boat",
+            code: "sandbox_not_ready",
+            retryable: false,
+            message: "Archiving",
+          });
+        return capture(request);
+      };
+      const stop = boat.provider.stop;
+      boat.provider.stop = async (request) => {
+        await stop(request);
+        if (boat.stops.length === 1)
+          boat.sandbox(request.sandboxId).info = {
+            ...boat.sandbox(request.sandboxId).info,
+            state: "stopping",
+            providerState: "archiving",
+          };
+      };
+      expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
+      const before = (
+        await db.query<{
+          preservation_note: string | null;
+        }>("select preservation_note from sandboxes where id=$1", [id])
+      ).rows[0];
+      expect(captures).toBe(1);
+      const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+      expect(await lifecycle.reconcileOne()).toBe(true);
+      const after = (
+        await db.query<{ status: string; preservation_note: string | null }>(
+          "select status::text,preservation_note from sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0];
+      expect(after?.status).toBe("stopped");
+      expect(after?.preservation_note).toBe(before?.preservation_note);
+      expect(captures).toBe(1);
+      expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(
+        result === "preserved" ? 1 : 0,
+      );
+      expect((await call(mcp, "work_recovery", { id })).data.archive).toBe(result === "preserved" ? archive : null);
+    } finally {
+      if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+      else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
+    }
+  });
+
+  test("a clean fully-pushed stop leaves no preservation note", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    expect((await call(mcp, "stop", { id: launched.data.id })).data.status).toBe("stopped");
+    const row = (
+      await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [
+        launched.data.id,
+      ])
+    ).rows[0];
+    expect(row?.preservation_note).toBeNull();
+  });
+
+  test("user-stop trace places capture before physical dispatch", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const log = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await call(mcp, "stop", { id: launched.data.id });
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events.filter((e) => e.event === "work_preservation_stage").map((e) => e.phase)).toEqual([
+        "observed",
+        "quiesce_started",
+        "quiesce_finished",
+        "capture_started",
+        "capture_clean",
+        "capture_committed",
+      ]);
+      expect(events.at(-1)).toMatchObject({
+        event: "sandbox_stop_dispatch",
+        source: "user_stop",
+        sandboxId: launched.data.id,
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   test("stop without a provider timestamp retains observed compute time", async () => {
     const { token, client, people, boat, db, clock } = await start();
     const mcp = await client(await token(people.member));
@@ -1305,4 +1601,21 @@ test("authenticated MCP forwards the configured shared orchestrator runtime rath
   expect(result.isError).not.toBe(true);
   expect(result.structuredContent).toEqual({ version: 1, items: [], cursor: null });
   expect(seen).toEqual([s.people.owner, s.people.org]);
+});
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();
+
+test("MCP launch preserves the closed busy account code and safe action", async () => {
+  const { token, client, people, boat } = await start({
+    providerFor: () => {
+      throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+    },
+  });
+  const mcp = await client(await token(people.owner));
+  const result = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+  expect(result.isError).toBe(true);
+  expect(result.text).toContain("error code: credential_busy");
+  expect(result.text).toContain(CREDENTIAL_BUSY_MESSAGE);
+  expect(boat.forks).toHaveLength(0);
 });

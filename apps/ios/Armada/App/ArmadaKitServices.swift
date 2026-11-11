@@ -140,7 +140,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
                 return Self.operation(receipt)
             }
             let receipt = try await client.submitOrchestratorOperation(id)
-            if receipt.state == .uncertain { throw ServiceFailure.uncertain }
+            if receipt.state != .pending && receipt.state != .succeeded && receipt.state != .failed { throw ServiceFailure.uncertain }
             // Keep terminal knowledge available to concurrent same-handle callers.
             // It does not block preparing a new command; explicit cleanup is separate.
             return Self.operation(receipt)
@@ -333,6 +333,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .invalidRequest: return .rejected("Armada refused this request.")
         case .invalidResponse: return .rejected("Armada returned a response this app version doesn't understand.")
         case .secureStorage: return .rejected("This device's secure storage is unavailable.")
+        case .refused: return .rejected(armada.localizedDescription)
         case .invalidOrigin, .http: return .rejected("The request could not be completed.")
         }
     }
@@ -370,12 +371,13 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         if let armada = error as? ArmadaError {
             switch armada {
             case .forbidden, .http(404): return .noAccess
-            case .conflict, .invalidRequest, .http(400):
+            case .conflict, .invalidRequest, .http(400), .refused:
                 let neverDispatched = saved.state == .pending && saved.receipt == nil && saved.canDiscard
                 // Permission to clean up a succeeded receipt is NOT rejection evidence.
                 guard saved.rejectedBeforeAdmission || neverDispatched else { return .uncertain }
                 do { try await client.discardOrchestratorOperation(id) }
                 catch { return .uncertain }
+                if case .refused = armada { return .rejected(armada.localizedDescription) }
                 return armada == .conflict ? .staleRevision : .rejected("Armada refused this request.")
             default: break
             }

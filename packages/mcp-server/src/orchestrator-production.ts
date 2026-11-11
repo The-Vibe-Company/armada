@@ -32,7 +32,7 @@ import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-nativ
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { preserveBeforeStop } from "./work-preservation.ts";
+import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** Real production composition. Modal Codex retains its native checkpoint lane;
  * Boat is explicitly best-effort ordinary archival/activation. Deployment intent
@@ -169,7 +169,14 @@ export function createProductionOrchestrators(input: {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       await input.credentials.assertTurn?.(actor, saved.id, saved.status === "stopped");
-      await sandboxActivity(stores.sandboxes, saved, { status: "running" }, async (signal) => {
+      const scoped = createSqlData(sql)({
+        via: "service",
+        userId: operation.ownerId,
+        orgs: [{ orgId: operation.orgId, role: "member" }],
+      }).sandboxes;
+      // Explicit new work cancels the pending stop epoch under the same activity
+      // fences used by ordinary send, so an older receipt cannot cover this turn.
+      await sandboxActivity(scoped, saved, { status: "running", stopRequested: false }, async (signal) => {
         const receipt = await provider.prompt({
           sandboxId: saved.providerSandboxId,
           harness: saved.harness,
@@ -217,8 +224,9 @@ export function createProductionOrchestrators(input: {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       await sandboxActivity(stores.sandboxes, saved, { stopRequested: true }, async () => {
         if (
-          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId).catch(() => {})) ===
-          "pending"
+          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop").catch(
+            () => {},
+          )) === "pending"
         )
           throw new ProviderError({
             provider: provider.id,
@@ -226,6 +234,7 @@ export function createProductionOrchestrators(input: {
             retryable: true,
             message: "Interruption is pending; retry stop after turns settle.",
           });
+        recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
         await provider.stop({ sandboxId: saved.providerSandboxId });
         return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
       });
@@ -251,6 +260,20 @@ export function createProductionOrchestrators(input: {
   return createOrchestratorServices(sql, {
     scopedMcpUrl: input.scopedMcpUrl,
     runtime: {
+      validateConnections: async (configuration, ownerId) => {
+        const member = (
+          await sql.query<{ role: "admin" | "member" }>(
+            "select role from public.members where org_id=$1 and user_id=$2",
+            [configuration.orgId, ownerId],
+          )
+        ).rows[0];
+        if (!member) throw new OrchestratorRuntimeError("not_found");
+        const actor = { userId: ownerId, orgId: configuration.orgId, role: member.role };
+        const connections = input.managedConnections ?? input.connections;
+        const ids = configuration.connections ?? (await connections?.defaults?.(actor, "private")) ?? [];
+        if (ids.length && !connections) throw new OrchestratorRuntimeError("invalid_request");
+        await connections?.validate(actor, ids, "private");
+      },
       authority,
       reserveOperation: reserveOrchestratorOperation,
       skillRevision,

@@ -44,7 +44,22 @@ export const COMMANDS: readonly Command[] = [
     group: "Go to",
     keywords: ["goldens", "snapshots", "repositories"],
   },
+  {
+    id: "templates",
+    label: "Templates",
+    href: "/templates",
+    group: "Go to",
+    keywords: ["presets", "launch", "model", "variables"],
+  },
   { id: "tools", label: "Tools", href: "/tools", group: "Go to", keywords: ["mcp", "connections"] },
+  { id: "skills", label: "Skills", href: "/skills", group: "Go to", keywords: ["skillpack", "key", "private"] },
+  {
+    id: "variables",
+    label: "Variables",
+    href: "/variables",
+    group: "Go to",
+    keywords: ["secrets", "environment", "env", "config"],
+  },
   {
     id: "harness",
     label: "Harness",

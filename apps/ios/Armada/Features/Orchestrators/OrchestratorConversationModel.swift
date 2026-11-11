@@ -122,10 +122,10 @@ final class OrchestratorConversationModel {
         }
         if lifecycleHandle == open.handle {
             if case .sending = lifecycle { return }
-            lifecycle = open.receipt == nil || open.receipt?.state == .uncertain
+            lifecycle = open.receipt == nil || open.receipt?.state.isUncertain == true
                 ? .unconfirmed(open.kind) : .inProgress(open.kind)
         }
-        guard let receipt = open.receipt, receipt.state != .uncertain,
+        guard let receipt = open.receipt, !receipt.state.isUncertain,
               !detail.openOperations.contains(where: { $0.id == receipt.id }) else { return }
         await service.settle(handle: open.handle)
         if lifecycleHandle == open.handle, case .inProgress = lifecycle,
@@ -151,7 +151,7 @@ final class OrchestratorConversationModel {
             return
         }
         lifecycleHandle = open.handle
-        lifecycle = open.receipt == nil || open.receipt?.state == .uncertain ? .unconfirmed(open.kind) : .inProgress(open.kind)
+        lifecycle = open.receipt == nil || open.receipt?.state.isUncertain == true ? .unconfirmed(open.kind) : .inProgress(open.kind)
     }
 
     /// Shows what is known of the conversation, catches up, then follows the event stream until

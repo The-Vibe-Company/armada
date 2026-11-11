@@ -1,13 +1,102 @@
 import Foundation
 
-public enum OrchestratorState: String, Codable, Sendable { case creating, ready, stopping, stopped, resuming, blocked }
-public enum OrchestratorContinuity: String, Codable, Sendable { case notStarted = "not_started", native, unverified, lost }
+// Every value the server reports from a list it may extend (states, continuity, operation states,
+// sizes) decodes a value this build does not name into `unknown(raw)`: one new value must never fail
+// a row, a list or a screen (#962). Open ids (kinds, providers, harnesses) are structs instead.
+// `ServerWireContractTests` decodes the server's fixtures plus a future value for each of them.
+
+public enum OrchestratorState: RawRepresentable, Codable, Hashable, Sendable {
+    case creating, ready, stopping, stopped, resuming, blocked
+    /// A state this build does not know: shown as itself and never treated as ready.
+    case unknown(String)
+    public init(rawValue: String) {
+        switch rawValue {
+        case "creating": self = .creating
+        case "ready": self = .ready
+        case "stopping": self = .stopping
+        case "stopped": self = .stopped
+        case "resuming": self = .resuming
+        case "blocked": self = .blocked
+        default: self = .unknown(rawValue)
+        }
+    }
+    public var rawValue: String {
+        switch self {
+        case .creating: "creating"
+        case .ready: "ready"
+        case .stopping: "stopping"
+        case .stopped: "stopped"
+        case .resuming: "resuming"
+        case .blocked: "blocked"
+        case .unknown(let raw): raw
+        }
+    }
+}
+public enum OrchestratorContinuity: RawRepresentable, Codable, Hashable, Sendable {
+    case notStarted, native, unverified, lost
+    /// A level this build does not know: never treated as resumable.
+    case unknown(String)
+    public init(rawValue: String) {
+        switch rawValue {
+        case "not_started": self = .notStarted
+        case "native": self = .native
+        case "unverified": self = .unverified
+        case "lost": self = .lost
+        default: self = .unknown(rawValue)
+        }
+    }
+    public var rawValue: String {
+        switch self {
+        case .notStarted: "not_started"
+        case .native: "native"
+        case .unverified: "unverified"
+        case .lost: "lost"
+        case .unknown(let raw): raw
+        }
+    }
+}
 /// `recover` is a request only: its receipt is the `stop` (or `create`) operation it settles.
 public enum OrchestratorAction: String, Codable, Sendable { case create, message, steer, stop, resume, recover
     /// Receipt kinds the server answers for this request.
-    var receiptKinds: Set<OrchestratorAction> { self == .recover ? [.stop, .create] : [self] }
+    var receiptKinds: Set<OrchestratorOperationKind> {
+        self == .recover ? [.stop, .create] : [OrchestratorOperationKind(rawValue: rawValue)!]
+    }
 }
-public enum OrchestratorOperationState: String, Codable, Sendable { case pending, succeeded, failed, uncertain }
+/// What an operation receipt records. Open: the server records more than the app requests
+/// (`connections_add`, `connections_remove` since #806), and a detail or event page listing one
+/// must still decode. The constants only name today's kinds.
+public struct OrchestratorOperationKind: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+    public init?(rawValue: String) { guard !rawValue.isEmpty else { return nil }; self.rawValue = rawValue }
+    public static let create = OrchestratorOperationKind(rawValue: "create")!
+    public static let message = OrchestratorOperationKind(rawValue: "message")!
+    public static let steer = OrchestratorOperationKind(rawValue: "steer")!
+    public static let stop = OrchestratorOperationKind(rawValue: "stop")!
+    public static let resume = OrchestratorOperationKind(rawValue: "resume")!
+}
+public enum OrchestratorOperationState: RawRepresentable, Codable, Hashable, Sendable {
+    case pending, succeeded, failed, uncertain
+    /// A state this build does not know: neither terminal nor proof that nothing happened.
+    case unknown(String)
+    public init(rawValue: String) {
+        switch rawValue {
+        case "pending": self = .pending
+        case "succeeded": self = .succeeded
+        case "failed": self = .failed
+        case "uncertain": self = .uncertain
+        default: self = .unknown(rawValue)
+        }
+    }
+    public var rawValue: String {
+        switch self {
+        case .pending: "pending"
+        case .succeeded: "succeeded"
+        case .failed: "failed"
+        case .uncertain: "uncertain"
+        case .unknown(let raw): raw
+        }
+    }
+}
 /// Provider and harness ids are open: the server's capabilities say which exist and which pairs are
 /// enabled, so a new one reaches the app without a release. The constants only name today's ids.
 public struct ArmadaProvider: RawRepresentable, Codable, Hashable, Sendable {
@@ -25,7 +114,31 @@ public struct ArmadaHarness: RawRepresentable, Codable, Hashable, Sendable {
 
 /// Canonical public wire values from merged #653 machine-size.ts. Resolution
 /// stays on the server: override > explicitly selected repository > golden > legacy.
-public enum MachineSize: String, Codable, Sendable, CaseIterable { case small, medium, large, xlarge }
+/// An orchestrator's configuration echoes its size, so a size added later still decodes (`unknown`);
+/// `allCases` are the sizes this build offers.
+public enum MachineSize: RawRepresentable, Codable, Hashable, Sendable, CaseIterable {
+    case small, medium, large, xlarge
+    case unknown(String)
+    public static let allCases: [MachineSize] = [.small, .medium, .large, .xlarge]
+    public init(rawValue: String) {
+        switch rawValue {
+        case "small": self = .small
+        case "medium": self = .medium
+        case "large": self = .large
+        case "xlarge": self = .xlarge
+        default: self = .unknown(rawValue)
+        }
+    }
+    public var rawValue: String {
+        switch self {
+        case .small: "small"
+        case .medium: "medium"
+        case .large: "large"
+        case .xlarge: "xlarge"
+        case .unknown(let raw): raw
+        }
+    }
+}
 
 /// Exact #661/#662 create contract including optional size from b6ca6e184f.
 /// nil omits the override; it does not submit a fabricated "default" size.
@@ -73,7 +186,7 @@ public struct OrchestratorOperation: Codable, Sendable, Identifiable {
     public let version: Int
     public let id: String
     public let orchestratorId: String
-    public let kind: OrchestratorAction
+    public let kind: OrchestratorOperationKind
     public let state: OrchestratorOperationState
     public let revision: Int
     public let errorCode: String?

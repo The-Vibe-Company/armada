@@ -288,6 +288,7 @@ export function isGitHubResult(value: string | undefined): value is GitHubConnec
 }
 
 export interface ConnectDeps {
+  ownerId: string;
   app: GitHubApp;
   encrypt(plaintext: string): Promise<Uint8Array>;
   /** Stores the connection as the signed-in person. Returns false when the database refused it. */
@@ -333,6 +334,19 @@ export async function completeGitHubConnection(
       refreshExpiresAt: tokens.refreshExpiresAt,
       installations,
     });
+    if (saved)
+      console.info(
+        JSON.stringify({
+          event: "github_connection_replaced",
+          caller: "dashboard_callback",
+          ownerId: deps.ownerId,
+          reason: "oauth_connect",
+          githubId: user.id,
+          accessExpiresAt: tokens.accessExpiresAt.toISOString(),
+          observedRemainingLifetimeMs: tokens.accessExpiresAt.getTime() - Date.now(),
+          accessTokenCached: false,
+        }),
+      );
     return saved ? "connected" : "not_saved";
   } catch (error) {
     if (error instanceof EncryptionKeyError) return "encryption";

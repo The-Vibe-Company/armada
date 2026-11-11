@@ -1,5 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { createSqlGoldenStore, createSqlVaultStore, type GoldenBuildStatus, ProviderError } from "@armada/core/server";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./support.ts";
@@ -7,6 +9,13 @@ import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./su
 async function fixture() {
   const server = await harness();
   const { boat, people } = server;
+  const exec = boat.provider.exec;
+  boat.provider.exec = async (request) => {
+    const result = await exec(request);
+    return request.command.includes("/helper/0.1.0/armada-helper") && !result.detached
+      ? { ...result, stdout: goldenHelperReport }
+      : result;
+  };
   let allocations = 0;
   boat.provider.createGolden = async () => {
     allocations++;
@@ -197,7 +206,10 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
         { golden_id: (before as { id: string }).id, build_id: null },
       ]);
       expect((await s.builds.status(s.people.admin, job.jobId)).phase).toBe(phase);
-      expect(s.boat.execs.at(-1)?.timeoutSeconds).toBe(600);
+      // The scanner owns its 600-second bound; helper verification may follow it.
+      expect(
+        s.boat.execs.find((request) => request.command.includes("cat-file --batch-all-objects"))?.timeoutSeconds,
+      ).toBe(600);
       expect(s.deleted).not.toContain((before as { provider_snapshot_id: string }).provider_snapshot_id);
       expect((await s.db.query("select id from golden_snapshot_retirements")).rows).toEqual([]);
       if (failure === "persist")
@@ -388,3 +400,141 @@ test("queued rebuild rechecks current target visibility before credentials or bu
     await s.close();
   }
 });
+
+test.each([false, true])(
+  "billing refusal frees capacity only without retained resource evidence (keepSource=%s)",
+  async (keepSource) => {
+    const s = await fixture();
+    try {
+      s.boat.provider.createGolden = async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "payment_required",
+          message: "unsafe upstream payload",
+          ...(keepSource ? { details: { keepSource: true } } : {}),
+          retryable: false,
+        });
+      };
+      const token = await s.token(s.people.admin);
+      const admitted = await s.http(token, "golden/create", {
+        name: "billing-refused",
+        org: s.people.org,
+        repos: ["acme/web"],
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const job = (await admitted.json()) as GoldenBuildStatus;
+      expect(admitted.status).toBe(202);
+      await s.builds.runOne();
+      const status = await s.http(token, "golden/build/status", { jobId: job.jobId });
+      expect(await status.json()).toMatchObject({
+        state: keepSource ? "recovery_required" : "failed",
+        failureReason: keepSource ? null : "provider_payment_required",
+        result: null,
+      });
+      const mcp = await call(await s.client(token), "golden_build_status", { jobId: job.jobId });
+      expect(mcp.data).toMatchObject({
+        state: keepSource ? "recovery_required" : "failed",
+        failureReason: keepSource ? null : "provider_payment_required",
+      });
+      expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(keepSource ? 1 : 0);
+      expect((await s.db.query("select 1 from goldens where name='billing-refused'")).rows).toEqual([]);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test.each([
+  { keepSource: false, status: 400 },
+  { keepSource: true, status: 400 },
+  { keepSource: false, status: undefined },
+])(
+  "snapshot refusal cleans up only confirmed non-mutating failures (%j)",
+  async ({ keepSource, status: httpStatus }) => {
+    const s = await fixture();
+    const logs: string[] = [];
+    const logging = spyOn(console, "error").mockImplementation((line) => logs.push(String(line)));
+    try {
+      s.boat.provider.snapshot = async ({ name }) => {
+        // Independently enforce Boat's documented saved-name contract.
+        expect(name).toMatch(/^[a-z0-9][a-z0-9-]{0,62}$/);
+        throw new ProviderError({
+          provider: "boat",
+          code: "invalid_request",
+          ...(httpStatus === undefined ? {} : { status: httpStatus }),
+          message: "unsafe-secret-payload",
+          providerCode: "unsafe-secret-payload",
+          details: { ...(keepSource ? { keepSource: true } : {}), secret: "unsafe-secret-payload" },
+          retryable: false,
+        });
+      };
+      const token = await s.token(s.people.admin);
+      const admitted = await s.http(token, "golden/create", {
+        name: "snapshot-refused",
+        org: s.people.org,
+        repos: ["acme/web"],
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const job = (await admitted.json()) as GoldenBuildStatus;
+      await s.builds.runOne();
+      const response = await s.http(token, "golden/build/status", { jobId: job.jobId });
+      const status = await response.json();
+      expect(status).toMatchObject({
+        state: keepSource ? "recovery_required" : "failed",
+        phase: "snapshot",
+        failureReason: keepSource || httpStatus !== 400 ? null : "provider_snapshot_rejected",
+        result: null,
+      });
+      expect(s.boat.stops).toHaveLength(1);
+      expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(keepSource ? 1 : 0);
+      expect((await s.db.query("select 1 from goldens where name='snapshot-refused'")).rows).toEqual([]);
+      expect(logs.join(" ")).toContain('"detail":"request_rejected"');
+      expect(JSON.stringify({ logs, status })).not.toContain("unsafe-secret-payload");
+    } finally {
+      logging.mockRestore();
+      await s.close();
+    }
+  },
+);
+
+test("an accepted renamed save with missing provenance retains capacity for recovery", async () => {
+  const s = await fixture();
+  try {
+    s.boat.provider.snapshot = async () => ({ name: "renamed-save", status: "saving" });
+    // The provider accepted the save, but the remapped handle is not yet readable.
+    s.boat.provider.getSnapshot = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "not_found",
+        status: 404,
+        message: "not visible yet",
+        retryable: false,
+      });
+    };
+    const job = await s.builds.admit(
+      s.boat.provider,
+      {
+        userId: s.people.admin,
+        orgId: s.people.org,
+        role: "admin",
+      },
+      { name: "renamed", visibility: "org", repos: ["acme/web"] },
+      crypto.randomUUID(),
+    );
+    await s.builds.runOne();
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "recovery_required",
+      phase: "snapshot",
+      failureReason: null,
+      result: null,
+    });
+    expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(1);
+    expect((await s.db.query("select 1 from goldens where name='renamed'")).rows).toEqual([]);
+    expect(s.deleted).toEqual([]);
+  } finally {
+    await s.close();
+  }
+});
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

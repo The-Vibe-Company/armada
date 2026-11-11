@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EncryptionKeyError, type GitHubInstallation } from "@armada/core";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import {
   type ConnectDeps,
   completeGitHubConnection,
@@ -16,6 +17,8 @@ import {
   sameState,
   storedGitHubInstallations,
 } from "../src/lib/github.ts";
+
+const auditEvents = captureGitHubAuditLogs();
 
 const APP = { clientId: "Iv1.test", clientSecret: "client-secret-value" };
 const ACCESS = "ghu_0123456789abcdefghijABCDEFGHIJ0123";
@@ -69,6 +72,7 @@ function github(options: { token?: Response; user?: Response; installations?: un
 function deps(fetchImpl: typeof fetch, overrides: Partial<ConnectDeps> = {}) {
   const saved: Parameters<ConnectDeps["save"]>[0][] = [];
   const connect: ConnectDeps = {
+    ownerId: "armada-owner",
     app: APP,
     encrypt: async (plaintext) => new TextEncoder().encode(`sealed:${plaintext}`),
     save: async (connection) => {
@@ -87,6 +91,18 @@ describe("completing Connect GitHub", () => {
     const { connect, saved } = deps(fetchImpl);
     const result = await completeGitHubConnection(connect, { code: "abc", redirectUri: "https://armada.test/cb" });
     expect(result).toBe("connected");
+    expect(auditEvents).toEqual([
+      {
+        event: "github_connection_replaced",
+        caller: "dashboard_callback",
+        ownerId: "armada-owner",
+        reason: "oauth_connect",
+        githubId: 583231,
+        accessTokenCached: false,
+        accessExpiresAt: expect.any(String),
+        observedRemainingLifetimeMs: expect.any(Number),
+      },
+    ]);
     expect(calls[0]?.body).toMatchObject({
       client_id: APP.clientId,
       code: "abc",

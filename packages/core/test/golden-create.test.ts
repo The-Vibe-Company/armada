@@ -3,10 +3,12 @@ import { generateKeyPairSync } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
+import helperManifest from "../helper/manifest.json";
 import {
   connectGolden,
   createGoldenCreateService,
@@ -216,7 +218,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
           state: "succeeded",
           provider: providerId,
           result: {
-            snapshot: "golden-bx_1",
+            snapshot: "golden-bx-1",
             warnings: providerId === "modal" ? ["skillpack_download_unavailable"] : [],
           },
         });
@@ -238,15 +240,23 @@ describe("createGoldenCreateService, wired to a real database", () => {
           boat_sandbox_id: string;
           config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
         }>(
-          "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config from goldens where name = 'web'",
+          "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config, helper_receipt from goldens where name = 'web'",
         );
         expect(row.rows[0]).toMatchObject({
           visibility: "org",
           provider: providerId,
           modal_app_id: providerId === "modal" ? modal.appId : null,
-          provider_snapshot_id: "golden-bx_1",
+          provider_snapshot_id: "golden-bx-1",
+          helper_receipt: {
+            version: "0.1.0",
+            protocol: 1,
+            digest: helperManifest.x86_64.digest,
+            platform: "x86_64",
+            capabilities: ["diagnose"],
+            snapshotId: "golden-bx-1",
+          },
           provider_sandbox_id: null,
-          boat_snapshot_id: providerId === "boat" ? "golden-bx_1" : null,
+          boat_snapshot_id: providerId === "boat" ? "golden-bx-1" : null,
           boat_sandbox_id: null,
           config: {
             repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
@@ -337,7 +347,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
         ).rejects.toMatchObject({ code: "build_failed" });
         expect((await original("select 1 from goldens")).rows).toHaveLength(0);
         expect((await original("select 1 from golden_backend_slots")).rows).toHaveLength(0);
-        expect(deleted).toEqual(["golden-bx_1"]);
+        expect(deleted).toEqual(["golden-bx-1"]);
         const diagnostics = logs.mock.calls.map(([line]) => JSON.parse(String(line)));
         expect(diagnostics.filter((entry) => entry.event === "golden_persist_failed")).toEqual([
           { event: "golden_persist_failed", step: "slot_finalize", sqlState: expected },
@@ -497,10 +507,10 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
         if (!artifact || artifact.status !== "ready") throw new Error("unusable snapshot");
         return start(artifact.content);
       },
-      exec: async () => ({
+      exec: async ({ command }) => ({
         detached: false,
         exitCode: failure === "scan" ? 97 : 0,
-        stdout: "",
+        stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
         stderr: "",
         timedOut: false,
         truncated: false,
@@ -780,7 +790,8 @@ function readyProvider(): Provider {
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},
     sshKey: async () => ({ sshEndpoint: "ssh.test:22", hostKey: "ssh-ed25519 AAAA" }),
-    exec: async () => ok,
+    exec: async ({ command }) =>
+      command.includes("/helper/0.1.0/armada-helper") ? { ...ok, stdout: helperOutput } : ok,
     events: async () => ({ events: [], hasMore: false }),
     stop: async () => {},
     delete: async () => ({ status: "pending" }),
@@ -889,13 +900,13 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
       // Independent real connection sees no row: that absence is NOT evidence of rollback.
       expect((await sql.query("select id from goldens")).rows).toHaveLength(0);
       expect(deleted).toEqual([]);
-      expect(artifacts.has("golden-bx_1")).toBe(true);
+      expect(artifacts.has("golden-bx-1")).toBe(true);
       expect(failure).toMatchObject({ code: "conflict" });
       expect(String(failure)).toContain("reconcile the in-flight transaction");
       finish();
       await pendingCommit;
       const committed = await sql.query<{ provider_snapshot_id: string }>("select provider_snapshot_id from goldens");
-      expect(committed.rows[0]?.provider_snapshot_id).toBe("golden-bx_1");
+      expect(committed.rows[0]?.provider_snapshot_id).toBe("golden-bx-1");
       expect(artifacts.has(committed.rows[0]!.provider_snapshot_id)).toBe(true);
       const slots = await sql.query<{ golden_id: string; build_id: string | null }>(
         "select golden_id,build_id from golden_backend_slots",
@@ -1164,3 +1175,8 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
     }
   },
 );
+
+const helperOutput = `x86_64\n${helperManifest.x86_64.digest}  /home/user/.local/share/armada/helper/0.1.0/armada-helper\n{"version":"0.1.0","protocol":1,"capabilities":["diagnose"]}\n`;
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

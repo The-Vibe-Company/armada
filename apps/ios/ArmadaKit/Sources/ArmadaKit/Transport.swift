@@ -4,6 +4,9 @@ public enum ArmadaError: Error, Sendable, Equatable, LocalizedError {
     case signedOut, forbidden, conflict, unavailable, invalidResponse, secureStorage, invalidOrigin, invalidRequest
     case emailCodeRefused
     case http(Int)
+    /// An orchestrator route refused the request with a closed server reason (`credential_refused`):
+    /// a structured 4xx other than the statuses above, which keep their own cases.
+    case refused(code: String, message: String? = nil)
     public var errorDescription: String? {
         switch self {
         case .emailCodeRefused: "Could not verify this code. It may be incorrect, expired, or already used. Opening the email link uses up the code. Request a new code and enter it here without opening the link."
@@ -16,6 +19,7 @@ public enum ArmadaError: Error, Sendable, Equatable, LocalizedError {
         case .secureStorage: "Secure storage is unavailable."
         case .invalidOrigin: "A secure Armada origin is required."
         case .http: "The request could not be completed."
+        case .refused(let code, let message): message ?? OrchestratorExplanation.text(for: code)
         }
     }
 }

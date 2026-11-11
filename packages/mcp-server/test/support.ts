@@ -390,6 +390,7 @@ export async function harness(
     modalProviderFor?: HandlerOptions["modalProviderFor"];
     providerFor?: HandlerOptions["providerFor"];
     modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
+    connections?: HandlerOptions["connections"];
   } = {},
 ): Promise<TestServer> {
   const { db, people } = await database();
@@ -455,6 +456,7 @@ export async function harness(
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
+    ...(options.connections ? { connections: options.connections } : {}),
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
     ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),

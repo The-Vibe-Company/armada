@@ -39,6 +39,8 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxStore extends SandboxStore {
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
+  assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
@@ -75,7 +77,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
-  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.created_at`;
+  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.helper_receipt, g.created_at`;
 const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
@@ -362,9 +364,30 @@ export function createSqlData(sql: Sql): DataSource {
           [...scope, id, JSON.stringify(usage)],
         );
       },
+      async assertExecAllowed(id) {
+        const row = (
+          await sql.query<{ stop_requested_at: unknown; application_secret_tainted: boolean }>(
+            `select s.stop_requested_at,s.application_secret_tainted from public.sandboxes s join public.goldens g on g.id=s.golden_id
+           where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new DataError("No such sandbox.");
+        // Refuse all exec, not a racy provider-state sample: Boat commands can
+        // restore retained disks without invoking the prompt resume hooks.
+        if (row.application_secret_tainted)
+          throw new DataError(
+            "Application-secret exposed sandboxes cannot execute commands or restore retained disks.",
+          );
+        if (row.stop_requested_at !== null)
+          throw new DataError(
+            "Sandbox is stopping; wait for stop or send explicit new work before exec.",
+            "sandbox_not_ready",
+          );
+      },
       async preserveWork(id, provider, providerId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        return preserveBeforeStop(sql, provider, id, providerId);
+        return preserveBeforeStop(sql, provider, id, providerId, "user_stop");
       },
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -383,8 +406,17 @@ export function createSqlData(sql: Sql): DataSource {
         }
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
-          set("stop_requested_at", patch.stopRequested ? new Date().toISOString() : null, "::timestamptz");
-          if (patch.stopRequested) sets.push("reconcile_after = now()");
+          // Retries of an in-flight stop share one epoch; send/resume clears it.
+          sets.push(
+            patch.stopRequested
+              ? "stop_requested_at = coalesce(s.stop_requested_at, clock_timestamp())"
+              : "stop_requested_at = null",
+          );
+          if (patch.stopRequested)
+            sets.push(
+              "reconcile_after = now()",
+              "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
+            );
         }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
@@ -418,9 +450,18 @@ export function createSqlData(sql: Sql): DataSource {
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        // Only an explicit send/resume may cancel an in-flight stop. Other
+        // workspace operations must not mutate data covered by its receipt.
+        if (
+          patch.advanceGeneration &&
+          patch.activityToken &&
+          patch.stopRequested === undefined &&
+          !patch.deleteRequested
+        )
+          fence += " and s.stop_requested_at is null";
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
-          fence = ` and s.lifecycle_generation = $${params.length}`;
+          fence += ` and s.lifecycle_generation = $${params.length}`;
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')

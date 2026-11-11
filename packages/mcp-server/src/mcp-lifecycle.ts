@@ -12,6 +12,7 @@ import {
   type SandboxInfo,
   type SandboxRecord,
   type Sql,
+  type TemplateService,
 } from "@armada/core/server";
 import { bootstrapBoatMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
 import { resolveMcpStdioExecutable } from "./mcp-stdio-bootstrap.ts";
@@ -24,6 +25,8 @@ export function createMcpLifecycle(options: {
   registry: McpRegistry;
   /** Trusted internal registry for the same transaction (managed parents never use the public registry). */
   registryForSql?: (sql: Sql) => McpRegistry;
+  /** Called only for an immutable template-request hint from the current authorized sandbox read. */
+  prepareReadableVariables?: TemplateService["prepare"];
   prepareGitHub?: (provider: Provider, sandboxId: string) => Promise<void>;
 }) {
   const { sql, registry } = options;
@@ -290,8 +293,8 @@ export function createMcpLifecycle(options: {
         ).rows[0];
         if (!member) throw Error("No authorized Armada sandbox for this resume.");
         const sandbox = (
-          await tx.query<{ id: string; owner_id: string }>(
-            `select id,owner_id from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
+          await tx.query<{ id: string; owner_id: string; application_secret_tainted: boolean }>(
+            `select id,owner_id,application_secret_tainted from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
           and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
             [provider.id, providerSandboxId, caller.orgId, caller.userId],
           )
@@ -301,6 +304,8 @@ export function createMcpLifecycle(options: {
           !canAccessSandboxInterior({ ownerId: sandbox.owner_id }, { userId: caller.userId, currentRole: member.role })
         )
           throw Error("No authorized Armada sandbox for this resume.");
+        if (sandbox.application_secret_tainted)
+          throw Error("Application-secret exposed sandboxes cannot resume or restore retained disks.");
         await authorizePersonalBindings(tx, sandbox.id, caller.userId);
         // Serialize a FRESH physical observation with fencing and config publication.
         // A caller's earlier stopped sample can predate another replica's completed
@@ -328,8 +333,14 @@ export function createMcpLifecycle(options: {
       });
     },
     async beforePrompt(provider: Provider, providerSandboxId: string, caller: { userId: string; orgId: string }) {
-      const r = await sql.query<{ id: string; org_id: string; owner_id: string; role: "admin" | "member" }>(
-        `select s.id,s.org_id,s.owner_id,m.role from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+      const r = await sql.query<{
+        id: string;
+        org_id: string;
+        owner_id: string;
+        role: "admin" | "member";
+        template_request_id: string | null;
+      }>(
+        `select s.id,s.org_id,s.owner_id,m.role,${options.prepareReadableVariables ? "(select r.id from public.template_launch_requests r where r.sandbox_id=s.id and r.manifest->'variables'<>'{}'::jsonb)" : "null::uuid"} as template_request_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
         [provider.id, providerSandboxId, caller.userId, caller.orgId],
       );
       const row = r.rows[0];
@@ -340,6 +351,8 @@ export function createMcpLifecycle(options: {
         throw Error("No authorized Armada sandbox for this native turn.");
       await authorizePersonalBindings(sql, row.id, caller.userId);
       await reconcile(provider, { id: row.id, orgId: row.org_id, ownerId: row.owner_id, providerSandboxId });
+      if (row.template_request_id)
+        await options.prepareReadableVariables?.(provider, providerSandboxId, caller, row.template_request_id);
       return row.id;
     },
     /** Authorized server renewal for an ongoing VM turn. Never changes native config or tokens. */

@@ -1,6 +1,7 @@
 "use client";
 
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
+import { goldenBuildFailureText } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { type FormEvent, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { buildGolden, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
@@ -439,7 +440,7 @@ function ScopedGoldenForm({
                 ? observed.state === "failed" || observed.state === "recovery_required"
                   ? {
                       ok: false,
-                      error: `Build ${observed.jobId}: ${observed.state} (build_failed). Last-good golden retained.`,
+                      error: `Build ${observed.jobId}: ${observed.state} (${goldenBuildFailureText(observed)}). Last-good golden retained.`,
                     }
                   : {
                       ok: true,

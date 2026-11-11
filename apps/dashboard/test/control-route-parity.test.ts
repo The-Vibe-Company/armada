@@ -23,6 +23,8 @@ test("every CLI POST control route is admitted by the dashboard proxy", async ()
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     module: ts.ModuleKind.ESNext,
     strict: true,
+    // Route inference needs imported CLI types, not every installed ambient package.
+    types: [],
   });
   const checker = program.getTypeChecker();
   const sources = program.getSourceFiles().filter((source) => files.includes(source.fileName));
@@ -62,6 +64,20 @@ test("every CLI POST control route is admitted by the dashboard proxy", async ()
           strings(span.expression, next).map((value) => prefix + value + span.literal.text),
         );
       return values;
+    }
+    // Orchestrator actions turn a finite CLI union such as connections_add into
+    // a path segment. Resolve the actual literals instead of copying proxy routes.
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "replace" &&
+      node.arguments.length === 2 &&
+      ts.isStringLiteral(node.arguments[0]!) &&
+      ts.isStringLiteral(node.arguments[1]!)
+    ) {
+      const search = node.arguments[0]!.text;
+      const replacement = node.arguments[1]!.text;
+      return strings(node.expression.expression, next).map((value) => value.replace(search, replacement));
     }
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "apiUrl")
       return strings(node.arguments[1] ?? fail(node), next);

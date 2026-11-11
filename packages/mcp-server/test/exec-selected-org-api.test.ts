@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, type Provider } from "@armada/core";
+import { createBoatProvider } from "@armada/provider-boat";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { filePreferences } from "../../cli/src/preferences.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
+import { sandbox as boatSandbox } from "../../provider-boat/test/support.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { database, ENCRYPTION_KEY } from "./support.ts";
 
 const user = "11111111-1111-4111-8111-111111111111";
 const orgA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -125,5 +128,80 @@ test("exec command text after -- cannot bypass persisted selected-org HTTP scope
   } finally {
     await db.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// Owns exec's retained-disk admission through the shared API/CLI tool path.
+// SQL remains ready and has no explicit-stop fence, as after provider TTL expiry.
+test("tainted Boat exec refuses retained compute before commands, even when SQL remains ready", async () => {
+  const { db, people } = await database();
+  try {
+    const id = crypto.randomUUID();
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!.id;
+    await db.query(
+      `insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,application_secret_tainted)
+       values($1,'bx_tainted_exec',$2,$3,$4,'codex','ready',true)`,
+      [id, golden, people.org, people.owner],
+    );
+    const authStore = createMemoryAuthStore();
+    authStore.addMembership(people.owner, { orgId: people.org, name: "Example", role: "member" });
+    let state: "stopped" | "archived" = "stopped";
+    let commands = 0;
+    const provider = createBoatProvider({
+      apiKey: "boat_fixture_not_real",
+      fetch: (async (input, init) => {
+        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        if (init?.method === "GET") return Response.json({ sandbox: boatSandbox({ id: "bx_tainted_exec", state }) });
+        if (path.endsWith("/commands")) {
+          commands++;
+          return Response.json({
+            ok: true,
+            type: "command.finished",
+            success: true,
+            exitCode: 0,
+            stdout: "must not run",
+            stderr: "",
+            timedOut: false,
+          });
+        }
+        throw Error(`Unexpected provider request ${init?.method} ${path}`);
+      }) as typeof fetch,
+    });
+    const options: ControlOptions = {
+      authStore,
+      store: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(db),
+      providers: { resolve: async () => provider },
+      supabase: {
+        supabaseUrl: "https://supabase.test",
+        anonKey: "anon",
+        fetch: async () => Response.json({ id: people.owner }),
+      },
+    };
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: people.owner })).replace(/=+$/, "")}.sig`;
+    for (const retainedState of ["stopped", "archived"] as const) {
+      state = retainedState;
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/exec", {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+          body: JSON.stringify({ org: people.org, id, command: "pwd" }),
+        }),
+        options,
+      );
+      expect(commands).toBe(0);
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toMatchObject({ error: { code: "dependency_unavailable" } });
+    }
+    const row = (
+      await db.query<{ status: string; stop_requested_at: unknown }>(
+        "select status,stop_requested_at from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(row).toEqual({ status: "ready", stop_requested_at: null });
+  } finally {
+    await db.close();
   }
 });

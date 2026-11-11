@@ -233,6 +233,61 @@ sys.exit(23)
   }
 });
 
+test.skipIf(process.platform !== "linux")(
+  "generic GitHub preparation preserves the managed Claude MCP bridge and rejects a tampered wrapper",
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "armada-managed-claude-install-"));
+    const path = join(home, "claude");
+    const native = join(home, "native-claude");
+    try {
+      mkdirSync(join(home, ".armada"), { mode: 0o700 });
+      writeFileSync(join(home, ".armada", "mcp-owned.json"), JSON.stringify(["armada_tools"]), { mode: 0o600 });
+      writeFileSync(
+        join(home, ".claude.json"),
+        JSON.stringify({ mcpServers: { armada_tools: { type: "http", url: "https://tools.invalid/mcp" } } }),
+        { mode: 0o600 },
+      );
+      writeFileSync(
+        native,
+        `#!/usr/bin/python3
+import json,sys
+managed=False
+for line in sys.stdin:
+    m=json.loads(line)
+    if m.get("type")=="control_request":
+        if m["request"]["subtype"]=="mcp_set_servers": managed=True
+        print(json.dumps({"type":"control_response","response":{"subtype":"success","request_id":m["request_id"],"response":{"errors":{}}}}),flush=True)
+    elif m.get("type")=="user": print(json.dumps({"type":"result","managed":managed}),flush=True)
+`,
+        { mode: 0o755 },
+      );
+      symlinkSync(native, path);
+      const managed = () =>
+        installFixture(
+          home,
+          nativeCwdInstallScript(path, nativeCwdCommand(path, "claude", undefined, true), undefined, true),
+        );
+      const generic = () => installFixture(home, nativeCwdInstallScript(path, nativeCwdCommand(path, "claude")));
+      expect(managed().status).toBe(0);
+      expect(generic().status).toBe(0);
+      const result = spawnSync(path, ["--input-format", "stream-json"], {
+        env: { HOME: home, PATH: "/usr/bin:/bin" },
+        input: JSON.stringify({ type: "user", message: { content: "tools" } }) + "\n",
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual({ type: "result", managed: true });
+      writeFileSync(`${path}.armada-wrapper`, "#!/bin/sh\nexit 0\n");
+      expect(generic().status).not.toBe(0);
+      expect(managed().status).toBe(0);
+      expect(generic().status).toBe(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  },
+);
+
 // Offline real-protocol check: uses a temporary HOME and an allowlisted environment, never auth.
 test.skipIf(!process.env.CODEX_NATIVE_TEST_BINARY)("real Codex app-server reports the selected thread cwd", () => {
   const base = mkdtempSync(join(tmpdir(), "armada-real-codex-"));

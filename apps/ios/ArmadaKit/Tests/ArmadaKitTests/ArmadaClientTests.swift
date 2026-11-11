@@ -401,9 +401,10 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     let submitted = try JSONSerialization.jsonObject(with: JSONEncoder().encode(inherited)) as! [String: Any]
     #expect(submitted["size"] == nil)
     #expect(submitted["repo"] == nil)
-    #expect(throws: (any Error).self) {
-        _ = try JSONDecoder().decode(MachineSize.self, from: Data(#""default""#.utf8))
-    }
+    // A size the server adds later decodes (an orchestrator echoes it) but is never offered.
+    let later = try JSONDecoder().decode(MachineSize.self, from: Data(#""default""#.utf8))
+    #expect(later == .unknown("default"))
+    #expect(!MachineSize.allCases.contains(later))
 }
 
 @Test func bareValidationStatusAndGenericConflictNeverProveNoAdmission() async throws {

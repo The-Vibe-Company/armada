@@ -20,8 +20,12 @@ const sql: core.Sql = {
   query: (q, values) => db.query(q, values),
   transaction: (work) => db.transaction((tx) => work({ query: (q, values) => tx.query(q, values) })),
 };
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 const key = Buffer.alloc(32, 19).toString("base64");
 // Work preservation uses the process environment, just as the deployed server does.
 process.env.ARMADA_ENCRYPTION_KEY = key;
@@ -460,10 +464,13 @@ try {
           "A two-minute Modal launch must have only the configured 30-minute headroom plus five-minute preservation margin, not a 24h timer",
         );
       const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
-      const deniedBefore = effects.length;
+      // Prior scenarios may be stopping in the real background worker. This
+      // denied request must not mutate its own target; unrelated cleanup is valid.
+      const targetEffects = () => effects.filter((item) => item.id === before.provider_sandbox_id).length;
+      const deniedBefore = targetEffects();
       const denied = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 600 }, 403, memberId);
       assert.equal(denied.error.code, "extension_not_allowed");
-      assert.equal(effects.length, deniedBefore, "Denied member must not mutate provider state");
+      assert.equal(targetEffects(), deniedBefore, "Denied member must not mutate the target provider state");
       let conversation: string | null = null;
       if (active)
         conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
@@ -588,7 +595,7 @@ try {
     assert.equal(stopped.status_reason, "expired");
     assert.equal(
       stopped.preservation_note,
-      "unpushed work could not be preserved (missing_bun). Resume the sandbox and push or copy any local work before stopping again.",
+      "could not check for unpushed work (capture_missing_bun). If this sandbox had local work, resume it and push or copy it before stopping again.",
     );
     const operations = effects
       .slice(expirationStart)

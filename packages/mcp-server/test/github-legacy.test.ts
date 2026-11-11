@@ -6,6 +6,7 @@ import {
   type Provider,
   resolveGitHubAccess,
 } from "@armada/core/server";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { createLegacyGitHubPreparation, refreshLegacyGitHub } from "../src/github-legacy.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
@@ -144,3 +145,6 @@ test("opted-in next-prompt preparation repairs siblings and never blocks prompts
     await db.close();
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

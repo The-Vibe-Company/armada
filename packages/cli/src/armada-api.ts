@@ -1,14 +1,19 @@
 import { AuthError } from "@armada/auth";
 import {
   API_FAILURE_HELP,
+  APPLICATION_VAULT_CONFLICT_MESSAGES,
   type ApiFailureCode,
+  githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
+  TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
 import type { SessionStore } from "./session.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const TEMPLATE_LAUNCH_UNKNOWN =
+  "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown.";
 
 export interface ArmadaApiIo {
   env: NodeJS.ProcessEnv;
@@ -29,6 +34,7 @@ export class ArmadaApiError extends AuthError {
     readonly serverCode: string,
     readonly status: number,
     message: string,
+    readonly details?: Readonly<{ phase: string }>,
   ) {
     super(message, status === 400 ? "usage" : status === 409 || status === 403 ? "conflict" : "unavailable");
   }
@@ -80,13 +86,15 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         });
       } catch (error) {
         throw new AuthError(
-          signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-            ? `The server did not answer in time; the operation may have been accepted.${
-                path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
-              }`
-            : path === "/api/v1/sandbox/launch"
-              ? "Launch outcome unknown. Run armada list to check before retrying."
-              : "Armada could not reach the server.",
+          path === "/api/v1/templates/launch"
+            ? TEMPLATE_LAUNCH_UNKNOWN
+            : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+              ? `The server did not answer in time; the operation may have been accepted.${
+                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                }`
+              : path === "/api/v1/sandbox/launch"
+                ? "Launch outcome unknown. Run armada list to check before retrying."
+                : "Armada could not reach the server.",
           "unavailable",
         );
       }
@@ -104,18 +112,26 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           });
         } catch (error) {
           throw new AuthError(
-            signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-              ? `The server did not answer in time; the operation may have been accepted.${
-                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
-                }`
-              : path === "/api/v1/sandbox/launch"
-                ? "Launch outcome unknown. Run armada list to check before retrying."
-                : "Armada could not reach the server.",
+            path === "/api/v1/templates/launch"
+              ? TEMPLATE_LAUNCH_UNKNOWN
+              : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+                ? `The server did not answer in time; the operation may have been accepted.${
+                    path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                  }`
+                : path === "/api/v1/sandbox/launch"
+                  ? "Launch outcome unknown. Run armada list to check before retrying."
+                  : "Armada could not reach the server.",
             "unavailable",
           );
         }
       }
       const payload: unknown = await response.json().catch(() => null);
+      if (
+        response.ok &&
+        path === "/api/v1/templates/launch" &&
+        (!payload || typeof payload !== "object" || Array.isArray(payload))
+      )
+        throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
       const failureCode =
         payload && typeof payload === "object" && "error" in payload
@@ -132,8 +148,99 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           response.status,
           `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
         );
-      if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode))
-        throw new ArmadaApiError(failureCode, response.status, API_FAILURE_HELP[failureCode as ApiFailureCode]);
+      // Vault writes can be echoed by an upstream failure. Only closed local text is safe.
+      if (path.startsWith("/api/v1/variables/") || path.startsWith("/api/v1/secrets/")) {
+        const known: Record<string, string> = {
+          [APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged]:
+            "Version conflict. List entries and retry with the current --expected-version.",
+          [APPLICATION_VAULT_CONFLICT_MESSAGES.inactive]:
+            "Entry revoked or deleted. Revocation is terminal; delete a revoked entry before reusing its name.",
+          [APPLICATION_VAULT_CONFLICT_MESSAGES.nameInUse]:
+            "Name already in use, including revoked entries. Delete the old entry before reusing its name.",
+        };
+        const message = apiMessage(payload, "");
+        const messages: Record<number, string> = {
+          400: "Invalid application vault request. Check the name (uppercase, non-reserved), value (valid UTF-8, no NUL, at most 8 KiB; secrets cannot be empty), ID and version.",
+          401: "Run armada login or update ARMADA_TOKEN.",
+          403: "Application vault access denied. Current membership is required; only admins can mutate organization entries.",
+          404: "Application vault entry or organization not found or not visible.",
+          409: "Application vault conflict. List entries and check the current version, duplicate name or revoked status before retrying.",
+        };
+        throw new ArmadaApiError(
+          response.status === 400
+            ? "invalid"
+            : response.status === 401
+              ? "unauthorized"
+              : response.status === 403
+                ? "forbidden"
+                : response.status === 404
+                  ? "not_found"
+                  : response.status === 409
+                    ? "conflict"
+                    : "unavailable",
+          response.status,
+          (response.status === 409 && Object.hasOwn(known, message) ? known[message] : undefined) ??
+            messages[response.status] ??
+            "Application vault unavailable. Check entry status before retrying.",
+        );
+      }
+      if (path === "/api/v1/templates/launch" && response.status >= 500)
+        throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
+      if (path.startsWith("/api/v1/templates/")) {
+        const known: Record<string, string> = {
+          "Template revision changed.":
+            "Template revision changed. Get the current revision and retry with --expected-revision.",
+          "Template revision unavailable.":
+            "Template revision unavailable. Get the template and choose an existing revision.",
+          ...Object.fromEntries(
+            Object.entries(TEMPLATE_REFUSAL_HELP).map(([reason, help]) => [
+              `Template launch refused: ${reason}.`,
+              help,
+            ]),
+          ),
+          "Template name or request key already exists.":
+            "Template name or request key already exists. Choose another template name or inspect the original launch request.",
+          "Request key already used with a different request.":
+            "Request key already used with a different request. Retry only the original key and body until its outcome is known.",
+        };
+        const fallback: Record<number, string> = {
+          400: "Invalid template request. Check the definition, IDs, versions and supported overrides. Secret bindings are not supported.",
+          401: "Run armada login or update ARMADA_TOKEN.",
+          403: "Template access denied. Current membership is required; only admins can mutate organization templates.",
+          404: "Template or revision not found or not visible.",
+          409: "Template reference changed or is unavailable. Check its golden, connections, variable and model-account versions before retrying.",
+        };
+        const message = apiMessage(payload, "");
+        throw new ArmadaApiError(
+          response.status === 400
+            ? "invalid"
+            : response.status === 401
+              ? "unauthorized"
+              : response.status === 403
+                ? "forbidden"
+                : response.status === 404
+                  ? "not_found"
+                  : response.status === 409
+                    ? "conflict"
+                    : "unavailable",
+          response.status,
+          (Object.hasOwn(known, message) ? known[message] : undefined) ??
+            fallback[response.status] ??
+            "Template operation unavailable. For launch, retain the original request key and body; its outcome may be unknown.",
+        );
+      }
+      if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode)) {
+        const phase =
+          failureCode === "github_hydration_failed"
+            ? githubHydrationPhase((payload as { error?: { details?: { phase?: unknown } } }).error?.details?.phase)
+            : undefined;
+        throw new ArmadaApiError(
+          failureCode,
+          response.status,
+          API_FAILURE_HELP[failureCode as ApiFailureCode] + (phase ? ` Failing phase: ${phase}.` : ""),
+          phase ? { phase } : undefined,
+        );
+      }
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.

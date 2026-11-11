@@ -7,6 +7,7 @@ import {
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  goldenBuildFailureText,
   HARNESSES,
   type Harness,
   isSandboxProvider,
@@ -28,6 +29,7 @@ import {
   VERSION,
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
+import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import {
@@ -44,6 +46,7 @@ import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
+import { templateCommand } from "./template-commands.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
 export interface Io {
@@ -56,7 +59,7 @@ export interface Deps {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   readFile?: (path: string) => Promise<string>;
-  /** The secret for `armada creds set`. By default stdin, and only when it is piped. */
+  /** Values for credential/application vault writes. By default stdin, only when piped. */
   readStdin?: () => Promise<string>;
   /** Legacy test seam; commands use the Armada API rather than direct stores. */
   actor?: GoldenActor;
@@ -189,6 +192,10 @@ Usage:
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada template --help                   Create, publish, list, get, delete and launch immutable templates
+  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
+  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
+                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
   armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]
@@ -362,6 +369,11 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return logout(rest, io, deps);
     case "org":
       return orgCommand(rest, vaultIo(io, deps));
+    case "template":
+      return templateCommand(rest, vaultIo(io, deps, true));
+    case "vars":
+    case "secrets":
+      return applicationVaultCommand(command, rest, vaultIo(io, deps, true));
     case "creds":
       return credsCommand(rest, vaultIo(io, deps));
     case "token":
@@ -570,7 +582,7 @@ async function admitGoldenBuild(
       if (current.state === "failed" || current.state === "recovery_required")
         throw new GoldenError(
           "build_failed",
-          `Build ${job.jobId}: ${current.state} (${current.failureReason ?? "build_failed"}).`,
+          `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`,
         );
       deadline.throwIfAborted();
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
@@ -593,10 +605,7 @@ async function admitGoldenBuild(
     return current.result ?? undefined;
   }
   if (current.state === "failed" || current.state === "recovery_required")
-    throw new GoldenError(
-      "build_failed",
-      `Build ${job.jobId}: ${current.state} (${current.failureReason ?? "build_failed"}).`,
-    );
+    throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`);
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
   else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
   return undefined;
@@ -1178,13 +1187,23 @@ function authOf(io: Io, deps: Deps): AuthIo {
   return deps.auth ?? productionAuthIo(io, deps.env ?? process.env);
 }
 
-function vaultIo(io: Io, deps: Deps): VaultIo {
+function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
   return {
     auth: authOf(io, deps),
-    readFile: deps.readFile ?? ((path) => Bun.file(path).text()),
+    readFile:
+      deps.readFile ??
+      (async (path) =>
+        strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
+          : Bun.file(path).text()),
     readStdin:
       deps.readStdin ??
-      (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin is a terminal")) : Bun.stdin.text())),
+      (async () => {
+        if (process.stdin.isTTY) throw new Error("stdin is a terminal");
+        return strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
+          : Bun.stdin.text();
+      }),
   };
 }
 

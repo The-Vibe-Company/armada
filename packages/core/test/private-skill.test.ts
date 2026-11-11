@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,9 @@ test.each([
   "refused",
   "broad key",
   "missing",
+  "missing read permission",
+  "expired",
+  "revoked",
   "wrong receipt",
   "cli unavailable",
   "missing executable",
@@ -22,6 +25,7 @@ test.each([
   "unreadable key",
   "bad reference",
   "install nonzero",
+  "unsafe lock",
 ])("private installer %s", (mode) => {
   const root = mkdtempSync(join(tmpdir(), "private-skill-"));
   const originalKeys = "# unrelated authorization\nssh-ed25519 AAAA existing\n";
@@ -31,6 +35,8 @@ test.each([
       mkdirSync(join(home, ".ssh"), { recursive: true });
       writeFileSync(join(home, ".ssh/authorized_keys"), originalKeys, { mode: 0o600 });
     }
+    if (mode === "unsafe lock")
+      symlinkSync(join(root, ".ssh/authorized_keys"), join(root, ".ssh/authorized_keys.armada.lock"));
     const fake = `#!/usr/bin/env node
 const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');
 const kind=path.basename(process.argv[1]);
@@ -40,8 +46,9 @@ if(!process.env.SKILLPACK_API_KEY||process.env.ARMADA_GIT_TOKEN)process.exit(9);
 if(process.env.MODE==='cli unavailable')process.exit(2);
 if(process.env.MODE==='auth unavailable')process.exit(8);
 if(process.env.MODE==='protocol'){process.stdout.write('not JSON');process.exit(0);}
-if(process.env.MODE==='refused')process.exit(3);
+if(['refused','expired','revoked'].includes(process.env.MODE))process.exit(3);
 if(process.argv[2]==='auth'){process.stdout.write(JSON.stringify({workspace:{id:'11111111-1111-4111-8111-111111111111'},token:{scopes:process.env.MODE==='broad key'?['skills:read','secrets:read']:['skills:read']}}));process.exit(0);}
+if(process.env.MODE==='missing read permission')process.exit(7);
 if(process.env.MODE==='install usage')process.exit(2);
 if(process.env.MODE==='install nonzero')process.exit(9);
 if(process.env.MODE==='conflict')process.exit(6);
@@ -65,7 +72,7 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       stderr = result.stderr.toString();
     expect(stdout + stderr).not.toContain("cmp_pat_" + "a".repeat(48));
     const value = JSON.parse(stdout);
-    if (mode === "ok")
+    if (mode === "ok" || mode === "broad key")
       expect(value).toEqual({
         reference: "notes@1.0.0",
         version: "1.0.0",
@@ -76,27 +83,31 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       });
     else
       expect(value.reason).toBe(
-        mode === "refused"
-          ? "skillpack_credential_refused"
-          : mode === "broad key"
-            ? "skillpack_scope_refused"
-            : mode === "missing"
-              ? "skillpack_skill_unavailable"
-              : {
-                  "wrong receipt": "skillpack_receipt_invalid",
-                  "cli unavailable": "skillpack_cli_unavailable",
-                  "missing executable": "skillpack_cli_unavailable",
-                  "auth unavailable": "skillpack_auth_unavailable",
-                  protocol: "skillpack_protocol_invalid",
-                  conflict: "skillpack_install_conflict",
-                  rejected: "skillpack_request_rejected",
-                  "install usage": "skillpack_request_rejected",
-                  "unreadable key": "skillpack_credential_unreadable",
-                  "bad reference": "skillpack_request_rejected",
-                  "install nonzero": "skillpack_install_nonzero",
-                }[mode],
+        {
+          refused: "skillpack_credential_refused",
+          expired: "skillpack_credential_refused",
+          revoked: "skillpack_credential_refused",
+          missing: "skillpack_skill_unavailable",
+          "missing read permission": "skillpack_skill_unavailable",
+          "wrong receipt": "skillpack_receipt_invalid",
+          "cli unavailable": "skillpack_cli_unavailable",
+          "missing executable": "skillpack_cli_unavailable",
+          "auth unavailable": "skillpack_auth_unavailable",
+          protocol: "skillpack_protocol_invalid",
+          conflict: "skillpack_install_conflict",
+          rejected: "skillpack_request_rejected",
+          "install usage": "skillpack_request_rejected",
+          "unreadable key": "skillpack_credential_unreadable",
+          "bad reference": "skillpack_request_rejected",
+          "install nonzero": "skillpack_install_nonzero",
+          "unsafe lock": "skillpack_ssh_key_cleanup_failed",
+        }[mode],
       );
-    for (const home of homes) expect(readFileSync(join(home, ".ssh/authorized_keys"), "utf8")).toBe(originalKeys);
+    for (const home of homes) {
+      const contents = readFileSync(join(home, ".ssh/authorized_keys"), "utf8");
+      if (mode === "unsafe lock") expect(contents).toStartWith(originalKeys);
+      else expect(contents).toBe(originalKeys);
+    }
     for (const path of readdirSync(root, { recursive: true })) {
       try {
         expect(readFileSync(join(root, String(path)), "utf8")).not.toContain("cmp_pat_" + "a".repeat(48));

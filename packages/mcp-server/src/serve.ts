@@ -1,8 +1,10 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
+  createApplicationVault,
   createGoldenAdoption,
   createSqlVaultStore,
+  createTemplateService,
   GoldenBuildJobs,
   GoldenSnapshotRetirements,
   githubAppFromEnv,
@@ -13,6 +15,7 @@ import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
+import { retryDatabaseBoot } from "./database-boot.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -32,7 +35,7 @@ import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
-import { pruneResourceObservations } from "./resource-store.ts";
+import { pruneServerRetention } from "./retention-maintenance.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
@@ -77,7 +80,7 @@ export async function startServer(
     config.development,
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
-  const sql = bunSql(config.databaseUrl);
+  const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, (tx, id) =>
     createHistoricalSandboxProviderResolver(providers)(tx, id),
   );
@@ -85,7 +88,10 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
+  const templates = createTemplateService(sql);
   const mcp = createMcpHttpIntegration({
+    prepareReadableVariables: templates.prepare,
+    deferBackground: true,
     githubRuntimeEnabled: config.githubRuntimeEnabled,
     githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
     github: { store, app: githubApp, encryptionKey: config.encryptionKey },
@@ -99,7 +105,13 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
   });
-  await mcp.drainInvalidations();
+  try {
+    await retryDatabaseBoot(() => mcp.drainInvalidations(), options.logError ?? console.error);
+  } catch (error) {
+    await mcp.close();
+    await sql.close();
+    throw error;
+  }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
@@ -181,6 +193,8 @@ export async function startServer(
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
+    templates,
+    applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -262,6 +276,8 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
+    templates,
+    ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,
     encryptionKey: config.encryptionKey,
@@ -290,6 +306,7 @@ export async function startServer(
     ],
     ...(options.logError ? { log: options.logError } : {}),
   });
+  mcp.startBackground();
   const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {
     workerDone: Promise.resolve(),
   });
@@ -299,7 +316,7 @@ export async function startServer(
     lifecycle,
     options.logError,
     goldenRetirements,
-    () => pruneResourceObservations(sql, new Date()),
+    () => pruneServerRetention(sql, control.applicationVault, new Date()),
     orchestrators
       ? [
           orchestrators.runtime.createWorker,
@@ -320,7 +337,7 @@ export async function startServer(
     invitationWorker?.stop();
     const closed = mcp.close();
     const stopped = stop(closeActiveConnections);
-    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => {});
+    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => sql.close());
     return stopped;
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.

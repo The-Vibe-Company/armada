@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
+  API_FAILURE_HELP,
+  CREDENTIAL_BUSY_MESSAGE,
   createSqlVaultStore,
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
+  GitHubHydrationError,
   HARNESS_KINDS,
   HARNESSES,
   MACHINE_SIZES,
@@ -551,6 +554,64 @@ describe("armada org and armada creds against the control API", () => {
 });
 
 describe("control API", () => {
+  // The HTTP route invokes github_refresh through the real MCP transport and launch credential
+  // resolver. A private hydration refusal must keep its closed phase all the way to the owner.
+  test("GitHub refresh preserves the closed hydration failure across MCP and HTTP", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("GitHub repair", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const golden = await db.query<{ id: string }>(
+        "insert into goldens(org_id, owner_id, name, visibility, config) values($1,$2,'repair','org',$3::jsonb) returning id",
+        [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+      );
+      const sandbox = await db.query<{ id: string }>(
+        "insert into sandboxes(org_id, owner_id, golden_id, boat_id, harness, status) values($1,$2,$3,'bx_repair','claude','ready') returning id",
+        [org.id, STAN, golden.rows[0]!.id],
+      );
+      await db.query(
+        `insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at)
+         values($1,7,'owner',$2,$3,$4)`,
+        [
+          STAN,
+          await encryptSecret("synthetic-refresh", KEY),
+          await encryptSecret("synthetic-access", KEY),
+          new Date(Date.now() + 60_000),
+        ],
+      );
+      const boat = fakeBoat();
+      boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+      let hydrationAttempts = 0;
+      boat.provider.sshKey = async () => {
+        hydrationAttempts++;
+        throw new GitHubHydrationError("sudo");
+      };
+      options.providers = { resolve: async () => boat.provider };
+      options.github = {
+        app: { clientId: "fixture", clientSecret: "fixture" },
+        fetch: (async () => Response.json({ id: 7, login: "owner", name: null })) as unknown as typeof fetch,
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/github/refresh", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ id: sandbox.rows[0]!.id }),
+        }),
+        options,
+      );
+      expect(hydrationAttempts).toBe(1);
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toEqual({
+        error: {
+          code: "github_hydration_failed",
+          message: API_FAILURE_HELP.github_hydration_failed,
+          details: { phase: "sudo" },
+        },
+      });
+    });
+  });
+
   test("uncertain retained provider outcomes preserve only recovery metadata", async () => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Provider failure", STAN);
@@ -770,6 +831,24 @@ describe("control API", () => {
           expect(unknown?.status).toBe(404);
           expect(boat.forks).toHaveLength(0);
           expect(boat.preparations).toEqual([]);
+        }
+        if (repo === undefined) {
+          for (const reason of ["helper_missing", "helper_receipt_invalid"]) {
+            if (reason === "helper_receipt_invalid")
+              await db.query(
+                `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='web'`,
+              );
+            const refused = await launch({ helperCapabilities: ["diagnose"] });
+            expect(refused?.status).toBe(400);
+            expect(await refused!.json()).toEqual({
+              error: {
+                code: "unsupported",
+                message: expect.any(String),
+                details: { reason, action: "rebuild_golden" },
+              },
+            });
+            expect(boat.forks).toHaveLength(0);
+          }
         }
         const response = await launch(repo === undefined ? {} : { repo });
         if (!response) throw new Error("missing response");
@@ -1563,9 +1642,45 @@ test.each(["claude", "codex"] as const)(
         expect(restored.nativeAuthRevision).toBe(0);
         await expect(
           modelAuth.claim({ userId: ADA, orgId: org.id, role: "member" }, winner.credentialId, 1, crypto.randomUUID()),
-        ).rejects.toMatchObject({ code: "conflict" });
+        ).rejects.toMatchObject({ code: "credential_busy" });
       }
-      expect((await post(ADA, winner.credentialId === chosen ? alternate : chosen)).status).toBe(409);
+      const refusedBinding = await post(ADA, winner.credentialId === chosen ? alternate : chosen);
+      expect(refusedBinding.status).toBe(409);
+      expect(await refusedBinding.json()).toMatchObject({ error: { code: "conflict", message: expect.any(String) } });
     });
   },
 );
+
+test("HTTP launch keeps build-5 refusal code and adds the busy account reason", async () => {
+  await withServer(async ({ options, db }) => {
+    const org = await options.store.createOrg("Busy", STAN);
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    await db.query(
+      "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'busy','org','snapshot',$3::jsonb)",
+      [
+        org.id,
+        STAN,
+        JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+      ],
+    );
+    options.providerFor = () => fakeBoat().provider;
+    options.providers = {
+      resolve: async () => {
+        throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+      },
+    };
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+    const response = (await handleControlRequest(
+      new Request("https://armada.test/api/v1/sandbox/launch", {
+        method: "POST",
+        headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+        body: JSON.stringify({ org: org.id, golden: "busy", harness: "codex" }),
+      }),
+      options,
+    ))!;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: { code: "conflict", reason: "credential_busy", message: CREDENTIAL_BUSY_MESSAGE },
+    });
+  });
+});

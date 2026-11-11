@@ -45,7 +45,14 @@ updates config + snapshot, finalizes binding and marks job succeeded **in one
 transaction**. The prior snapshot stays retained. The full filesystem/binary/
 git-object scan is unchanged, fail-closed at Boat's documented 600-second maximum.
 
-Failures expose errorCode build_failed. Confirmed builder stop (or denial before
+Failures expose errorCode build_failed. A confirmed HTTP 400 from an unaccepted
+Boat snapshot save exposes the closed `provider_snapshot_rejected` reason with
+owner retry guidance; local validation errors do not claim a provider rejection.
+Accepted saves with unreadable provenance retain capacity as recovery_required.
+Modal snapshot failures retain their conservative uncertain-outcome handling.
+See [Boat snapshot rejection](diagnostics/boat-snapshot-rejection.md).
+
+Confirmed builder stop (or denial before
 any builder request) permits releasing only this attempt's pending reservation,
 retaining the existing binding and last-good config/snapshot. Existing ambiguous
 persistence artifact-reference checks remain in force.
@@ -68,7 +75,10 @@ hosts may await the tracked worker task to drain; terminated processes lose leas
 
 ## Deployment
 
-Apply the new migration before worker deployment. RLS is enabled; only service_role
+Apply migrations in filename order, including
+`20261111080000_golden_snapshot_failure_reason.sql` (after the prior failure-reason
+constraint migrations), before deploying the server that writes
+`provider_snapshot_rejected`. RLS is enabled; only service_role
 has table grants. Arbitrary setup/config payloads use existing AES-GCM encryption.
 User JWTs cannot read ciphertext or mutate jobs. Allow the additive status route
 through the dashboard proxy.
@@ -78,3 +88,48 @@ snapshot. No HTTP/proxy timeout is increased. The original proposal is preserved
 in [async-build-contract.md](async-build-contract.md).
 
 No production migration/rebuild/deployment is part of this change.
+
+## Operator recovery of the historical Boat billing incident
+
+There is **no owner/admin force-release API or CLI command**. Missing builder
+metadata does not prove a refusal: a timed-out allocation can still create a
+machine. New ambiguous builds always retain their reservation.
+
+Migration 20261110220100_legacy_boat_payment_recovery.sql captures eligibility
+only for already-existing Boat creates in recovery_required/builder with no
+builder, snapshot, golden or recorded reason. Later jobs default ineligible,
+even with identical metadata. Nothing is automatically released.
+
+For staging incident **aa2f54f7**, after migrations/server rollout:
+
+1. Obtain the full UUID from the first create receipt (the prefix is not a UUID).
+   Verify the matching original diagnostic proves golden_build_failed,
+   phase=builder, code=payment_required, with no allocation. Present billing
+   status, an empty golden list or an absent builder ID is not sufficient.
+2. A trusted database operator connected to **staging** using its normal
+   service-role/database-owner access runs this transaction with that full ID:
+
+       begin;
+       select public.reconcile_legacy_boat_payment_refusal(
+         '<full-uuid-beginning-aa2f54f7>'::uuid,
+         'provider_payment_required'
+       );
+       commit;
+
+   The invoker-security function is executable only by service_role (and the
+   database owner), never a user JWT. It rechecks migration-captured eligibility
+   and current resource/state guards under a job lock, atomically releases only
+   that pending reservation, and records failed/provider_payment_required.
+   Repeating a completed confirmation is read-only.
+3. The owner runs:
+
+       armada golden build-status <full-job-uuid> --json
+       armada golden create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
+
+   Expect the old job failed with failureReason=provider_payment_required
+   (build-status exits 1 for terminal failure). Retry with a fresh admission key;
+   the old reservation must no longer block creation.
+
+No golden ID is needed. Do not expose this function through the control API or
+use an attestation to release a post-migration ambiguous job.
+No staging/production database operation is performed by this PR's agent.

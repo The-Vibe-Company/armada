@@ -246,7 +246,7 @@ final class OrchestratorListModel {
             )
             return
         }
-        if let receipt = open.receipt, receipt.state != .uncertain {
+        if let receipt = open.receipt, !receipt.state.isUncertain {
             // Accepted: once the orchestrator is listed past creating, read its final receipt so
             // the saved command is forgotten; until then it is in progress, not unknown.
             if items.contains(where: { $0.id == receipt.orchestratorID && $0.state != .creating }) {

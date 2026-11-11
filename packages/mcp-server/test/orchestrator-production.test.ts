@@ -7,6 +7,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -31,6 +32,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let fault: "none" | "launcher" | "fork" | "initialization" | "skills" | "epoch" = "none";
   let throwLogger = false;
   let stopUnconfirmed = false;
+  let deletePending = false;
   const lines: string[] = [];
   const childPreparation: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
@@ -64,6 +66,12 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     async stop(request) {
       if (stopUnconfirmed) throw new Error(privateText);
       return placement.provider.stop(request);
+    },
+    async delete(request) {
+      if (deletePending) return { status: "pending" };
+      if (stopUnconfirmed) throw new Error(privateText);
+      await placement.provider.stop(request);
+      return { status: "deleted" };
     },
     async prompt(request) {
       childPreparation.push("prompt");
@@ -333,6 +341,26 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
     ).toEqual([{ sandbox_id: childReceipt.result.sandboxId }]);
     expect(placement.forks.map((fork) => fork.from)).toEqual(["modal-image", "modal-image"]);
+    // A prior successful stop epoch must not cover newly admitted child work.
+    await sql.query("update sandboxes set stop_requested_at=clock_timestamp(),stop_generation=1 where id=$1", [
+      childReceipt.result.sandboxId,
+    ]);
+    placement.setExecOutput({ stdout: '{"status":"clean"}' });
+    await preserveBeforeStop(
+      sql,
+      provider,
+      childReceipt.result.sandboxId,
+      (
+        await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from sandboxes where id=$1", [
+          childReceipt.result.sandboxId,
+        ])
+      ).rows[0]!.provider_sandbox_id,
+      "managed_child_stop",
+    );
+    const capturesBeforeMessage = placement.execs.filter((r) => r.preservationStage === "collect_exec").length;
+    placement.setExecOutput({
+      stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills\n`,
+    });
     const messagedChild = await scoped(
       "message",
       { sandboxId: childReceipt.result.sandboxId, text: "child hello" },
@@ -367,6 +395,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     ).toEqual([{ requested_model: "gpt-6.1-sol" }, { requested_model: "gpt-6.1-sol" }]);
     const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
     expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    expect(placement.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(
+      capturesBeforeMessage + 1,
+    );
     const childRead = await scoped("read", { sandboxId: childReceipt.result.sandboxId });
     expect(await childRead?.json()).toMatchObject({
       result: { status: "stopped", ownerId: p.owner, credentialId: account.id },
@@ -431,6 +462,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "skills",
       "private-skill",
       "private-skill-stop-unconfirmed",
+      "private-skill-delete-pending",
       "expired-skill-key",
       "undecryptable-skill-key",
       "epoch",
@@ -439,7 +471,8 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     ] as const) {
       lines.length = 0;
       stopUnconfirmed = scenario === "private-skill-stop-unconfirmed";
-      const privateSkill = scenario === "private-skill" || stopUnconfirmed;
+      deletePending = scenario === "private-skill-delete-pending";
+      const privateSkill = scenario === "private-skill" || stopUnconfirmed || deletePending;
       fault = ["launcher", "fork", "initialization", "skills", "epoch"].includes(scenario)
         ? (scenario as typeof fault)
         : "none";
@@ -490,7 +523,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       );
       if (storedSkillKey || privateSkill) {
         const failedParent = (await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator;
-        expect(failedParent.state).toBe(stopUnconfirmed ? "blocked" : "stopped");
+        expect(failedParent.state).toBe(stopUnconfirmed || deletePending ? "blocked" : "stopped");
         expect(failedParent.conversationId).toBeNull();
         expect(failedParent.skillReceipt).toBeNull();
         await expect(
@@ -508,9 +541,12 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
             [failedParent.sandboxId],
           )
         ).rows[0];
-        if (!stopUnconfirmed) {
-          expect(sandbox?.status).toBe("stopped");
+        if (!stopUnconfirmed && !deletePending) {
+          expect(sandbox?.status).toBe("deleted");
           expect(sandbox?.stopped_at).not.toBeNull();
+        } else {
+          expect(sandbox?.status).not.toBe("deleted");
+          expect(sandbox?.stopped_at).toBeNull();
         }
       }
       if (storedSkillKey) {
@@ -548,6 +584,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         skills: ["skills", "skill_command_missing"],
         "private-skill": ["skills_credential", "skillpack_credential_missing"],
         "private-skill-stop-unconfirmed": ["skills_credential", "skillpack_credential_missing"],
+        "private-skill-delete-pending": ["skills_credential", "skillpack_credential_missing"],
         "expired-skill-key": ["skills_credential", "skillpack_credential_refused"],
         "undecryptable-skill-key": ["skills_credential", "skillpack_credential_unreadable"],
         epoch: ["epoch_install", "authority_denied"],
@@ -561,6 +598,16 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         stage: expected[0],
         reason: expected[1],
       });
+      const cleanupRecords = records.filter((record) => record.event === "orchestrator_create_cleanup_failure");
+      if (stopUnconfirmed || deletePending) {
+        expect(cleanupRecords).toHaveLength(1);
+        expect(cleanupRecords[0]).toMatchObject({
+          action: "create",
+          outcome: "unconfirmed",
+          step: deletePending ? "unconfirmed" : "delete",
+          reason: deletePending ? "cleanup_unconfirmed" : "unexpected_error",
+        });
+      } else expect(cleanupRecords).toHaveLength(0);
       expect(records[0].operationId).toMatch(/^[a-f0-9-]{36}$/);
       expect(records[0].orchestratorId).toMatch(/^[a-f0-9-]{36}$/);
       if (scenario === "failure_publication")

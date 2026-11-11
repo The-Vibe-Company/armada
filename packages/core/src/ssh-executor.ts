@@ -2,10 +2,35 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
+export const PRIVATE_SSH_FAILURES = [
+  "skillpack_ssh_keygen_failed",
+  "skillpack_ssh_local_storage_failed",
+  "skillpack_ssh_authorization_failed",
+  "skillpack_ssh_connection_invalid",
+  "skillpack_ssh_connection_failed",
+  "skillpack_ssh_host_key_rejected",
+  "skillpack_ssh_authentication_failed",
+  "skillpack_ssh_unreachable",
+  "skillpack_ssh_timeout",
+  "skillpack_ssh_node_missing",
+  "skillpack_ssh_flock_missing",
+  "skillpack_ssh_home_unavailable",
+  "skillpack_ssh_key_cleanup_failed",
+  "skillpack_ssh_remote_failed",
+  "skillpack_ssh_output_invalid",
+] as const;
+export class PrivateSshError extends Error {
+  constructor(readonly reason: (typeof PRIVATE_SSH_FAILURES)[number]) {
+    super(reason);
+  }
+}
 export interface SshExecDeps {
+  /** Opt in only for the private GitHub repair installer, never generic guest output. */
+  githubHydration?: boolean;
   onWarning?: (warning: GoldenBuildWarning) => void;
   mkdtemp?: typeof mkdtemp;
   rm?: typeof rm;
@@ -216,13 +241,19 @@ export async function sshPrivateSkillCommand(
   input: { sandboxId: string; key: string; script: string },
   deps: SshExecDeps = {},
 ): Promise<string> {
-  return sshExchange(
-    provider,
-    { sandboxId: input.sandboxId, token: input.key, script: input.script },
-    deps,
-    true,
-    600_000,
-  );
+  try {
+    return await sshExchange(
+      provider,
+      { sandboxId: input.sandboxId, token: input.key, script: input.script },
+      deps,
+      true,
+      600_000,
+      true,
+    );
+  } catch (error) {
+    if (error instanceof PrivateSshError) throw error;
+    throw new PrivateSshError("skillpack_ssh_local_storage_failed");
+  }
 }
 
 async function sshExchange(
@@ -231,6 +262,7 @@ async function sshExchange(
   deps: SshExecDeps,
   capture: boolean,
   timeoutMs = capture ? 30_000 : 600_000,
+  privateTransport = false,
 ): Promise<string> {
   const fs = {
     mkdtemp: deps.mkdtemp ?? mkdtemp,
@@ -242,15 +274,21 @@ async function sshExchange(
   const dir = await fs.mkdtemp(join(tmpdir(), "armada-ssh-"));
   const key = join(dir, "key"),
     known = join(dir, "known_hosts");
+  let step: "keygen" | "local_storage" | "authorization" | "connection" | "remote" = "keygen";
   try {
     await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "", false, timeoutMs);
+    step = "local_storage";
     await fs.chmod(key, 0o600);
     const pub = await (deps.readPublicKey ?? ((p: string) => Bun.file(p).text()))(`${key}.pub`);
+    step = "authorization";
     const c = await provider.sshKey({ sandboxId: input.sandboxId, key: pub.trim() });
+    step = "connection";
     const username = c.username === undefined ? "user" : c.username;
     if (username !== "user" && username !== "root") throw new GoldenError("setup_failed", "Invalid SSH username.");
     const ep = parseEndpoint(c.sshEndpoint);
-    await fs.writeFile(known, knownLine(ep.host, ep.port, c.hostKey), { mode: 0o600 });
+    const knownText = knownLine(ep.host, ep.port, c.hostKey);
+    step = "local_storage";
+    await fs.writeFile(known, knownText, { mode: 0o600 });
     // ssh joins its command argv with spaces before the remote shell parses it. Keep this one
     // shell-quoted argument so semicolons cannot escape bash -c and turn `set +x` into a command.
     // The checkout script itself carries the cleanup trap; do not exec, which would discard it.
@@ -259,6 +297,7 @@ async function sshExchange(
         (username === "root" ? "export HOME=/home/user; cd /home/user || exit 96; " : "") +
         "bash -s; status=$?; unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; history -c 2>/dev/null || true; exit $status",
     );
+    step = "remote";
     return await command(
       run,
       "ssh",
@@ -292,6 +331,22 @@ async function sshExchange(
       capture,
       timeoutMs,
       deps.onWarning,
+      privateTransport,
+      input.sandboxId,
+      deps.githubHydration === true,
+    );
+  } catch (error) {
+    if (!privateTransport || error instanceof PrivateSshError) throw error;
+    throw new PrivateSshError(
+      step === "local_storage"
+        ? "skillpack_ssh_local_storage_failed"
+        : step === "keygen"
+          ? "skillpack_ssh_keygen_failed"
+          : step === "authorization"
+            ? "skillpack_ssh_authorization_failed"
+            : step === "connection"
+              ? "skillpack_ssh_connection_invalid"
+              : "skillpack_ssh_remote_failed",
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -318,6 +373,9 @@ function command(
   capture = false,
   timeoutMs = capture ? 30_000 : 600_000,
   onWarning?: (warning: GoldenBuildWarning) => void,
+  privateTransport = false,
+  sandboxId?: string,
+  githubHydration = false,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -326,8 +384,10 @@ function command(
     const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", capture ? "pipe" : "ignore", "pipe"] });
     let pending = "";
     let phase = "ssh";
+    let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let timedOut = false;
+    let privateReason: (typeof PRIVATE_SSH_FAILURES)[number] | undefined;
     const output: Buffer[] = [];
     let bytes = 0,
       overflow = false;
@@ -344,12 +404,43 @@ function command(
       c.kill("SIGKILL");
     }, timeoutMs);
     c.stderr?.on("data", (d) => {
-      if (capture) return;
+      if (capture && !privateTransport) return;
       // Stream only fixed protocol records; discard all tool stderr, including arbitrary secrets.
       pending += String(d);
       const lines = pending.split("\n");
       pending = (lines.pop() ?? "").slice(-256);
       for (const line of lines) {
+        if (privateTransport) {
+          const remote =
+            /^ARMADA_PRIVATE_FAILURE (node_missing|flock_missing|home_unavailable|key_cleanup_failed)$/.exec(line);
+          if (remote)
+            privateReason = (
+              {
+                node_missing: "skillpack_ssh_node_missing",
+                flock_missing: "skillpack_ssh_flock_missing",
+                home_unavailable: "skillpack_ssh_home_unavailable",
+                key_cleanup_failed: "skillpack_ssh_key_cleanup_failed",
+              } as const
+            )[remote[1] as "node_missing" | "flock_missing" | "home_unavailable" | "key_cleanup_failed"];
+          else if (!privateReason) {
+            if (
+              line.includes("Host key verification failed") ||
+              line.includes("REMOTE HOST IDENTIFICATION HAS CHANGED")
+            )
+              privateReason = "skillpack_ssh_host_key_rejected";
+            else if (line.includes("Permission denied (publickey"))
+              privateReason = "skillpack_ssh_authentication_failed";
+            else if (/kex_exchange_identification|Connection closed by/.test(line))
+              privateReason = "skillpack_ssh_connection_failed";
+            else if (
+              /Connection refused|Connection timed out|Could not resolve hostname|Network is unreachable|Connection reset by peer/.test(
+                line,
+              )
+            )
+              privateReason = "skillpack_ssh_unreachable";
+          }
+          continue; // Never forward private SSH stderr, even build-looking records.
+        }
         const match =
           /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|skillpack|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})$/.exec(
             line,
@@ -358,6 +449,12 @@ function command(
           phase = match[1]!;
           exitCode = match[2];
         }
+        const github = githubHydration
+          ? /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
+              line,
+            )
+          : null;
+        if (github) hydrationPhase = githubHydrationPhase(github[1]);
         const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
         if (warning)
           onWarning?.(
@@ -378,7 +475,11 @@ function command(
     });
     c.on("error", () => {
       clearTimeout(timer);
-      reject(new GoldenError("build_failed", `${file} could not start. Check server SSH tooling.`));
+      reject(
+        privateTransport
+          ? new PrivateSshError("skillpack_ssh_remote_failed")
+          : new GoldenError("build_failed", `${file} could not start. Check server SSH tooling.`),
+      );
     });
     c.stdin?.on?.("error", () => {
       /* Close/error owns the sanitized failure. */
@@ -387,8 +488,26 @@ function command(
       clearTimeout(timer);
       if (code === 0 && !overflow) resolve(Buffer.concat(output).toString("utf8"));
       else {
+        if (privateTransport) {
+          reject(
+            new PrivateSshError(
+              timedOut
+                ? "skillpack_ssh_timeout"
+                : overflow
+                  ? "skillpack_ssh_output_invalid"
+                  : (privateReason ??
+                    (code === 255 ? "skillpack_ssh_connection_failed" : "skillpack_ssh_remote_failed")),
+            ),
+          );
+          return;
+        }
         const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
         if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
+        if (hydrationPhase) {
+          console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: hydrationPhase }));
+          reject(new GitHubHydrationError(hydrationPhase));
+          return;
+        }
         reject(
           new GoldenError(
             "build_failed",

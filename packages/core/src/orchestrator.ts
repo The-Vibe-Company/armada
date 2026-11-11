@@ -37,6 +37,8 @@ export interface OrchestratorCreate {
   reasoningEffort?: string;
   /** Opaque authorized model-account reference; not a credential or MCP connection ID. */
   modelAccountId: string;
+  /** Omit for launch defaults; [] explicitly disables user MCP connections. */
+  connections?: string[];
   idleSeconds?: number;
   maxActiveChildren?: number;
 }
@@ -60,11 +62,23 @@ export interface Orchestrator {
   skillRevision: string;
   skillReceipt?: OrchestratorSkillReceipt | null;
   blockedReason: string | null;
+  failureMessage?: string | null;
 }
 
 /** Required on message/steer/stop/resume and wait mutations; create uses only Idempotency-Key. */
 export interface OrchestratorFence {
   expectedRevision: number;
+}
+export interface OrchestratorConnection {
+  id: string;
+  name: string;
+}
+export interface OrchestratorConnections {
+  version: typeof ORCHESTRATOR_CONTRACT_VERSION;
+  connections: OrchestratorConnection[];
+}
+export interface OrchestratorConnectionMutation extends OrchestratorFence {
+  connections: string[];
 }
 export interface OrchestratorMessage extends OrchestratorFence {
   text: string;
@@ -73,11 +87,13 @@ export interface OrchestratorOperation {
   version: typeof ORCHESTRATOR_CONTRACT_VERSION;
   id: string;
   orchestratorId: string;
-  kind: "create" | "message" | "steer" | "stop" | "resume";
+  kind: "create" | "message" | "steer" | "stop" | "resume" | "connections_add" | "connections_remove";
   state: "pending" | "succeeded" | "failed" | "uncertain";
   revision: number;
   /** Safe stable code, never a raw SDK exception. */
   errorCode: string | null;
+  /** Readable safe action for a closed failure code, when available. */
+  errorMessage?: string | null;
 }
 export interface OrchestratorWait extends OrchestratorFence {
   kind: "ci" | "child" | "external" | "task";
@@ -117,6 +133,7 @@ export type OrchestratorEvent = {
   | { kind: "state"; state: OrchestratorState; continuity: OrchestratorContinuity }
   | { kind: "operation"; operation: OrchestratorOperation }
   | { kind: "wait"; lease: OrchestratorWaitLease; status: "active" | "released" | "expired" }
+  | { kind: "connections"; connections: OrchestratorConnection[] }
   | { kind: "child"; sandboxId: string; operationId: string }
 );
 export interface OrchestratorEventPage {
@@ -138,6 +155,8 @@ export interface OrchestratorDetail {
   waits: OrchestratorWaitLease[];
   delegation: OrchestratorDelegation | null;
   childSandboxIds: string[];
+  /** Only user connections; internal authority servers are never removable. */
+  connections: OrchestratorConnection[];
   usage?: { own: SandboxUsage | null; children: SandboxUsageSummary };
 }
 

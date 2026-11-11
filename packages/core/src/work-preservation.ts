@@ -58,7 +58,7 @@ type CaptureDiagnostic = ReturnType<typeof workPreservationError> & { stage: "co
 export type WorkPreservation =
   | { status: "clean" }
   | { status: "preserved"; archive: string }
-  | { status: "failed"; reason: CaptureFailure; diagnostic?: CaptureDiagnostic };
+  | { status: "failed"; reason: CaptureFailure; diagnostic?: CaptureDiagnostic; workAtRisk?: true };
 
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024;
 
@@ -112,6 +112,7 @@ export async function preserveWork(
   provider: Pick<Provider, "exec">,
   sandboxId: string,
   callerSignal?: AbortSignal,
+  onWorkAtRisk?: () => void,
 ): Promise<WorkPreservation> {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -121,6 +122,16 @@ export async function preserveWork(
   const token = crypto.randomUUID().replaceAll("-", "");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
+  let workAtRisk = false;
+  const riskFields = () => (workAtRisk ? { workAtRisk: true as const } : {});
+  const confirmRisk = () => {
+    workAtRisk = true;
+    try {
+      onWorkAtRisk?.();
+    } catch {
+      /* Observation cannot break capture. */
+    }
+  };
   const controller = new AbortController();
   const signal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
   let stage: CaptureFailure = "exec_failed";
@@ -129,12 +140,13 @@ export async function preserveWork(
     status: "failed",
     reason: "timeout",
     diagnostic: { stage: execStage, errorClass: "timeout", providerStatus: null },
+    ...riskFields(),
   });
   async function execute(request: Parameters<Provider["exec"]>[0], stage: CaptureDiagnostic["stage"] = "collect_exec") {
     execStage = stage;
     try {
       signal.throwIfAborted();
-      return await provider.exec({ ...request, signal });
+      return await provider.exec({ ...request, signal, preservationStage: stage });
     } catch (error) {
       throw new CaptureError("exec_failed", { stage, ...workPreservationError(error) });
     }
@@ -167,6 +179,7 @@ export async function preserveWork(
         !/^[0-9a-f]{64}$/.test(value.sha256)
       )
         throw new Error();
+      confirmRisk();
       const chunks: Buffer[] = [];
       const count = Math.ceil(size / CHUNK_BYTES);
       for (let start = 0; start < count; start += 8) {
@@ -207,8 +220,10 @@ finally { fs.closeSync(fd); }`,
       if (plaintext.length > MAX_ARCHIVE_BYTES) throw new Error();
       return { status: "preserved", archive: plaintext.toString("base64") };
     }
-    if (value.status === "failed" && "reason" in value && FAILURE_REASONS.includes(value.reason as CaptureFailure))
-      return { status: "failed", reason: value.reason as CaptureFailure };
+    if (value.status === "failed" && "reason" in value && FAILURE_REASONS.includes(value.reason as CaptureFailure)) {
+      if ("workAtRisk" in value && value.workAtRisk === true) confirmRisk();
+      return { status: "failed", reason: value.reason as CaptureFailure, ...riskFields() };
+    }
     throw new Error();
   }
   try {
@@ -225,6 +240,7 @@ finally { fs.closeSync(fd); }`,
     return {
       status: "failed",
       reason: error instanceof CaptureError ? error.reason : stage,
+      ...riskFields(),
       ...(error instanceof CaptureError && error.diagnostic
         ? { diagnostic: error.diagnostic }
         : error instanceof CaptureError && error.reason === "timeout"

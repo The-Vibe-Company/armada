@@ -18,7 +18,7 @@ jobs:
   verify:
     name: Lint, typecheck and test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
@@ -106,7 +106,7 @@ jobs:
       - run: bun scripts/prepare-runtime.ts
       - run: bun scripts/golden-os-image.ts
       - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts
+      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 

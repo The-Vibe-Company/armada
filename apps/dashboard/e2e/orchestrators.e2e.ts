@@ -419,3 +419,22 @@ test("a stopped orchestrator shows no working turn, whatever its last prompt eve
   await expect(page.getByTestId("agent-working")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Steer" })).toHaveCount(0);
 });
+
+test("a refused create shows the account action without recovery or lifecycle controls", async ({ page }) => {
+  const message = "This subscription account is already in use. Stop its sandbox or choose the organization API key.";
+  await testControl("patch", {
+    id: ALICE_ORCHESTRATOR,
+    patch: {
+      state: "stopped",
+      sandboxId: null,
+      conversationId: null,
+      continuity: "not_started",
+      blockedReason: "credential_busy",
+      failureMessage: message,
+    },
+  });
+  await signIn(page, "alice@example.com", DETAIL);
+  await expect(page.getByText("Create failed", { exact: true })).toBeVisible();
+  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Recover|Resume|Stop/, exact: true })).toHaveCount(0);
+});

@@ -11,6 +11,7 @@ import {
   parsePinnedMcpStdio,
   type Sql,
   sshHydrateGitHubToken,
+  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -39,6 +40,9 @@ const sha = async (v: string) =>
 /** Production HTTP adapter. Upstream grants never cross the gateway/native boundary. */
 export function createMcpHttpIntegration(options: {
   sql: Sql;
+  /** Server boot owns initial draining/backoff before periodic database work starts. */
+  deferBackground?: boolean;
+  prepareReadableVariables?: TemplateService["prepare"];
   /** Trusted server opt-in, never a request parameter. Defaults off. */
   githubRuntimeEnabled?: boolean;
   /** Default off until the coordinator verifies the legacy installer on a real Boat image. */
@@ -79,6 +83,7 @@ export function createMcpHttpIntegration(options: {
   const lifecycle = createMcpLifecycle({
     sql,
     registry,
+    ...(options.prepareReadableVariables ? { prepareReadableVariables: options.prepareReadableVariables } : {}),
     ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
     encryptionKey: options.encryptionKey,
     origin: new URL(options.publicUrl).origin,
@@ -592,12 +597,17 @@ export function createMcpHttpIntegration(options: {
     });
     return draining;
   }
-  const timer = setInterval(() => {
-    // Provider expiry I/O must never delay durable revoke/disable stream closure.
-    void drainInvalidations().catch(() => gateway.close());
-    void renewActiveLeases().catch(() => gateway.close());
-  }, 250);
-  timer.unref();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const startBackground = () => {
+    if (timer) return;
+    timer = setInterval(() => {
+      // Provider expiry I/O must never delay durable revoke/disable stream closure.
+      void drainInvalidations().catch(() => gateway.close());
+      void renewActiveLeases().catch(() => gateway.close());
+    }, 250);
+    timer.unref();
+  };
+  if (!options.deferBackground) startBackground();
   return {
     registry,
     broker,
@@ -657,6 +667,7 @@ export function createMcpHttpIntegration(options: {
       await refreshActiveExpiries(args[1].id);
     },
     drainInvalidations,
+    startBackground,
     renewActiveLeases,
     async close() {
       clearInterval(timer);

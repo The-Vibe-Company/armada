@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   CreateGoldenRequest,
   DeleteReceipt,
@@ -25,13 +26,22 @@ import type {
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";
-import { buildEventPage, eventPageOptions, MACHINE_SIZE_CATALOG, ProviderError, parseMachineSize } from "@armada/core";
+import {
+  buildEventPage,
+  eventPageOptions,
+  MACHINE_SIZE_CATALOG,
+  ProviderError,
+  parseMachineSize,
+  validateReadableVariables,
+} from "@armada/core";
+import { sshReadableVariables } from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
   type CreateSandboxRequest,
   type PromptRequestProviderEnum,
   type Sandbox,
+  SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
 } from "@boatdev/sdk";
@@ -85,6 +95,24 @@ const BOAT_STATES: Record<SandboxState, readonly string[]> = {
   stopped: ["archived"],
   failed: ["error", "cancelled"],
 };
+
+const LOG_STATES = new Set<string>(Object.values(SandboxStateEnum));
+const MAPPED_STATES = new Set(Object.values(BOAT_STATES).flat());
+function trace(fields: Record<string, unknown>): void {
+  try {
+    console.info(JSON.stringify({ ...fields, at: new Date().toISOString() }));
+  } catch {
+    /* Diagnostics must not change lifecycle admission. */
+  }
+}
+function lifecycleTrace(
+  sandboxId: string,
+  operation: "stop" | "resume" | "interrupt" | "quiesce",
+  phase: string,
+  path: string,
+) {
+  trace({ event: "boat_lifecycle", providerSandboxId: sandboxId, operation, phase, path });
+}
 
 function sandboxState(providerState: string): SandboxState {
   for (const [state, names] of Object.entries(BOAT_STATES)) {
@@ -206,7 +234,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     // The generated SandboxActionResponse omits the documented top-level stop.
     // Read the raw acceptance so the exact operation fence is not discarded.
     const response = await call(async () => {
+      lifecycleTrace(sandboxId, "stop", "api_dispatch", "archive");
       const accepted = await api.stopRaw({ sandboxId }, { signal });
+      lifecycleTrace(sandboxId, "stop", "api_accepted", "archive");
       return (await accepted.raw.json()) as {
         id?: string;
         stop?: { id?: string };
@@ -390,6 +420,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       // Only the trusted managed adapter calls this port after its own owner,
       // account and operation fence. Ordinary MCP resume hooks deliberately hide
       // managed parents; managed MCP is prepared by that adapter after activation.
+      lifecycleTrace(sandboxId, "resume", "api_dispatch", "best_effort");
       await call(() => api.resume({ sandboxId }, { signal }));
       let info = await provider.get(sandboxId, { signal });
       for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
@@ -400,6 +431,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
     },
     async stopBestEffort(sandboxId: string): Promise<void> {
+      lifecycleTrace(sandboxId, "stop", "before_hook", "best_effort");
       await options.beforeStop?.(provider, sandboxId);
       await archive(sandboxId);
     },
@@ -431,6 +463,30 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
     },
 
+    async configureReadableVariables({ sandboxId, harness, variables }) {
+      variables = validateReadableVariables(variables);
+      if (harness !== "claude" && harness !== "codex") throw invalidRequest("Invalid readable variable harness.");
+      const digest = createHash("sha256")
+        .update(JSON.stringify(Object.entries(variables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
+        .digest("hex");
+      // Live VM receipt, not a process-local cache: missing /run state always rehydrates.
+      const present = await provider.exec({
+        sandboxId,
+        timeoutSeconds: 30,
+        command: `/usr/bin/python3 -I -c '${READABLE_VARIABLE_PROBE}' ${harness}`,
+      });
+      if (!present.detached && !present.timedOut && present.exitCode === 0 && present.stdout.trim() === digest) return;
+      await installNativeCwdWrapper(
+        async (request) => {
+          const result = await provider.exec(request);
+          if (result.detached || result.exitCode !== 0 || result.timedOut)
+            throw invalidRequest("Native variable wrapper unavailable.");
+        },
+        sandboxId,
+        harness,
+      );
+      await sshReadableVariables(provider, sandboxId, harness, variables);
+    },
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
       let resumed = false;
       const workflow = AbortSignal.timeout(90_000);
@@ -443,6 +499,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {
             try {
+              lifecycleTrace(request.sandboxId, "resume", "api_dispatch", "prompt");
               await call(() => api.resume({ sandboxId: request.sandboxId }, { signal }));
             } catch (error) {
               if (!(error instanceof ProviderError) || error.status !== 409) throw error;
@@ -551,6 +608,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async interrupt(request: InterruptRequest): Promise<void> {
+      lifecycleTrace(request.sandboxId, "interrupt", "api_dispatch", "turns");
       await call(() =>
         api.interrupt({
           sandboxId: request.sandboxId,
@@ -560,6 +618,25 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async exec(request: ExecRequest): Promise<ExecResult> {
+      const started = performance.now();
+      const execId = request.onlyIfRunning ? crypto.randomUUID() : undefined;
+      const stage =
+        request.preservationStage === "collect_exec" || request.preservationStage === "chunk_exec"
+          ? request.preservationStage
+          : "exec";
+      const observation = (attempt: number, fields: Record<string, unknown>) => {
+        if (request.onlyIfRunning)
+          trace({
+            event: "boat_preservation_exec",
+            providerSandboxId: request.sandboxId,
+            stage,
+            execId,
+            attempt,
+            maxAttempts: RESTORE_RETRIES,
+            elapsedMs: Math.round(performance.now() - started),
+            ...fields,
+          });
+      };
       const commandRequest = {
         command: request.command,
         ...(request.cwd ? { cwd: request.cwd } : {}),
@@ -573,12 +650,37 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           // startup may settle, but stopping/terminal compute cannot accept capture.
           // The extra GET for every chunk is deliberate: refuse compute that
           // stopped mid-download rather than implicitly resuming it.
+          observation(attempt, { source: "get_api", decision: "dispatch" });
           const current = await provider.get(
             request.sandboxId,
             request.signal ? { signal: request.signal } : undefined,
           );
           request.signal?.throwIfAborted();
-          if (current.physicalExitConfirmed || !["ready", "running"].includes(current.state)) {
+          const refused = current.physicalExitConfirmed === true || !["ready", "running"].includes(current.state);
+          const wait = refused && current.state === "starting" && attempt < RESTORE_RETRIES;
+          observation(attempt, {
+            source: "state_guard",
+            providerState: LOG_STATES.has(current.providerState) ? current.providerState : "unrecognized",
+            stateMappingKnown: MAPPED_STATES.has(current.providerState),
+            normalizedState: current.state,
+            physicalExitConfirmed: current.physicalExitConfirmed === true,
+            autoStopAt:
+              current.expiresAt instanceof Date && Number.isFinite(current.expiresAt.getTime())
+                ? current.expiresAt.toISOString()
+                : null,
+            stoppedAt:
+              current.stoppedAt instanceof Date && Number.isFinite(current.stoppedAt.getTime())
+                ? current.stoppedAt.toISOString()
+                : null,
+            decision: !refused
+              ? "command"
+              : wait
+                ? "wait_starting"
+                : current.state === "starting"
+                  ? "startup_budget_exhausted"
+                  : "refuse_terminal",
+          });
+          if (refused) {
             if (current.state === "starting" && attempt < RESTORE_RETRIES) {
               await sleep(NOT_READY_WAIT_MS);
               continue;
@@ -593,12 +695,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           }
         }
         try {
+          observation(attempt, { source: "command_api", decision: "dispatch" });
           const response = await call(() =>
             api.command(
               { sandboxId: request.sandboxId, commandRequest },
               request.signal ? { signal: request.signal } : undefined,
             ),
           );
+          observation(attempt, { source: "command_api", decision: "response_received" });
           if ("processId" in response) return { detached: true, processId: response.processId };
           if (!("exitCode" in response)) throw unexpectedAnswer("command result");
           return {
@@ -616,6 +720,19 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
             error instanceof ProviderError &&
             error.code === "sandbox_not_ready" &&
             error.status === 409;
+          observation(attempt, {
+            source: "command_api",
+            decision: notReady ? "refused_not_ready" : restoring ? "refused_restoring" : "failed",
+            providerStatus:
+              error instanceof ProviderError &&
+              typeof error.status === "number" &&
+              Number.isInteger(error.status) &&
+              error.status >= 100 &&
+              error.status <= 599
+                ? error.status
+                : null,
+            retryScheduled: (restoring || notReady) && attempt < RESTORE_RETRIES,
+          });
           if ((!restoring && !notReady) || attempt >= RESTORE_RETRIES) throw error;
           // A 409 refusal did not execute the command. Never replay ambiguous errors.
           await sleep(notReady ? NOT_READY_WAIT_MS : RESTORE_WAIT_MS);
@@ -670,9 +787,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         (!request.conversationId || conversation.id === request.conversationId) && conversation.running;
       // Idle reviewers have no turn to interrupt. Avoid making preservation
       // depend on the harness accepting an unnecessary interruption.
-      if (!(await provider.conversations(request.sandboxId)).some(active)) return;
+      const needsInterrupt = (await provider.conversations(request.sandboxId)).some(active);
+      lifecycleTrace(request.sandboxId, "quiesce", needsInterrupt ? "interrupt_needed" : "idle_no_interrupt", "turns");
+      if (!needsInterrupt) return;
       await provider.interrupt(request);
       const conversations = await provider.conversations(request.sandboxId);
+      lifecycleTrace(request.sandboxId, "quiesce", conversations.some(active) ? "pending" : "settled", "turns");
       if (
         conversations.some(
           (conversation) =>
@@ -703,8 +823,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {
+      lifecycleTrace(request.sandboxId, "stop", "before_hook", "ordinary");
       await options.beforeStop?.(provider, request.sandboxId);
+      lifecycleTrace(request.sandboxId, "stop", "api_dispatch", "ordinary");
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
+      lifecycleTrace(request.sandboxId, "stop", "api_accepted", "ordinary");
     },
 
     async delete(request: { sandboxId: string }): Promise<DeleteReceipt> {
@@ -728,3 +851,24 @@ function isRestoring(details: unknown): boolean {
     (details as Record<string, unknown>).message === RESTORING
   );
 }
+
+// Fixed read-only probe. No values/desired digest enter exec arguments or command journals.
+const READABLE_VARIABLE_PROBE = `import os,sys,json,stat,hashlib
+try:
+ h=sys.argv[1]
+ assert h in ("claude","codex")
+ root="/run/armada-readable-variables"
+ d=os.lstat(root)
+ assert stat.S_ISDIR(d.st_mode) and d.st_uid==0 and not d.st_mode&0o022
+ wrapper="/usr/local/bin/"+h+".armada-wrapper"
+ assert os.path.realpath("/usr/local/bin/"+h)==wrapper
+ w=os.lstat(wrapper)
+ assert stat.S_ISREG(w.st_mode) and w.st_uid==0 and not w.st_mode&0o022
+ with open(wrapper) as f: assert "/run/armada-readable-variables/" in f.read()
+ fd=os.open(root+"/"+h+".json",os.O_RDONLY|os.O_NOFOLLOW)
+ with os.fdopen(fd) as f:
+  s=os.fstat(f.fileno())
+  assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and not s.st_mode&0o022 and s.st_size<=1048576
+  values=json.load(f)
+ print(hashlib.sha256(json.dumps(sorted(values.items()),ensure_ascii=False,separators=(",",":")).encode()).hexdigest())
+except Exception: print("missing")`;

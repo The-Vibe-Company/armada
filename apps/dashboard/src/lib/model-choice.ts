@@ -126,3 +126,17 @@ function checked(
     throw error;
   }
 }
+
+/**
+ * The agent, model and effort a template freezes, from its form: the same check as a launch, so a template never
+ * stores a choice a launch would refuse.
+ */
+export function modelChoice(
+  harness: string,
+  fields: ModelFields,
+): Parsed<{ harness: Harness; model: string; reasoningEffort: string }> {
+  const known = HARNESSES.find((candidate) => candidate === harness);
+  if (!known) return { ok: false, error: "Choose Claude Code or Codex." };
+  const choice = checked(known, chosenModel(fields), fields.reasoningEffort.trim() || undefined);
+  return choice.ok ? { ok: true, args: { harness: known, ...choice.args } } : choice;
+}

@@ -114,7 +114,7 @@ export function startServerWorkers(
       try {
         await maintenance();
       } catch {
-        log("armada: resource evidence retention unavailable; retrying.");
+        log("armada: retention maintenance unavailable; retrying.");
       }
       if (!shutdown.signal.aborted)
         await new Promise<void>((resolve) => {

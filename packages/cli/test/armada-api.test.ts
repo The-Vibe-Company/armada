@@ -226,6 +226,7 @@ for (const failure of ["502", "network", "timeout"] as const) {
 
 test("closed server failures give actionable CLI help without parsing free text", async () => {
   for (const [code, status, help] of [
+    ["github_hydration_failed", 503, "Check the failing phase"],
     ["credential_refused", 422, "Replace or reconnect"],
     ["provider_unavailable", 502, "Try again later"],
     ["dependency_unavailable", 503, "Try again later"],
@@ -236,12 +237,44 @@ test("closed server failures give actionable CLI help without parsing free text"
       fetch: async () => Response.json({ error: { code, message: "credential_refused revoked expired" } }, { status }),
     });
     try {
-      await client.request("/api/v1/sandbox/launch");
+      await client.request(code === "github_hydration_failed" ? "/api/v1/github/refresh" : "/api/v1/sandbox/launch");
       throw new Error("Expected error");
     } catch (error) {
       expect(error).toBeInstanceOf(ArmadaApiError);
       expect((error as ArmadaApiError).serverCode).toBe(code);
       expect((error as Error).message).toContain(help);
+    }
+  }
+});
+
+// The CLI owns distrust of response diagnostics, including structured phase values.
+test("GitHub repair exposes only a closed server phase to its owner", async () => {
+  for (const phase of ["sudo", "directories", "synthetic-secret", null]) {
+    const client = await createArmadaApiClient({
+      ...io({ ARMADA_TOKEN: token }),
+      fetch: async () =>
+        Response.json(
+          {
+            error: {
+              code: "github_hydration_failed",
+              message: "synthetic-secret",
+              details: { phase, raw: "synthetic-secret" },
+            },
+          },
+          { status: 503 },
+        ),
+    });
+    try {
+      await client.request("/api/v1/github/refresh");
+      throw Error("Expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArmadaApiError);
+      const failure = error as ArmadaApiError;
+      expect(failure.serverCode).toBe("github_hydration_failed");
+      expect(failure.details).toEqual(phase === "sudo" || phase === "directories" ? { phase } : undefined);
+      if (failure.details) expect(failure.message).toContain(`Failing phase: ${phase}.`);
+      expect(JSON.stringify(error)).not.toContain("synthetic-secret");
+      expect(failure.message).not.toContain("synthetic-secret");
     }
   }
 });

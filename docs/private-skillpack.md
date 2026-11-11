@@ -19,10 +19,15 @@ Do not install a private package into an already hostile sandbox.
 
 ## Configure and install
 
-Create a Skillpack key scoped **only to `skills:read`**. Armada refuses broader
-or unknown scopes before installing. Native CLI presently does not enforce its
-`--confirm-secrets` flag; scope restriction is the actual security fence. Human
-login keys default to broad capabilities and must not be used here.
+Armada accepts any valid Skillpack key with the read permission needed for the
+install, including broader keys. We recommend a read-only (`skills:read`) key,
+but do not require it. Invalid, expired or revoked keys still fail authentication;
+a key without access to the requested skill fails the install.
+
+A compromised or prompt-injected sandbox that reads the key during the install
+window can do whatever that key allows on Skillpack, not only read skills.
+Native CLI presently does not enforce its `--confirm-secrets` flag; a broader
+key can also authorize secret projection. Use only trusted skills and sandboxes.
 
 Use `armada creds set skillpack --file <private-file>` or pipe the value on
 stdin. Add `--org <organization>` for an org default (admin only). Your own
@@ -51,9 +56,8 @@ no `auth login`, profile write, argv secret or provider command journal is used.
 The freshly authorized SSH key is removed under the shared `authorized_keys`
 lock **before** the installer runs, including on refused/missing-skill paths;
 unrelated keys and file metadata are preserved. Golden create/update installs the trusted native CLI automatically; the base
-image must supply Node, Bash and `flock`. Private secret
-projection is denied by the required read-only capability set: skills requiring
-secret projection fail at the API authorization boundary, before projection.
+image must supply Node, Bash and `flock`. A read-only key limits authority during the install window; broader keys do not
+provide that capability fence.
 
 Defaults, version resolution, custom origins and secret-bearing skill packages
 are outside this first credential/install slice. No live credential or production
@@ -190,13 +194,14 @@ for cmd in $(boat history "$BOAT_ID" --mode commands --limit 100 --json | jq -r 
 done | python3 -c "$SCAN" "$PATTERN"
 ```
 
-**Broad-key refusal:** replace the personal key using
+**Broad-key success:** replace the personal key using
 `armada creds set skillpack --file "$SKILLPACK_BROAD_FILE"`, repeat create with a
-new name/idempotency key on each provider and poll detail until `blocked`.
-Expected: `.orchestrator.blockedReason` **and** the create operation's `.errorCode`
-are `skillpack_credential_refused`, `.orchestrator.skillReceipt` is null, and
-there is no conversation/first prompt. Run the same absence/key/journal checks
-on this parent's audit alias. Restore the read-only key from its private file.
+new name/idempotency key on smoke-modal and smoke-boat using
+`--skill ship-pr-dev@1.6.1`, and poll until ready. Expect a non-null skill receipt
+and verify that the agent can read the installed skill. Run the same
+absence/key/journal checks on each parent's audit alias. Restore the preferred
+read-only key from its private file. Repeat with an invalid, expired or revoked
+key: expect `skillpack_credential_refused` and no receipt/first turn.
 Also repeat with a known nonexistent private slug: expect
 `skillpack_skill_unavailable` and no receipt/first turn. No key is ever an argv
 value, output value, fixture or log.
@@ -216,13 +221,13 @@ A pre-Skillpack golden is not upgraded automatically: rebuild it with
 Before snapshotting, run `command -v skillpack node bash flock` and
 `skillpack --version` as the guest user. Do not use `auth login` in a golden or
 snapshot a credential. Check private access using a disposable sandbox and a
-command-local, stdin-supplied `skills:read`-only key; never print auth status or
+command-local, stdin-supplied Skillpack key; never print auth status or
 raw install output into a shared log.
 
 Coordinator staging evidence confirmed the #897 cause: `smoke-modal` was built
 before private skills support and `skillpack` was absent from the SSH user's PATH.
 Node v22.23.4, Bash and `flock` were present. Authentication was never reached;
-key scope remains unverified. This now returns `skillpack_cli_unavailable` at
+key authentication remains unverified. This now returns `skillpack_cli_unavailable` at
 `skills_auth`, directing the owner to rebuild the golden. The failed operation
 settles as `failed`; the parent becomes `stopped` only after confirmed cleanup.
 
@@ -233,18 +238,17 @@ receipt and server diagnostics use the same codes):
 | --- | --- |
 | `skillpack_credential_missing` | Store a personal or org Skillpack credential. |
 | `skillpack_credential_refused` | Replace an expired/revoked key; check workspace membership. |
-| `skillpack_scope_refused` | Replace the key with one scoped **only** to `skills:read`. |
 | `skillpack_download_unavailable` | The last golden build could not download Skillpack. Allow GitHub release HTTPS egress, then rebuild; repeating offline builds will not help. |
 | `skillpack_cli_unavailable` | Rebuild the golden with the trusted native CLI executable on PATH; check its permissions/version. |
 | `skillpack_auth_unavailable` | Check registry connectivity and CLI/API compatibility during auth status. |
 | `skillpack_protocol_invalid` | Update the trusted native CLI/API; auth status did not return the supported workspace contract. |
-| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's workspace access; secret-projecting skills are not supported. |
+| `skillpack_skill_unavailable` | Check the bare slug, exact version and key's read permission/workspace access. |
 | `skillpack_install_conflict` | Inspect project lock/install state in a disposable sandbox; rebuild a clean golden. |
 | `skillpack_request_rejected` | Check the requested version/tool and update CLI/API compatibility. |
 | `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
 | `skillpack_timeout` | Check guest resources and registry connectivity; inspect before retrying. |
 | `skillpack_receipt_invalid` | Rebuild with a compatible native CLI; inspect project permissions and lockfile without exposing package contents. |
-| `skillpack_transport_failed` | Check SSH connectivity, Node, Bash, `flock`, home permissions and pinned-host access. |
+| `skillpack_transport_failed` | Public install provider-exec transport failed: check provider command availability/liveness. Private SSH uses the precise #914 sub-step reasons below. |
 | `skillpack_credential_unreadable` | Re-store the personal/org key with `armada creds set skillpack --file <private-file>`; check server encryption-key configuration if this persists. |
 | `skillpack_process_failed` | Check guest process limits and CLI execution resources; no registry response was obtained. |
 | `skillpack_install_nonzero` | The native installer exited with an unsupported status; check CLI version/permissions and report the closed install-stage reason. |
@@ -317,8 +321,7 @@ non-secret custom setup with `--setup <local-script>` during update.
 
 Then rerun the original `orchestrator create` with a fresh name/idempotency key,
 the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key must
-be scoped **only** to `skills:read`; broad keys now return
-`skillpack_scope_refused`. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
+have access to read the skill; broader keys are also accepted. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
 
 The public sandbox-launch path now reports the same closed missing-CLI reason
@@ -326,3 +329,109 @@ and `golden update` action, with distinct request/package/registry/receipt/trans
 classifications. It discovers the user-local executable too. Native install-stage
 usage exit (2) is `skillpack_request_rejected`, not a missing CLI; auth-status
 usage exit (2) signals an incompatible CLI.
+
+## Private SSH transport diagnostics (#914)
+
+Boat supplies a provider-pinned endpoint and user identity. Modal authorizes an
+Ed25519 key via its SDK, starts port 2222 behind a TCP tunnel and returns the
+actual host key: workers log in as `user`, golden builders as `root`. Do not
+switch workers to root or disable host-key checking. Modal's provider-managed
+SSH authorizations live in `/run/armada-ssh` and expire after 15 minutes, not in
+`~/.ssh`; the server's ephemeral private key is always destroyed after the
+exchange. The home-key cleanup script must not be mistaken for proof that this
+separate root-owned provider store was edited.
+
+Private installs now log a closed sub-step reason at `skills_transport`, never
+raw SSH stderr, credentials, endpoint details or the SDK exception:
+
+| Reason | Action |
+| --- | --- |
+| `skillpack_ssh_local_storage_failed` | Check server ephemeral directory/file permissions and cleanup; the transport could not manage its local SSH material. |
+| `skillpack_ssh_keygen_failed` | Check server ephemeral storage and `ssh-keygen` availability/permissions. |
+| `skillpack_ssh_authorization_failed` | Check provider key registration and active sandbox lifecycle; the guest was not reached. |
+| `skillpack_ssh_connection_failed` | SSH exited 255 without a more specific classification, or failed during key exchange/closed the connection. Check the Modal TCP tunnel and whether sshd is serving port 2222; this is not proof the guest command ran. |
+| `skillpack_ssh_connection_invalid` | Check provider-returned SSH username, endpoint and pinned host-key metadata. |
+| `skillpack_ssh_host_key_rejected` | Reconcile the provider's actual host key; do not disable pinning. |
+| `skillpack_ssh_authentication_failed` | Check provider authorization, worker user and key expiry. |
+| `skillpack_ssh_unreachable` | Check the provider tunnel and server egress to its SSH port. |
+| `skillpack_ssh_timeout` | Check SSH liveness and guest command completion. |
+| `skillpack_ssh_node_missing` | Rebuild with Node on the SSH user's PATH. |
+| `skillpack_ssh_flock_missing` | Rebuild with `flock` on the SSH user's PATH. |
+| `skillpack_ssh_home_unavailable` | Repair the worker home directory and traversal permissions. |
+| `skillpack_ssh_key_cleanup_failed` | Check the worker's `.ssh` directory and cleanup lock ownership; no private install ran. |
+| `skillpack_ssh_remote_failed` | The remote command failed without an accepted protocol marker; check guest shell prerequisites without forwarding raw output. |
+| `skillpack_ssh_output_invalid` | The private response was malformed, oversized or not a supported receipt; inspect guest startup-output pollution without sharing it. |
+
+Tests previously substituted both SSH executables and guest home paths, so they
+did not prove a real Modal worker SSH session. A local disposable Docker check
+with the actual Modal SSH preparation and NNP can reach private CLI scope
+validation as a non-root worker; this does not substitute for a staging rerun.
+The staging cause in #914 is not inferred from that local check.
+
+A failed private **create**, before authority installation or a conversation,
+disposes its fresh Modal allocation instead of attempting a native checkpoint.
+Only an acknowledged `deleted` receipt produces a terminal `stopped` parent and
+a deleted sandbox row. Pending/failed disposal remains visibly blocked with the
+original install reason; do not claim a terminal outcome without physical proof.
+Boat retains its confirmed-stop path. Existing conversations and resumes are
+never discarded by this cleanup path.
+
+The #914 investigation also found a concrete namespace mismatch: the initial
+orchestrator provider was resolved from the org golden, but the sandbox row was
+persisted private. Modal store namespaces include visibility. Re-resolving that
+sandbox for cleanup therefore selected a different store. New creates now bind
+the private working target from the outset, while retaining the original golden
+visibility for source credentials/App authority. Recovery already uses this
+split-source contract. The old scope-free provider fake hid the mismatch; the existing
+production resolver integration test now checks both working-target privacy and
+source authority at the factory boundary.
+
+This fixes new creates, not historical stranded allocations. Do not introduce a
+cross-scope fallback or delete older resources by name: use exact, fenced create
+recovery/management proof. The namespace mismatch explains failed cleanup, not
+the original live SSH failure; the staging transport sub-step still needs proof.
+
+Failed-create cleanup emits exactly one additional secret-free
+`orchestrator_create_cleanup_failure` record if it cannot confirm cleanup. Its
+closed `step` is `fence`, `resolve`, `revalidate`, `delete`, `stop` or `unconfirmed`.
+Its `reason` is the existing safe error-class vocabulary (or `cleanup_unconfirmed`
+when no deletion/stop receipt proves completion), never the exception message.
+The original install reason remains the operation errorCode/parent blockedReason;
+cleanup exceptions and provider messages are never forwarded. A pending delete
+is `unconfirmed`, not proof of deletion or grounds to publish a terminal parent.
+
+If Node/flock is absent, those prerequisite checks necessarily run before home-key
+cleanup. Boat can retain that ephemeral public authorization until owner cleanup;
+Modal authorizations expire in 15 minutes. The server still deletes its ephemeral
+private key. Do not interpret a prerequisite refusal as successful key cleanup.
+
+## Modal worker SSH authentication through a private /run (#914)
+
+OpenSSH reads `AuthorizedKeysFile` as the target login user, not as its root
+listener. A root-owned authorization file beneath `/run` can therefore work for
+golden builders (`root`) and refuse worker logins (`user`) if `/run` is private
+(mode `0700`). The prior OS test used a traversable Docker `/run` and missed this
+boundary. The new provider-owned OS regression runs both parent modes, both
+trusted roles, fresh keys against the running daemon and a refused wrong-role
+login. The old implementation fails the private-parent worker case with
+`skillpack_ssh_authentication_failed` while the normal-parent/root controls work.
+
+Modal SSH preparation now retains its root-managed expiring authorization store
+and adds a fixed `AuthorizedKeysCommand /bin/cat /run/armada-ssh/authorized_keys`
+with `AuthorizedKeysCommandUser root` as the standard OpenSSH fallback. This
+executes only a fixed read-only program with a fixed path; no user/key/request
+argument or shell interpolation is used. It does **not** make the worker's SSH
+session root, change `AllowUsers`, permit passwords/forwarding, disable pinning,
+make `/run` traversable or give the worker write access to authorization. The
+same store remains covered by existing pre-snapshot SSH scrubbing and 15-minute
+key expiry. A second authorization is read by the existing daemon at each auth
+attempt, rather than depending on daemon startup having seen that key.
+
+No golden rebuild or migration is required: the server generates this config for
+new worker SSH daemons. Recreate the failed private parent after the server
+upgrade; its failed allocation was already disposed. The staging-specific field
+requested to confirm this exact cause is only
+`stat -c '%n %a %U %G' /run /etc/ssh` on a disposable worker fork. The local
+reproducer establishes this failure mode, not the still-unreported staging mode.
+A successful live private Skillpack receipt still requires the coordinator's
+post-deployment rerun and a valid Skillpack key (read-only recommended).

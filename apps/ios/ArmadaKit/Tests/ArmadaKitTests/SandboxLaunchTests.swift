@@ -290,10 +290,20 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     }
     #expect(setup.detail == nil)
     #expect(setup.title == "Golden setup failed")
-    // A missing route allocated nothing; a server error or an unknown 400 code proves nothing.
+    // A missing route allocated nothing; a server error or the legacy `unknown` code proves nothing.
     #expect(classify(404, "Not Found") == .refused(SandboxLaunchFailure.refusal(code: "", message: nil)))
     #expect(classify(500, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmed)
     #expect(classify(400, #"{"error":{"code":"unknown","message":"x"}}"#) == .unconfirmed)
+    // #962: a code this build does not know, answered as a 4xx with the server's reason, is a
+    // refusal that shows that reason; without one, or with an uncertain code, nothing is proven.
+    guard case .refused(let later) = classify(422, #"{"error":{"code":"quota_exceeded","message":"Your organization reached\nits sandbox quota."}}"#) else {
+        Issue.record("Expected a refusal"); return
+    }
+    #expect(later.code == "quota_exceeded" && later.title == "Armada refused this launch")
+    #expect(later.detail == "Your organization reached its sandbox quota.")
+    #expect(classify(422, #"{"error":{"code":"quota_exceeded"}}"#) == .unconfirmed)
+    #expect(classify(400, #"{"error":{"code":"quota_exceeded","message":" "}}"#) == .unconfirmed)
+    #expect(classify(409, #"{"error":{"code":"outcome_unknown","message":"x"}}"#) == .unconfirmed)
     let long = String(repeating: "a", count: 400)
     guard case .refused(let bounded) = classify(409, #"{"error":{"code":"conflict","message":"\#(long)"}}"#) else {
         Issue.record("Expected a refusal"); return

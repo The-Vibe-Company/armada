@@ -18,6 +18,16 @@ import {
   parsePreview,
   type RecipientPreview,
 } from "./invitations.ts";
+import {
+  type LaunchOutcome,
+  parseLaunchOutcome,
+  parseRevision,
+  parseTemplate,
+  type TemplateHeader,
+  type TemplateRequest,
+  type TemplateRevision,
+} from "./templates.ts";
+import { parseVaultItem, type VaultItem, type VaultKind, type VaultScope } from "./variables.ts";
 
 /**
  * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
@@ -407,6 +417,111 @@ export function createInvitationControl(options: ArmadaApiOptions) {
       if (payload.accepted !== true || typeof payload.orgId !== "string")
         throw new ControlError("The Armada server did not confirm the invitation.");
       return { orgId: payload.orgId };
+    },
+  };
+}
+
+/**
+ * Variables and write-only application secrets (#921's control API, #935's page): `variables/*` and `secrets/*`,
+ * POST with the viewer's bearer. Every answer is parsed to metadata only; `readVariable` is the one call that
+ * returns a value, and only for a readable variable. There is no secret read: the server has no such route.
+ */
+export function createVaultControl(options: ArmadaApiOptions) {
+  const post = (kind: VaultKind, operation: string, body: object) =>
+    controlPost(options, `/api/v1/${kind === "variable" ? "variables" : "secrets"}/${operation}`, body, FEATURE);
+
+  async function item(kind: VaultKind, operation: string, body: object): Promise<VaultItem> {
+    const parsed = parseVaultItem(kind, (await post(kind, operation, body)).item);
+    if (!parsed) throw new ControlError("The Armada server sent an unexpected answer.");
+    return parsed;
+  }
+
+  async function list(kind: VaultKind, org: string): Promise<VaultItem[]> {
+    const payload = await post(kind, "list", { org });
+    if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no list.");
+    return payload.items
+      .map((row: unknown) => parseVaultItem(kind, row))
+      .filter((row): row is VaultItem => row?.orgId === org);
+  }
+
+  return {
+    /** Both kinds of the org the viewer may see: their own personal items and the org's. */
+    async list(org: string): Promise<VaultItem[]> {
+      const [variables, secrets] = await Promise.all([list("variable", org), list("secret", org)]);
+      return [...variables, ...secrets];
+    },
+    async readVariable(target: { org: string; id: string }): Promise<string> {
+      const payload = await post("variable", "read", target);
+      if (typeof payload.value !== "string") throw new ControlError("The Armada server sent no value.");
+      return payload.value;
+    },
+    create: (kind: VaultKind, request: { org: string; scope: VaultScope; name: string; value: string }) =>
+      item(kind, "set", request),
+    updateVariable: (request: { org: string; id: string; expectedVersion: number; name?: string; value?: string }) =>
+      item("variable", "update", request),
+    /** Replaces a secret's value; the old one is gone for good. */
+    rotateSecret: (request: { org: string; id: string; expectedVersion: number; value: string }) =>
+      item("secret", "rotate", request),
+    revoke: (kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) =>
+      item(kind, "revoke", target),
+    /** Answers the deleted item's tombstone: its name and final version, no value. */
+    async delete(kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) {
+      const parsed = parseVaultItem(kind, (await post(kind, "delete", target)).item, { tombstone: true });
+      if (!parsed) throw new ControlError("The Armada server sent an unexpected answer.");
+      return parsed;
+    },
+  };
+}
+
+const FEATURE = "variables and secrets";
+
+/**
+ * Launch templates (#938's control API, #949's page): `templates/*`, POST with the viewer's bearer. Every answer is
+ * parsed to the header and the four choices of a revision; a launch's manifest (which carries readable values) is
+ * never kept, only its state and sandbox id.
+ */
+export function createTemplateControl(options: ArmadaApiOptions) {
+  const post = (operation: string, body: object) =>
+    controlPost(options, `/api/v1/templates/${operation}`, body, "templates");
+
+  async function saved(operation: string, body: object): Promise<{ item: TemplateHeader; revision: TemplateRevision }> {
+    const payload = await post(operation, body);
+    const item = parseTemplate(payload.item);
+    const revision = parseRevision(payload.revision);
+    if (!item || !revision) throw new ControlError("The Armada server sent an unexpected template.");
+    return { item, revision };
+  }
+
+  return {
+    /** The org's templates the viewer may see: their own personal ones and the org's. */
+    async list(org: string): Promise<TemplateHeader[]> {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no template list.");
+      return payload.items.map(parseTemplate).filter((row): row is TemplateHeader => row?.orgId === org);
+    },
+    /** One revision, the current one by default. */
+    get: (target: { org: string; id: string; revision?: number }) => saved("get", target),
+    create: (request: TemplateRequest & { org: string }) => saved("create", request),
+    /** Publishes a new immutable revision; a stale `expectedRevision` is refused (409). */
+    publish: (request: { org: string; id: string; expectedRevision: number; definition: Record<string, unknown> }) =>
+      saved("publish", request),
+    async delete(target: { org: string; id: string; expectedRevision: number }): Promise<void> {
+      const payload = await post("delete", target);
+      if (!isRecord(payload.item)) throw new ControlError("The Armada server did not confirm the deletion.");
+    },
+    async launch(request: {
+      org: string;
+      id: string;
+      revision: number;
+      requestKey: string;
+      prompt?: string;
+      ttlSeconds?: number;
+      size?: string;
+      repo?: string;
+    }): Promise<LaunchOutcome> {
+      const outcome = parseLaunchOutcome(await post("launch", request));
+      if (!outcome) throw new ControlError("The Armada server sent an unexpected launch answer.");
+      return outcome;
     },
   };
 }

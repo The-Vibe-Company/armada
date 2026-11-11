@@ -1,4 +1,11 @@
-export { API_FAILURE_HELP, API_FAILURE_STATUS, type ApiFailureCode } from "./api-failure.ts";
+export {
+  API_FAILURE_HELP,
+  API_FAILURE_STATUS,
+  type ApiFailureCode,
+  GitHubHydrationError,
+  type GitHubHydrationPhase,
+  githubHydrationPhase,
+} from "./api-failure.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
@@ -115,6 +122,7 @@ export {
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
+export { goldenBuildFailureText, providerPaymentRequiredMessage } from "./golden-build-status.ts";
 export type { GoldenBuildWarning } from "./golden-build-warning.ts";
 export {
   assignDirs,
@@ -137,6 +145,7 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
+export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -219,6 +228,7 @@ export {
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,
+  SANDBOX_STATES,
   type SandboxInfo,
   type SandboxState,
   type SnapshotInfo,
@@ -229,6 +239,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,
@@ -302,6 +313,13 @@ export {
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
+export {
+  type LaunchTemplate,
+  TEMPLATE_REFUSAL_HELP,
+  type TemplateDefinition,
+  type TemplateRefusalReason,
+  templateRefusalHelp,
+} from "./templates.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,
@@ -324,6 +342,11 @@ export {
   setMemberRole,
   type VaultStore,
 } from "./vault.ts";
-export { VaultError, type VaultErrorCode } from "./vault-error.ts";
+export {
+  APPLICATION_VAULT_CONFLICT_MESSAGES,
+  CREDENTIAL_BUSY_MESSAGE,
+  VaultError,
+  type VaultErrorCode,
+} from "./vault-error.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

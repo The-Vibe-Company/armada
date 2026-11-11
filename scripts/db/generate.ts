@@ -27,6 +27,13 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  launch_templates: "LaunchTemplateRow",
+  launch_template_revisions: "LaunchTemplateRevisionRow",
+  template_launch_requests: "TemplateLaunchRequestRow",
+  application_secrets: "ApplicationSecretRow",
+  application_secret_uploads: "ApplicationSecretUploadRow",
+  application_vault_audit: "ApplicationVaultAuditRow",
+  readable_variables: "ReadableVariableRow",
   sandbox_turn_models: "SandboxTurnModelRow",
   sandbox_work_recovery: "SandboxWorkRecovery",
   orchestrator_activity: "OrchestratorActivity",

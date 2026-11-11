@@ -91,6 +91,8 @@ export interface HandlerOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  templates?: import("@armada/core/server").TemplateService;
+  applicationVault?: import("@armada/core/server").ApplicationVault;
   connections?: LaunchStores["connections"];
   /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
   log?: (line: string) => void;
@@ -149,6 +151,8 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.templates ? { templates: options.templates } : {}),
+        ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(caller),
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),

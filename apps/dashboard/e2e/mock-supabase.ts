@@ -112,6 +112,22 @@ type State = {
   unverifiedEmails: string[];
   /** GoTrue calls that establish or check an identity (`/verify`, `/token`, `/user`), in order. */
   authCalls: string[];
+  /**
+   * #921's application vault: readable variables (`value`) and write-only secrets (`sealed`, which no response ever
+   * includes; a deleted or revoked item has none). `vaultCalls` records each `variables/*`/`secrets/*` route with the
+   * body's field names only, so a test can check what was sent without the mock keeping a submitted value around.
+   */
+  vault: Row[];
+  vaultCalls: { route: string; fields: string[]; authorized: boolean }[];
+  /**
+   * #938's launch templates: headers (`deleted` tombstones kept), their immutable revisions, every `templates/*` call
+   * and the launch requests by key. `templateOutcome` makes the next launch answer this state instead of starting.
+   */
+  templates: Row[];
+  templateRevisions: Row[];
+  templateCalls: { route: string; body: Row; authorized: boolean }[];
+  templateRequests: Map<string, Row>;
+  templateOutcome: Row | null;
 };
 
 function seed(): State {
@@ -190,6 +206,46 @@ function seed(): State {
       },
     ],
     github_connections: [],
+    vault: [
+      vaultItem(id(80), "variable", "org", ALICE, "APP_REGION", { value: "eu-west-1", version: 3 }),
+      vaultItem(id(81), "secret", "org", ALICE, "STRIPE_API_KEY", { sealed: "sk_e2e_seeded_org_secret" }),
+      vaultItem(id(82), "secret", "personal", ALICE, "ALICE_DEPLOY_TOKEN", { sealed: "e2e_seeded_alice_secret" }),
+      vaultItem(id(83), "secret", "personal", ALICE, "OLD_WEBHOOK_SECRET", { status: "revoked", version: 2 }),
+      vaultItem(id(84), "variable", "personal", BOB, "BOB_NOTES_URL", { value: "https://notes.bob.test" }),
+    ],
+    vaultCalls: [],
+    templates: [
+      templateRow(id(90), "org", ALICE, "Backend with docs", 2),
+      templateRow(id(91), "personal", ALICE, "Modal quick fix", 1),
+      templateRow(id(92), "personal", BOB, "Bob scratch", 1),
+    ],
+    templateRevisions: [
+      templateRevision(id(90), 1, { goldenId: id(20), provider: "boat", harness: "claude", connections: [] }),
+      templateRevision(id(90), 2, {
+        goldenId: id(20),
+        provider: "boat",
+        harness: "claude",
+        connections: [id(60)],
+        variables: [{ key: "APP_REGION", variableId: id(80), version: 3 }],
+      }),
+      // Bound to an older version of APP_REGION: the page says a new revision is needed.
+      templateRevision(id(91), 1, {
+        goldenId: id(26),
+        provider: "modal",
+        harness: "codex",
+        // Bound under another key than the variable's name (set over the API).
+        variables: [
+          { key: "DEPLOY_REGION", variableId: id(80), version: 2 },
+          { key: "FALLBACK_REGION", variableId: id(80), version: 2 },
+        ],
+        // Pinned over the API at a version the account has since left.
+        modelAccount: { id: id(40), version: 9 },
+      }),
+      templateRevision(id(92), 1, { goldenId: id(22), provider: "boat", harness: "claude" }),
+    ],
+    templateCalls: [],
+    templateRequests: new Map(),
+    templateOutcome: null,
     githubInstallations: [
       {
         id: 4242,
@@ -1063,6 +1119,341 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   });
 }
 
+function vaultItem(
+  itemId: string,
+  kind: "variable" | "secret",
+  scope: "personal" | "org",
+  owner: string,
+  name: string,
+  extra: Row = {},
+): Row {
+  return {
+    id: itemId,
+    kind,
+    org_id: ACME,
+    owner_id: owner,
+    scope,
+    name,
+    version: 1,
+    epoch: 1,
+    status: "active",
+    expires_at: null,
+    created_at: "2026-11-09T10:00:00.000Z",
+    updated_at: "2026-11-10T10:00:00.000Z",
+    ...extra,
+  };
+}
+
+/** The metadata DTO of `application-vault.ts`: never a value, never the sealed secret. */
+function vaultDto(row: Row): Row {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    ownerId: row.owner_id,
+    scope: row.scope,
+    name: row.name,
+    version: row.version,
+    epoch: row.epoch,
+    status: row.status,
+    ...(row.kind === "secret" ? { expiresAt: row.expires_at } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** `POST /api/v1/{variables,secrets}/<operation>`, with the server's membership, admin and version rules. */
+function vaultRoute(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.vaultCalls.push({ route, fields: Object.keys(body).sort(), authorized: userId !== null });
+  if (!userId) return json({ error: "Unauthorized." }, 401);
+  const [resource, operation] = route.split("/");
+  const kind = resource === "variables" ? "variable" : "secret";
+  const refuse = (status: number, code: string, message: string) => controlFail(status, code, message);
+  const invalid = () => refuse(400, "invalid", "Invalid application vault request.");
+  const denied = () => refuse(403, "forbidden", "Application vault access denied.");
+  if (kind === "secret" && operation === "read") return invalid();
+  if (!isMember(body.org, userId)) return denied();
+  const visible = (row: Row) =>
+    row.kind === kind && row.org_id === body.org && (row.scope === "org" || row.owner_id === userId);
+  const nameOk = (value: unknown) =>
+    typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !/^(ARMADA_|GITHUB_|GH_)/.test(value);
+  const taken = (name: unknown, scope: unknown, except?: unknown) =>
+    state.vault.some(
+      (row) =>
+        row.kind === kind &&
+        row.org_id === body.org &&
+        row.status !== "deleted" &&
+        row.name === name &&
+        row.scope === scope &&
+        (scope === "org" || row.owner_id === userId) &&
+        row.id !== except,
+    );
+  const now = new Date().toISOString();
+  if (operation === "list")
+    return json({ items: state.vault.filter((row) => visible(row) && row.status !== "deleted").map(vaultDto) });
+  if (operation === "set") {
+    if (body.scope !== "personal" && body.scope !== "org") return invalid();
+    if (body.scope === "org" && !isAdmin(body.org, userId)) return denied();
+    if (!nameOk(body.name) || typeof body.value !== "string" || (kind === "secret" && !body.value)) return invalid();
+    if (taken(body.name, body.scope)) return refuse(409, "conflict", "An application vault name is already in use.");
+    const row = vaultItem(id(++sequence), kind, body.scope, userId, String(body.name), {
+      org_id: body.org,
+      created_at: now,
+      updated_at: now,
+      ...(kind === "secret" ? { sealed: body.value } : { value: body.value }),
+    });
+    state.vault.push(row);
+    return json({ item: vaultDto(row) });
+  }
+  const row = state.vault.find((item) => item.id === body.id && visible(item));
+  if (!row) return refuse(404, "not_found", "Application vault resource unavailable.");
+  if (operation === "read") {
+    if (row.status !== "active") return refuse(404, "not_found", "Application vault resource unavailable.");
+    return json({ item: vaultDto(row), value: row.value });
+  }
+  if (row.scope === "org" && !isAdmin(body.org, userId)) return denied();
+  if (row.version !== body.expectedVersion) return refuse(409, "conflict", "Application vault version changed.");
+  if ((operation === "update" || operation === "rotate") && row.status !== "active")
+    return refuse(409, "conflict", "Application vault resource is not active.");
+  if (operation === "update" || operation === "rotate") {
+    if (body.name !== undefined && !nameOk(body.name)) return invalid();
+    if (body.name !== undefined && taken(body.name, row.scope, row.id))
+      return refuse(409, "conflict", "An application vault name is already in use.");
+    if (operation === "rotate" && (typeof body.value !== "string" || !body.value)) return invalid();
+    if (body.name !== undefined) row.name = body.name;
+    if (body.value !== undefined) row[kind === "secret" ? "sealed" : "value"] = body.value;
+  } else if (operation === "revoke" || operation === "delete") {
+    row.status = operation === "revoke" ? "revoked" : "deleted";
+    delete row.sealed;
+    delete row.value;
+  } else return invalid();
+  row.version = Number(row.version) + 1;
+  row.epoch = Number(row.epoch) + 1;
+  row.updated_at = now;
+  return json({ item: vaultDto(row) });
+}
+
+function templateRow(
+  templateId: string,
+  scope: "personal" | "org",
+  owner: string,
+  name: string,
+  revision: number,
+): Row {
+  return {
+    id: templateId,
+    orgId: ACME,
+    ownerId: owner,
+    scope,
+    name,
+    currentRevision: revision,
+    status: "active",
+    createdAt: "2026-11-09T10:00:00.000Z",
+    updatedAt: "2026-11-10T10:00:00.000Z",
+  };
+}
+
+function templateRevision(templateId: string, revision: number, definition: Row): Row {
+  const harness = definition.harness === "codex" ? "codex" : "claude";
+  return {
+    templateId,
+    id: crypto.randomUUID(),
+    revision,
+    definition: {
+      goldenBinding: null,
+      model: harness === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5",
+      reasoningEffort: "high",
+      connections: [],
+      variables: [],
+      skills: [],
+      ...definition,
+    },
+  };
+}
+
+/**
+ * `POST /api/v1/templates/<operation>` as #938's template service answers it: strict fields, owner-or-org
+ * visibility, admin-only org writes, optimistic revisions and a launch replayed by its request key.
+ */
+function templateRoute(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.templateCalls.push({ route, body, authorized: userId !== null });
+  if (!userId) return json({ error: "Unauthorized." }, 401);
+  const operation = route.slice("templates/".length);
+  const allowed: Record<string, string[]> = {
+    create: ["org", "name", "scope", "definition"],
+    list: ["org"],
+    get: ["org", "id", "revision"],
+    publish: ["org", "id", "expectedRevision", "definition"],
+    delete: ["org", "id", "expectedRevision"],
+    launch: ["org", "id", "revision", "requestKey", "prompt", "ttlSeconds", "size", "repo"],
+  };
+  const invalid = () => controlFail(400, "invalid", "Invalid template request.");
+  const fields = allowed[operation];
+  if (!fields || Object.keys(body).some((key) => !fields.includes(key))) return invalid();
+  if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Template access denied.");
+  const visible = (row: Row) =>
+    row.orgId === body.org && row.status === "active" && (row.scope === "org" || row.ownerId === userId);
+  // The `launch_templates_name` unique index: one active name per org and scope (per owner when personal).
+  const nameTaken = (name: unknown, scope: unknown) =>
+    state.templates.some(
+      (row) =>
+        row.orgId === body.org &&
+        row.status === "active" &&
+        row.scope === scope &&
+        row.name === name &&
+        (scope === "org" || row.ownerId === userId),
+    );
+  const revisionOf = (row: Row, revision = row.currentRevision) =>
+    state.templateRevisions.find((r) => r.templateId === row.id && r.revision === revision);
+  const dto = (r: Row) => ({ id: r.id, revision: r.revision, definition: r.definition });
+  /** The template service's reference checks, in its words: an org template binds only org resources. */
+  const definition = (scope: unknown, input: unknown): Row | Response => {
+    if (typeof input !== "object" || input === null) return invalid();
+    const d = input as Row;
+    const golden = liveGoldens(userId).find((row) => row.id === d.goldenId && row.org_id === body.org);
+    if (
+      !golden ||
+      golden.provider !== d.provider ||
+      !golden.provider_snapshot_id ||
+      (scope === "org" && golden.visibility !== "org")
+    )
+      return controlFail(409, "conflict", "Template launch refused: environment_unavailable.");
+    if (d.harness !== "claude" && d.harness !== "codex") return invalid();
+    for (const cid of (d.connections ?? []) as string[]) {
+      const c = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
+      if (!c || c.status !== "connected" || (scope === "org" && c.scope !== "org"))
+        return controlFail(409, "conflict", "Template launch refused: connection_unavailable.");
+    }
+    for (const binding of (d.variables ?? []) as Row[]) {
+      const v = state.vault.find(
+        (row) =>
+          row.id === binding.variableId &&
+          row.kind === "variable" &&
+          row.status === "active" &&
+          (row.scope === "org" || row.owner_id === userId),
+      );
+      if (!v || (scope === "org" && v.scope !== "org"))
+        return controlFail(409, "conflict", "Template launch refused: variable_unavailable.");
+      if (v.version !== binding.version)
+        return controlFail(409, "conflict", "Template launch refused: variable_version_changed.");
+    }
+    if (d.modelAccount !== undefined) {
+      const pinned = d.modelAccount as Row;
+      const account = state.credentials.find((row) => row.id === pinned.id && row.status === "active");
+      if (!account) return controlFail(409, "conflict", "Template launch refused: model_account_unavailable.");
+      if (account.version !== pinned.version)
+        return controlFail(409, "conflict", "Template launch refused: model_account_version_changed.");
+    }
+    return {
+      ...(d.modelAccount === undefined ? {} : { modelAccount: d.modelAccount }),
+      goldenId: d.goldenId,
+      provider: d.provider,
+      goldenBinding: null,
+      harness: d.harness,
+      model: d.model ?? (d.harness === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5"),
+      reasoningEffort: d.reasoningEffort ?? "high",
+      connections: d.connections ?? [],
+      variables: d.variables ?? [],
+      skills: d.skills ?? [],
+    };
+  };
+  const now = new Date().toISOString();
+  if (operation === "list")
+    return json({
+      items: state.templates.filter(visible).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    });
+  if (operation === "create") {
+    if (body.scope !== "personal" && body.scope !== "org") return invalid();
+    if (typeof body.name !== "string" || !body.name.trim()) return invalid();
+    if (body.scope === "org" && !isAdmin(body.org, userId))
+      return controlFail(403, "forbidden", "Template administrator permission required.");
+    const def = definition(body.scope, body.definition);
+    if (def instanceof Response) return def;
+    if (nameTaken(body.name, body.scope))
+      return controlFail(409, "conflict", "Template name or request key already exists.");
+    const row: Row = {
+      ...templateRow(id(++sequence), body.scope, userId, body.name, 1),
+      orgId: body.org,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const revision = { templateId: row.id, id: crypto.randomUUID(), revision: 1, definition: def };
+    state.templates.push(row);
+    state.templateRevisions.push(revision);
+    return json({ item: row, revision: dto(revision) });
+  }
+  const row = state.templates.find((item) => item.id === body.id && visible(item));
+  if (!row) return controlFail(404, "not_found", "Template unavailable.");
+  if (operation === "get") {
+    const revision = revisionOf(row, body.revision === undefined ? row.currentRevision : body.revision);
+    if (!revision) return controlFail(404, "not_found", "Template revision unavailable.");
+    return json({ item: row, revision: dto(revision) });
+  }
+  if (operation === "launch") {
+    // Keys are scoped to the actor and the org.
+    const key = `${body.org}:${userId}:${body.requestKey}`;
+    const digest = JSON.stringify(body);
+    const previous = state.templateRequests.get(key);
+    if (previous) {
+      if (previous.digest !== digest)
+        return controlFail(409, "conflict", "Request key already used with a different request.");
+      return json(previous.result);
+    }
+    const revision = revisionOf(row, body.revision);
+    if (!revision) return controlFail(404, "not_found", "Template revision unavailable.");
+    const def = revision.definition as Row;
+    const golden = liveGoldens(userId).find((g) => g.id === def.goldenId);
+    let result: Row;
+    if (state.templateOutcome) {
+      result = { requestId: crypto.randomUUID(), id: crypto.randomUUID(), ...state.templateOutcome };
+      state.templateOutcome = null;
+    } else if (!golden) {
+      result = {
+        requestId: crypto.randomUUID(),
+        state: "failed",
+        id: crypto.randomUUID(),
+        reason: "environment_unavailable",
+      };
+    } else {
+      const launched = sandbox(
+        crypto.randomUUID(),
+        `bx_template_${++sequence}`,
+        String(golden.id),
+        userId,
+        String(def.harness),
+        body.prompt ? "running" : "ready",
+        now,
+      );
+      launched.model = def.model;
+      launched.reasoning_effort = def.reasoningEffort;
+      launched.provider = golden.provider;
+      launched.connections = def.connections;
+      launched.repository_dir = body.repo ?? null;
+      state.sandboxes.unshift(launched);
+      result = { requestId: crypto.randomUUID(), state: "succeeded", id: launched.id, status: launched.status };
+    }
+    // The server answers its frozen manifest, readable values included: the dashboard must never pass it on.
+    result.manifest = { version: 1, templateId: row.id, variables: { APP_REGION: "manifest-canary-5e1d" } };
+    state.templateRequests.set(key, { digest, result });
+    return json(result);
+  }
+  if (row.scope === "org" && !isAdmin(body.org, userId))
+    return controlFail(403, "forbidden", "Template administrator permission required.");
+  if (row.currentRevision !== body.expectedRevision) return controlFail(409, "conflict", "Template revision changed.");
+  if (operation === "delete") {
+    Object.assign(row, { status: "deleted", updatedAt: now });
+    return json({ item: row });
+  }
+  const def = definition(row.scope, body.definition);
+  if (def instanceof Response) return def;
+  row.currentRevision = Number(row.currentRevision) + 1;
+  row.updatedAt = now;
+  const revision = { templateId: row.id, id: crypto.randomUUID(), revision: row.currentRevision, definition: def };
+  state.templateRevisions.push(revision);
+  return json({ item: row, revision: dto(revision) });
+}
+
 /* The registry's control API (issue #522): POST /api/v1/mcp/<operation>, user JWT as the bearer. */
 
 const DASHBOARD = process.env.DASHBOARD_ORIGIN ?? "http://127.0.0.1:3100";
@@ -1849,6 +2240,51 @@ function accountDto(row: Row): Row {
   };
 }
 
+/* The Skillpack key (#957): `creds/set` and `creds/rm`, one per scope, never a value in an answer. */
+const SKILLPACK_PAT = /^cmp_pat_[a-f0-9]{48}$/;
+
+function skillpackDto(row: Row): Row {
+  return {
+    kind: row.kind,
+    status: row.status ?? "active",
+    expiresAt: row.expires_at ?? null,
+    updatedAt: row.updated_at ?? row.created_at,
+    createdAt: row.created_at,
+  };
+}
+
+function singleton(route: string, body: Row, scope: "user" | "org", owner: string): Response {
+  if (body.kind !== "skillpack") return controlFail(400, "invalid", "Unknown credential.");
+  const mine = (row: Row) => row.scope === scope && row.owner_id === owner && row.kind === "skillpack";
+  const now = new Date().toISOString();
+  if (route === "creds/rm") {
+    const before = state.credentials.length;
+    state.credentials = state.credentials.filter((row) => !mine(row));
+    return before === state.credentials.length
+      ? controlFail(404, "not_found", "No such credential is stored.")
+      : json({ ok: true });
+  }
+  if (typeof body.value !== "string" || !SKILLPACK_PAT.test(body.value.trim()))
+    return controlFail(
+      400,
+      "invalid",
+      "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
+    );
+  state.credentials = state.credentials.filter((row) => !mine(row));
+  state.credentials.push({
+    id: crypto.randomUUID(),
+    scope,
+    owner_id: owner,
+    kind: "skillpack",
+    // Sealed as the server does: the mock keeps random bytes, never the text it was sent.
+    value_enc: `\\x${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`,
+    created_at: now,
+    updated_at: now,
+    status: "active",
+  });
+  return json({ ok: true });
+}
+
 function accounts(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
   state.accountCalls.push({ route, body: { ...body, ...(body.value === undefined ? {} : { value: "[sent]" }) } });
@@ -1856,10 +2292,12 @@ function accounts(route: string, body: Row, request: Request): Response {
   const model = (row: Row) => String(row.kind) in MODEL_KINDS;
   if (route === "creds/list") {
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
+    // As the server: every kind of the scope, the Skillpack key (#957) as kind and dates only.
+    const listed = (row: Row) => model(row) || row.kind === "skillpack";
     const rows = (scope: string, owner: unknown) =>
       state.credentials
-        .filter((row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted")
-        .map(accountDto);
+        .filter((row) => row.scope === scope && row.owner_id === owner && listed(row) && row.status !== "deleted")
+        .map((row) => (model(row) ? accountDto(row) : skillpackDto(row)));
     return json({
       user: rows("user", userId),
       orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
@@ -1879,6 +2317,7 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (scope === "org" && !isAdmin(body.org, userId))
     return controlFail(403, "forbidden", "Only an org admin can do that.");
   const owner = scope === "org" ? body.org : userId;
+  if (route === "creds/set" || route === "creds/rm") return singleton(route, body, scope, String(owner));
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
   const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
   if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
@@ -2312,6 +2751,19 @@ function control(url: URL, body: Row): Response {
     state.invitations.push(row);
     return json({ ok: true });
   }
+  /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
+  if (url.pathname === "/__test/vault-revoke") {
+    const row = state.vault.find((item) => item.id === body.id);
+    if (!row) return json({ error: "unknown item" }, 404);
+    Object.assign(row, { status: "revoked", version: Number(row.version) + 1, epoch: Number(row.epoch) + 1 });
+    delete row.sealed;
+    return json({ ok: true });
+  }
+  /** The next template launch answers this state (failed with a reason, or reconciling) instead of starting. */
+  if (url.pathname === "/__test/template-outcome") {
+    state.templateOutcome = body;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/state") {
     return json({
       orgBoatKeys: state.orgs.filter((org) => org.boat_api_key_enc).map((org) => org.id),
@@ -2335,6 +2787,12 @@ function control(url: URL, body: Row): Response {
       invitations: state.invitations.map(invitationDto),
       members: state.members,
       connections: state.connections.map((row) => ({ ...row })),
+      vaultCalls: state.vaultCalls,
+      templateCalls: state.templateCalls,
+      templates: state.templates,
+      templateRevisions: state.templateRevisions,
+      // Whether the mock holds a sealed value for each secret, never the value itself.
+      vault: state.vault.map(({ sealed, value, ...row }) => ({ ...row, sealed: sealed !== undefined, value })),
     });
   }
   return json({ message: "not found" }, 404);
@@ -2385,8 +2843,16 @@ const server = Bun.serve({
       if (route === "golden/size-policy") return goldenSizePolicy(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
-      if (route === "creds/list" || route.startsWith("creds/accounts/")) return accounts(route, body, request);
+      if (
+        route === "creds/list" ||
+        route === "creds/set" ||
+        route === "creds/rm" ||
+        route.startsWith("creds/accounts/")
+      )
+        return accounts(route, body, request);
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
+      if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
+      if (route.startsWith("templates/")) return templateRoute(route, body, request);
       if (route.startsWith("org/invitations/"))
         return invitations(route.slice("org/invitations/".length), body, request);
       if (route === "golden/list")
