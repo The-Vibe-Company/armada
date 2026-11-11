@@ -37,7 +37,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         <div className="hidden px-3 pb-2 md:block">
           <CommandMenuTrigger />
         </div>
-        <NavLinks className="grid grid-cols-6 gap-1 px-3 pb-3 md:flex md:flex-col md:gap-0.5 md:overflow-y-auto md:pb-4" />
+        <NavLinks className="px-3 pb-3 md:overflow-y-auto md:pb-4" />
         <div className="mt-auto hidden border-t px-3 py-3 md:block">
           <div className="flex items-center gap-2.5 px-2 pb-2">
             <span

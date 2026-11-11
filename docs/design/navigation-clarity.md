@@ -50,4 +50,22 @@ Retain the existing Geist typography, graphite surfaces and semantic focus blue.
 No changes to #970 visual pass, #1005 Sandboxes, #1007 skill pickers or #1006 Routines pages. No route moves, APIs, queries, permissions or launch behavior changes. Cross-links and empty states deferred to the next slices.
 
 ### Validation
-Pending local verification, independent review, rendered desktop/phone captures and latest-SHA CI.
+Desktop and phone navigation tests cover grouping, active links, keyboard activation, phone collapse and width. Full verification, independent review and CI are recorded in the PR.
+
+### Rendered before / after (mock data)
+
+**Desktop before**
+
+![desktop before](navigation-clarity/navigation-before-desktop.png)
+
+**Desktop after**
+
+![desktop after](navigation-clarity/navigation-after-desktop.png)
+
+**Phone before**
+
+![phone before](navigation-clarity/navigation-before-phone.png)
+
+**Phone after**
+
+![phone after](navigation-clarity/navigation-after-phone.png)

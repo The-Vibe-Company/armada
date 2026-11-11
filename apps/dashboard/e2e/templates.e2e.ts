@@ -104,7 +104,7 @@ test("a missing agent account warns before publication and choosing a usable age
   const dialog = page.getByRole("dialog", { name: "New template" });
   const warning = dialog.getByRole("status");
   await expect(warning).toContainText("No usable Claude Code account is available to you in this organization.");
-  await expect(warning.getByRole("link", { name: "Build > Harness" })).toHaveAttribute("href", "/harness");
+  await expect(warning.getByRole("link", { name: "Start with > Harness" })).toHaveAttribute("href", "/harness");
   await dialog.getByRole("radio", { name: "Codex" }).check();
   await expect(warning).toHaveCount(0);
   await dialog.getByRole("radio", { name: "Claude Code" }).check();

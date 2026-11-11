@@ -1,0 +1,43 @@
+import { expect, test } from "@playwright/test";
+import { reset, signIn } from "./helpers";
+
+test.beforeEach(reset);
+
+// The browser boundary owns discoverability, active routes and phone menu behavior.
+// A flat Build bucket, hidden group copy, or broken menu interaction fails this contract.
+for (const phone of [false, true]) {
+  test(`relationship navigation stays usable on ${phone ? "phone" : "desktop"}`, async ({ page }) => {
+    await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
+    await signIn(page, "alice@example.com", "/environments");
+    const nav = page.getByRole("navigation", { name: "Main", exact: true });
+    const toggle = nav.getByRole("button", { name: /Navigation/ });
+    if (phone) {
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(nav.getByRole("link", { name: "Environments" })).toBeHidden();
+      await toggle.click();
+    }
+    await expect(nav.getByRole("region", { name: "Start with", exact: true })).toContainText(
+      "A machine and an agent account.",
+    );
+    await expect(nav.getByRole("region", { name: "Give the agent" })).toContainText(
+      "Tools, instructions and configuration.",
+    );
+    await expect(nav.getByRole("region", { name: "Save a combination" })).toContainText(
+      "Templates bring these choices together.",
+    );
+    const environment = nav.getByRole("link", { name: "Environments", exact: true });
+    await expect(environment).toHaveAttribute("aria-current", "page");
+    await page.screenshot({ path: `test-results/navigation-after-${phone ? "phone" : "desktop"}.png` });
+    const templates = nav.getByRole("link", { name: "Templates", exact: true });
+    await templates.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/templates$/);
+    if (phone) {
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(toggle).toContainText("Templates");
+      await toggle.click();
+    }
+    await expect(nav.getByRole("link", { name: "Templates", exact: true })).toHaveAttribute("aria-current", "page");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(phone ? 390 : 1280);
+  });
+}
