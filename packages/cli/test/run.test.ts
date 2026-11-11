@@ -52,7 +52,8 @@ describe("run", () => {
     const { code, out, err } = await capture([command, "--help"]);
     expect(code).toBe(0);
     expect(err).toBe("");
-    expect(out).toContain(`armada ${command}`);
+    expect(out).toContain("Usage:");
+    expect(out).toContain(command);
   });
 
   test("an unknown command fails with a usage error", async () => {
