@@ -1,3 +1,4 @@
+import struct ArmadaKit.ConversationDetailPolling
 import Foundation
 import Observation
 
@@ -40,6 +41,7 @@ final class SandboxConversationModel {
     /// The turn each accepted bubble opened, to retire it once the transcript shows that turn.
     @ObservationIgnored private var acceptedPrompts: [String: String] = [:]
     @ObservationIgnored private let service: any SandboxService
+    @ObservationIgnored private var detailPolling = ConversationDetailPolling()
     @ObservationIgnored let sandboxID: String
     @ObservationIgnored private let orgID: String
     /// The list row's status, shown until the interior state is read.
@@ -140,7 +142,7 @@ final class SandboxConversationModel {
     func watchState() async {
         while !Task.isCancelled, phase == .loaded || phase == .loading {
             let busy = isWorking || stopping || state?.status == .starting || state?.status == .stopping
-            try? await Task.sleep(for: busy ? .seconds(3) : .seconds(15))
+            try? await Task.sleep(for: detailPolling.delay(busy: busy))
             guard !Task.isCancelled else { return }
             _ = await loadState()
         }
