@@ -332,6 +332,6 @@ export {
   setMemberRole,
   type VaultStore,
 } from "./vault.ts";
-export { VaultError, type VaultErrorCode } from "./vault-error.ts";
+export { APPLICATION_VAULT_CONFLICT_MESSAGES, VaultError, type VaultErrorCode } from "./vault-error.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

@@ -11,3 +11,8 @@ use production or real application secrets. Verify personal and organization
 permissions, stale-version conflicts, reserved names, oversize input, revoked
 names, and absence of secret values in output. This CLI change adds no migration
 and does not deliver values to sandboxes.
+
+When setting an entry with `--org`, explicitly choose `--scope personal` or
+`--scope org`; choosing organization context alone never opts into sharing.
+Without `--org`, set defaults to personal scope in the selected organization.
+Both `armada vars --help` and `armada vars set --help` show usage (likewise secrets).

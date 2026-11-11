@@ -101,7 +101,7 @@ test("vault CLI uses authenticated body-only API contracts and projects metadata
       input: "stdin",
     },
     {
-      argv: ["secrets", "set", item.name, "--org", otherOrg, "--file", "input.txt"],
+      argv: ["secrets", "set", item.name, "--org", otherOrg, "--scope", "org", "--file", "input.txt"],
       route: "secrets/set",
       body: { org: otherOrg, scope: "org", name: item.name, value: canary },
       input: "input.txt",
@@ -154,7 +154,7 @@ test("only explicit non-JSON variable reads print readable bytes, while writes n
 });
 
 test("vault organization context resolves names and refuses missing context before mutation", async () => {
-  const result = await invoke(["secrets", "set", item.name, "--org", "Team"]);
+  const result = await invoke(["secrets", "set", item.name, "--org", "Team", "--scope", "org"]);
   expect(result.code).toBe(0);
   expect(result.requests.map((request) => new URL(request.url).pathname)).toEqual([
     "/api/v1/org/list",
@@ -165,6 +165,17 @@ test("vault organization context resolves names and refuses missing context befo
   expect(missing.code).toBe(2);
   expect(missing.err).toContain("Select an organization");
   expect(missing.requests).toHaveLength(0);
+});
+
+test("set with explicit org refuses implicit sharing before reading input or making requests", async () => {
+  for (const resource of ["vars", "secrets"]) {
+    const result = await invoke([resource, "set", item.name, "--org", otherOrg]);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("--scope personal|org");
+    expect(result.requests).toHaveLength(0);
+    expect(result.inputSources).toHaveLength(0);
+    expect(result.out + result.err).not.toContain(canary);
+  }
 });
 
 test("unsafe vault arguments and input failures are value-free and never reach the API", async () => {
@@ -206,7 +217,11 @@ test("vault API errors select actionable local messages without echoing untruste
     [503, canary, "unavailable"],
     [409, "Application vault version changed.", "--expected-version"],
     [409, "Application vault resource is not active.", "Revocation is terminal"],
-    [409, "An application vault name is already in use.", "Delete the old entry"],
+    [
+      409,
+      "An application vault name is already in use. Update or delete the existing entry; delete revoked secrets before reusing their names.",
+      "Delete the old entry",
+    ],
   ] as const) {
     const result = await invoke(["secrets", "rotate", item.id, "--expected-version", "2", "--json"], {
       status,
@@ -221,12 +236,17 @@ test("vault API errors select actionable local messages without echoing untruste
 
 test("vault help documents secure input, scope and metadata-only JSON without authentication", async () => {
   for (const resource of ["vars", "secrets"]) {
-    const result = await invoke([resource, "--help"], { selected: null });
-    expect(result.code).toBe(0);
-    expect(result.out).toContain("piped stdin or --file");
-    expect(result.out).toContain("--scope personal|org");
-    expect(result.out).toContain("--json always emits\nmetadata only");
-    expect(result.requests).toHaveLength(0);
+    for (const argv of [
+      [resource, "--help"],
+      [resource, "set", "--help"],
+    ]) {
+      const result = await invoke(argv, { selected: null });
+      expect(result.code).toBe(0);
+      expect(result.out).toContain("piped stdin or --file");
+      expect(result.out).toContain("--scope personal|org");
+      expect(result.out).toContain("--json always emits\nmetadata only");
+      expect(result.requests).toHaveLength(0);
+    }
   }
 });
 

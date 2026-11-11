@@ -14,9 +14,9 @@ const HELP = `Application variables and write-only secrets (not model credential
   armada secrets revoke|delete <id> --expected-version <N> [--org <name|UUID>] [--json]
 
 Values come only from piped stdin or --file; bytes are preserved, never echoed or cached.
-Set creates a new entry; duplicate names conflict. --org defaults set scope to org;
-otherwise set is personal in the organization selected by armada org use.
-Use --scope personal with --org to create a personal entry in that organization.
+Set creates a new entry; duplicate names conflict. With --org, set requires explicit
+--scope personal|org. Without --org, set defaults to personal in the organization
+selected by armada org use.
 Lists include your personal entries and visible organization entries; IDs determine mutation scope.
 Only vars read prints the readable value (without adding a newline). --json always emits
 metadata only, including for vars read. Secrets have no read/reveal/export operation.
@@ -30,7 +30,7 @@ export async function applicationVaultCommand(
   argv: readonly string[],
   io: VaultIo,
 ): Promise<number> {
-  if (argv.length === 0 || (argv.length === 1 && argv[0] === "--help")) {
+  if (argv.length === 0 || argv.includes("--help")) {
     io.auth.out(HELP);
     return 0;
   }
@@ -106,7 +106,10 @@ function parseInput(resource: "vars" | "secrets", argv: readonly string[]) {
     for (const key of args.options.keys()) if (!allowed.has(key)) throw new Error();
     if (args.positionals.length !== (action === "list" ? 0 : 1)) throw new Error();
     const org = single(args, "--org");
-    const scope = single(args, "--scope") ?? (org === undefined ? "personal" : "org");
+    const explicitScope = single(args, "--scope");
+    if (action === "set" && org !== undefined && explicitScope === undefined)
+      throw new VaultError("invalid", "Set with --org requires explicit --scope personal|org.");
+    const scope = explicitScope ?? "personal";
     if (scope !== "personal" && scope !== "org") throw new Error();
     const revision = single(args, "--expected-version");
     if (versioned && (!revision || !/^[1-9]\d*$/.test(revision) || !Number.isSafeInteger(Number(revision))))
@@ -120,7 +123,8 @@ function parseInput(resource: "vars" | "secrets", argv: readonly string[]) {
       version: revision === undefined ? undefined : Number(revision),
       json: flag(args, "--json"),
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof VaultError) throw error;
     // Rejected arguments may themselves contain a value. Do not interpolate them.
     throw new VaultError(
       "invalid",

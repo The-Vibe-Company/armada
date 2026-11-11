@@ -1,6 +1,7 @@
 import { AuthError } from "@armada/auth";
 import {
   API_FAILURE_HELP,
+  APPLICATION_VAULT_CONFLICT_MESSAGES,
   type ApiFailureCode,
   githubHydrationPhase,
   type InvitationApiError,
@@ -137,11 +138,11 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       // Vault writes can be echoed by an upstream failure. Only closed local text is safe.
       if (path.startsWith("/api/v1/variables/") || path.startsWith("/api/v1/secrets/")) {
         const known: Record<string, string> = {
-          "Application vault version changed.":
+          [APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged]:
             "Version conflict. List entries and retry with the current --expected-version.",
-          "Application vault resource is not active.":
+          [APPLICATION_VAULT_CONFLICT_MESSAGES.inactive]:
             "Entry revoked or deleted. Revocation is terminal; delete a revoked entry before reusing its name.",
-          "An application vault name is already in use.":
+          [APPLICATION_VAULT_CONFLICT_MESSAGES.nameInUse]:
             "Name already in use, including revoked entries. Delete the old entry before reusing its name.",
         };
         const message = apiMessage(payload, "");

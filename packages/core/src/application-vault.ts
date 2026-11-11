@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { encryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
-import { VaultError } from "./vault-error.ts";
+import { APPLICATION_VAULT_CONFLICT_MESSAGES, VaultError } from "./vault-error.ts";
 
 type Kind = "variable" | "secret";
 type Operation = "list" | "read" | "set" | "update" | "rotate" | "revoke" | "delete" | "upload" | "commit";
@@ -111,10 +111,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
         (error.code === "23505" ||
           (error.code === "ERR_POSTGRES_SERVER_ERROR" && "errno" in error && error.errno === "23505"))
       )
-        throw new VaultError(
-          "conflict",
-          "An application vault name is already in use. Update or delete the existing entry; delete revoked secrets before reusing their names.",
-        );
+        throw new VaultError("conflict", APPLICATION_VAULT_CONFLICT_MESSAGES.nameInUse);
       // Database/encryption errors can contain submitted data. Never forward their text or cause.
       throw new VaultError("unavailable", "Application vault unavailable.");
     }
@@ -196,7 +193,8 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
     if (current.scope === "org" && role !== "admin")
       throw new VaultError("forbidden", "Application vault access denied.");
     const expected = version(input.expectedVersion);
-    if (current.version !== expected) throw new VaultError("conflict", "Application vault version changed.");
+    if (current.version !== expected)
+      throw new VaultError("conflict", APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged);
     if (
       (operation === "delete" && current.status === "deleted") ||
       (operation === "revoke" && current.status === "revoked")
@@ -206,7 +204,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
       current.status === "deleted" ||
       ((operation === "update" || operation === "rotate") && current.status !== "active")
     )
-      throw new VaultError("conflict", "Application vault resource is not active.");
+      throw new VaultError("conflict", APPLICATION_VAULT_CONFLICT_MESSAGES.inactive);
     if (
       kind === "secret" &&
       typeof input.value === "string" &&
@@ -244,7 +242,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
         params,
       )
     ).rows[0];
-    if (!row) throw new VaultError("conflict", "Application vault version changed.");
+    if (!row) throw new VaultError("conflict", APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged);
     await audit(tx, actor, kind, operation, row);
     return { item: metadata(row) };
   }
@@ -305,7 +303,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
             ).rows[0];
             if (!row) throw new VaultError("not_found", "Application vault resource unavailable.");
             if (row.version !== version(input.expectedVersion) || row.status !== "active")
-              throw new VaultError("conflict", "Application vault version changed.");
+              throw new VaultError("conflict", APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged);
             scope = row.scope;
             key = input.name ?? row.name;
             // Upload captures the current expiry when omitted; the pinned version fences commit.
