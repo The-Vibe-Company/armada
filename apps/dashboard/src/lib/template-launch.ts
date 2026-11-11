@@ -2,7 +2,13 @@ import type { MachineSizePolicy } from "@armada/core";
 import type { GoldenRow } from "./data/goldens.ts";
 import { goldenSizing } from "./machine-size.ts";
 import { goldenRepositoryDirs } from "./repository-context.ts";
-import { agentSummary, type TemplateDefinition, type TemplateItem, type TemplateLookups } from "./templates.ts";
+import {
+  agentSummary,
+  type TemplateDefinition,
+  type TemplateItem,
+  type TemplateLookups,
+  templateProblems,
+} from "./templates.ts";
 
 /** What a launch from a template needs to know, built on the server from the template and its environment. */
 export type TemplateLaunchTarget = {
@@ -24,14 +30,18 @@ export type TemplateLaunchTarget = {
   agent: string;
 };
 
-/** What the launch dialog needs, built on the server from the template and the environment it names. */
+/**
+ * What the launch dialog needs, built on the server from the template and the environment it names. Null when its
+ * revision could not be read: nothing is launched from choices the page cannot show.
+ */
 export function launchTarget(
-  item: TemplateItem & { revision: NonNullable<TemplateItem["revision"]> },
+  item: TemplateItem,
   goldens: readonly Pick<GoldenRow, "id" | "name" | "provider" | "config" | "size_policy">[],
   lookups: TemplateLookups,
-  blocker: string | null,
-): TemplateLaunchTarget {
+): TemplateLaunchTarget | null {
+  if (!item.revision) return null;
   const definition = item.revision.definition;
+  const blocker = templateProblems(definition, lookups)[0]?.text ?? null;
   const golden = goldens.find((row) => row.id === definition.goldenId && row.provider === definition.provider);
   const repositories = golden ? goldenRepositoryDirs(golden.config) : [];
   const sizing = golden ? goldenSizing(golden, repositories) : null;

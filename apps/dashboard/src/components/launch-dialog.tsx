@@ -20,6 +20,7 @@ import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { ModKey } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -53,6 +54,7 @@ import {
   type ModelAccount,
 } from "@/lib/model-accounts";
 import { isSubmitShortcut } from "@/lib/shortcut";
+import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
@@ -75,6 +77,8 @@ type LaunchProps = {
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
   sizing?: LaunchSizing;
+  /** The templates that start from this environment: choosing one preselects everything but the run (#949). */
+  templates?: readonly TemplateLaunchTarget[];
 };
 
 /**
@@ -93,14 +97,61 @@ export function LaunchDialog(props: LaunchProps) {
       </DialogTrigger>
       {/* Header and footer stay put; only the fields scroll, so Launch is always on screen. */}
       <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0">
-        <LaunchForm {...props} />
+        <LaunchStart {...props} />
       </DialogContent>
     </Dialog>
   );
 }
 
+/**
+ * With templates for this environment, the dialog starts with a choice: everything chosen here, or a template's
+ * preset (its agent, model, tools and variables), where only the task and the run remain to choose.
+ */
+function LaunchStart(props: LaunchProps) {
+  const id = useId();
+  const [start, setStart] = useState("");
+  const templates = props.templates ?? [];
+  const template = templates.find((item) => item.id === start);
+  const picker =
+    templates.length > 0 ? (
+      <div className="space-y-2 pt-1" data-launch-start>
+        <Label htmlFor={`${id}-start`}>Start from</Label>
+        <NativeSelect id={`${id}-start`} value={start} onChange={(event) => setStart(event.target.value)}>
+          <option value="">No template: choose below</option>
+          {templates.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name} (revision {item.revision})
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
+    ) : undefined;
+  if (!template) return <LaunchForm {...props} picker={picker} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <DialogHeader className="px-6 pt-6 pb-4 pr-12">
+        <DialogTitle className="truncate">Launch from {props.golden}</DialogTitle>
+        <DialogDescription>
+          With {template.name}, revision {template.revision}
+        </DialogDescription>
+      </DialogHeader>
+      <TemplateLaunchForm key={template.id} target={template} picker={picker} />
+    </div>
+  );
+}
+
 /** Mounted with the dialog, so every opening starts from the defaults. */
-function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, repositories, sizing }: LaunchProps) {
+function LaunchForm({
+  golden,
+  provider,
+  orgId,
+  catalog,
+  connections,
+  accounts,
+  repositories,
+  sizing,
+  picker,
+}: LaunchProps & { picker?: ReactNode }) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
   const [choice, setChoice] = useState({
@@ -205,6 +256,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
+          {picker}
           <div className="space-y-2 pt-1">
             <Label htmlFor={`${id}-prompt`}>Task</Label>
             <Textarea

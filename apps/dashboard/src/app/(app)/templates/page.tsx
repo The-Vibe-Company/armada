@@ -170,12 +170,8 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         plural(definition.variables.length, "variable"),
       ].join(" · ")
     : `Revision ${item.currentRevision}`;
-  const blocker =
-    state.bucket === "action" ? (state.problems[0]?.text ?? null) : state.bucket === "rest" ? state.label : null;
-  const target =
-    item.revision && definition
-      ? launchTarget({ ...item, revision: item.revision }, context.goldens, lookups, blocker)
-      : null;
+  const target = launchTarget(item, context.goldens, lookups);
+  const blocker = target?.blocker ?? null;
 
   const detail = (
     <div className="space-y-4" data-template-panel={item.name}>
