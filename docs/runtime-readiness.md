@@ -31,8 +31,10 @@ Run only in a disposable, authorized staging environment; this agent does not
 modify production or deploy.
 
 1. Boot normally and confirm `/healthz` returns 200 with `ok: true` and `version`.
-2. Using a staging-only database proxy/network control, deny database admission
-   **after boot**. After the one-second cached observation expires, probe again:
+2. Using a staging-only database proxy/network control, block the serving pool
+   **after boot**, including its existing pooled sockets, or reject queries at the
+   proxy. Merely denying new connections while existing pooled sessions still
+   work does not exercise this outage. After the one-second cache expires, probe again:
    require 503 with `database_unavailable` within approximately two seconds of
    the request (plus network/scheduling time), not a raw driver error or stale 200.
 3. While admission is denied, issue concurrent health requests. Confirm the
