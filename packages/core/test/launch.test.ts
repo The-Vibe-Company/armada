@@ -1152,6 +1152,9 @@ for (const harness of ["claude", "codex"] as const) {
           return { exitCode: 0 };
         },
       });
+      world.stores.credentials.skillpackKey = async () => {
+        throw new Error("Public pins must not resolve Skillpack credentials.");
+      };
       world.stores.sandboxes.recordSkills = async () => {};
       await launchSandbox(world.provider, world.stores, owner, {
         golden: "web",

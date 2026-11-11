@@ -1,21 +1,21 @@
 import { ORCHESTRATOR_SKILL_PATTERN, type OrchestratorSkillReceipt } from "./orchestrator.ts";
 import type { Provider } from "./provider.ts";
 
-export function validateSkillPins(skills: unknown): asserts skills is string[] {
+export function validateSkillPins(skills: unknown, publicOnly = false): asserts skills is string[] {
   if (
     !Array.isArray(skills) ||
     skills.length > 20 ||
     skills.some(
       (skill) =>
         typeof skill !== "string" ||
-        !skill.includes("/") ||
+        (publicOnly && !skill.includes("/")) ||
         skill.length > 256 ||
         !ORCHESTRATOR_SKILL_PATTERN.test(skill) ||
-        skill.split("/")[1]?.startsWith("armada-tools@"),
+        skill.split("/").at(-1)?.startsWith("armada-tools@"),
     ) ||
-    new Set(skills.map((skill) => skill.split("@")[0].split("/")[1])).size !== skills.length
+    new Set(skills.map((skill) => skill.split("@")[0].split("/").at(-1))).size !== skills.length
   )
-    throw new Error("Skills require distinct public org/slug@exact-version pins (maximum 20).");
+    throw new Error("Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).");
 }
 
 export function parseSkillReceipt(output: string, skill: string, harness: string): OrchestratorSkillReceipt {
@@ -61,7 +61,7 @@ export async function installSkill(
   skill: string,
   buildWarnings: readonly string[] = [],
 ): Promise<OrchestratorSkillReceipt> {
-  validateSkillPins([skill]);
+  validateSkillPins([skill], true);
   let reason = "skillpack_transport_failed";
   try {
     const commands = {
@@ -105,7 +105,7 @@ function quote(value: string): string {
 }
 
 export function skillInstallCommand(skill: string, projectDir: string, harness: string): string {
-  validateSkillPins([skill]);
+  validateSkillPins([skill], true);
   const [reference, version] = skill.split("@");
   return `export PATH="$PATH:/home/user/.local/bin"; skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${harness === "claude" ? "claude-code" : "codex"} --pin --yes --json`;
 }
