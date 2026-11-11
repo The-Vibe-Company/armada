@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore, mutateCredentialAccount, ProviderError } from "@armada/core/server";
+import {
+  CREDENTIAL_BUSY_MESSAGE,
+  createSqlVaultStore,
+  mutateCredentialAccount,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { createSqlData } from "../src/data.ts";
@@ -1599,3 +1605,17 @@ test("authenticated MCP forwards the configured shared orchestrator runtime rath
 
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
+
+test("MCP launch preserves the closed busy account code and safe action", async () => {
+  const { token, client, people, boat } = await start({
+    providerFor: async () => {
+      throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+    },
+  });
+  const mcp = await client(await token(people.owner));
+  const result = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+  expect(result.isError).toBe(true);
+  expect(result.text).toContain("error code: credential_busy");
+  expect(result.text).toContain(CREDENTIAL_BUSY_MESSAGE);
+  expect(boat.forks).toHaveLength(0);
+});
