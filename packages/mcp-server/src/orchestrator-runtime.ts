@@ -360,10 +360,18 @@ export class OrchestratorRuntime {
         assertCurrent: () => this.options.store.assertCreateCurrent(reservation),
       });
       diagnostics.stage("preparing");
-      const identity = await this.options.store.preparing(reservation);
+      const identity = await this.options.store.preparing(reservation, { publishReady: false });
       reservation.identity = identity;
       diagnostics.bind({ sandboxId: identity.sandboxId });
-      await this.prepare(backend, identity, diagnostics, () => this.options.store.assertCreateCurrent(reservation));
+      await this.prepare(
+        backend,
+        identity,
+        diagnostics,
+        () => this.options.store.assertCreateCurrent(reservation),
+        async () => {
+          reservation.identity = await this.options.store.preparing(reservation);
+        },
+      );
       return { parentState: "ready" as const };
     });
   }
@@ -612,9 +620,10 @@ export class OrchestratorRuntime {
     backend: OrchestratorRuntimeBackend,
     identity: RuntimeIdentity,
     diagnostics: OrchestratorDiagnostics,
-    validate?: () => Promise<void>,
+    validate: () => Promise<void>,
+    publishReady: () => Promise<void>,
   ): Promise<void> {
-    await validate?.();
+    await validate();
     if (!identity.providerSandboxId) throw new OrchestratorRuntimeError("unavailable");
     diagnostics.stage("initialization_mcp");
     await backend.prepareMcp?.(identity);
@@ -629,11 +638,14 @@ export class OrchestratorRuntime {
       skillpackKey: () => this.options.skillpackKey?.(identity.ownerId, identity.orgId) ?? Promise.resolve(null),
       harness: identity.configuration.harness,
       recordReceipt: async (receipt) => {
-        await validate?.();
+        await validate();
         await this.options.store.recordSkillReceipt(identity, receipt);
       },
       configureAuthority: async () => {
-        await validate?.();
+        await validate();
+        // Bootstrap has installed and durably recorded the requested skill.
+        // Intentionally publish ready before installEpoch: epoch admission requires ready.
+        await publishReady();
         await this.configureAuthority(backend, identity, diagnostics);
       },
     });
