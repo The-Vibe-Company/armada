@@ -1,5 +1,5 @@
 /** Sandbox command failures may contain guest secrets; only closed reasons leave the client. */
-export function sandboxFailure(path: string, status: number, serverCode: unknown) {
+export function sandboxFailure(path: string, status: number, serverCode: unknown, serverMessage: unknown) {
   if (
     !/^\/api\/v1\/sandbox\/(?:list|detail|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
       path,
@@ -48,12 +48,27 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     path === "/api/v1/logs/read" ||
     path.startsWith("/api/v1/sandboxes/");
   const legacyCode = status === 403 || (wasInterior && status === 404) ? "conflict" : "unavailable";
+  // These immutable-binding refusals are fixed server-owned strings, never guest text.
+  const bindingReasons: Record<string, string> = {
+    "The Modal workspace is already bound; its account cannot change.":
+      "The Modal workspace is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
+    "The workspace was bound concurrently; no account change was made.":
+      "The workspace was bound concurrently; no account change was made. Run armada detail ID to inspect the winning binding before continuing.",
+  };
+  const bindingReason =
+    path === "/api/v1/sandbox/bind-credential" &&
+    status === 409 &&
+    typeof serverMessage === "string" &&
+    Object.hasOwn(bindingReasons, serverMessage)
+      ? bindingReasons[serverMessage]
+      : undefined;
   return {
     code,
     exitCode: code === "invalid_request" ? (2 as const) : (1 as const),
     message:
+      bindingReason ??
       help[code] ??
-      `The sandbox service could not complete the request (${status}). ${inspect} A mutation may already have been accepted; check its outcome before retrying.`,
+      `Sandbox operation failed (${status}). Check access and sandbox status. ${inspect} A mutation may already have been accepted; check its outcome before retrying.`,
     legacyCode: code === legacyCode ? undefined : legacyCode,
   };
 }

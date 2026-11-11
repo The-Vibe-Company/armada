@@ -257,7 +257,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
-      const sandboxError = sandboxFailure(path, response.status, failureCode);
+      const sandboxError = sandboxFailure(path, response.status, failureCode, apiMessage(payload, ""));
       if (sandboxError)
         throw new ArmadaApiError(
           sandboxError.code,

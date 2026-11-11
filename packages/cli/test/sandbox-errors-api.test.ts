@@ -4,7 +4,7 @@ import { memorySessionStore } from "../src/session.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const canary = "synthetic-private-provider-detail";
-async function capture(args: string[], status: number, serverCode: unknown) {
+async function capture(args: string[], status: number, serverCode: unknown, message = canary) {
   let out = "";
   let err = "";
   let calls = 0;
@@ -21,7 +21,7 @@ async function capture(args: string[], status: number, serverCode: unknown) {
     },
     fetch: async () => {
       calls++;
-      return Response.json({ error: { code: serverCode, message: canary, details: { reason: canary } } }, { status });
+      return Response.json({ error: { code: serverCode, message, details: { reason: canary } } }, { status });
     },
   };
   const exit = await run(args, auth, { auth });
@@ -97,3 +97,22 @@ test.each(["provider_unavailable", "dependency_unavailable", "outcome_unknown"])
     expect(JSON.parse(result.err).error.message).toContain("armada list --json");
   },
 );
+
+test.each(["", canary])("binding refusal preserves only an exact fixed reason (suffix=%s)", async (suffix) => {
+  const message = "The workspace was bound concurrently; no account change was made.";
+  const result = await capture(
+    ["bind-credential", id, "--credential-id", id, "--json"],
+    409,
+    "conflict",
+    message + suffix,
+  );
+  const failure = JSON.parse(result.err).error;
+  expect(result.exit).toBe(1);
+  if (!suffix) {
+    expect(failure.message).toContain(message);
+    expect(failure.message).toContain("armada detail ID");
+  } else {
+    expect(failure.message).not.toContain(message);
+    expect(failure.message).toContain("armada list --json");
+  }
+});
