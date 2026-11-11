@@ -57,6 +57,9 @@ import { describeFailure } from "@/lib/failure";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 2000;
+const RETRY_BASE_MS = 500;
+const RETRY_MAX_MS = 8000;
+const MAX_RETRIES = 5;
 /** Within this distance of the bottom the view follows new messages; further up it stays where the person is. */
 const PINNED_PX = 48;
 /** A stopped sandbox takes a message too: the server's `send` restores the same machine, disk and conversation. */
@@ -77,7 +80,68 @@ type Props = {
   configured: boolean;
 };
 
-type Poll = { error: string | null; configured: boolean };
+type Poll = {
+  error: string | null;
+  configured: boolean;
+  retryAvailable: boolean;
+  accessEnded: boolean;
+};
+
+type PollSession = {
+  active: boolean;
+  reading: boolean;
+  paused: boolean;
+  retries: number;
+  timer: ReturnType<typeof setTimeout> | undefined;
+  controller: AbortController | null;
+};
+
+type ReadResult =
+  | { kind: "success"; more: boolean; active: boolean }
+  | { kind: "retryable"; message: string }
+  | { kind: "access-ended"; message: string }
+  | { kind: "aborted" };
+
+const SANDBOX_STATUSES: readonly SandboxStatus[] = [
+  "starting",
+  "ready",
+  "running",
+  "stopping",
+  "stopped",
+  "failed",
+  "deleted",
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSandboxStatus(value: unknown): value is SandboxStatus {
+  return typeof value === "string" && SANDBOX_STATUSES.includes(value as SandboxStatus);
+}
+
+/** A successful page has a stable outer shape; individual events remain lenient in parseEventPage. */
+function isSuccessfulPage(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  if (!isSandboxStatus(value.status)) return false;
+  if (typeof value.usageRevision !== "string") return false;
+  if (typeof value.configured !== "boolean") return false;
+  if (!Array.isArray(value.events)) return false;
+  if (value.cursor !== null && typeof value.cursor !== "string") return false;
+  if (typeof value.hasMore !== "boolean") return false;
+  if ("error" in value) return false;
+  return value.prompt === undefined || value.prompt === null || isRecord(value.prompt);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function accessEndedMessage(status: number): string {
+  if (status === 401) return "Your session expired or is no longer valid. Sign in again, then retry.";
+  if (status === 403) return "You no longer have access to this sandbox. Check your organization, then retry.";
+  return "This sandbox is no longer available. Reload the page, then retry.";
+}
 
 /**
  * The sandbox as a conversation: the prompts, the agent's answers and its tool calls, read from the event stream
@@ -88,7 +152,12 @@ export function SandboxChat(props: Props) {
   const router = useRouter();
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [status, setStatus] = useState(initialStatus);
-  const [poll, setPoll] = useState<Poll>({ error: null, configured: true });
+  const [poll, setPoll] = useState<Poll>({
+    error: null,
+    configured: true,
+    retryAvailable: false,
+    accessEnded: false,
+  });
   const [hasMore, setHasMore] = useState(false);
   const [turnModel, setTurnModel] = useState<{
     promptId?: string;
@@ -111,62 +180,172 @@ export function SandboxChat(props: Props) {
   useLayoutEffect(() => {
     refreshing.current = refreshPending;
   }, [refreshPending]);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const reading = useRef(false);
-  const mounted = useRef(true);
+  const sessionRef = useRef<PollSession | null>(null);
+  const isCurrent = useCallback((session: PollSession) => session.active && sessionRef.current === session, []);
 
-  const read = useCallback(async (): Promise<{ more: boolean; active: boolean }> => {
-    const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
-    if (cursor.current) url.searchParams.set("cursor", cursor.current);
-    let body: Record<string, unknown>;
-    try {
-      const response = await fetch(url, { cache: "no-store" });
-      body = (await response.json()) as Record<string, unknown>;
-    } catch {
-      setPoll((current) => ({ ...current, error: "The dashboard lost contact with the server. Retrying…" }));
-      return { more: false, active: true };
-    }
-    if (typeof body.prompt === "object" && body.prompt !== null) setTurnModel(body.prompt);
-    const next = typeof body.status === "string" ? (body.status as SandboxStatus) : known.current;
-    const statusChanged = next !== known.current;
-    const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
-    if (statusChanged) {
-      known.current = next;
-      setStatus(next);
-    }
-    // Only committed page props acknowledge the card's revision. A discarded or
-    // stale RSC refresh must remain retryable on the next successful poll.
-    const refreshNeeded = next !== rendered.current.status || usageChanged;
-    if (!refreshing.current && refreshNeeded) {
-      startRefresh(() => router.refresh());
-    }
-    const error = typeof body.error === "string" ? body.error : null;
-    const configured = body.configured !== false;
-    setPoll((current) =>
-      current.error === error && current.configured === configured ? current : { error, configured },
-    );
-    setLoaded(true);
-    const page = parseEventPage(body);
-    if (page.cursor) cursor.current = page.cursor;
-    if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
-    setHasMore(page.hasMore);
-    return { more: page.hasMore, active: isActiveStatus(next) || refreshNeeded };
-  }, [sandboxId, router]);
+  const applyMetadata = useCallback(
+    (session: PollSession, body: Record<string, unknown>) => {
+      if (!isCurrent(session)) return null;
+      if (isRecord(body.prompt)) setTurnModel(body.prompt);
+      const next = isSandboxStatus(body.status) ? body.status : known.current;
+      const statusChanged = next !== known.current;
+      const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
+      if (statusChanged) {
+        known.current = next;
+        setStatus(next);
+      }
+      // Only committed page props acknowledge the card's revision. A discarded or
+      // stale RSC refresh must remain retryable on the next successful poll.
+      const refreshNeeded = next !== rendered.current.status || usageChanged;
+      if (!refreshing.current && refreshNeeded) {
+        startRefresh(() => router.refresh());
+      }
+      const error = typeof body.error === "string" ? body.error : null;
+      const configured = typeof body.configured === "boolean" ? body.configured : true;
+      setPoll((current) =>
+        current.error === error && current.configured === configured && !current.retryAvailable && !current.accessEnded
+          ? current
+          : { error, configured, retryAvailable: false, accessEnded: false },
+      );
+      return { next, refreshNeeded };
+    },
+    [isCurrent, router],
+  );
+
+  const read = useCallback(
+    async (session: PollSession): Promise<ReadResult> => {
+      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
+      const cursorBefore = cursor.current;
+      if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
+      const controller = new AbortController();
+      session.controller = controller;
+      try {
+        const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+        if (!isCurrent(session)) return { kind: "aborted" };
+
+        let body: unknown;
+        try {
+          body = await response.json();
+        } catch (error) {
+          if (isAbortError(error) || !isCurrent(session)) return { kind: "aborted" };
+          if (response.status === 401 || response.status === 403 || response.status === 404) {
+            return { kind: "access-ended", message: accessEndedMessage(response.status) };
+          }
+          return { kind: "retryable", message: "The server returned an unreadable conversation response." };
+        }
+        if (!isCurrent(session)) return { kind: "aborted" };
+
+        if (!response.ok) {
+          // The log lane can fail after the independent status read succeeded. Keep
+          // any valid metadata from that response, but never consume its page/cursor.
+          if (isRecord(body)) applyMetadata(session, body);
+          if (response.status === 401 || response.status === 403 || response.status === 404) {
+            return { kind: "access-ended", message: accessEndedMessage(response.status) };
+          }
+          const message =
+            isRecord(body) && typeof body.error === "string"
+              ? body.error
+              : `The server returned HTTP ${response.status}.`;
+          return { kind: "retryable", message };
+        }
+        if (!isSuccessfulPage(body)) {
+          return { kind: "retryable", message: "The server returned an invalid conversation response." };
+        }
+        const metadata = applyMetadata(session, body);
+        if (!metadata || !isCurrent(session)) return { kind: "aborted" };
+
+        const page = parseEventPage(body);
+        // A successful page must make progress before the continuation can run. The
+        // route turns stalled upstream cursors into 502s, but keep the browser safe
+        // if a proxy or an older server ever sends one directly.
+        if (page.hasMore && (!page.cursor || page.cursor === cursorBefore)) {
+          return { kind: "retryable", message: "The server returned a conversation page without a new cursor." };
+        }
+        if (page.cursor) cursor.current = page.cursor;
+        if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
+        setHasMore(page.hasMore);
+        setLoaded(true);
+        return { kind: "success", more: page.hasMore, active: isActiveStatus(metadata.next) || metadata.refreshNeeded };
+      } catch (error) {
+        if (isAbortError(error) || !isCurrent(session)) return { kind: "aborted" };
+        return { kind: "retryable", message: "The dashboard lost contact with the server." };
+      } finally {
+        if (session.controller === controller) session.controller = null;
+      }
+    },
+    [applyMetadata, isCurrent, sandboxId],
+  );
 
   /** Read until drained, inactive and rendered metadata is acknowledged. One loop at a time. */
-  const tick = useCallback(async () => {
-    if (reading.current) return;
-    reading.current = true;
-    clearTimeout(timer.current);
-    try {
-      const { more, active } = await read();
-      if (!mounted.current) return;
-      if (more) timer.current = setTimeout(() => void tick(), 0);
-      else if (active) timer.current = setTimeout(() => void tick(), POLL_MS);
-    } finally {
-      reading.current = false;
-    }
-  }, [read]);
+  const tick = useCallback(
+    async function pollTick() {
+      const session = sessionRef.current;
+      if (!session || !isCurrent(session) || session.reading || session.paused) return;
+      session.reading = true;
+      clearTimeout(session.timer);
+      session.timer = undefined;
+      try {
+        const result = await read(session);
+        if (!isCurrent(session)) return;
+        if (result.kind === "aborted") return;
+        if (result.kind === "success") {
+          session.retries = 0;
+          if (result.more) session.timer = setTimeout(() => void pollTick(), 0);
+          else if (result.active) session.timer = setTimeout(() => void pollTick(), POLL_MS);
+          return;
+        }
+        if (result.kind === "access-ended") {
+          session.paused = true;
+          setPoll((current) => ({
+            ...current,
+            error: result.message,
+            retryAvailable: true,
+            accessEnded: true,
+          }));
+          return;
+        }
+        if (session.retries >= MAX_RETRIES) {
+          session.paused = true;
+          setPoll((current) => ({
+            ...current,
+            error: `${result.message} Retry when the server is available.`,
+            retryAvailable: true,
+            accessEnded: false,
+          }));
+          return;
+        }
+        const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** session.retries);
+        session.retries += 1;
+        setPoll((current) => ({
+          ...current,
+          error: `${result.message} Retrying…`,
+          retryAvailable: false,
+          accessEnded: false,
+        }));
+        session.timer = setTimeout(() => void pollTick(), delay);
+      } finally {
+        session.reading = false;
+      }
+    },
+    [isCurrent, read],
+  );
+
+  const retryPolling = useCallback(() => {
+    const session = sessionRef.current;
+    if (!session || !isCurrent(session)) return;
+    session.paused = false;
+    session.retries = 0;
+    setPoll((current) => ({ ...current, error: null, retryAvailable: false, accessEnded: false }));
+    void tick();
+  }, [isCurrent, tick]);
+
+  const resumePolling = useCallback(() => {
+    const session = sessionRef.current;
+    if (!session || !isCurrent(session)) return;
+    session.paused = false;
+    session.retries = 0;
+    void tick();
+  }, [isCurrent, tick]);
 
   // A server action such as Stop re-renders the page with the new status: show it in the same paint as the header,
   // not at the next poll, and read again when it says the sandbox is active (polling stops on an inactive status).
@@ -178,11 +357,22 @@ export function SandboxChat(props: Props) {
   }, [initialStatus, tick]);
 
   useEffect(() => {
-    mounted.current = true;
+    const session: PollSession = {
+      active: true,
+      reading: false,
+      paused: false,
+      retries: 0,
+      timer: undefined,
+      controller: null,
+    };
+    sessionRef.current = session;
     void tick();
     return () => {
-      mounted.current = false;
-      clearTimeout(timer.current);
+      session.active = false;
+      session.paused = true;
+      clearTimeout(session.timer);
+      session.controller?.abort();
+      if (sessionRef.current === session) sessionRef.current = null;
     };
   }, [tick]);
 
@@ -244,7 +434,7 @@ export function SandboxChat(props: Props) {
             )}
           </div>
         )}
-        <Notices status={status} reason={reason} poll={poll} />
+        <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
 
         <Transcript
           key={selected ?? "all"}
@@ -264,7 +454,7 @@ export function SandboxChat(props: Props) {
             running={turnRunning}
             onDone={() => {
               router.refresh();
-              void tick();
+              resumePolling();
             }}
           />
         )}
@@ -307,7 +497,17 @@ function ConversationPicker({
 }
 
 /** The sandbox-wide notices. A failed turn explains itself where it ended, in the conversation. */
-function Notices({ status, reason, poll }: { status: SandboxStatus; reason: string | undefined; poll: Poll }) {
+function Notices({
+  status,
+  reason,
+  poll,
+  onRetry,
+}: {
+  status: SandboxStatus;
+  reason: string | undefined;
+  poll: Poll;
+  onRetry: () => void;
+}) {
   const notices = [
     status === "failed" && !reason && (
       <Alert key="failed" variant="destructive">
@@ -318,7 +518,14 @@ function Notices({ status, reason, poll }: { status: SandboxStatus; reason: stri
     ),
     poll.error && (
       <Alert key="poll" variant="destructive" role="alert">
-        <AlertDescription>{poll.error}</AlertDescription>
+        <AlertDescription>
+          <span>{poll.error}</span>
+          {poll.retryAvailable && (
+            <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+        </AlertDescription>
       </Alert>
     ),
     !poll.configured && (
