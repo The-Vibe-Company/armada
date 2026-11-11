@@ -90,3 +90,18 @@ private func message(
     #endif
     print("Projection component: config=\(configuration) events=4000 output_bytes=512000 median_ms=\(String(format: "%.3f", samples.sorted()[2]))")
 }
+
+@Test func emptyAndLegacyDefaultSnapshotsReplaceRatherThanAppendOldText() {
+    let cases: [(mode: AgentEvent.TextMode?, text: String, partial: Bool, expected: [ConversationItem.Kind])] = [
+        (.snapshot, "", false, []),
+        (nil, "replacement", false, [.assistant(text: "replacement", streaming: false, model: "retained")]),
+        (.snapshot, "", true, [.assistant(text: "", streaming: true, model: "retained")])
+    ]
+    for sample in cases {
+        let projection = ConversationProjection.project([
+            message("a", text: "old", model: "retained"),
+            message("b", text: sample.text, mode: sample.mode, partial: sample.partial)
+        ])
+        #expect(projection.items.map(\.kind) == sample.expected)
+    }
+}
