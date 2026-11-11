@@ -7,7 +7,7 @@ import Observation
 
 /// The conversations opened recently in this session, in memory only (ArmadaKit
 /// `ConversationCache`). `AppModel` owns one and empties it when the session or organization changes.
-typealias ConversationMemory = ConversationCache<OrchestratorEvent>
+typealias ConversationMemory = ConversationCache<AgentEvent>
 
 /// Follows one durable event stream and keeps the projected conversation. The loading order is
 /// ArmadaKit's `ConversationLoader` (#812): what this session already read is shown at once,
@@ -28,7 +28,7 @@ final class ConversationFeed {
 
     /// One read: forward after `cursor`, or backward (the latest page when `cursor` is nil, else
     /// the page before that older cursor).
-    typealias Fetch = @Sendable (_ cursor: String?, _ backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage
+    typealias Fetch = @Sendable (_ cursor: String?, _ backward: Bool) async throws(ServiceFailure) -> ConversationEventPage
 
     private(set) var conversation = Conversation(items: [], activeTurns: [:], technicalCount: 0)
     private(set) var documents: [String: MarkdownDocument] = [:]
@@ -41,10 +41,8 @@ final class ConversationFeed {
     /// Counts older pages read, so the transcript asks again even when a page added no new first
     /// item (more fragments of a message already shown, or only technical events).
     private(set) var olderPagesRead = 0
-    /// The highest orchestrator revision any event carried; a newer value means detail is stale.
-    private(set) var latestRevision = 0
 
-    @ObservationIgnored private let loader: ConversationLoader<OrchestratorEvent>
+    @ObservationIgnored private let loader: ConversationLoader<AgentEvent>
     @ObservationIgnored private var cache: [String: CachedMarkdownDocument] = [:]
     /// Orders projections that finish out of order: only the latest stream is shown.
     @ObservationIgnored private var generation = 0
@@ -77,7 +75,7 @@ final class ConversationFeed {
                 case .unavailable, .noAccess, .rejected:
                     self.connection = .stopped(error)
                     return nil
-                case .offline, .uncertain, .staleRevision:
+                case .offline, .uncertain:
                     self.connection = .reconnecting(error.message)
                     return .seconds(min(30, 1 << min(failures, 5)))
                 }
@@ -105,9 +103,9 @@ final class ConversationFeed {
 
     private static func read(
         _ fetch: @escaping Fetch
-    ) -> (ConversationRead) async throws(ServiceFailure) -> ConversationPage<OrchestratorEvent> {
-        { (read: ConversationRead) async throws(ServiceFailure) -> ConversationPage<OrchestratorEvent> in
-            let page: OrchestratorEventPage
+    ) -> (ConversationRead) async throws(ServiceFailure) -> ConversationPage<AgentEvent> {
+        { (read: ConversationRead) async throws(ServiceFailure) -> ConversationPage<AgentEvent> in
+            let page: ConversationEventPage
             switch read {
             case .latest: page = try await fetch(nil, true)
             case .older(let cursor): page = try await fetch(cursor, true)
@@ -119,7 +117,7 @@ final class ConversationFeed {
 
     /// Called once per read that changed the stream (never per event). Projection and Markdown
     /// run off the main actor, so a long history never blocks scrolling or the composer.
-    private func show(_ events: [OrchestratorEvent]) async {
+    private func show(_ events: [AgentEvent]) async {
         hasOlder = loader.hasOlder
         generation += 1
         let current = generation
@@ -127,7 +125,6 @@ final class ConversationFeed {
             ConversationProjection.project(events)
         }.value
         guard current == generation else { return }
-        latestRevision = max(latestRevision, events.map(\.revision).max() ?? 0)
         conversation = projected
         hasLoaded = true
         let sources = projected.items.compactMap { item -> MarkdownDocumentSource? in

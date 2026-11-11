@@ -13,7 +13,7 @@ struct OrganizationPickerView: View {
             ArmadaBackdrop {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        Text("Choose the organization whose orchestrators and sandboxes you want to see. You can switch later from Account.")
+                        Text("Choose the organization whose sandboxes you want to see. You can switch later from Account.")
                             .font(.subheadline)
                             .foregroundStyle(ArmadaTheme.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
