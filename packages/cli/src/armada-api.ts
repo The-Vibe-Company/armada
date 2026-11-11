@@ -6,6 +6,7 @@ import {
   githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
+  TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
 import type { SessionStore } from "./session.ts";
 
@@ -83,13 +84,15 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         });
       } catch (error) {
         throw new AuthError(
-          signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-            ? `The server did not answer in time; the operation may have been accepted.${
-                path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
-              }`
-            : path === "/api/v1/sandbox/launch"
-              ? "Launch outcome unknown. Run armada list to check before retrying."
-              : "Armada could not reach the server.",
+          path === "/api/v1/templates/launch"
+            ? "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown."
+            : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+              ? `The server did not answer in time; the operation may have been accepted.${
+                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                }`
+              : path === "/api/v1/sandbox/launch"
+                ? "Launch outcome unknown. Run armada list to check before retrying."
+                : "Armada could not reach the server.",
           "unavailable",
         );
       }
@@ -107,13 +110,15 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           });
         } catch (error) {
           throw new AuthError(
-            signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-              ? `The server did not answer in time; the operation may have been accepted.${
-                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
-                }`
-              : path === "/api/v1/sandbox/launch"
-                ? "Launch outcome unknown. Run armada list to check before retrying."
-                : "Armada could not reach the server.",
+            path === "/api/v1/templates/launch"
+              ? "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown."
+              : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+                ? `The server did not answer in time; the operation may have been accepted.${
+                    path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                  }`
+                : path === "/api/v1/sandbox/launch"
+                  ? "Launch outcome unknown. Run armada list to check before retrying."
+                  : "Armada could not reach the server.",
             "unavailable",
           );
         }
@@ -171,24 +176,24 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "Application vault unavailable. Check entry status before retrying.",
         );
       }
+      if (path === "/api/v1/templates/launch" && response.status >= 500)
+        throw new ArmadaApiError(
+          "unavailable",
+          response.status,
+          "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown.",
+        );
       if (path.startsWith("/api/v1/templates/")) {
         const known: Record<string, string> = {
           "Template revision changed.":
             "Template revision changed. Get the current revision and retry with --expected-revision.",
           "Template revision unavailable.":
             "Template revision unavailable. Get the template and choose an existing revision.",
-          "Template launch refused: template_revision_changed.":
-            "Template revision changed during admission. Get the current revision before retrying.",
-          "Template launch refused: reference_unavailable.":
-            "A template reference is missing or inaccessible. Check the template definition.",
-          "Template launch refused: environment_unavailable.":
-            "Template golden is removed, unavailable or inaccessible. Publish a revision with an eligible golden.",
-          "Template launch refused: connection_unavailable.":
-            "Template connection is unknown, disabled, disconnected or inaccessible. Check the exact connection ID.",
-          "Template launch refused: variable_unavailable.":
-            "Readable variable is missing or inaccessible. Check its reference.",
-          "Template launch refused: variable_version_changed.":
-            "Readable variable version changed. Publish a revision with its current version.",
+          ...Object.fromEntries(
+            Object.entries(TEMPLATE_REFUSAL_HELP).map(([reason, help]) => [
+              `Template launch refused: ${reason}.`,
+              help,
+            ]),
+          ),
           "Template name or request key already exists.":
             "Template name or request key already exists. Choose another template name or inspect the original launch request.",
           "Request key already used with a different request.":

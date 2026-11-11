@@ -1,4 +1,4 @@
-import { type LaunchTemplate, type OrgSummary, parseMachineSize, VaultError } from "@armada/core";
+import { type LaunchTemplate, type OrgSummary, parseMachineSize, templateRefusalHelp, VaultError } from "@armada/core";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { armadaApiUrl } from "./armada-api.ts";
 import { control } from "./control.ts";
@@ -216,14 +216,20 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     body,
     action === "launch" ? AbortSignal.timeout(10 * 60_000) : undefined,
   );
-  if (flag(args, "--json") || action === "get" || action === "launch") io.auth.out(`${JSON.stringify(result)}\n`);
-  else if (action === "list") {
+  if (flag(args, "--json") || action === "launch") io.auth.out(`${JSON.stringify(result)}\n`);
+  else if (action === "get") {
+    const revision = result.revision as { revision: number };
+    io.auth.out(`${format(result.item as LaunchTemplate)}\nSelected revision: ${revision.revision}\n`);
+  } else if (action === "list") {
     const items = result.items as LaunchTemplate[];
     io.auth.out(items.length ? `${items.map(format).join("\n")}\n` : "No templates.\n");
   } else io.auth.out(`${format(result.item as LaunchTemplate)}\n`);
   if (action === "launch" && result.state !== undefined && result.state !== "succeeded") {
+    const reason = templateRefusalHelp(result.reason);
     io.auth.err(
-      "Template launch is not confirmed successful. Retain the original request key and body; inspect the request before starting new work.\n",
+      result.state === "failed"
+        ? `Template launch refused; no sandbox started. ${reason}\n`
+        : `Template launch outcome unknown (not confirmed successful). ${reason} Retry with the same template ID, request key and body.\n`,
     );
     return 1;
   }

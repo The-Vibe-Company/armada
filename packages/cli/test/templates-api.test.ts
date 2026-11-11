@@ -10,7 +10,13 @@ const template = { id, orgId: org, name: "preset", scope: "personal", currentRev
 
 async function invoke(
   args: string[],
-  options: { response?: unknown; status?: number; file?: string; beforeLaunch?: (stderr: string) => void } = {},
+  options: {
+    response?: unknown;
+    status?: number;
+    file?: string;
+    fetchError?: Error;
+    beforeLaunch?: (stderr: string) => void;
+  } = {},
 ) {
   const requests: Request[] = [];
   let out = "",
@@ -42,8 +48,9 @@ async function invoke(
           const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
           requests.push(request);
           if (request.url.endsWith("/templates/launch")) options.beforeLaunch?.(err);
+          if (options.fetchError) throw options.fetchError;
           if (request.url.endsWith("/templates/list")) return Response.json({ items: [template] });
-          return Response.json(options.response ?? { item: template, revision: { definition } }, {
+          return Response.json(options.response ?? { item: template, revision: { revision: 1, definition } }, {
             status: options.status ?? 200,
           });
         },
@@ -167,6 +174,12 @@ test("template failures use closed actionable diagnostics without echoing untrus
     ["Template launch refused: reference_unavailable.", "reference"],
     ["Template launch refused: environment_unavailable.", "golden"],
     ["Template launch refused: connection_unavailable.", "connection"],
+    ["Template launch refused: environment_binding_changed.", "provider binding changed"],
+    ["Template launch refused: environment_snapshot_unavailable.", "snapshot"],
+    ["Template launch refused: connection_version_changed.", "grant changed"],
+    ["Template launch refused: model_account_unavailable.", "account is missing"],
+    ["Template launch refused: model_account_version_changed.", "account version changed"],
+    ["Template launch refused: model_account_incompatible.", "incompatible"],
     ["untrusted provider text: do-not-echo", "Template"],
   ] as const) {
     const result = await invoke(["template", "launch", id, "--request-key", "run-1"], {
@@ -228,4 +241,52 @@ test("name-based launch prints recovery ID before submission and ID retries bypa
   expect(retry.code).toBe(0);
   expect(retry.requests).toHaveLength(1);
   expect(await retry.requests[0]?.json()).toEqual(await first.requests[1]?.json());
+});
+
+test("template launch transport failures warn of unknown outcome and preserve idempotent recovery", async () => {
+  for (const error of [new Error("private transport failure"), new DOMException("private timeout", "TimeoutError")]) {
+    const result = await invoke(["template", "launch", id, "--request-key", "durable-1"], { fetchError: error });
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain("outcome unknown");
+    expect(result.err).toContain("same template ID, request key and body");
+    expect(result.err).not.toContain("private");
+    expect(result.requests).toHaveLength(1);
+  }
+});
+
+test("post-claim launch receipts distinguish confirmed refusal from uncertain allocation and translate closed reasons", async () => {
+  for (const state of ["failed", "reconciling"]) {
+    for (const [reason, help] of [
+      ["environment_admission_unavailable", "golden became unavailable"],
+      ["authorization_changed", "authorization changed"],
+      ["variable_delivery_unavailable", "variable delivery is unavailable"],
+      ["connection_unavailable", "connection is unknown"],
+      ["private unknown reason", "Check current access"],
+    ]) {
+      const result = await invoke(["template", "launch", id, "--request-key", "durable-1", "--json"], {
+        response: { state, reason },
+      });
+      expect(result.code).toBe(1);
+      expect(result.err).toContain(help ?? "");
+      expect(result.err).not.toContain("private unknown reason");
+      if (state === "failed") {
+        expect(result.err).toContain("no sandbox started");
+        expect(result.err).not.toContain("outcome unknown");
+      } else {
+        expect(result.err).toContain("outcome unknown");
+        expect(result.err).toContain("same template ID, request key and body");
+      }
+      expect(JSON.parse(result.out)).toEqual({ state, reason });
+    }
+  }
+});
+
+test("template get prints readable header and selected revision unless JSON is requested", async () => {
+  const plain = await invoke(["template", "get", id, "--revision", "1"]);
+  expect(plain.code).toBe(0);
+  expect(plain.out).toContain("preset  personal");
+  expect(plain.out).toContain("Selected revision: 1");
+  expect(plain.out).not.toContain('"item"');
+  const json = await invoke(["template", "get", id, "--revision", "1", "--json"]);
+  expect(JSON.parse(json.out)).toEqual({ item: template, revision: { revision: 1, definition } });
 });
