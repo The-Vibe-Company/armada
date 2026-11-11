@@ -744,6 +744,32 @@ export type Database = {
           },
         ];
       };
+      golden_skill_defaults: {
+        Row: {
+          golden_id: string;
+          skills: Json;
+          updated_at: string;
+        };
+        Insert: {
+          golden_id: string;
+          skills: Json;
+          updated_at?: string;
+        };
+        Update: {
+          golden_id?: string;
+          skills?: Json;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_skill_defaults_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: true;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       golden_snapshot_publications: {
         Row: {
           id: string;
@@ -2600,6 +2626,32 @@ export type Database = {
           },
         ];
       };
+      org_skill_defaults: {
+        Row: {
+          org_id: string;
+          skills: Json;
+          updated_at: string;
+        };
+        Insert: {
+          org_id: string;
+          skills: Json;
+          updated_at?: string;
+        };
+        Update: {
+          org_id?: string;
+          skills?: Json;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "org_skill_defaults_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: true;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       organization_invitations: {
         Row: {
           id: string;
@@ -2676,6 +2728,32 @@ export type Database = {
           created_at?: string;
         };
         Relationships: [];
+      };
+      personal_skill_defaults: {
+        Row: {
+          user_id: string;
+          skills: Json;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          skills: Json;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          skills?: Json;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "personal_skill_defaults_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       readable_variables: {
         Row: {
@@ -3404,6 +3482,7 @@ export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoptio
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type GoldenBuildJob = Database["public"]["Tables"]["golden_build_jobs"]["Row"];
 export type GoldenOperationFence = Database["public"]["Tables"]["golden_operation_fences"]["Row"];
+export type GoldenSkillDefaultsRow = Database["public"]["Tables"]["golden_skill_defaults"]["Row"];
 export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
 export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
@@ -3443,8 +3522,10 @@ export type OrchestratorRuntimeCreateKeyRow = Database["public"]["Tables"]["orch
 export type OrchestratorRuntimeEventRow = Database["public"]["Tables"]["orchestrator_runtime_events"]["Row"];
 export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"]["Row"];
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
+export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
 export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];

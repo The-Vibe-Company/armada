@@ -34,11 +34,12 @@ test("existing native children use new GitHub material and register it before gh
     await mkdir(home);
     await mkdir(bin);
     const gh = Bun.which("gh");
-    if (!gh) throw Error("Actual gh executable required for credential-boundary verification");
+    const git = Bun.which("git");
+    if (!gh || !git) throw Error("Actual gh and git executables required for credential-boundary verification");
     const observer = join(root, "observe-gh");
     await writeFile(observer, `#!/bin/sh\n${gh} "$@" | sha256sum\n`, { mode: 0o700 });
     const gitObserver = join(root, "observe-git");
-    await writeFile(gitObserver, `#!/bin/sh\nexec /usr/bin/git "$@"\n`, { mode: 0o700 });
+    await writeFile(gitObserver, `#!/bin/sh\nexec "${git}" "$@"\n`, { mode: 0o700 });
     const tools = {
       root: join(root, "private"),
       activation: socket.activation,
