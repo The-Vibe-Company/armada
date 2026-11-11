@@ -360,6 +360,7 @@ export async function collectSandboxUsage(
   targetPromptId?: string,
 ): Promise<void> {
   if (!store.recordUsage) return;
+  targetPromptId ??= sandbox.taskPromptId ?? undefined;
   try {
     const history = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => null);
     const events = history ?? [];
@@ -389,6 +390,27 @@ export async function collectSandboxUsage(
           /* A missing native file must not erase an earlier observation. */
         }
       }
+    }
+    // An admitted but unmeasured target is a real turn, not a falsely complete subtotal.
+    if (targetPromptId && ![...rows.values()].some((row) => row.promptId === targetPromptId)) {
+      rows.set(JSON.stringify([targetPromptId, null]), {
+        promptId: targetPromptId,
+        model: null,
+        inputTokens: null,
+        outputTokens: null,
+        cachedTokens: null,
+      });
+    }
+    const measuredPrompts = new Set([...rows.values()].filter((row) => row.model !== null).map((row) => row.promptId));
+    for (const [key, row] of rows) {
+      if (
+        row.model === null &&
+        measuredPrompts.has(row.promptId) &&
+        [row.inputTokens, row.outputTokens, row.cachedTokens, row.cacheWriteTokens, row.reasoningTokens].every(
+          (value) => value == null,
+        )
+      )
+        rows.delete(key);
     }
     const knownTurns = Math.max(
       retained?.turnCount ?? 0,

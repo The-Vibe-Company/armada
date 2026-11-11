@@ -338,7 +338,32 @@ describe("agent turns", () => {
   });
 
   test("a prompt without a conversation opens a new one on the right harness, with its options", async () => {
-    const boat = fakeBoat(queued("conv_new"));
+    const boat = fakeBoat(
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      { body: { sandbox: sandbox({ state: "ready" }) } },
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      queued("conv_new"),
+    );
     const receipt = await boat.provider.prompt({
       sandboxId: ID,
       harness: "claude",
@@ -348,8 +373,8 @@ describe("agent turns", () => {
       fast: true,
     });
     expect(receipt).toEqual({ promptId: "prompt_1", conversationId: "conv_new", status: "queued" });
-    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
-    expect(boat.requests[0]?.body).toEqual({
+    expect(boat.requests[3]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
+    expect(boat.requests[3]?.body).toEqual({
       provider: "claude-code",
       prompt: "Fix the tests",
       new: true,
@@ -360,9 +385,58 @@ describe("agent turns", () => {
   });
 
   test("a prompt with a conversation continues it, and codex maps to boat's codex", async () => {
-    const boat = fakeBoat(queued("conv_1"));
+    const boat = fakeBoat(
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      { body: { sandbox: sandbox({ state: "ready" }) } },
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      queued("conv_1"),
+    );
     await boat.provider.prompt({ sandboxId: ID, harness: "codex", text: "Go on", conversationId: "conv_1" });
-    expect(boat.requests[0]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
+    expect(boat.requests[3]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
+  });
+
+  test("optional usage bridge installation failure cannot block an ordinary prompt", async () => {
+    const boat = fakeBoat(
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: false,
+          exitCode: 1,
+          stdout: "",
+          stderr: "unavailable",
+          timedOut: false,
+        },
+      },
+      queued("conv_new"),
+    );
+    await expect(boat.provider.prompt({ sandboxId: ID, harness: "claude", text: "Continue" })).resolves.toMatchObject({
+      promptId: "prompt_1",
+    });
+    expect(boat.requests.map((request) => request.path)).toEqual([
+      `/api/v1/sandboxes/${ID}/commands`,
+      `/api/v1/sandboxes/${ID}/prompt`,
+    ]);
   });
 
   test("an empty prompt is refused before any request", async () => {
@@ -610,7 +684,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
       "provisioning",
       "ready",
       "configure",
-      ...(fail ? [] : ["bridge", "prompt"]),
+      ...(fail ? [] : ["bridge", "ready", "bridge", "prompt"]),
     ]);
     await expect(provider.snapshot({ sandboxId: ID, name: "safe" })).rejects.toThrow("snapshot scrub I/O failed");
   }

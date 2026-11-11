@@ -1,4 +1,5 @@
 import type { ExecRequest } from "@armada/core";
+import { NATIVE_USAGE_BOOTSTRAP } from "./native-usage.ts";
 
 export const NATIVE_HARNESS_PATHS = {
   codex: "/usr/local/bin/codex",
@@ -23,7 +24,7 @@ export async function installNativeCwdWrapper(
     sandboxId,
     timeoutSeconds: 60,
     command:
-      (harness === "codex" ? "python3 -c 'import tomllib' >/dev/null || exit 1; " : "") +
+      (harness === "codex" ? "python3 -I -c 'import tomllib' >/dev/null || exit 1; " : "") +
       nativeCwdInstallScript(path, command, cwd),
   });
 }
@@ -36,8 +37,8 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
       `selected=${quote(cwd ?? "")}`,
       `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
       'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
-      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${original} "$@"; fi`,
-      `exec ${original} "$@"`,
+      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" python3 -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} claude ${original} "$@"; fi`,
+      `exec python3 -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} claude ${original} "$@"`,
     ].join("; ");
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
   const script = [
@@ -57,7 +58,7 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
     // Boat sends WORK_DIR as cwd in thread/start and thread/resume, overriding process cwd.
     // Only stdio app-server needs a protocol bridge; CLI invocations keep their normal transport.
     `if [ "\${args[0]-}" = app-server ]; then`,
-    `  exec python3 -c ${quote(codexCwdBridge)} "$selected" ${original} "\${args[@]}"`,
+    `  exec python3 -I -c ${quote(codexCwdBridge)} "$selected" ${original} "\${args[@]}"`,
     "fi",
     `exec ${original} "\${args[@]}"`,
   ].join("\n");
@@ -110,6 +111,11 @@ function quote(value: string): string {
 /** Transparent stdio bridge: only private reload replies are consumed; peer traffic and stderr are preserved. */
 const codexCwdBridge = `
 import fcntl, json, os, signal, stat, subprocess, sys, threading, time, uuid, socket, http.client
+usage = {"__name__":"armada_native_usage"}
+exec(${JSON.stringify(NATIVE_USAGE_BOOTSTRAP)},usage)
+usage_pending = {}
+usage_fresh = set()
+usage_tickets = {}
 
 class ManagedMcpOverridesError(Exception):
     pass
@@ -313,6 +319,19 @@ def receive():
                 pending[1].append("result" in message and "error" not in message)
                 pending[0].set()
                 continue
+        if isinstance(message,dict):
+            request = usage_pending.pop(str(message.get("id")),None)
+            result = message.get("result",{})
+            if request and request[0] in ("thread/start","thread/resume") and isinstance(result,dict):
+                thread = result.get("thread",{})
+                if isinstance(thread,dict) and isinstance(thread.get("id"),str) and request[0]=="thread/start": usage_fresh.add(thread["id"])
+            if message.get("method") in ("turn/completed","turn/failed"):
+                params = message.get("params",{})
+                thread = params.get("threadId") if isinstance(params,dict) else None
+                ticket = usage_tickets.pop(thread,None)
+                if ticket:
+                    try: usage["terminal"](ticket)
+                    except Exception: pass
         output(line)
 receiver = threading.Thread(target=receive, daemon=True)
 receiver.start()
@@ -396,6 +415,19 @@ def relay():
                         output((json.dumps({"id":message["id"],"error":{"code":-32603,"message":"Native MCP configuration refresh failed; retry the turn."}})+"\\n").encode())
                     continue
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
+            if isinstance(message,dict):
+                method=message.get("method")
+                if method in ("thread/start","thread/resume"):
+                    usage_pending[str(message.get("id"))]=(method,None)
+                if method=="turn/start":
+                    params=message.get("params",{})
+                    thread=params.get("threadId") if isinstance(params,dict) else None
+                    if isinstance(thread,str):
+                        try:
+                            ticket=usage["capture"]("codex",thread,thread in usage_fresh)
+                            usage_fresh.discard(thread)
+                            if ticket: usage_tickets[thread]=ticket
+                        except Exception: pass
             native_registry()
             child.stdin.write(line)
             child.stdin.flush()

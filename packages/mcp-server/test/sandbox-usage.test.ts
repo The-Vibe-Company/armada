@@ -149,6 +149,26 @@ test("native collection persists retry-safe rows and preserves measurements when
     }
     await collectSandboxUsage(provider, store, (await store.get(id))!);
     expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    // Stop still knows its target when provider history and native files are unavailable.
+    provider.events = async () => {
+      throw new Error("history unavailable");
+    };
+    const fallback = { ...(await store.get(id))!, taskPromptId: "unmeasured" };
+    await collectSandboxUsage(provider, store, fallback);
+    const incomplete = (await store.get(id))?.usage;
+    expect(incomplete?.turnCount).toBe(2);
+    expect(incomplete?.tokenTotals?.inputTokens).toBeNull();
+    const later = { ...row, promptId: "unmeasured", inputTokens: 100 };
+    await store.recordUsage!(id, { turnCount: 2, turns: [later] });
+    // A stale status writer cannot erase a concurrently discovered prompt or lower its counters.
+    await store.recordUsage!(id, { turnCount: 1, turns: [{ ...later, inputTokens: 50 }, row] });
+    const measured = (await store.get(id))?.usage;
+    expect(measured?.turnCount).toBe(2);
+    expect(measured?.turns).toEqual([row, later]);
+    expect(measured?.tokenTotals?.inputTokens).toBe(142);
+    const unknownModel = { ...row, model: null, inputTokens: 7 };
+    await store.recordUsage!(id, { turnCount: 2, turns: [unknownModel] });
+    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
   } finally {
     await db.close();
   }

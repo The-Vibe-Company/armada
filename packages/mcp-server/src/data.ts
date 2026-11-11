@@ -326,7 +326,36 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async recordUsage(id, usage) {
         await sql.query(
-          `update public.sandboxes s set usage_turns=$4::text::jsonb
+          `update public.sandboxes s set usage_turns=(
+            with snapshots as (
+              select value, ordinality as ordinal
+              from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb) ||
+                coalesce(($4::text::jsonb)->'turns','[]'::jsonb)) with ordinality
+            ), merged as (
+              select distinct on (value->>'promptId', value->>'model')
+                value || jsonb_strip_nulls(jsonb_build_object(
+                  'inputTokens', max((value->>'inputTokens')::bigint) over identity,
+                  'outputTokens', max((value->>'outputTokens')::bigint) over identity,
+                  'cachedTokens', max((value->>'cachedTokens')::bigint) over identity,
+                  'cacheWriteTokens', max((value->>'cacheWriteTokens')::bigint) over identity,
+                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) as value
+              from snapshots
+              window identity as (partition by value->>'promptId', value->>'model')
+              order by value->>'promptId', value->>'model', ordinal desc
+            ), retained as (
+              select value from merged m where m.value->>'model' is not null
+                or m.value->>'inputTokens' is not null or m.value->>'outputTokens' is not null
+                or m.value->>'cachedTokens' is not null or m.value->>'cacheWriteTokens' is not null
+                or m.value->>'reasoningTokens' is not null
+                or not exists (select 1 from merged known
+                  where known.value->>'promptId'=m.value->>'promptId' and known.value->>'model' is not null)
+            )
+            select jsonb_build_object(
+              'turnCount', greatest((s.usage_turns->>'turnCount')::int,
+                (($4::text::jsonb)->>'turnCount')::int,
+                (select nullif(count(distinct value->>'promptId'),0)::int from retained)),
+              'turns', coalesce((select jsonb_agg(value order by value->>'promptId', value->>'model') from retained),'[]'::jsonb))
+          )
           where ${SANDBOX_VISIBLE} and s.id=$3::uuid
             -- Managed parents use their durable journal as the sole usage writer.
             and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
