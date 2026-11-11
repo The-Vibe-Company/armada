@@ -86,7 +86,7 @@ export class OrchestratorAuthority {
       }>(
         `select o.id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids
         from public.orchestrator_delegations d
-        join public.orchestrators o on o.id=d.orchestrator_id
+        join public.armada_access_parents o on o.id=d.orchestrator_id
         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
         join public.sandboxes s on s.id=o.sandbox_id
         where d.hash=$1 and d.revoked_at is null and d.acknowledged_at is not null
@@ -128,7 +128,7 @@ export class OrchestratorAuthority {
           join public.sandboxes s on s.id=c.sandbox_id
           where c.orchestrator_id=$1 and c.sandbox_id=$2 and c.org_id=$3 and c.owner_id=$4
           and s.org_id=c.org_id and s.owner_id=c.owner_id
-          and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=s.id) for update of c,s`,
+          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id) for update of c,s`,
           [row.id, request.childId ?? null, row.org_id, row.owner_id],
         );
         if (!child.rows.length) return deny();
@@ -156,10 +156,10 @@ export class OrchestratorAuthority {
     const installed = await this.sql.transaction(async (tx) => {
       const parent = (
         await tx.query<{ sandbox_id: string }>(
-          `select o.sandbox_id from public.orchestrators o join public.sandboxes s on s.id=o.sandbox_id
+          `select o.sandbox_id from public.armada_access_parents o join public.sandboxes s on s.id=o.sandbox_id
          join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
          where o.id=$1 and o.state='ready' and s.lifecycle_generation=$2
-         and s.stop_requested_at is null and s.status in ('ready','running') for update of o,s,m`,
+         and s.stop_requested_at is null and s.status in ('starting','ready','running') for update of o,s,m`,
           [orchestratorId, transport.lifecycleGeneration],
         )
       ).rows[0];
@@ -169,9 +169,9 @@ export class OrchestratorAuthority {
         transport.physicalGeneration,
       ]);
       const result = await tx.query<{ authority_epoch: string; lifecycle_generation: string }>(
-        `update public.orchestrators o set authority_epoch=authority_epoch+1
+        `update public.armada_access_parents o set authority_epoch=authority_epoch+1
          from public.sandboxes s,public.members m where o.id=$1 and o.state='ready'
-         and s.id=o.sandbox_id and s.stop_requested_at is null and s.status in ('ready','running')
+         and s.id=o.sandbox_id and s.stop_requested_at is null and s.status in ('starting','ready','running')
          and m.org_id=o.org_id and m.user_id=o.owner_id
          returning o.authority_epoch,s.lifecycle_generation`,
         [orchestratorId],
@@ -207,11 +207,11 @@ export class OrchestratorAuthority {
         return deny();
       const ack = await this.sql.query(
         `update public.orchestrator_delegations d set acknowledged_at=now()
-        from public.orchestrators o,public.sandboxes s,public.members m
+        from public.armada_access_parents o,public.sandboxes s,public.members m
         where d.hash=$1 and o.id=d.orchestrator_id and o.state='ready'
         and o.authority_epoch=d.epoch and s.id=o.sandbox_id and s.lifecycle_generation=d.physical_generation
         and d.native_generation=s.orchestrator_native_generation and d.native_generation=$2
-        and s.stop_requested_at is null and s.status in ('ready','running')
+        and s.stop_requested_at is null and s.status in ('starting','ready','running')
         and m.org_id=o.org_id and m.user_id=o.owner_id and d.revoked_at is null and d.expires_at>now()
         returning d.id`,
         [secret.hash, transport.physicalGeneration],
@@ -231,7 +231,7 @@ export class OrchestratorAuthority {
 
   /** Revocation is serialized against admission; rotation/stop must call this before delivery/checkpoint. */
   async revoke(orchestratorId: string): Promise<void> {
-    await this.sql.query(`update public.orchestrators set authority_epoch=authority_epoch+1 where id=$1`, [
+    await this.sql.query(`update public.armada_access_parents set authority_epoch=authority_epoch+1 where id=$1`, [
       orchestratorId,
     ]);
   }
