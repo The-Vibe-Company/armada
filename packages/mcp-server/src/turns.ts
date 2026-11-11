@@ -361,7 +361,8 @@ export async function collectSandboxUsage(
 ): Promise<void> {
   if (!store.recordUsage) return;
   try {
-    const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => []);
+    const history = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => null);
+    const events = history ?? [];
     const collected = reportedTurnUsage(events);
     const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
     const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
@@ -389,12 +390,14 @@ export async function collectSandboxUsage(
         }
       }
     }
+    const knownTurns = Math.max(
+      retained?.turnCount ?? 0,
+      collected.turnCount,
+      targetPromptId ? 1 : 0,
+      new Set([...rows.values()].map((r) => r.promptId)).size,
+    );
     await store.recordUsage(sandbox.id, {
-      turnCount: Math.max(
-        retained?.turnCount ?? 0,
-        collected.turnCount,
-        new Set([...rows.values()].map((r) => r.promptId)).size,
-      ),
+      turnCount: history === null && knownTurns === 0 ? null : knownTurns,
       turns: [...rows.values()],
     });
   } catch {
