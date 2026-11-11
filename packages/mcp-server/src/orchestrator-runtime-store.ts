@@ -10,7 +10,7 @@ import type {
   PromptStatus,
 } from "@armada/core";
 import { boundEventEntries, coalesceEventMessages, reportedTurnUsage, truncateEvent } from "@armada/core";
-import { createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
+import { CREDENTIAL_BUSY_MESSAGE, createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
 export class OrchestratorRuntimeError extends Error {
@@ -307,6 +307,7 @@ export class OrchestratorRuntimeStore {
           state: receipt.state as OrchestratorOperation["state"],
           revision: receipt.revision,
           errorCode: persisted.rows[0]?.error_code ?? null,
+          ...(persisted.rows[0]?.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
         },
       };
     });
@@ -457,6 +458,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
+      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
     }));
   }
 
@@ -647,6 +649,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
+      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
     };
   }
 
@@ -788,6 +791,7 @@ export class OrchestratorRuntimeStore {
             state: existing.state,
             revision: Number(existing.revision),
             errorCode: existing.error_code,
+            ...(existing.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
           },
         };
       }
@@ -796,6 +800,8 @@ export class OrchestratorRuntimeStore {
         [input.id],
       );
       if (["message", "steer"].includes(input.action) && identity.state !== "ready")
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      if (identity.state === "stopped" && !identity.sandboxId && identity.continuity === "not_started")
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
       if (busy.rows.length || identity.revision !== input.expectedRevision)
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
@@ -969,7 +975,10 @@ export class OrchestratorRuntimeStore {
    * This may fail a request, not publish native success or adopt a machine. */
   async failCreateBeforeFork(
     reservation: RuntimeReservation,
-    errorCode: "create_preallocation_failed" | "provider_payment_required" = "create_preallocation_failed",
+    errorCode:
+      | "create_preallocation_failed"
+      | "provider_payment_required"
+      | "credential_busy" = "create_preallocation_failed",
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
       const row = await tx.query(
@@ -979,12 +988,12 @@ export class OrchestratorRuntimeStore {
         [reservation.operation.id, reservation.createDispatchId ?? null, errorCode],
       );
       if (!row.rows.length) return false;
-      await tx.query(`update public.orchestrators set state='blocked' where id=$1 and revision=$2`, [
+      await tx.query(`update public.orchestrators set state='stopped' where id=$1 and revision=$2`, [
         reservation.identity.id,
         reservation.operation.revision,
       ]);
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason=$2,updated_at=now() where orchestrator_id=$1`,
+        `update public.orchestrator_runtime set blocked_reason=$2,continuity='not_started',updated_at=now() where orchestrator_id=$1`,
         [reservation.identity.id, errorCode],
       );
       await tx.query(
@@ -994,7 +1003,12 @@ export class OrchestratorRuntimeStore {
           reservation.operation.revision,
           JSON.stringify({
             kind: "operation",
-            operation: { ...reservation.operation, state: "failed", errorCode },
+            operation: {
+              ...reservation.operation,
+              state: "failed",
+              errorCode,
+              ...(errorCode === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+            },
           }),
         ],
       );
@@ -1052,11 +1066,11 @@ export class OrchestratorRuntimeStore {
         [row.id],
       );
       await tx.query(
-        `update public.orchestrators set state='blocked' where id=$1 and revision=$2 and sandbox_id is null`,
+        `update public.orchestrators set state='stopped' where id=$1 and revision=$2 and sandbox_id is null`,
         [row.orchestrator_id, row.revision],
       );
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',updated_at=now() where orchestrator_id=$1`,
+        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',continuity='not_started',updated_at=now() where orchestrator_id=$1`,
         [row.orchestrator_id],
       );
       await tx.query(
@@ -1065,7 +1079,7 @@ export class OrchestratorRuntimeStore {
           row.orchestrator_id,
           row.revision,
           JSON.stringify({ kind: "operation", operation }),
-          JSON.stringify({ kind: "state", state: "blocked", continuity: "not_started" }),
+          JSON.stringify({ kind: "state", state: "stopped", continuity: "not_started" }),
         ],
       );
       return operation;

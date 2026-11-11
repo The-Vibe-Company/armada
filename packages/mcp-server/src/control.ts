@@ -176,6 +176,7 @@ export interface ControlOptions {
 export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
 
 const STATUS: Record<VaultErrorCode, number> = {
+  credential_busy: 409,
   credential_binding_required: 409,
   credential_binding_unsafe: 409,
   invalid: 400,
@@ -355,7 +356,14 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         },
         { status: STATUS[error.code], headers: { "cache-control": "no-store" } },
       );
-    if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
+    if (error instanceof VaultError) {
+      if (error.code === "credential_busy")
+        return Response.json(
+          { error: { code: "conflict", reason: "credential_busy", message: error.message } },
+          { status: 409, headers: { "cache-control": "no-store" } },
+        );
+      return fail(STATUS[error.code], error.code, error.message);
+    }
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
       return fail(

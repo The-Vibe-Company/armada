@@ -1,5 +1,6 @@
 import type { GoldenActor, Provider, Sql } from "@armada/core/server";
 import {
+  CREDENTIAL_BUSY_MESSAGE,
   createSqlVaultStore,
   decryptSecret,
   ProviderError,
@@ -444,11 +445,7 @@ export function createModelAuthOwnership(
           throw new VaultError("unavailable", "Native identity admission requires registry maintenance.");
         for (const peer of peers.rows) {
           const saved = JSON.parse(await decryptSecret(new Uint8Array(peer.state_enc), encryptionKey)) as NativeState;
-          if (saved.secrets.includes(incoming))
-            throw new VaultError(
-              "conflict",
-              "credential_busy: this native session is already registered under another account.",
-            );
+          if (saved.secrets.includes(incoming)) throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
         }
         // A replaced legacy import has lost the old home's identity entirely.
         // Only same-row enrollment can prove those writers were quiesced.
@@ -461,11 +458,7 @@ export function createModelAuthOwnership(
            limit 1`,
           [id],
         );
-        if (unknownHistory.rows.length)
-          throw new VaultError(
-            "conflict",
-            "credential_busy: a replaced legacy account has unreconciled history. Stop its writer and enroll that same account row before adding another native account.",
-          );
+        if (unknownHistory.rows.length) throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
         // A pre-enrollment home can already hold a newer token than its vault
         // import. Fence its upstream identity, not just that stale token string.
         const historical = await tx.query<{ value_enc: Uint8Array; same_owner: boolean }>(
@@ -487,10 +480,7 @@ export function createModelAuthOwnership(
           // Imported identity labels are not proof of another user's identity.
           // Across owners require an exact secret match, not a forgeable label.
           if (peerTokens.refresh_token === incoming || (peer.same_owner && peerTokens.account_id === incomingIdentity))
-            throw new VaultError(
-              "conflict",
-              "credential_busy: this provider account has a historical binding under another account. Stop it and explicitly replace that same account instead.",
-            );
+            throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
         }
         const previous = (
           await tx.query<{ sandbox_id: string; account_version: number }>(
@@ -519,25 +509,17 @@ export function createModelAuthOwnership(
           [id, version, sandboxId, sameOwner],
         );
         for (const binding of bindings.rows) {
-          if (binding.id === sandboxId)
-            throw new VaultError("conflict", "credential_busy: launch cannot adopt an existing unmanaged workspace.");
+          if (binding.id === sandboxId) throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           if (binding.credential_version === null || Number(binding.credential_version) >= version)
-            throw new VaultError(
-              "conflict",
-              "credential_busy: native version was already used; reconcile its authoritative state or explicitly import a fresh version.",
-            );
+            throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           const terminal =
             (binding.status === "stopped" && binding.stopped_at !== null) ||
             (binding.status === "deleted" && binding.deleted_at !== null);
           if (!terminal || binding.activity_lease_id !== null || binding.stop_requested_at !== null)
-            throw new VaultError("conflict", "credential_busy: an earlier native writer has not been quiesced.");
+            throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           // authenticated can edit status/timestamps. A fresh import is not
           // permission to trust those labels while an old native writer lives.
-          if (!historicalProvider)
-            throw new VaultError(
-              "conflict",
-              "credential_busy: historical native quiescence requires a trusted provider observation.",
-            );
+          if (!historicalProvider) throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           let timer: ReturnType<typeof setTimeout> | undefined;
           const controller = new AbortController();
           try {
@@ -559,11 +541,7 @@ export function createModelAuthOwnership(
                 timer.unref();
               }),
             ]);
-            if (!quiescent)
-              throw new VaultError(
-                "conflict",
-                "credential_busy: the provider has not confirmed the earlier native writer stopped.",
-              );
+            if (!quiescent) throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           } catch (error) {
             if (error instanceof VaultError) throw error;
             throw new VaultError("unavailable", "Historical native quiescence could not be verified.");
@@ -595,10 +573,7 @@ export function createModelAuthOwnership(
           }
         }
         if (!row || row.sandbox_id !== sandboxId || Number(row.account_version) !== version)
-          throw new VaultError(
-            "conflict",
-            "credential_busy: native session already belongs to another sandbox or revision.",
-          );
+          throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
         await state.initialize(tx, id, version, await decryptSecret(new Uint8Array(source), encryptionKey));
       };
       if (transaction) await claim(transaction);
@@ -670,7 +645,12 @@ export function createModelAuthOwnership(
           if (error instanceof VaultError)
             throw new ProviderError({
               provider: provider.id,
-              code: error.code === "conflict" ? "conflict" : error.code === "not_found" ? "not_found" : "unavailable",
+              code:
+                error.code === "conflict" || error.code === "credential_busy"
+                  ? "conflict"
+                  : error.code === "not_found"
+                    ? "not_found"
+                    : "unavailable",
               message: error.message,
               retryable: false,
             });
@@ -689,7 +669,10 @@ export function createModelAuthOwnership(
         );
         const row = found.rows[0];
         if (!row || row.sandbox_id !== sandboxId || Number(row.account_version) !== version)
-          throw new VaultError("conflict", "credential_busy: native session ownership does not match this sandbox.");
+          throw new VaultError(
+            "conflict",
+            "This sandbox no longer owns its subscription session. Stop it and launch a new sandbox with the intended account.",
+          );
       });
     },
   };
