@@ -15,7 +15,7 @@ import {
   type TurnModelEvidence,
   turnModelEvidence,
 } from "@armada/core";
-import type { SandboxView, ServerSandboxStore } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -221,7 +221,16 @@ export async function readStatus(
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
-    await store.update(sandbox.id, patch);
+    try {
+      await store.update(sandbox.id, patch);
+    } catch (error) {
+      if (!(error instanceof DataError && error.code === "sandbox_not_ready")) throw error;
+      // Observation is not an activity: a concurrent lifecycle owner wins, but
+      // must not turn an authorized read into a lease conflict or stale publish.
+      const current = await store.get(sandbox.id);
+      if (!current) throw error;
+      return report(current, current.status, null, null, null);
+    }
   }
   const refreshed = store.recordUsage ? await store.get(sandbox.id) : null;
   return report(
