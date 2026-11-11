@@ -5,6 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { CopyButton } from "@/components/copy-button";
+import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
@@ -189,6 +190,8 @@ export default async function SandboxPage({ params }: Props) {
           </Card>
 
           <SandboxCostCard cost={cost} />
+
+          <InstalledSkills receipts={sandbox.skills} />
 
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">

@@ -1,22 +1,9 @@
-import { ORCHESTRATOR_SKILL_PATTERN, type OrchestratorSkillReceipt } from "./orchestrator.ts";
-import type { Provider } from "./provider.ts";
+import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
+import { validateSkillPins } from "./skill-pins.ts";
 
-export function validateSkillPins(skills: unknown, publicOnly = false): asserts skills is string[] {
-  if (
-    !Array.isArray(skills) ||
-    skills.length > 20 ||
-    skills.some(
-      (skill) =>
-        typeof skill !== "string" ||
-        (publicOnly && !skill.includes("/")) ||
-        skill.length > 256 ||
-        !ORCHESTRATOR_SKILL_PATTERN.test(skill) ||
-        skill.split("/").at(-1)?.startsWith("armada-tools@"),
-    ) ||
-    new Set(skills.map((skill) => skill.split("@")[0].split("/").at(-1))).size !== skills.length
-  )
-    throw new Error("Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).");
-}
+export { validateSkillPins } from "./skill-pins.ts";
+
+import type { Provider } from "./provider.ts";
 
 export function parseSkillReceipt(output: string, skill: string, harness: string): OrchestratorSkillReceipt {
   const [reference, version] = skill.split("@");
