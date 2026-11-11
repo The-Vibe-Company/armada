@@ -229,7 +229,14 @@ export async function readStatus(
       // must not turn an authorized read into a lease conflict or stale publish.
       const current = await store.get(sandbox.id);
       if (!current) throw error;
-      return report(current, current.status, null, null, null);
+      return {
+        ...report(current, current.status, null, null, null),
+        settled:
+          !current.stopRequestedAt &&
+          (current.status === "stopped" ||
+            current.status === "deleted" ||
+            (current.status === "failed" && current.stoppedAt !== null)),
+      };
     }
   }
   const refreshed = store.recordUsage ? await store.get(sandbox.id) : null;
