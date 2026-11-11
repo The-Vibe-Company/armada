@@ -81,6 +81,19 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const seen: Request[] = [];
   for (const path of [
+    ["variables", "list"],
+    ["variables", "read"],
+    ["variables", "set"],
+    ["variables", "update"],
+    ["variables", "revoke"],
+    ["variables", "delete"],
+    ["secrets", "list"],
+    ["secrets", "set"],
+    ["secrets", "rotate"],
+    ["secrets", "revoke"],
+    ["secrets", "delete"],
+    ["secrets", "upload"],
+    ["secrets", "commit"],
     ["org", "list"],
     ["golden", "capabilities"],
     ["account", "status"],

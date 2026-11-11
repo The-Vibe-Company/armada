@@ -249,8 +249,37 @@ describe("GitHub access at launch", () => {
     const world = await setup({ refresh: REFRESH_1 });
     world.github.refreshes.push("down", { access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
     expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "unavailable" });
-    expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "unavailable" });
+    const retry = await resolveGitHubAccess(world.deps, USER);
+    expect(retry.status).toBe("unavailable");
+    expect((retry as { message: string }).message).toContain("Retry shortly");
+    expect((retry as { message: string }).message).toContain(
+      "if this persists, reconnect GitHub in the dashboard under Settings",
+    );
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
+  });
+
+  test("a fence loser re-reads a concurrent rotation once and asks for retry, never reconnect or replay", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    const nextRefresh = await encryptSecret(REFRESH_2, KEY);
+    const store = world.deps.store;
+    let reads = 0;
+    const get = store.getGitHubConnection.bind(store);
+    store.getGitHubConnection = async (userId) => {
+      reads++;
+      return get(userId);
+    };
+    store.consumeGitHubRefresh = async () => {
+      const row = world.rows.get(USER);
+      if (!row) throw new Error("Expected linked connection");
+      world.rows.set(USER, { ...row, refreshTokenEnc: nextRefresh });
+      return false;
+    };
+    const access = await resolveGitHubAccess(world.deps, USER);
+    expect(access.status).toBe("unavailable");
+    expect((access as { message: string }).message).toContain("Retry shortly");
+    expect((access as { message: string }).message.toLowerCase()).not.toContain("reconnect");
+    expect(reads).toBe(1);
+    expect(world.github.refreshTokensSent).toEqual([]);
   });
 
   test("an App without expiring tokens, or without server credentials, is reported and not used", async () => {

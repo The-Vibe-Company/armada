@@ -84,6 +84,8 @@ produce a different digest even when its version number matches.
 
 Required helper refusals expose typed `reason` (`helper_missing`,
 `helper_receipt_invalid`, or `helper_capability_unsupported`) and
-`action: rebuild_golden` in HTTP error objects and MCP error structured content.
+`action: rebuild_golden` inside `error.details` in HTTP error objects and MCP error structured content.
+Both use `{ error: { code: "unsupported", message, details: { reason, action } } }`;
+GitHub hydration errors retain their existing MCP `_meta.error.details` phase.
 The latter reason covers a valid installation that cannot perform the requested
 capability. Clients do not need to parse the explanatory English message.

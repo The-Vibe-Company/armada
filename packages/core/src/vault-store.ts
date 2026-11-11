@@ -5,6 +5,8 @@ import type { Sql } from "./golden-store.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
 
+const githubRefreshQueues = new WeakMap<Sql, Map<string, Promise<void>>>();
+
 /**
  * The vault over SQL. The connection must be privileged: it reads ciphertext columns, and it reads
  * `auth.users` to find a person by email. Use the Supabase `postgres` role or `service_role`,
@@ -313,14 +315,27 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(sql, userId, expected),
 
     async withGitHubConnectionRefresh(userId, work) {
-      // A single-connection adapter cannot make an autonomous commit while a transaction holds it.
-      // Its atomic consumed-fence CAS still single-flights refresh; production has a separate pool.
-      if (!sql.transaction || !sql.autonomousQuery)
-        return work(refreshStore(sql), await readGitHubConnection(sql, userId));
-      return sql.transaction(async (transaction) => {
-        await transaction.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
-        return work(refreshStore(transaction, true, sql), await readGitHubConnection(transaction, userId));
+      // Queue local callers without reserving a database connection during HTTP.
+      // Across processes the durable consumed-token fence prevents replay.
+      let queues = githubRefreshQueues.get(sql);
+      if (!queues) {
+        queues = new Map();
+        githubRefreshQueues.set(sql, queues);
+      }
+      const previous = queues.get(userId) ?? Promise.resolve();
+      let release!: () => void;
+      const current = new Promise<void>((resolve) => {
+        release = resolve;
       });
+      queues.set(userId, current);
+      await previous;
+      try {
+        const connection = await readGitHubConnection(sql, userId);
+        return await work(refreshStore(sql, connection?.refreshTokenEnc), connection);
+      } finally {
+        release();
+        if (queues.get(userId) === current) queues.delete(userId);
+      }
     },
 
     async rotateGitHubToken(userId, expected, next) {
@@ -431,12 +446,12 @@ async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGit
   };
 }
 
-function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitHubConnectionStore {
+function refreshStore(sql: Sql, expectedRefresh: Uint8Array | undefined): GitHubConnectionStore {
   return {
-    consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(durable, userId, expected),
+    consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(sql, userId, expected),
     getGitHubConnection: (userId) => readGitHubConnection(sql, userId),
     withGitHubConnectionRefresh: async () => {
-      throw new Error("Nested GitHub refresh transactions are not supported.");
+      throw new Error("Nested GitHub refresh scopes are not supported.");
     },
     async rotateGitHubToken(userId, expected, next) {
       const result = await sql.query(
@@ -454,6 +469,7 @@ function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitH
           next.accessExpiresAt.toISOString(),
         ],
       );
+      if (result.rows.length) expectedRefresh = next.refreshTokenEnc;
       return result.rows.length > 0;
     },
     async markGitHubRevoked(userId, expected) {
@@ -466,27 +482,18 @@ function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitH
       return result.rows.length > 0;
     },
     async updateGitHubProfile(userId, profile) {
-      // Profile sync is best-effort, but an SQL error must not roll back a
-      // refresh token GitHub has already consumed. Keep the advisory lock held.
-      if (transactional) await sql.query("savepoint github_profile");
-      try {
-        await sql.query(
-          `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
-           where user_id = $1`,
-          [userId, profile.id, profile.login, profile.name],
-        );
-      } catch (error) {
-        if (transactional) await sql.query("rollback to savepoint github_profile");
-        throw error;
-      } finally {
-        if (transactional) await sql.query("release savepoint github_profile");
-      }
+      // A reconnect may publish during HTTP. Never overwrite its newer identity.
+      await sql.query(
+        `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
+         where user_id = $1 and refresh_token_enc = $5::bytea and revoked_at is null`,
+        [userId, profile.id, profile.login, profile.name, expectedRefresh],
+      );
     },
   };
 }
 
-/** Autocommit on the root pool while the separate owner advisory transaction is held.
- * If HTTP or the later rotation COMMIT is uncertain, this row survives to forbid replay. */
+/** Autocommit before remote HTTP. If HTTP or rotation publication is uncertain,
+ * this row survives to forbid replay even when another process reads the old token. */
 async function consumeGitHubRefresh(sql: Sql, userId: string, expected: Uint8Array): Promise<boolean> {
   const hash = createHash("sha256").update(expected).digest("hex");
   const result = await (sql.autonomousQuery ?? sql.query).call(

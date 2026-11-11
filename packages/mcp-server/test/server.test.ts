@@ -324,6 +324,15 @@ describe("tools", () => {
         "orchestrator_resume",
         "orchestrator_recover",
         "orchestrator_reconcile",
+        "variable_list",
+        "variable_read",
+        "variable_set",
+        "variable_update",
+        "variable_delete",
+        "secret_list",
+        "secret_commit",
+        "secret_revoke",
+        "secret_delete",
         "report",
         "resource_advice",
         "send",
@@ -334,6 +343,25 @@ describe("tools", () => {
       ].sort(),
     );
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+    const secretCommit = tools.find((tool) => tool.name === "secret_commit");
+    expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
+    expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });
+    const variableSet = tools.find((tool) => tool.name === "variable_set");
+    expect(variableSet?.inputSchema.required).toEqual(["org", "scope", "name", "value"]);
+    expect(variableSet?.inputSchema.properties?.scope).toMatchObject({ enum: ["personal", "org"] });
+    expect(variableSet?.inputSchema.properties?.value).toMatchObject({ type: "string" });
+    for (const name of ["variable_update", "variable_delete", "secret_revoke", "secret_delete"]) {
+      const schema = tools.find((tool) => tool.name === name)?.inputSchema;
+      expect(schema?.required).toEqual(["org", "id", "expectedVersion"]);
+      expect(schema?.properties?.expectedVersion).toMatchObject({ type: "integer", minimum: 1 });
+    }
+    for (const tool of tools.filter((tool) => /^(secret|variable)_/.test(tool.name))) {
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+      if (tool.name.startsWith("secret_")) {
+        expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value");
+        expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value_enc");
+      }
+    }
     const launch = tools.find((tool) => tool.name === "launch");
     expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
     expect(launch?.inputSchema.required ?? []).not.toContain("repo");
@@ -455,7 +483,9 @@ describe("tools", () => {
         helperCapabilities: ["diagnose"],
       });
       expect(refused.isError).toBe(true);
-      expect(refused.data).toMatchObject({ code: "unsupported", reason, action: "rebuild_golden" });
+      expect(refused.data).toEqual({
+        error: { code: "unsupported", message: expect.any(String), details: { reason, action: "rebuild_golden" } },
+      });
       expect(boat.forks).toHaveLength(0);
     }
     await db.query(

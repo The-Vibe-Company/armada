@@ -1,5 +1,6 @@
-import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
+  type ApplicationVault,
   assertGoldenMutation,
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -59,6 +60,7 @@ import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitS
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   caller: Caller;
@@ -110,7 +112,10 @@ const buildOutput = {
   state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
   phase: z.string(),
   errorCode: z.literal("build_failed").nullable(),
-  failureReason: z.enum(["skillpack_integrity_failed", "provider_payment_required"]).nullable().optional(),
+  failureReason: z
+    .enum(["skillpack_integrity_failed", "provider_payment_required", "provider_snapshot_rejected"])
+    .nullable()
+    .optional(),
   result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
 };
 
@@ -327,6 +332,97 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       }) as never,
     );
   };
+
+  const vaultOrg = z.string().uuid().describe("Organization UUID; the caller must be a current member.");
+  const vaultId = z.string().uuid().describe("Application variable or secret UUID returned by its metadata list.");
+  const vaultVersion = z.number().int().min(1).describe("Current metadata version; stale writes fail with conflict.");
+  const vaultName = z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]{0,127}$/)
+    .describe("Application key; managed auth and execution names are reserved.");
+  const vaultValue = z
+    .string()
+    .describe(
+      "Intentionally readable configuration, at most 8 KiB UTF-8. Empty and multiline values are allowed. Never enter secrets.",
+    );
+  const vaultInputs = {
+    list: z.strictObject({ org: vaultOrg }),
+    read: z.strictObject({ org: vaultOrg, id: vaultId }),
+    set: z.strictObject({ org: vaultOrg, scope: z.enum(["personal", "org"]), name: vaultName, value: vaultValue }),
+    update: z.strictObject({
+      org: vaultOrg,
+      id: vaultId,
+      expectedVersion: vaultVersion,
+      name: vaultName.optional(),
+      value: vaultValue.optional(),
+    }),
+    delete: z.strictObject({ org: vaultOrg, id: vaultId, expectedVersion: vaultVersion }),
+    revoke: z.strictObject({ org: vaultOrg, id: vaultId, expectedVersion: vaultVersion }),
+    commit: z.strictObject({
+      org: vaultOrg,
+      uploadReference: z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{43}$/)
+        .describe(
+          "One-use reference returned by authenticated POST /api/v1/secrets/upload; expires after five minutes and is bound to this actor and org. Never submit a secret value here.",
+        ),
+    }),
+  };
+  const vaultDescriptions = {
+    variable_list:
+      "List safe variable metadata, without values. Personal entries are owner-only; org entries require membership.",
+    variable_read:
+      "Read an active variable's intentionally readable value. Personal entries are owner-only; org entries require membership.",
+    variable_set:
+      "Create readable configuration in personal or org scope; org writes require admin. Values are intentionally readable: do not store secrets.",
+    variable_update:
+      "Rename or replace readable configuration using its current version. Supply name or value; org writes require admin.",
+    variable_delete:
+      "Delete a readable variable using its current version, retaining a value-free tombstone; org writes require admin.",
+    secret_list:
+      "List safe application-secret metadata only. Secret values, ciphertext and value fingerprints are never returned.",
+    secret_commit:
+      "Create or rotate a write-only application secret from an authenticated API upload reference. The upload fixes the operation, target and version. No plaintext secret arguments; returns safe metadata only.",
+    secret_revoke:
+      "Revoke a write-only application secret using its current version. Removes active ciphertext and advances the revocation epoch; org writes require admin.",
+    secret_delete:
+      "Delete a write-only application secret using its current version. Removes active ciphertext and retains a value-free tombstone; org writes require admin.",
+  };
+
+  // Secret plaintext ingress is API-only. MCP commits actor-bound one-use upload references.
+  for (const [kind, operations] of [
+    ["variable", ["list", "read", "set", "update", "delete"]],
+    ["secret", ["list", "commit", "revoke", "delete"]],
+  ] as const) {
+    for (const operation of operations) {
+      server.registerTool(
+        `${kind}_${operation}`,
+        {
+          description: vaultDescriptions[`${kind}_${operation}` as keyof typeof vaultDescriptions],
+          inputSchema: vaultInputs[operation],
+          outputSchema: z.object({}).passthrough(),
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            if (!context.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
+            const result = await context.applicationVault.command(caller, kind, operation, args, "mcp");
+            return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          } catch (error) {
+            // Never log SDK/database causes or submitted vault arguments.
+            const code = error instanceof VaultError ? error.code : "unavailable";
+            const message = error instanceof VaultError ? error.message : "Application vault unavailable.";
+            return {
+              isError: true,
+              content: [
+                { type: "text" as const, text: message },
+                { type: "text" as const, text: `error code: ${code}` },
+              ],
+            };
+          }
+        },
+      );
+    }
+  }
 
   for (const action of [
     "capabilities",
@@ -1723,11 +1819,15 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   return {
     isError: true,
     ...(error instanceof LaunchError && error.reason
-      ? { structuredContent: { code, reason: error.reason, action: error.action } }
+      ? { structuredContent: { error: { code, message, details: { reason: error.reason, action: error.action } } } }
       : {}),
+    ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [
       { type: "text", text: message },
       { type: "text", text: `error code: ${code}` },
+      ...(error instanceof GitHubHydrationError
+        ? [{ type: "text" as const, text: JSON.stringify({ error: { code, message, details: error.details } }) }]
+        : []),
     ],
   };
 }

@@ -44,7 +44,7 @@ interface Job {
   golden_id: string | null;
   snapshot: string | null;
   build_warnings: GoldenBuildWarning[];
-  failure_reason: "skillpack_integrity_failed" | "provider_payment_required" | null;
+  failure_reason: "skillpack_integrity_failed" | "provider_payment_required" | "provider_snapshot_rejected" | null;
 }
 export interface GoldenBuildJobsOptions {
   sql: Sql;
@@ -513,7 +513,13 @@ export class GoldenBuildJobs {
               ? (error.safeReason ?? null)
               : safeToRelease && error instanceof ProviderError && error.code === "payment_required"
                 ? "provider_payment_required"
-                : null,
+                : safeToRelease &&
+                    error instanceof ProviderError &&
+                    error.code === "invalid_request" &&
+                    error.status === 400 &&
+                    current.phase === "snapshot"
+                  ? "provider_snapshot_rejected"
+                  : null,
           ],
         );
       });

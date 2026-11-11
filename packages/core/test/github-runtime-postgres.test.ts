@@ -5,10 +5,10 @@ import { resolveGitHubAccess } from "../src/github.ts";
 import type { Sql } from "../src/golden-store.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 
-// Real PostgreSQL owns the autonomous pre-request COMMIT and per-owner lock proof. PGlite has one
-// connection and must not be presented as evidence that this fence survives another transaction.
+// Real PostgreSQL proves refresh never reserves the sole main-pool connection during HTTP,
+// and that the durable pre-request fence survives a failed rotation publication.
 describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub managed refresh (PostgreSQL)", () => {
-  test("same-owner expiry rotates once; another owner proceeds while the first refresh lock is held", async () => {
+  test("same-owner expiry rotates once; HTTP leaves the sole main connection free for other owners", async () => {
     await fixture(async (world) => {
       let entered!: () => void, release!: () => void;
       const reached = new Promise<void>((resolve) => {
@@ -17,7 +17,7 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub managed refresh (
         gate = new Promise<void>((resolve) => {
           release = resolve;
         });
-      world.pause = async (id) => {
+      world.pauseRefresh = async (id) => {
         if (id === 1) {
           entered();
           await gate;
@@ -26,12 +26,13 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub managed refresh (
       const first = world.resolve(0);
       await reached;
       try {
+        expect(await world.resolve(0, { ...world.sql })).toMatchObject({ status: "unavailable" });
         expect(await world.resolve(1)).toMatchObject({ status: "connected", identity: { id: 2 } });
       } finally {
         release();
       }
       expect(await first).toMatchObject({ status: "connected", identity: { id: 1 } });
-      world.pause = undefined;
+      world.pauseRefresh = undefined;
       world.advance();
       const results = await Promise.all([world.resolve(0), world.resolve(0), world.resolve(0)]);
       for (const access of results)
@@ -49,13 +50,14 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub managed refresh (
   test("remote success followed by SQL rollback keeps the durable consumed fence and never replays", async () => {
     await fixture(async (world) => {
       const faulty: Sql = {
-        query: world.sql.query,
         autonomousQuery: world.sql.autonomousQuery!,
-        transaction: (work) =>
-          world.sql.transaction!(async (tx) => {
-            await work(tx);
+        query: async <T>(text: string, params?: unknown[]) => {
+          if (!text.includes("set refresh_token_enc")) return world.sql.query<T>(text, params);
+          return world.sql.transaction!(async (tx) => {
+            await tx.query<T>(text, params);
             throw Error("forced_commit_uncertain");
-          }),
+          });
+        },
       };
       await expect(world.resolve(0, faulty)).rejects.toThrow("forced_commit_uncertain");
       expect(await world.resolve(0)).toMatchObject({ status: "unavailable" });
@@ -82,7 +84,7 @@ async function fixture(work: (world: Awaited<ReturnType<typeof setup>>) => Promi
 async function setup() {
   const location = process.env.ARMADA_TEST_POSTGRES_URL;
   if (!location) throw Error("Local disposable PostgreSQL fixture is required");
-  const client = new Bun.SQL(location, { max: 2 });
+  const client = new Bun.SQL(location, { max: 1 });
   const autonomous = new Bun.SQL(location, { max: 1 });
   const sql = sqlOver({
     unsafe: (text, params) => client.unsafe(text, params),
@@ -105,7 +107,7 @@ async function setup() {
     sql,
     users,
     key,
-    pause: undefined as undefined | ((id: number) => Promise<void>),
+    pauseRefresh: undefined as undefined | ((id: number) => Promise<void>),
     advance: () => {
       clock += 400000;
     },
@@ -133,12 +135,12 @@ async function setup() {
       grant.refresh = `offline-r-${crypto.randomUUID()}`;
       grant.access = `offline-a-${crypto.randomUUID()}`;
       grant.expires = clock + 600000;
+      await world.pauseRefresh?.(grant.id);
       return Response.json({ access_token: grant.access, refresh_token: grant.refresh, expires_in: 600 });
     }
     const access = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "");
     const grant = grants.find((g) => g.access === access && g.expires > clock);
     if (!grant) return Response.json({ message: "Rejected" }, { status: 401 });
-    await world.pause?.(grant.id);
     return Response.json({ id: grant.id, login: `owner${grant.id}`, name: `Owner ${grant.id}` });
   }) as unknown as typeof fetch;
   for (let i = 0; i < users.length; i++) {

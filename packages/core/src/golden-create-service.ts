@@ -147,6 +147,7 @@ export class GoldenCreateService {
     let uncertainSnapshot = false;
     let persistAttempted = false;
     let snapshotAttempted = false;
+    let saveAccepted = false;
     let knownUnpublished = false;
     let uncertainPublication = false;
     let requestedSnapshot: string | undefined;
@@ -193,7 +194,9 @@ export class GoldenCreateService {
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId });
       const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
-      requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
+      requestedSnapshot = input.existingGolden
+        ? `golden-r-${crypto.randomUUID()}`
+        : `golden-${builder.id.replaceAll("_", "-")}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       await enter("snapshot");
@@ -204,6 +207,7 @@ export class GoldenCreateService {
       snapshotAttempted = true;
       uncertainSnapshot = providerId === "modal";
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
+      saveAccepted = true;
       const snapshot = started.name;
       // The provider's reference is authoritative, not necessarily the requested label.
       // A remap needs source correlation before we may publish or reclaim that artifact.
@@ -281,6 +285,12 @@ export class GoldenCreateService {
       }
       return { snapshot, warnings };
     } catch (error) {
+      // Only Boat's save-call refusal proves no artifact was accepted. A later
+      // provenance/read failure must retain capacity even before ownership is known.
+      // Modal keeps its conservative unknown-outcome/source-retention contract.
+      if (providerId === "boat" && phase === "snapshot" && !saveAccepted && isNonMutatingProviderRefusal(error)) {
+        snapshotAttempted = false;
+      }
       refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
       console.error(
         JSON.stringify({
@@ -288,6 +298,13 @@ export class GoldenCreateService {
           buildId,
           phase,
           code: error instanceof GoldenError || error instanceof ProviderError ? error.code : "unknown",
+          ...(error instanceof ProviderError
+            ? {
+                provider: error.provider,
+                status: error.status,
+                detail: error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure",
+              }
+            : {}),
           elapsedMs: Date.now() - startedAt,
         }),
       );
@@ -566,4 +583,12 @@ function shellQuote(value: string): string {
 function safe(v: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v)) throw new GoldenError("invalid_config", "Unsafe repository path.");
   return v;
+}
+
+/** Closed diagnostic classes: upstream text, codes and details may contain credentials. */
+function snapshotRejectionClass(message: string): string {
+  if (/name/i.test(message) && /invalid|reserved|characters|pattern/i.test(message)) return "snapshot_name_invalid";
+  if (/trial|subscription|plan|billing|credit/i.test(message)) return "snapshot_account_restricted";
+  if (/quota|limit|capacity/i.test(message)) return "snapshot_limit_reached";
+  return "request_rejected";
 }

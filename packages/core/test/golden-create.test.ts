@@ -217,7 +217,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
           state: "succeeded",
           provider: providerId,
           result: {
-            snapshot: "golden-bx_1",
+            snapshot: "golden-bx-1",
             warnings: providerId === "modal" ? ["skillpack_download_unavailable"] : [],
           },
         });
@@ -245,17 +245,17 @@ describe("createGoldenCreateService, wired to a real database", () => {
           visibility: "org",
           provider: providerId,
           modal_app_id: providerId === "modal" ? modal.appId : null,
-          provider_snapshot_id: "golden-bx_1",
+          provider_snapshot_id: "golden-bx-1",
           helper_receipt: {
             version: "0.1.0",
             protocol: 1,
             digest: helperManifest.x86_64.digest,
             platform: "x86_64",
             capabilities: ["diagnose"],
-            snapshotId: "golden-bx_1",
+            snapshotId: "golden-bx-1",
           },
           provider_sandbox_id: null,
-          boat_snapshot_id: providerId === "boat" ? "golden-bx_1" : null,
+          boat_snapshot_id: providerId === "boat" ? "golden-bx-1" : null,
           boat_sandbox_id: null,
           config: {
             repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
@@ -346,7 +346,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
         ).rejects.toMatchObject({ code: "build_failed" });
         expect((await original("select 1 from goldens")).rows).toHaveLength(0);
         expect((await original("select 1 from golden_backend_slots")).rows).toHaveLength(0);
-        expect(deleted).toEqual(["golden-bx_1"]);
+        expect(deleted).toEqual(["golden-bx-1"]);
         const diagnostics = logs.mock.calls.map(([line]) => JSON.parse(String(line)));
         expect(diagnostics.filter((entry) => entry.event === "golden_persist_failed")).toEqual([
           { event: "golden_persist_failed", step: "slot_finalize", sqlState: expected },
@@ -899,13 +899,13 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
       // Independent real connection sees no row: that absence is NOT evidence of rollback.
       expect((await sql.query("select id from goldens")).rows).toHaveLength(0);
       expect(deleted).toEqual([]);
-      expect(artifacts.has("golden-bx_1")).toBe(true);
+      expect(artifacts.has("golden-bx-1")).toBe(true);
       expect(failure).toMatchObject({ code: "conflict" });
       expect(String(failure)).toContain("reconcile the in-flight transaction");
       finish();
       await pendingCommit;
       const committed = await sql.query<{ provider_snapshot_id: string }>("select provider_snapshot_id from goldens");
-      expect(committed.rows[0]?.provider_snapshot_id).toBe("golden-bx_1");
+      expect(committed.rows[0]?.provider_snapshot_id).toBe("golden-bx-1");
       expect(artifacts.has(committed.rows[0]!.provider_snapshot_id)).toBe(true);
       const slots = await sql.query<{ golden_id: string; build_id: string | null }>(
         "select golden_id,build_id from golden_backend_slots",
