@@ -36,7 +36,8 @@ type Code =
   | "pair_disabled"
   | "orchestrator_disabled"
   | "operation_failed"
-  | "continuity_failed";
+  | "continuity_failed"
+  | "preservation_failed";
 const API_CODES = new Set<Code>([
   ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
@@ -76,6 +77,36 @@ interface SmokeIo {
 const POLLS = 120;
 const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
 
+/** Inspect only the expected manifest and bundle header in memory; never extract recovery material. */
+function verifyRecovery(archive: string, repo: string, commit: string) {
+  if (archive.length > 3 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(archive)) fail("preservation_failed");
+  const bytes = Buffer.from(archive, "base64");
+  const entries = new Map<string, Buffer>();
+  for (let offset = 0; offset + 512 <= bytes.length;) {
+    const header = bytes.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = header.subarray(0, 100).toString().replace(/\0.*$/s, "");
+    const sizeText = header.subarray(124, 136).toString().replace(/\0.*$/s, "").trim();
+    if (!/^[0-7]+$/.test(sizeText)) fail("preservation_failed");
+    const size = Number.parseInt(sizeText, 8);
+    if (offset + 512 + size > bytes.length) fail("preservation_failed");
+    entries.set(name, bytes.subarray(offset + 512, offset + 512 + size));
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  try {
+    const manifest = JSON.parse(entries.get("manifest.json")?.toString() ?? "");
+    const entry = manifest.repositories.find((entry: { path: string }) => entry.path === repo);
+    if (manifest.version !== 2 || entry?.head !== commit || entry.bundle !== true ||
+        !/^repo-\d+$/.test(entry.directory)) fail("preservation_failed");
+    const bundle = entries.get(`${entry.directory}/commits.bundle`);
+    const header = bundle?.subarray(0, bundle.indexOf(Buffer.from("\n\n"))).toString();
+    if (!header?.split("\n").includes(`${commit} HEAD`) || !bundle?.includes(Buffer.from("PACK")))
+      fail("preservation_failed");
+  } catch {
+    fail("preservation_failed");
+  }
+}
+
 /** Operator entrypoint; injected I/O also permits fake-API validation without compute. */
 export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
   function report(index: number, step: string, error?: unknown) {
@@ -96,11 +127,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   let cases: SmokeCase[];
   const orchestrator = args.includes("--orchestrator");
   const github = args.includes("--github-runtime");
+  const preservation = args.includes("--work-preservation");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (github && orchestrator) ||
-      args.some((arg) => arg !== "--orchestrator" && arg !== "--github-runtime") ||
+      (github && (orchestrator || preservation)) ||
+      args.some((arg) => arg !== "--orchestrator" && arg !== "--github-runtime" && arg !== "--work-preservation") ||
       !env.ARMADA_URL ||
       !env.ARMADA_TOKEN ||
       !env.ARMADA_SMOKE_CASES
@@ -110,6 +142,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
       fail("invalid_configuration");
     origin = url.origin;
+    if (preservation && origin !== "https://armada-mcp-staging.up.railway.app") fail("invalid_configuration");
     const parsed: unknown = JSON.parse(env.ARMADA_SMOKE_CASES);
     if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) fail("invalid_configuration");
     for (const item of parsed) {
@@ -223,7 +256,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
   }
   let passed = true;
-  for (const [index, item] of cases.entries()) {
+  for (const { index, item, dirty } of cases.flatMap((item, index) =>
+    (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
+  )) {
     async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
       try {
         const value = await action();
@@ -266,6 +301,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }),
       );
     let sandboxId: string | undefined;
+    let commit: string | undefined;
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
@@ -296,6 +332,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             io.out(
               JSON.stringify({ case: index, step: "stop_warning", warning: "checkpoint_failed_disk_not_retained" }),
             );
+          preservationNote = status.preservationNote ?? preservationNote;
           return true;
         },
       );
@@ -404,6 +441,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             if (status !== 0 || remote !== 0 || push !== 0) fail("exec_failed");
           });
       }
+      if (preservation)
+        await step("preservation_clean_checkout", () =>
+          checkedExec(`test -z "$(${git} status --porcelain)" && test -z "$(${git} rev-list HEAD --branches --tags --not --remotes)"`),
+        );
       await nativeTurn(false);
       for (const [name, command] of [
         ["git_status", "git status -sb"],
@@ -447,7 +488,29 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           }),
         );
       }
+      if (preservation && dirty)
+        await step("preservation_commit", async () => {
+          const result = await sandbox<{ exitCode: number; timedOut: boolean; stdout: string }>("exec", {
+            id: sandboxId,
+            cwd: item.repo,
+            command: `${git} -c user.name=Armada-Smoke -c user.email=smoke@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false commit --allow-empty -m armada-preservation-smoke >/dev/null && ${git} rev-parse HEAD`,
+            timeout_seconds: 60,
+          });
+          if (result?.exitCode !== 0 || result.timedOut !== false || !/^[a-f0-9]{40}\n?$/.test(result.stdout))
+            fail("invalid_receipt");
+          commit = result.stdout.trim();
+        });
       if (!github) await step("stop", stopSandbox);
+      if (preservation)
+        await step(dirty ? "preservation_archive" : "preservation_clean_stop", async () => {
+          const result = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
+          if (!dirty) {
+            if (preservationNote || result.archive !== null) fail("preservation_failed");
+          } else {
+            if (!commit || typeof result.archive !== "string") fail("preservation_failed");
+            verifyRecovery(result.archive, item.repo, commit);
+          }
+        });
     } catch {
       passed = false;
     } finally {
@@ -490,7 +553,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
-    if (!orchestrator) continue;
+    if (!orchestrator || dirty) continue;
     let orchestratorId: string | undefined;
     let orchestratorStopped = false;
     let createAttempted = false;

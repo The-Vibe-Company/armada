@@ -217,3 +217,39 @@ pairs, gate/revision assertions and disposable push authority. See the
 First run the default smoke above with the staging gate off for the stock baseline;
 then retire those workers and turn staging on before running the new mode. A zero
 exit from this partial slice does not authorize production enablement.
+
+### Work-preservation slice (#969)
+
+Both staging workflow entrypoints now pass `--work-preservation`. This mode
+refuses any origin other than `https://armada-mcp-staging.up.railway.app` before
+making requests. The existing case format is unchanged: every selected pair runs
+twice, using separate disposable sandboxes. The first must start clean with no
+local-only refs and stop without a preservation note or recovery archive. The
+second creates a single empty, unpushed commit (no remote push), stops, retrieves
+the same recovery endpoint used by `armada recovery`, and checks the in-memory
+tar manifest and Git bundle header for that exact commit. Archive contents,
+commit IDs and provider messages are never logged or written to local disk.
+This checks recovery packaging, not a full Git restore.
+
+Named steps are `preservation_clean_checkout`, `preservation_commit`,
+`preservation_clean_stop` and `preservation_archive`. Missing or mismatched
+archives fail with `preservation_failed`; the existing stop and cleanup receipts
+still confirm provider termination. Recovery is checked after stop/status so a
+lifecycle capture overwriting the stop result cannot silently pass.
+
+Budget: two allocations and two trivial model turns per selected pair, instead
+of one. Expect roughly 4–10 minutes per pair (provider/model dependent); the
+whole run remains capped at 35 minutes plus five minutes reserved for cleanup,
+inside the 45-minute workflow limit. Four slow pairs can exhaust this budget and
+fail closed. Cost is twice the baseline sandbox/model usage, plus small recovery
+storage; stopped disks/archives retain the normal retention cost. No dollar
+estimate is reliable without the configured provider/model rates. Do not run
+this mode with production credentials. Live staging execution is performed by
+the existing post-deploy workflows, not by a PR or offline test run.
+
+Remaining #969 families (not claimed by this slice): full sandbox resume/expiry/
+list consistency and timings/leftover summaries; orchestrator memory and refused
+create; GitHub refresh; vault; templates; public/private skills and golden pinned
+digest verification. Existing GitHub exec checks and optional orchestrator
+lifecycle remain unchanged. These are verification follow-ups, not new product
+capabilities.
