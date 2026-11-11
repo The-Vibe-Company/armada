@@ -226,6 +226,7 @@ for (const failure of ["502", "network", "timeout"] as const) {
 
 test("closed server failures give actionable CLI help without parsing free text", async () => {
   for (const [code, status, help] of [
+    ["github_hydration_failed", 503, "check the github_hydration_failed phase"],
     ["credential_refused", 422, "Replace or reconnect"],
     ["provider_unavailable", 502, "Try again later"],
     ["dependency_unavailable", 503, "Try again later"],
@@ -236,7 +237,7 @@ test("closed server failures give actionable CLI help without parsing free text"
       fetch: async () => Response.json({ error: { code, message: "credential_refused revoked expired" } }, { status }),
     });
     try {
-      await client.request("/api/v1/sandbox/launch");
+      await client.request(code === "github_hydration_failed" ? "/api/v1/github/refresh" : "/api/v1/sandbox/launch");
       throw new Error("Expected error");
     } catch (error) {
       expect(error).toBeInstanceOf(ArmadaApiError);
