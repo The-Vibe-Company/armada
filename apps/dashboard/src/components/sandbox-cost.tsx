@@ -66,7 +66,12 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
             </dl>
             <Collapsible>
               <CollapsibleTrigger asChild>
-                <Button type="button" variant="ghost" className="group h-auto justify-start gap-1 p-0 text-[13px]">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="group -ml-2 justify-start gap-1 px-2 text-[13px]"
+                >
                   <ChevronRightIcon aria-hidden className="size-3 group-data-[state=open]:rotate-90" />
                   Per turn
                 </Button>
