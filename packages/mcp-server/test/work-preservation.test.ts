@@ -219,7 +219,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
 
 // Distinct lifecycle contract: a timed-out observation must never admit later
 // interrupt/exec work after the caller is free to stop the machine.
-test.each(["observe", "quiesce"])("the stop deadline queues a late %s without capture or a warning", async (stage) => {
+test.each(["observe", "quiesce", "capture"])("the stop deadline fences late %s work", async (stage) => {
   const { db, people } = await database();
   const originalTimeout = globalThis.setTimeout;
   try {
@@ -244,6 +244,7 @@ test.each(["observe", "quiesce"])("the stop deadline queues a late %s without ca
     let expire: (() => void) | undefined;
     let interrupts = 0;
     let execs = 0;
+    let captureSignal: AbortSignal | undefined;
     const provider = {
       ...boat.provider,
       get: () =>
@@ -254,16 +255,19 @@ test.each(["observe", "quiesce"])("the stop deadline queues a late %s without ca
           : Promise.resolve(info),
       quiesce: () => {
         interrupts++;
-        return new Promise<void>((resolve) => {
-          release = resolve;
-        });
+        return stage === "capture"
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              release = resolve;
+            });
       },
       async interrupt() {
         interrupts++;
       },
-      async exec() {
+      async exec(request: Parameters<typeof boat.provider.exec>[0]) {
         execs++;
-        return {
+        captureSignal = request.signal;
+        const result = {
           detached: false as const,
           exitCode: 0,
           stdout: '{"status":"clean"}',
@@ -271,6 +275,9 @@ test.each(["observe", "quiesce"])("the stop deadline queues a late %s without ca
           timedOut: false,
           truncated: false,
         };
+        return new Promise<typeof result>((resolve) => {
+          release = () => resolve(result);
+        });
       },
     };
     globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
@@ -282,18 +289,22 @@ test.each(["observe", "quiesce"])("the stop deadline queues a late %s without ca
     }) as typeof setTimeout;
     const stopped = preserveBeforeStop(sql, provider, id, "bx_late_recovery");
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     if (!expire || !release) throw new Error("Expected pending provider observation and deadline");
     expire();
-    expect(await stopped).toBe("pending");
+    expect(await stopped).toBe(stage === "capture" ? undefined : "pending");
+    if (stage === "capture") expect(captureSignal?.aborted).toBe(true);
     release();
     await Promise.resolve();
     await Promise.resolve();
     const row = (
       await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
     ).rows[0];
-    expect(row?.preservation_note ?? null).toBeNull();
+    if (stage === "capture") expect(row?.preservation_note).toContain("(timeout)");
+    else expect(row?.preservation_note ?? null).toBeNull();
     expect(interrupts).toBe(stage === "observe" ? 0 : 1);
-    expect(execs).toBe(0);
+    expect(execs).toBe(stage === "capture" ? 1 : 0);
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
   } finally {
     globalThis.setTimeout = originalTimeout;

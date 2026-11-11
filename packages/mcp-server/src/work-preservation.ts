@@ -24,13 +24,15 @@ export async function preserveBeforeStop(
 ): Promise<"pending" | void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
+  const controller = new AbortController();
   const progress = { stage: "observe" };
   try {
     return await Promise.race([
-      captureAndStore(sql, provider, id, providerId, () => expired, progress),
+      captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal),
       new Promise<"pending" | void>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
+          controller.abort();
           const diagnostic = { errorClass: "timeout", providerStatus: null };
           const reason = closedFailure(progress.stage, "timeout", diagnostic);
           const pending = ["observe", "quiesce"].includes(progress.stage);
@@ -55,6 +57,7 @@ export async function preserveBeforeStop(
       }),
     ]);
   } finally {
+    controller.abort();
     clearTimeout(timer);
   }
 }
@@ -66,6 +69,7 @@ async function captureAndStore(
   providerId: string,
   expired: () => boolean,
   progress: { stage: string },
+  signal: AbortSignal,
 ): Promise<"pending" | void> {
   let reason = "failed";
   let stage = "observe";
@@ -84,7 +88,7 @@ async function captureAndStore(
     if (expired()) return;
     stage = progress.stage = "capture";
     reason = "failed";
-    const result = await preserveWork(provider, providerId);
+    const result = await preserveWork(provider, providerId, signal);
     if (expired()) return;
     if (result.status === "preserved") {
       stage = progress.stage = "storage";
