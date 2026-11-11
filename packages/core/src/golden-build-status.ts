@@ -5,7 +5,7 @@ export interface GoldenBuildStatus {
   provider?: "boat" | "modal";
   state: "queued" | "running" | "recovery_required" | "succeeded" | "failed";
   phase: string;
-  failureReason?: "skillpack_integrity_failed" | "provider_payment_required" | null;
+  failureReason?: "skillpack_integrity_failed" | "provider_payment_required" | "provider_snapshot_rejected" | null;
   errorCode: "build_failed" | null;
   result: { name: string; visibility: "org" | "private"; snapshot: string; warnings?: GoldenBuildWarning[] } | null;
 }
@@ -20,6 +20,8 @@ export function providerPaymentRequiredMessage(provider?: "boat" | "modal"): str
 export function goldenBuildFailureText(status: GoldenBuildStatus): string {
   if (status.state === "recovery_required")
     return "Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.";
+  if (status.state === "failed" && status.failureReason === "provider_snapshot_rejected")
+    return "The provider rejected the saved snapshot request. Check saved-snapshot availability, billing and limits on the provider account, then retry. Contact an administrator if it persists.";
   return status.state === "failed" && status.failureReason === "provider_payment_required"
     ? providerPaymentRequiredMessage(status.provider)
     : (status.failureReason ?? "build_failed");
