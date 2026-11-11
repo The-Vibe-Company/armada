@@ -28,6 +28,9 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
     },
     async reconcileOne(signal?: AbortSignal): Promise<boolean> {
       signal?.throwIfAborted();
+      // The production lane is serial, but timed-out SDK calls can outlive a tick.
+      // Keep their raw work bounded; a slot opens only when it actually settles.
+      if (pending.size >= 4) return false;
       const token = crypto.randomUUID();
       const row = (
         await sql.query<{

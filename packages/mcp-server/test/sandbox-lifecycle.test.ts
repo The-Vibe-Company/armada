@@ -330,3 +330,79 @@ test("replicas lease one observation and resume admission fences old writes whil
     await db.close();
   }
 });
+
+test("timed-out provider observations stay bounded until their raw work settles", async () => {
+  const { db, people } = await database();
+  const arrived = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
+  const held = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
+  let lifecycle: ReturnType<typeof createSandboxLifecycle> | undefined;
+  try {
+    const sql = bunLikeSql(db);
+    const store = createSqlData(sql)({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    }).sandboxes;
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+    if (!golden) throw Error("missing golden");
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const id = crypto.randomUUID();
+      ids.push(id);
+      await store.insert({
+        id,
+        provider: "boat",
+        providerSandboxId: `bx_2345678${i}`,
+        goldenId: golden.id,
+        orgId: people.org,
+        ownerId: people.owner,
+        harness: "claude",
+        status: "running",
+        model: "test",
+        reasoningEffort: "medium",
+        effectiveTtlSeconds: 3600,
+      });
+    }
+    let calls = 0;
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (input: Request | string | URL) => {
+        const index = calls++;
+        arrived[index]?.resolve();
+        if (index < held.length) await held[index]?.promise;
+        return Response.json({
+          ok: true,
+          sandbox: sandbox({
+            id: new URL(input instanceof Request ? input.url : String(input)).pathname.split("/").at(-1),
+            state: index < held.length ? "archived" : "running",
+          }),
+        });
+      }) as typeof fetch,
+    });
+    lifecycle = createSandboxLifecycle(sql, async () => provider);
+    for (let i = 0; i < 4; i++) {
+      const controller = new AbortController();
+      const tick = lifecycle.reconcileOne(controller.signal);
+      await arrived[i]?.promise;
+      controller.abort();
+      expect(await tick).toBe(true);
+    }
+    expect(await lifecycle.reconcileOne()).toBe(false);
+    expect(calls).toBe(4);
+    expect(
+      (await db.query("select id from sandboxes where id=any($1::uuid[]) and reconcile_lease is null", [ids])).rows,
+    ).toHaveLength(1);
+    for (const gate of held) gate.resolve();
+    await lifecycle.drain();
+    // Late archived responses cannot turn the aborted observations into terminal writes.
+    expect(
+      (await db.query("select id from sandboxes where id=any($1::uuid[]) and status='running'", [ids])).rows,
+    ).toHaveLength(5);
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    expect(calls).toBe(5);
+  } finally {
+    for (const gate of held) gate.resolve();
+    await lifecycle?.drain();
+    await db.close();
+  }
+});
