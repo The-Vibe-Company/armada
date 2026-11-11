@@ -75,6 +75,7 @@ function withIsolatedRoots(script: string, roots: { home: string; root: string; 
   return innerScript(script)
     .replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)
     .replace("    /root/*)", `    ${roots.root}/*)`)
+    .replaceAll("/home/user/.armada-helper", `${roots.home}/.armada-helper`)
     .replaceAll("/root/.prime/", `${roots.root}/.prime/`)
     .replaceAll("/home/user/.prime/", `${roots.home}/.prime/`);
 }
@@ -540,5 +541,17 @@ test("disposable Prime cleanup fails closed when removal is unavailable", () => 
     expect(existsSync(join(roots.root, ".prime"))).toBe(true);
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+linuxScanTest("helper runtime state refuses snapshot even without token-shaped contents", async () => {
+  const world = sandbox();
+  try {
+    const script = await capturedScript();
+    expect(runAgainst(script, world.roots).status).toBe(0);
+    mkdirSync(join(world.roots.home, ".armada-helper", "spool"), { recursive: true });
+    expect(runAgainst(script, world.roots).status).toBe(97);
+  } finally {
+    rmSync(world.base, { recursive: true, force: true });
   }
 });

@@ -681,6 +681,7 @@ export type Database = {
           removed_at: string | null;
           size_policy: Json | null;
           build_warnings: string[];
+          helper_receipt: Json | null;
         };
         Insert: {
           id?: string;
@@ -701,6 +702,7 @@ export type Database = {
           removed_at?: string | null;
           size_policy?: Json | null;
           build_warnings?: string[];
+          helper_receipt?: Json | null;
         };
         Update: {
           id?: string;
@@ -721,6 +723,7 @@ export type Database = {
           removed_at?: string | null;
           size_policy?: Json | null;
           build_warnings?: string[];
+          helper_receipt?: Json | null;
         };
         Relationships: [
           {

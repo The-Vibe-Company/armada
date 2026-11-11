@@ -6,6 +6,7 @@ import type { GoldenConfig, GoldenRepo } from "./golden-config.ts";
 import { GoldenError } from "./golden-config.ts";
 import { type GoldenCreateDeps, GoldenCreateService } from "./golden-create-service.ts";
 import { goldenGitHubAdapter } from "./golden-github.ts";
+import { verifyGoldenHelper } from "./golden-helper.ts";
 import { scanGoldenSandbox } from "./golden-scan.ts";
 import {
   captureGoldenPublication,
@@ -88,6 +89,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       options.ssh ??
       ((provider, input) =>
         sshStdinCheckout(provider, input, { ...(input.onWarning ? { onWarning: input.onWarning } : {}) })),
+    verifyHelper: verifyGoldenHelper,
     scan: (provider, sandboxId, context) => scanGoldenSandbox(provider, sandboxId, context),
     async reserve(provider, actor, existingGolden) {
       buildProvider = provider;
@@ -213,6 +215,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       builderId,
       reservationId,
       warnings,
+      helperReceipt,
     }) {
       const config: GoldenConfig = {
         repos: repos.map(
@@ -351,6 +354,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         await sql.query("update public.goldens set build_warnings=$2::text[] where id=$1", [
           inserted.id,
           "{" + warnings.join(",") + "}",
+        ]);
+        await sql.query("update public.goldens set helper_receipt=$2::text::jsonb where id=$1", [
+          inserted.id,
+          JSON.stringify(helperReceipt ?? null),
         ]);
         await options.job?.complete(sql, inserted.id, snapshot, warnings);
         step = "commit";

@@ -25,6 +25,7 @@ import type { ApiFailureCode } from "./api-failure.ts";
 export type LaunchErrorCode =
   | ApiFailureCode
   | "invalid_request"
+  | "unsupported"
   /** The harness has no credential for the caller or the org. */
   | "no_credentials"
   /** The sandbox failed to start, or a provider call failed while launching. */

@@ -1223,6 +1223,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
       ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
+      ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
@@ -1272,6 +1273,7 @@ async function providerForGolden(options: ControlOptions, caller: Caller, golden
 
 function launchJson(result: LaunchResult) {
   return {
+    helper: result.helper,
     sandbox: {
       ...result.sandbox,
       boatId: result.sandbox.provider === "boat" ? result.sandbox.providerSandboxId : null,

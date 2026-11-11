@@ -46,6 +46,15 @@ export async function scanGoldenSandbox(
 ): Promise<void> {
   const script = [
     "set -u",
+    // Inert helper code is allowed; workload state and resident brokers are not.
+    "for path in /home/user/.armada-helper /root/.armada-helper /home/user/.local/state/armada/helper /root/.local/state/armada/helper /run/armada-helper /tmp/armada-helper; do",
+    '  if [ -e "$path" ] || [ -L "$path" ]; then exit 97; fi',
+    "done",
+    "for comm in /proc/[0-9]*/comm; do",
+    '  [ -r "$comm" ] || continue',
+    '  name=$(cat "$comm" 2>/dev/null) || { [ ! -e "$comm" ] && continue; exit 95; }',
+    '  case "$name" in armada-helper|armada-broker|armada-github-b*) exit 97 ;; esac',
+    "done",
     `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}'`,
     `roots='${SCAN_ROOTS}'`,
     // Classify paths in memory; only fixed labels and counts leave this process.
