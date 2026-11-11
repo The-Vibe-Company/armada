@@ -153,7 +153,12 @@ export async function createModalIntegration(options: {
     const pair = await resolveManagementCredentials(authority);
     return { tokenId: pair.tokenId, tokenSecret: pair.tokenSecret, scope: authority.credentialScope };
   };
-  const modalProviderFor: NonNullable<HandlerOptions["modalProviderFor"]> = async (tokens, binding, context) => {
+  const modalProviderFor = async (
+    tokens: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[0],
+    binding: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[1],
+    context: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[2],
+    storedReads = false,
+  ): Promise<Provider> => {
     const authority = await options.sql.query<{ app_name: string }>(
       "select app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
       [context.target.orgId, binding.appId, binding.environment],
@@ -167,13 +172,15 @@ export async function createModalIntegration(options: {
       binding,
       ...(context.caller.orchestratorCleanup ? { cleanup: context.caller.orchestratorCleanup } : {}),
     };
-    await options.sql.query(
-      "insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing",
-      [scopeKey(scope), JSON.stringify({ ...scope, cleanup: undefined })],
-    );
+    if (!storedReads)
+      await options.sql.query(
+        "insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing",
+        [scopeKey(scope), JSON.stringify({ ...scope, cleanup: undefined })],
+      );
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
     const composed: ComposedModalOptions = {
+      storedReads,
       sql: options.sql,
       scope,
       sourceScope,
@@ -252,6 +259,28 @@ export async function createModalIntegration(options: {
   }
   return {
     modalProviderFor,
+    storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
+      if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
+      const tokens = await modalTokensFor(target, caller);
+      const provider = await modalProviderFor(
+        tokens,
+        target.modal,
+        { target, caller, credentialScope: tokens.scope },
+        true,
+      );
+      // Do not let a stored observation adapter accidentally drive admission.
+      const reads = new Set<PropertyKey>(["get", "getPrompt", "events"]);
+      return new Proxy(provider, {
+        get(object, property, receiver) {
+          const value = Reflect.get(object, property, receiver);
+          if (typeof value === "function" && !reads.has(property))
+            return () => {
+              throw new VaultError("forbidden", "Stored observations cannot perform live operations.");
+            };
+          return value;
+        },
+      });
+    },
     modalTokensFor,
     goldenTarget,
     route: async (request: Request) => (new URL(request.url).pathname === MODAL_INGEST_PATH ? ingest(request) : null),

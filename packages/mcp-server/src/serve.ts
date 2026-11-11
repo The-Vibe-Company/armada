@@ -233,12 +233,15 @@ export async function startServer(
     goldenTarget: modal.goldenTarget,
     goldenBuilds,
     goldenAdoption,
+    storedProviderFor: modal.storedProviderFor,
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await providers.resolve(sandbox, caller),
+        provider: await (sandbox.provider === "modal"
+          ? modal.storedProviderFor(sandbox, caller)
+          : providers.resolve(sandbox, caller)),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
@@ -303,6 +306,7 @@ export async function startServer(
     providerFor,
     providerMetadata,
     modalProviderFor,
+    storedProviderFor: modal.storedProviderFor,
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [

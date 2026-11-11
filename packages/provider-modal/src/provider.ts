@@ -29,6 +29,9 @@ import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
 export interface ModalProviderOptions extends ModalConnection {
+  /** Server-owned history projection only. No live App/runner calls in get/events/getPrompt.
+   * Never use this provider for admission or lifecycle decisions. */
+  storedReads?: boolean;
   scope: Scope;
   /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
@@ -732,14 +735,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
     async get(id) {
-      await bound();
+      if (!options.storedReads) await bound();
       const row = await store.get(id);
       assertMachineSource(row);
       if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
       // bound() and assertMachineSource above already verified this read. Do not
       // repeat the remote App lookup through physical(); keep the live exit poll.
       let exited = false;
-      if (row.phase === "active") {
+      if (row.phase === "active" && !options.storedReads) {
         if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
         exited = (await (await client.sandboxes.fromId(row.physicalId)).poll()) !== null;
       }
@@ -1225,7 +1228,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const row = await store.get(r.sandboxId);
       assertMachineSource(row);
       // Observation must never use ready(): a stop racing this read must not activate a new generation.
-      if (row.phase === "active") return runner.call(row, "getPrompt", r);
+      if (row.phase === "active" && !options.storedReads) return runner.call(row, "getPrompt", r);
       let cursor: string | undefined;
       let latest: import("@armada/core").AgentEvent | undefined;
       for (;;) {
@@ -1236,6 +1239,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("unavailable", "Prompt event cursor did not advance.");
         cursor = page.cursor;
       }
+      // A just-admitted turn can precede async journal ingestion. Absence is not
+      // evidence of completion, especially on a stored-only observation.
+      if (latest?.kind !== "prompt" && options.storedReads && row.phase === "active")
+        return { promptId: r.promptId, status: "queued", done: false };
       if (latest?.kind !== "prompt") throw refusal("not_found", "No durable prompt observation found.");
       return {
         promptId: r.promptId,
@@ -1272,7 +1279,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     },
     async events(r) {
       r.signal?.throwIfAborted();
-      await bound();
+      if (!options.storedReads) await bound();
       r.signal?.throwIfAborted();
       const row = await store.get(r.sandboxId);
       // History is readable without live compute, but still belongs to this

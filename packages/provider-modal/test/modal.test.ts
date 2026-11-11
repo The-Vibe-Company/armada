@@ -295,6 +295,72 @@ function fixture(
     },
   };
 }
+test("stored composition reads ingested turns without any live SDK, runner or lifecycle lease", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+  const event = {
+    id: "terminal",
+    at: 1,
+    kind: "prompt" as const,
+    promptId: "stored-turn",
+    text: "work",
+    status: "finished" as const,
+  };
+  await appendModalEvents(db, scope, row.id, "1", [{ sequence: 1, event }]);
+  f.client.apps.fromName = async () => {
+    throw new Error("No live App lookup on stored reads");
+  };
+  f.client.sandboxes.fromId = async () => {
+    throw new Error("No physical poll on stored reads");
+  };
+  const stored = await createComposedModalProvider({
+    ...compositionOptions(f),
+    storedReads: true,
+    fetcher: Object.assign(
+      async () => {
+        throw new Error("No runner RPC on stored reads");
+      },
+      {
+        preconnect: () => {
+          throw new Error("No network preconnect on stored reads");
+        },
+      },
+    ),
+  });
+  try {
+    expect(await stored.provider.get(row.id)).toMatchObject({ id: row.id, state: "ready" });
+    expect((await stored.provider.events({ sandboxId: row.id })).events).toEqual([event]);
+    expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "stored-turn" })).toMatchObject({
+      status: "finished",
+      done: true,
+    });
+    expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "not-ingested-yet" })).toMatchObject({
+      status: "queued",
+      done: false,
+    });
+    // An exclusive writer does not block history; membership and source guards remain live.
+    await f.store.lease(row.id, async () => {
+      expect((await stored.provider.events({ sandboxId: row.id })).events).toEqual([event]);
+    });
+    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [
+      scope.orgId,
+      "00000000-0000-0000-0000-000000000004",
+    ]);
+    await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+    await expect(stored.provider.events({ sandboxId: row.id })).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
+      scope.orgId,
+      scope.userId,
+    ]);
+    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [
+      scope.orgId,
+      "00000000-0000-0000-0000-000000000004",
+    ]);
+    await stored.close();
+  }
+});
+
 test.each(["foreign-source", "deleted"] as const)("history refuses an invalid machine (%s)", async (invalid) => {
   const f = fixture();
   const row = await runningFork(f);

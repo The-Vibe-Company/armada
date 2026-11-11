@@ -80,7 +80,7 @@ export async function readStatus(
   provider: Provider | null,
   store: ServerSandboxStore,
   sandbox: SandboxView,
-  options: { promptId?: string; now: Date },
+  options: { promptId?: string; now: Date; stored?: boolean },
 ): Promise<StatusReport> {
   // Registration is not readiness. Only the launch owner (or lifecycle recovery
   // after its lease expires) may publish completion; status must remain readable.
@@ -163,7 +163,7 @@ export async function readStatus(
           complete,
         });
         // Unknown observations can be retried; telemetry persistence cannot change the outcome.
-        if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+        if (!options.stored && recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
           try {
             await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
               ...evidence,
@@ -192,7 +192,7 @@ export async function readStatus(
     };
   }
 
-  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
+  if (!options.stored && store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
     await collectSandboxUsage(provider, store, sandbox, prompt?.promptId);
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
@@ -205,6 +205,9 @@ export async function readStatus(
       : (next === "stopped" || next === "stopping") && sandbox.statusReason === "expired"
         ? "expired"
         : null;
+  // Stored projections never acquire activity/lifecycle leases or publish over a
+  // concurrent admission. The existing lifecycle worker refreshes physical state.
+  if (options.stored) return report(sandbox, next, info, prompt, info.expiresAt ?? null);
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,
