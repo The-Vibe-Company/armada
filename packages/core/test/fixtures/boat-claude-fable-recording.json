@@ -1,0 +1,27 @@
+{
+  "events": [
+    {
+      "id": "c628be4e-68b3-41d0-b51e-34b88c47046f",
+      "at": 1794314127907,
+      "conversationId": "4e331452-ce0c-4e28-98b9-f2acad7f9c23",
+      "promptId": "5f58f2cc-d440-4897-a485-4be6e653df6b",
+      "kind": "prompt",
+      "text": "Which model are you running? Reply with your exact model ID only.",
+      "status": "finished"
+    },
+    {
+      "id": "31cf592a-60ae-4068-a8ea-1df2650b6a30",
+      "at": 1794314130656,
+      "conversationId": "4e331452-ce0c-4e28-98b9-f2acad7f9c23",
+      "promptId": "5f58f2cc-d440-4897-a485-4be6e653df6b",
+      "kind": "message",
+      "text": "claude-sonnet-5",
+      "partial": false,
+      "model": "claude-sonnet-5",
+      "tools": []
+    }
+  ],
+  "cursor": "MTc5NDMxNDEzMDY1NjozMWNmNTkyYS02MGFlLTQwNjgtYThlYS0xZGYyNjUwYjZhMzA",
+  "hasMore": false,
+  "settled": true
+}

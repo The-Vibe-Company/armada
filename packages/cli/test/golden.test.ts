@@ -12,6 +12,8 @@ import {
 import { type ControlOptions, createSqlData, handleControlRequest } from "@armada/mcp-server";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
@@ -112,7 +114,7 @@ describe("golden command", () => {
       expect(created.code).toBe(0);
       expect(created.err).toContain("Build admission key:");
       expect(created.out).toContain("Created golden monorepo (private).");
-      expect(created.out).toContain("golden-bx_1");
+      expect(created.out).toContain("golden-bx-1");
       expect(created.out).toContain("web, api");
       expect(sshCalls).toHaveLength(1);
       expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
@@ -138,7 +140,7 @@ describe("golden command", () => {
       ).rejects.toThrow(/No golden named 'monorepo'/);
       expect(await asUser(db, people.owner, () => goldenForLaunch(store, owner, "monorepo"))).toMatchObject({
         name: "monorepo",
-        providerSnapshotId: "golden-bx_1",
+        providerSnapshotId: "golden-bx-1",
       });
       await db.query(`insert into goldens
         (org_id, name, visibility, owner_id, provider, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config)
@@ -396,9 +398,13 @@ function fakeCreateProvider(): Provider {
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},
     sshKey: async () => ({ sshEndpoint: "ssh.test:22", hostKey: "ssh-ed25519 AAAA" }),
-    exec: async () => ok,
+    exec: async ({ command }) =>
+      command.includes("/helper/0.1.0/armada-helper") ? { ...ok, stdout: goldenHelperReport } : ok,
     events: async () => ({ events: [], hasMore: false }),
     stop: async () => {},
     delete: async () => ({ status: "pending" }),
   };
 }
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

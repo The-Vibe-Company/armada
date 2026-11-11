@@ -8,6 +8,8 @@ import { catalogLock } from "./skillpack-catalog.ts";
 type Grant = { token: string; generation: string; sandboxId: string };
 type Vm = {
   expectedMcp: number;
+  servers?: string[];
+  conversation?: string;
   id: string;
   name: string;
   tags: Record<string, string>;
@@ -15,6 +17,7 @@ type Vm = {
   grant?: Grant;
   epoch: boolean;
   mcp: boolean;
+  prompts?: Map<string, { promptId: string; conversationId: string; status: "finished"; done: true }>;
 };
 export function fakeModalRuntime(input: {
   appName: string;
@@ -31,15 +34,20 @@ export function fakeModalRuntime(input: {
     terminations: 0,
     runnerCalls: 0,
     modelCalls: 0,
+    promptCalls: 0,
+    skillLaunchOrder: [] as string[],
     mcpConfigurations: 0,
     epochInstalls: 0,
   };
   const byId = new Map<string, Vm>(),
     byName = new Map<string, Vm>();
+  const terminationAttempts: string[] = [];
   let providerReads = 0;
   const privateTokens = new Set<string>();
   let expectedMcp = 0;
   let preservationFailure = "missing_python3";
+  let running = false;
+  let lastPromptServers: string[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -57,11 +65,20 @@ export function fakeModalRuntime(input: {
         version: number;
         requestId: string;
         op: string;
+        promptId?: string;
         input?: { command?: string; conversationId?: string };
         configuration?: { revision: string; servers: object };
         token?: string;
       };
       effects.runnerCalls++;
+      if (packet.op === "exec" && packet.input?.command?.includes("git rev-parse --git-path info/exclude"))
+        effects.skillLaunchOrder.push("exclude");
+      if (packet.op === "exec" && packet.input?.command?.includes("skillpack install"))
+        effects.skillLaunchOrder.push("install");
+      if (packet.op === "prompt") {
+        effects.promptCalls++;
+        effects.skillLaunchOrder.push("prompt");
+      }
       const capturing = packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY");
       if (capturing && preservationFailure === "unavailable") return new Response(null, { status: 503 });
       let result: unknown;
@@ -74,7 +91,7 @@ export function fakeModalRuntime(input: {
             ? preservationFailure === "output_invalid"
               ? "not-json"
               : JSON.stringify({ status: "failed", reason: preservationFailure })
-            : packet.input?.command?.startsWith("skillpack install")
+            : packet.input?.command?.includes("skillpack install")
               ? catalogLock("codex")
               : "",
           stderr: "",
@@ -82,7 +99,8 @@ export function fakeModalRuntime(input: {
           truncated: !!capturing && preservationFailure === "output_truncated",
         };
       else if (packet.op === "configureMcp") {
-        assert(!vm.epoch, "Generic MCP must prepare before private epoch installation.");
+        // Runner owns preservation of the private epoch during quiescent refresh.
+        assert(!running, "Cannot configure a running native turn.");
         assert(packet.configuration);
         assert.equal(
           Object.keys(packet.configuration.servers).length,
@@ -95,6 +113,7 @@ export function fakeModalRuntime(input: {
           const capability = server.headers?.Authorization?.slice(7);
           if (capability) privateTokens.add(capability);
         }
+        vm.servers = Object.keys(packet.configuration.servers).sort();
         vm.mcp = true;
         effects.mcpConfigurations++;
         result = { revision: packet.configuration.revision };
@@ -111,20 +130,31 @@ export function fakeModalRuntime(input: {
       } else if (packet.op === "observeOrchestrator")
         result = {
           physicalGeneration: vm.grant.generation,
-          state: "quiescent",
-          evidence: "native-fixture-observation",
+          state: running ? "active" : "quiescent",
+          evidence: createHash("sha256").update(`${vm.grant.generation}:${running}`).digest("hex"),
           eventWatermark: 0,
           acknowledgedSequence: 0,
           nativeSessionId: null,
         };
       else if (packet.op === "interrupt") result = {};
       else if (packet.op === "steer") return Response.json({ error: "no_running_turn" }, { status: 409 });
-      else if (packet.op === "prompt")
-        result = {
+      else if (packet.op === "prompt") {
+        assert(!running);
+        lastPromptServers = vm.servers ?? [];
+        vm.conversation ??= packet.input?.conversationId ?? crypto.randomUUID();
+        const accepted = {
           promptId: crypto.randomUUID(),
-          conversationId: packet.input?.conversationId ?? crypto.randomUUID(),
-          status: "finished",
+          conversationId: vm.conversation,
+          status: "finished" as const,
+          done: true as const,
         };
+        vm.prompts ??= new Map();
+        vm.prompts.set(accepted.promptId, accepted);
+        result = accepted;
+      } else if (packet.op === "getPrompt") {
+        result = vm.prompts?.get(packet.promptId ?? "");
+        assert(result, "Only accepted fixture prompt ids can be read");
+      } else if (packet.op === "events") result = { events: [], hasMore: false };
       else if (packet.op === "checkpoint")
         result = { generation: vm.grant.generation, watermark: 0, acknowledgedSequence: 0 };
       else {
@@ -143,6 +173,7 @@ export function fakeModalRuntime(input: {
       getTags: async () => vm.tags,
       terminate: async () => {
         effects.terminations++;
+        terminationAttempts.push(vm.id);
         vm.exit = 0;
       },
       createConnectToken: async () => ({ url: `${tunnelOrigin}/${vm.id}`, token: "synthetic-connect" }),
@@ -260,10 +291,25 @@ export function fakeModalRuntime(input: {
     localOrigin,
     tunnelOrigin,
     privateTokens,
+    terminationAttempts,
+    physicalExits: () =>
+      [...byId.values()]
+        .filter((vm) => vm.exit !== null)
+        .map((vm) => vm.id)
+        .sort(),
     release,
-    expectConnections: (count: number) => {
-      expectedMcp = count;
+    expectConnections: (count: number, sandboxId?: string) => {
+      if (sandboxId) {
+        const vm = [...byId.values()].find((vm) => vm.tags.armada_sandbox === sandboxId);
+        assert(vm);
+        vm.expectedMcp = count;
+      } else expectedMcp = count;
     },
+    running: (value: boolean) => {
+      running = value;
+    },
+    lastPromptServers: () => lastPromptServers,
+    hasEpoch: (sandboxId: string) => [...byId.values()].some((vm) => vm.tags.armada_sandbox === sandboxId && vm.epoch),
     providerReads: () => providerReads,
     close: () => kernel.stop(true),
   };

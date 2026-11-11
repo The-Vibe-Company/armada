@@ -11,6 +11,7 @@ import {
   gitSetupCommand,
 } from "./github.ts";
 import {
+  delay,
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
@@ -19,15 +20,18 @@ import {
   waitReady,
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
+import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
+import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { installSkill, validateSkillPins } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
@@ -36,8 +40,12 @@ export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
 export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS).map((limits) => limits.maxTtlSeconds));
 
 const OUTPUT_LIMIT = 2000;
+const OWNERSHIP_RETRY_DELAY_MS = 1000;
 
 export interface LaunchRequest {
+  /** Explicit admission requirement; slice 0 supports diagnose only. */
+  helperCapabilities?: string[];
+  skills?: string[];
   credentialId?: string;
   size?: MachineSize;
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
@@ -60,6 +68,16 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
+  /** Resolve only for private launch pins, under the already-authorized actor. Never harness env. */
+  skillpackKey?(actor: GoldenActor): Promise<string | null>;
+  /** Server transport port; the browser-safe launcher must not import SSH implementation. */
+  installPrivateSkill?(
+    provider: Provider,
+    input: Parameters<typeof import("./private-skill.ts").installPrivateSkill>[1],
+  ): ReturnType<typeof import("./private-skill.ts").installPrivateSkill>;
+  /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
+  refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
+
   resolve(
     actor: GoldenActor,
     harness: Harness,
@@ -106,6 +124,8 @@ export interface LaunchStores {
 
 /** What a launch did about GitHub. A launch without a connection still succeeds, and says so here. */
 export interface GitHubLaunchInfo {
+  /** Advertised expiry of the injected token, not a guarantee against owner rotation. */
+  tokenExpiresAt?: string;
   status: GitHubStatus;
   /** The account git and gh act as in the sandbox. */
   login?: string;
@@ -114,6 +134,7 @@ export interface GitHubLaunchInfo {
 }
 
 export interface LaunchResult {
+  helper: HelperNegotiation;
   sandbox: SandboxRecord;
   golden: GoldenRecord;
   github: GitHubLaunchInfo;
@@ -134,8 +155,12 @@ export interface LaunchOptions extends GoldenLimits {
   beforeFork?: (sandboxId: string) => Promise<void>;
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
+  /** Trusted final-start admission/bootstrap, after all repository and init work. */
+  beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
   /** Trusted server-only narrowing for managed orchestrator parents. Not a public launch field. */
   privateParent?: true;
+  /** Trusted narrowing for ordinary sandboxes with owner-scoped access. Keeps normal TTL policy. */
+  privateVisibility?: true;
   /** For tests. */
   newId?: () => string;
 }
@@ -157,11 +182,41 @@ export async function launchSandbox(
   request: LaunchRequest,
   options: LaunchOptions = {},
 ): Promise<LaunchResult> {
+  try {
+    validateSkillPins(request.skills ?? []);
+  } catch {
+    throw new LaunchError(
+      "invalid_request",
+      "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
+    );
+  }
+  if (request.skills?.length && !stores.sandboxes.recordSkills)
+    throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
   const harness = checkHarness(provider, request.harness);
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
+  const helper = negotiateHelper(golden.helperReceipt, golden.providerSnapshotId);
+  const requestedHelper = request.helperCapabilities;
+  if (
+    requestedHelper !== undefined &&
+    (!Array.isArray(requestedHelper) ||
+      requestedHelper.length > 8 ||
+      requestedHelper.some((cap) => typeof cap !== "string" || cap.length > 64))
+  )
+    throw new LaunchError("invalid_request", "Invalid helper capabilities.");
+  if (requestedHelper?.some((cap) => helper.status !== "supported" || !helper.capabilities.includes(cap as "diagnose")))
+    throw new LaunchError(
+      "unsupported",
+      "Helper capability unsupported. Rebuild the golden with armada golden update; this server supports diagnose only.",
+      {
+        helperRefusal:
+          helper.status === "unsupported"
+            ? helper
+            : { reason: "helper_capability_unsupported", action: "rebuild_golden" },
+      },
+    );
   // The provider comes from the golden. The one the caller passed must be that backend, never another.
   assertProviderOf(provider, golden.provider);
   const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
@@ -186,7 +241,7 @@ export async function launchSandbox(
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
-  const visibility = options.privateParent ? "private" : golden.visibility;
+  const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];
@@ -335,14 +390,85 @@ export async function launchSandbox(
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
           : { status: github.status, message: github.message };
-      await setup(provider, ready.id, golden, secrets, progress);
+      if (github.status === "connected" && github.expiresAt)
+        launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
+      await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
       progress("initialization_cwd");
       if (repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
+      if (request.skills?.length) {
+        const receipts = [];
+        let privateKey: string | null | undefined;
+        for (const skill of request.skills) {
+          const projectDir = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
+          if (!skill.includes("/")) {
+            if (!stores.credentials.installPrivateSkill)
+              throw new PrivateSkillError("skillpack_transport_failed", "transport");
+            if (privateKey === undefined) privateKey = (await stores.credentials.skillpackKey?.(actor)) ?? null;
+            receipts.push(
+              await stores.credentials.installPrivateSkill(provider, {
+                sandboxId: ready.id,
+                projectDir,
+                reference: skill,
+                harness,
+                key: privateKey,
+                ...(golden.buildWarnings ? { buildWarnings: golden.buildWarnings } : {}),
+              }),
+            );
+          } else
+            receipts.push(await installSkill(provider, ready.id, projectDir, harness, skill, golden.buildWarnings));
+        }
+        if (repositoryDir !== null) {
+          // Local Git metadata only: do not stage third-party launch skills with worker changes.
+          const paths = [
+            "/.companion/skills.lock.json",
+            "/.companion/skills.lock.json.lock",
+            ...request.skills.flatMap((skill) => {
+              const slug = skill.split("@")[0]!.split("/").at(-1);
+              return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
+            }),
+          ];
+          const excluded = await provider.exec({
+            sandboxId: ready.id,
+            cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
+            timeoutSeconds: 30,
+            command: `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
+          });
+          if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
+            throw new Error("Skillpack checkout exclusions could not be prepared.");
+        }
+        await stores.sandboxes.recordSkills!(record.id, receipts);
+        record.skills = receipts;
+      }
       progress("initialization_mcp");
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       await stores.connections?.prepare?.(provider, record, actor);
+      await options.beforeStart?.(provider, record);
+      // Boat goldens carry the native CLI. A restored fork can be ready while its
+      // executable cannot even boot; probe the installed wrapper (including its
+      // harness-only readable environment) without creating a session or model turn.
+      // Modal validates its separately distributed native runtime at installation.
+      if (provider.id === "boat") {
+        try {
+          const health = await provider.exec({
+            sandboxId: ready.id,
+            command: `${harness} --version >/dev/null 2>&1`,
+            cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
+            timeoutSeconds: 15,
+            signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+          });
+          if (health.detached || health.timedOut || health.truncated || health.exitCode !== 0)
+            throw new Error("harness_health_failed");
+        } catch {
+          // Fixed text only: native boot errors can include paths or credentials.
+          // Reuse the existing public code; iPhone clients decode closed lists.
+          throw new LaunchError(
+            "start_failed",
+            "The agent runtime could not start in this sandbox. Relaunch in a new sandbox.",
+          );
+        }
+      }
       progress("initialization_publish");
       if (prompt === undefined) {
         signal.throwIfAborted();
@@ -371,6 +497,15 @@ export async function launchSandbox(
             },
           );
         });
+      try {
+        await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
+      } catch {
+        try {
+          console.error("armada: turn model request record unavailable; accepted prompt continues.");
+        } catch {
+          /* Logging must not change accepted work. */
+        }
+      }
       return {
         patch: {
           status: "running" as const,
@@ -401,6 +536,7 @@ export async function launchSandbox(
           // physical readiness, native preparation, credential setup and prompt overhead.
           deadlineMs:
             15 * 60_000 +
+            (request.skills?.length ?? 0) * 300_000 +
             1000 *
               (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
                 golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
@@ -447,6 +583,7 @@ function finish(
   prompt: { conversationId: string; promptId: string } | undefined,
 ): LaunchResult {
   return {
+    helper: negotiateHelper(golden.helperReceipt, golden.providerSnapshotId),
     sandbox: { ...record, status, conversationIds },
     golden,
     github,
@@ -459,13 +596,19 @@ function finish(
 async function setup(
   provider: Provider,
   sandboxId: string,
+  armadaSandboxId: string,
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
+  sleep: (ms: number) => Promise<void> = delay,
 ): Promise<void> {
   for (const repo of golden.config.repos) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets);
+    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
+      dir: repo.dir,
+      sandboxId: armadaSandboxId,
+      sleep,
+    });
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
@@ -518,22 +661,71 @@ async function run(
   spec: ShellCommand,
   label: string,
   secrets: readonly string[],
+  repository?: { dir: string; sandboxId: string; sleep: (ms: number) => Promise<void> },
 ): Promise<void> {
-  const result = await provider.exec({
+  const request = {
     sandboxId,
     command: spec.command,
     cwd: spec.cwd,
     timeoutSeconds: spec.timeoutSeconds,
-  });
+  };
+  let result = await provider.exec(request);
+  // Production has shown intermittent refusals with either selector path. Retry only
+  // a completed Git ownership rejection once; keep the same user and ownership guard.
+  if (
+    repository !== undefined &&
+    !result.detached &&
+    !result.timedOut &&
+    result.exitCode === 128 &&
+    result.stderr.includes("detected dubious ownership in repository")
+  ) {
+    await repository.sleep(OWNERSHIP_RETRY_DELAY_MS);
+    let retry: "ownership_refused" | "exit_nonzero" | "timed_out" | "detached" | "exec_threw" | "succeeded" =
+      "exec_threw";
+    try {
+      result = await provider.exec(request);
+      if (result.detached) retry = "detached";
+      else if (result.timedOut) retry = "timed_out";
+      else if (result.exitCode === 0) retry = "succeeded";
+      else if (result.exitCode === 128 && result.stderr.includes("detected dubious ownership in repository"))
+        retry = "ownership_refused";
+      else retry = "exit_nonzero";
+    } finally {
+      try {
+        console.info(
+          JSON.stringify({
+            event: "launch_repository_ownership_retry",
+            sandboxId: repository.sandboxId,
+            provider: provider.id,
+            providerSandboxId: sandboxId,
+            attempt: 2,
+            delayMs: OWNERSHIP_RETRY_DELAY_MS,
+            outcome: retry === "succeeded" ? "recovered" : "failed",
+            retry,
+          }),
+        );
+      } catch {
+        // Best-effort diagnostics must not change launch or cleanup outcomes.
+      }
+    }
+  }
   if (result.detached) throw new LaunchError("init_failed", `${label} started in the background.`);
   if (result.timedOut) {
     throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
   }
   if (result.exitCode !== 0) {
-    throw new LaunchError(
+    const failure = new LaunchError(
       "init_failed",
       `${label} failed (exit ${result.exitCode}).${output(result.stderr, result.stdout, secrets)}`,
     );
+    // Inspect stderr before diagnostic-tail truncation; never bypass Git's ownership guard.
+    if (repository !== undefined && result.stderr.includes("detected dubious ownership in repository"))
+      throw new LaunchError(
+        "init_failed",
+        `Cannot update repository '${repository.dir}' in sandbox ${repository.sandboxId}: checkout ownership does not match the user running sandbox commands. Report this golden and sandbox ID to its administrator to check command-user and checkout UIDs before retrying.`,
+        { cause: failure, safeReason: "repository_ownership_mismatch" },
+      );
+    throw failure;
   }
 }
 
@@ -545,6 +737,16 @@ function output(stderr: string, stdout: string, secrets: readonly string[]): str
 }
 
 function withSandbox(error: unknown, sandboxId: string, secrets: readonly string[]): LaunchError {
+  if (error instanceof PrivateSkillError)
+    return new LaunchError(
+      "start_failed",
+      `Private Skillpack installation failed at ${error.stage}: ${error.reason}.`,
+      {
+        cause: error,
+        sandboxId,
+        skillFailure: { reason: error.reason, stage: error.stage },
+      },
+    );
   if (error instanceof LaunchError) {
     return error.sandboxId === sandboxId
       ? error
@@ -552,6 +754,7 @@ function withSandbox(error: unknown, sandboxId: string, secrets: readonly string
           cause: error.cause,
           sandboxId,
           ...(error.safeReason ? { safeReason: error.safeReason } : {}),
+          ...(error.skillFailure ? { skillFailure: error.skillFailure } : {}),
         });
   }
   return new LaunchError("start_failed", `The sandbox could not be started: ${redact(messageOf(error), secrets)}`, {

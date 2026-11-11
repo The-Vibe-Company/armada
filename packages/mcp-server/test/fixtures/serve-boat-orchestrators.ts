@@ -6,24 +6,36 @@ import * as core from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
+import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
+import { checkSandboxSkillLaunch } from "./sandbox-skill-launch.ts";
 import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
 
 const db = await openDatabase();
 await applyMigrations(db);
-const sql: core.Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-};
+const sql = fixtureSql(db);
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 const boots = new Map<string, string>();
 const sshCalls: string[] = [];
+const authorityInstalled = new Set<string>();
+const mcpServers = new Map<string, string[]>();
+let lastPromptServers: string[] = [];
+let running = false;
 mock.module("@armada/core/server", () => ({
   ...core,
-  sshStdinCheckout: async () => {},
+  sshStdinCheckout: async (_provider: unknown, input: { sandboxId: string; token: string }) => {
+    const payload = JSON.parse(input.token);
+    if (payload.servers) mcpServers.set(input.sandboxId, Object.keys(payload.servers).sort());
+  },
   sshOrchestratorReceipt: async (_provider: unknown, input: { sandboxId: string; token: string }) => {
     const payload = JSON.parse(input.token);
     sshCalls.push(payload.op ?? "bridge");
+    if (payload.op === "install") authorityInstalled.add(input.sandboxId);
+    if (payload.op === "scrub") authorityInstalled.delete(input.sandboxId);
     return {
       physicalGeneration: boots.get(input.sandboxId),
       acknowledged: true,
@@ -93,10 +105,12 @@ type Machine = {
   }[];
 };
 const machines = new Map<string, Machine>();
+const managedWrapperInstalls = new Map<string, number>();
 let prompts = 0,
   stops = 0,
   failStop = false;
 const requests: string[] = [];
+const skillLaunchOrder: string[] = [];
 let eventReads = 0;
 let observedPoll: (() => void) | undefined;
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -131,17 +145,29 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   assert(machine, `Unknown Boat sandbox ${path}`);
   const suffix = match[2];
   if (!suffix) return json({ sandbox: machine });
-  if (suffix === "/commands")
+  if (suffix === "/commands") {
+    if (body.command.includes("python3 -I -c 'import json,os,signal,stat,subprocess,threading,uuid'"))
+      managedWrapperInstalls.set(machine.id, (managedWrapperInstalls.get(machine.id) ?? 0) + 1);
+    if (JSON.stringify(body).includes("git rev-parse --git-path info/exclude")) skillLaunchOrder.push("exclude");
+    if (JSON.stringify(body).includes("skillpack install")) skillLaunchOrder.push("install");
     return json({
       type: "command.finished",
       success: true,
       exitCode: JSON.stringify(body).includes("example/missing") ? 1 : 0,
-      stdout: catalogLock(JSON.stringify(body).includes("claude-code") ? "claude-code" : "codex"),
+      stdout:
+        body.command === "cat /proc/sys/kernel/random/boot_id"
+          ? boots.get(machine.id)
+          : body.command.includes("skillpack install")
+            ? catalogLock(body.command.includes("claude-code") ? "claude-code" : "codex")
+            : "",
       stderr: "",
       timedOut: false,
     });
+  }
   if (suffix === "/prompt") {
+    skillLaunchOrder.push("prompt");
     prompts++;
+    lastPromptServers = mcpServers.get(machine.id) ?? [];
     machine.model = body.model;
     machine.harness = body.provider === "codex" ? "codex" : "claude";
     const conversationId = machine.conversation ?? `conv_${prompts}`;
@@ -186,8 +212,6 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     );
     return json({ promptId: `prompt-${prompts}`, conversationId, status: "queued" }, 202);
   }
-  if (suffix === "/steer")
-    return Response.json({ ok: false, code: "no_running_turn", message: "Nothing runs" }, { status: 409 });
   if (suffix.startsWith("/prompts/"))
     return json({
       promptRun: {
@@ -210,9 +234,16 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   if (suffix === "/conversations")
     return json({
       conversations: machine.conversation
-        ? [{ id: machine.conversation, running: false, lastHarness: machine.harness, lastModel: machine.model }]
+        ? [{ id: machine.conversation, running, lastHarness: machine.harness, lastModel: machine.model }]
         : [],
     });
+  if (suffix === "/steer") {
+    if (!running)
+      return Response.json({ ok: false, code: "no_running_turn", message: "Nothing runs" }, { status: 409 });
+    assert.equal(machine.harness, "claude");
+    assert(running, "The acceptance steer must reach a running Claude turn");
+    return json({ conversationId: machine.conversation, promptId: `steer-${prompts}`, mode: "native" });
+  }
   if (suffix === "/interrupt") return json({});
   if (suffix === "/stop") {
     stops++;
@@ -287,12 +318,21 @@ async function cli(args: string[], expected = 0) {
   assert.equal(code, expected, `${args.join(" ")}: ${err}\n${out}\n${logs.join("\n")}\n${requests.join("\n")}`);
   return JSON.parse(out || err);
 }
+async function waitForCreate(operation: { id: string; orchestratorId: string }): Promise<core.OrchestratorDetail> {
+  for (let attempt = 0; attempt < 150; attempt++) {
+    const detail: core.OrchestratorDetail = await cli(["detail", operation.orchestratorId, "--org", orgId]);
+    const receipt = detail.operations.find((item) => item.id === operation.id);
+    if (receipt && receipt.state !== "pending") return detail;
+  }
+  throw Error("Create did not settle after bounded real HTTP polling");
+}
+
 try {
+  const selected = await connectionFixture(sql, key, ownerId, orgId);
   for (const harness of ["codex", "claude"] as const) {
+    const promptsBeforeHarness = prompts;
     const model = core.resolveModelChoice(harness, {}).model;
-    const create = await cli([
-      "create",
-      `Boat ${harness}`,
+    const selectors = [
       "--skill",
       catalogReference,
       "--org",
@@ -307,20 +347,105 @@ try {
       model,
       "--model-account",
       models.get(harness)!,
+    ];
+    const allocationsBeforeRefusal = machines.size;
+    const refusedSelection = await realFetch(`${origin}/api/v1/orchestrators`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.token}`,
+        "content-type": "application/json",
+        "idempotency-key": `forbidden-create-${harness}`,
+      },
+      body: JSON.stringify({
+        version: 1,
+        orgId,
+        name: `Forbidden ${harness}`,
+        goldenId: golden.id,
+        provider: "boat",
+        harness,
+        model,
+        modelAccountId: models.get(harness),
+        connections: [selected.forbidden.id],
+      }),
+    });
+    assert.equal(refusedSelection.status, 404);
+    assert.equal(((await refusedSelection.json()) as { error: { code: string } }).error.code, "not_found");
+    assert.equal(machines.size, allocationsBeforeRefusal, "Forbidden create must not allocate or enqueue a parent");
+    assert.equal(
+      (
+        await sql.query(
+          "select orchestrator_id from public.orchestrator_runtime_create_keys where owner_id=$1 and org_id=$2 and idempotency_key=$3",
+          [ownerId, orgId, `forbidden-create-${harness}`],
+        )
+      ).rows.length,
+      0,
+      "Denied selection must not reserve an async create",
+    );
+    const create = await cli([
+      "create",
+      `Boat ${harness}`,
+      ...selectors,
       "--idempotency-key",
       `create-${harness}`,
+      "--connections",
+      selected.first.id,
     ]);
     const id = create.orchestratorId;
-    let detail: core.OrchestratorDetail = await cli(["detail", id, "--org", orgId]);
-    for (let i = 0; i < 150; i++) {
-      detail = await cli(["detail", id, "--org", orgId]);
-      if (detail?.orchestrator.state !== "creating") break;
-    }
+    let detail = await waitForCreate(create);
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
     assert.equal(detail.orchestrator.configuration.skill, catalogReference);
     assert.deepEqual(detail.orchestrator.skillReceipt, catalogReceipt);
-    let revision = detail.orchestrator.revision;
+    const empty = await cli([
+      "create",
+      `Boat empty ${harness}`,
+      ...selectors,
+      "--no-connections",
+      "--idempotency-key",
+      `empty-create-${harness}`,
+    ]);
+    const emptyDetail = await waitForCreate(empty);
+    assert.equal(emptyDetail.orchestrator.state, "ready", JSON.stringify(emptyDetail));
+    assert.deepEqual(emptyDetail.connections, []);
+    const emptyNative = (
+      await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+        emptyDetail.orchestrator.sandboxId,
+      ])
+    ).rows[0]!.provider_sandbox_id;
+    assert(authorityInstalled.has(emptyNative), "Explicit none must retain the internal orchestrator server");
+    let revision = await exerciseConnections({
+      detail,
+      selected,
+      request: async (path, body, key) => {
+        const response = await realFetch(`${origin}${path}`, {
+          ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
+          headers: {
+            authorization: `Bearer ${token.token}`,
+            "content-type": "application/json",
+            ...(key ? { "idempotency-key": key } : {}),
+          },
+        });
+        return { status: response.status, value: await response.json() };
+      },
+      running: (value) => {
+        running = value;
+      },
+      expectServers: () => {},
+      sawPrompt: (ids) =>
+        assert.deepEqual(lastPromptServers, ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
+    });
+    revision = (await cli(["detail", id, "--org", orgId])).orchestrator.revision;
+    const parentNativeId = (
+      await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
+        detail.orchestrator.sandboxId,
+      ])
+    ).rows[0]!.provider_sandbox_id;
+    if (harness === "claude")
+      assert.equal(
+        managedWrapperInstalls.get(parentNativeId),
+        3,
+        "Only create and changed MCP generations reinstall the managed wrapper",
+      );
     const act = async (action: string, text?: string, expected = 0) => {
       const result = await cli(
         [
@@ -341,6 +466,12 @@ try {
     };
     const readsBeforeSend = eventReads;
     await act("send", "hello");
+    if (harness === "claude")
+      assert.equal(
+        managedWrapperInstalls.get(parentNativeId),
+        3,
+        "Unchanged messages must not reinstall the native wrapper",
+      );
     // No owner events request yet: only the production background consumer can
     // pull this page and publish its cursor/activity. Await I/O, never a sleep.
     if (eventReads === readsBeforeSend)
@@ -376,7 +507,7 @@ try {
     ).rows[0]?.runtime_result;
     assert.equal(receipt?.kind, "prompt_receipt");
     assert.equal(receipt.promptId, `prompt-${prompts}`);
-    assert.equal(prompts, harness === "codex" ? 1 : 4, "Owner send must dispatch to Boat");
+    assert.equal(prompts, promptsBeforeHarness + 4, "Three connection turns and the owner send must reach Boat");
     const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
     const agentEvents = page.events
       .filter((item: core.OrchestratorEvent) => item.kind === "agent")
@@ -430,6 +561,12 @@ try {
     assert.equal(detail.orchestrator.state, "ready");
     assert.equal(detail.orchestrator.continuity, "unverified", JSON.stringify(detail));
     await act("send", "continue");
+    if (harness === "claude")
+      assert.equal(
+        managedWrapperInstalls.get(parentNativeId),
+        4,
+        "A fresh physical boot must reinstall before continuing the same conversation",
+      );
     const continued: core.OrchestratorEventPage = await cli([
       "events",
       id,
@@ -473,6 +610,11 @@ try {
     assert.equal(stops, physicalStops, "Completed retirement replay must not issue provider I/O");
     detail = await cli(["detail", id, "--org", orgId]);
     assert.equal(detail.orchestrator.state, "stopped");
+    assert.equal(
+      prompts,
+      promptsBeforeHarness + 6,
+      "Connection turns, ordinary turn, post-refusal turn and resumed turn must all dispatch",
+    );
   }
   const beforeFailurePrompts = prompts;
   const failed = await cli([
@@ -495,9 +637,7 @@ try {
     "--idempotency-key",
     "missing-method",
   ]);
-  let blocked: core.OrchestratorDetail = await cli(["detail", failed.orchestratorId, "--org", orgId]);
-  for (let i = 0; i < 150 && blocked.orchestrator.state === "creating"; i++)
-    blocked = await cli(["detail", failed.orchestratorId, "--org", orgId]);
+  const blocked = await waitForCreate(failed);
   assert.equal(blocked.orchestrator.state, "blocked");
   assert.equal(blocked.orchestrator.skillReceipt, null);
   assert.equal(blocked.orchestrator.conversationId, null);
@@ -506,7 +646,37 @@ try {
   assert(logs.some((line) => line.includes('"kind":"prompt_status"') && line.includes('"value":"finished"')));
   assert(logs.some((line) => line.includes('"kind":"events_poll"') && line.includes('"value":"published"')));
   assert(!logs.some((line) => line.includes('stage="native_checkpoint"')), logs.join("\n"));
-  console.log(`SERVE_BOAT_RECEIPT ${JSON.stringify({ prompts, stops, sshCalls: sshCalls.length })}`);
+  const baselinePrompts = prompts,
+    baselineStops = stops;
+  await checkSandboxSkillLaunch({
+    sql,
+    orgId,
+    body: {
+      golden: golden.name,
+      org: orgId,
+      provider: "boat",
+      harness: "codex",
+      credentialId: models.get("codex"),
+      connections: [],
+    },
+    allocations: () => machines.size,
+    prompts: () => prompts,
+    stops: () => stops,
+    order: skillLaunchOrder,
+    request: async (action, body) => {
+      const response = await fakeFetch(`${origin}/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() };
+    },
+  });
+  assert.equal(prompts - baselinePrompts, 1);
+  assert.equal(stops - baselineStops, 2);
+  console.log(
+    `SERVE_BOAT_RECEIPT ${JSON.stringify({ prompts, stops, sshCalls: sshCalls.length, sandboxSkills: true })}`,
+  );
 } finally {
   await server.stop(true);
   await server.workerDone;

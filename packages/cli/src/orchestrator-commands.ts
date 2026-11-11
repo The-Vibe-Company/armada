@@ -2,6 +2,8 @@ import { AuthError } from "@armada/auth";
 import {
   ORCHESTRATOR_CONTRACT_VERSION,
   ORCHESTRATOR_DEFAULTS,
+  type OrchestratorConnectionMutation,
+  type OrchestratorConnections,
   type OrchestratorCreate,
   type OrchestratorDetail,
   type OrchestratorEvent,
@@ -11,6 +13,8 @@ import {
   type OrchestratorMessage,
   type OrchestratorOperation,
   parseMachineSize,
+  type SandboxUsageSummary,
+  summarizeSandboxUsage,
 } from "@armada/core";
 import { type Args, parseArgs, single } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
@@ -18,10 +22,13 @@ import type { AuthIo } from "./auth-commands.ts";
 
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
-         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>] [--skill <org/slug@version>]
+         --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>] [--skill <org/slug@version|slug@version>]
+         [--connections <id,...> | --no-connections]
          [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
   capabilities
+  connections list <id> --org <id>
+  connections add|remove <id> <connection-id,...> --org <id> --expected-revision <revision> --idempotency-key <key>
   detail <id> --org <id>
   send|steer <id> <text> --org <id> --expected-revision <revision> --idempotency-key <key>
   stop|resume|recover <id> --org <id> --expected-revision <revision> --idempotency-key <key>
@@ -38,13 +45,17 @@ export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   availability, account access, continuity and lifecycle; no local quota policy.
 `;
 
-type ReadCommand = { action: "list" | "detail" | "events" | "capabilities"; id?: string; query: URLSearchParams };
+type ReadCommand = {
+  action: "list" | "detail" | "events" | "capabilities" | "connections_list";
+  id?: string;
+  query: URLSearchParams;
+};
 type MutationCommand = {
-  action: "create" | "message" | "steer" | "stop" | "resume" | "recover";
+  action: "create" | "message" | "steer" | "stop" | "resume" | "recover" | "connections_add" | "connections_remove";
   id?: string;
   key: string;
   orgId: string;
-  body: OrchestratorCreate | OrchestratorFence | OrchestratorMessage;
+  body: OrchestratorCreate | OrchestratorFence | OrchestratorMessage | OrchestratorConnectionMutation;
 };
 export type OrchestratorCommand = (ReadCommand | MutationCommand) & {
   json: boolean;
@@ -64,7 +75,9 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
     "--limit",
     "--size",
   ]);
-  const [action, ...positionals] = args.positionals;
+  const [rawAction, ...rawPositionals] = args.positionals;
+  const action = rawAction === "connections" ? `connections_${rawPositionals[0]}` : rawAction;
+  const positionals = rawAction === "connections" ? rawPositionals.slice(1) : rawPositionals;
   const common = {
     json: args.options.has("--json"),
     all: args.options.has("--all"),
@@ -75,7 +88,24 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
     for (const name of names) allowed.add(name);
   };
   let command: ReadCommand | MutationCommand;
-  if (action === "create") {
+  if (action === "connections_list") {
+    if (positionals.length !== 1) usage("connections list needs one orchestrator ID.");
+    allow("--org");
+    command = { action, id: positionals[0]!, query: new URLSearchParams({ orgId: required(args, "--org") }) };
+  } else if (action === "connections_add" || action === "connections_remove") {
+    if (positionals.length !== 2 || !positionals[1]?.trim())
+      usage("connections add/remove needs an orchestrator ID and comma-separated connection IDs.");
+    allow("--org", "--expected-revision", "--idempotency-key");
+    const connections = positionals[1]!.split(",");
+    if (connections.some((id) => !id.trim())) usage("Connection IDs must be nonempty.");
+    command = {
+      action,
+      id: positionals[0]!,
+      orgId: required(args, "--org"),
+      key: idempotencyKey(args),
+      body: { expectedRevision: integer(args, "--expected-revision", 0, Number.MAX_SAFE_INTEGER), connections },
+    };
+  } else if (action === "create") {
     if (positionals.length !== 1 || !positionals[0]?.trim()) usage("create needs one name.");
     allow(
       "--org",
@@ -90,7 +120,14 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       "--idle-seconds",
       "--size",
       "--idempotency-key",
+      "--connections",
+      "--no-connections",
     );
+    const connections = single(args, "--connections");
+    if (args.options.has("--no-connections") && connections !== undefined)
+      usage("Use --connections or --no-connections, not both.");
+    if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
+      usage("--connections needs nonempty comma-separated IDs.");
     const provider = required(args, "--provider");
     const harness = required(args, "--agent");
     if (provider !== "boat" && provider !== "modal") usage("--provider must be boat or modal.");
@@ -104,6 +141,8 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       harness,
       model: required(args, "--model"),
       modelAccountId: required(args, "--model-account"),
+      ...(args.options.has("--no-connections") ? { connections: [] } : {}),
+      ...(connections === undefined ? {} : { connections: connections.split(",") }),
       // Actual #662 b6ca6e1 additive size field; shared #653 validator, no local policy.
       ...(single(args, "--size") === undefined ? {} : { size: parseMachineSize(single(args, "--size")) }),
     };
@@ -202,9 +241,14 @@ export function orchestratorSummary(value: OrchestratorList | OrchestratorDetail
     );
   if ("orchestrator" in value) {
     const item = value.orchestrator;
-    return `${item.configuration.name} (${item.id})\n${item.state}; continuity ${item.continuity}; revision ${item.revision}\n${item.configuration.harness}/${item.configuration.model} on ${item.configuration.provider}\nIdle deadline: ${item.idleDeadline ?? "none"}${item.blockedReason ? `\nBlocked: ${item.blockedReason}` : ""}\n${value.operations.length} operations; ${value.waits.length} waits; ${value.childSandboxIds.length} children`;
+    return `${item.configuration.name} (${item.id})\n${item.state}; continuity ${item.continuity}; revision ${item.revision}\n${item.configuration.harness}/${item.configuration.model} on ${item.configuration.provider}\nIdle deadline: ${item.idleDeadline ?? "none"}${item.blockedReason ? `\nBlocked: ${item.blockedReason}` : ""}\n${value.operations.length} operations; ${value.waits.length} waits; ${value.childSandboxIds.length} children\n${orchestratorUsageSummary("Own usage", summarizeSandboxUsage(value.usage?.own))}\n${orchestratorUsageSummary("Child aggregate usage", value.usage?.children)}\nCompute is Armada-observed elapsed time, not provider-billed seconds. Token fields are reported separately, not a unique-token total.`;
   }
   return `${value.kind} ${value.state}: operation ${value.id}; orchestrator ${value.orchestratorId}; revision ${value.revision}${value.errorCode ? `; ${value.errorCode}` : ""}`;
+}
+
+function orchestratorUsageSummary(label: string, usage: SandboxUsageSummary | undefined): string {
+  const measured = (value: number | null | undefined) => value ?? "unknown";
+  return `${label}: compute ${measured(usage?.computeSeconds)} seconds; turns ${measured(usage?.turnCount)}; input ${measured(usage?.inputTokens)}; output ${measured(usage?.outputTokens)}; cached ${measured(usage?.cachedTokens)}; cache write ${measured(usage?.cacheWriteTokens)}; reasoning ${measured(usage?.reasoningTokens)}`;
 }
 
 export function orchestratorEventSummary(event: OrchestratorEvent): string {
@@ -223,7 +267,9 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
   const root = "/api/v1/orchestrators";
   if ("body" in command) {
     const path =
-      command.action === "create" ? root : `${root}/${encodeURIComponent(command.id ?? "")}/${command.action}`;
+      command.action === "create"
+        ? root
+        : `${root}/${encodeURIComponent(command.id ?? "")}/${command.action.replace("_", "/")}`;
     let result: OrchestratorOperation;
     try {
       result = versioned(
@@ -258,6 +304,17 @@ export async function orchestratorCommand(argv: readonly string[], auth: AuthIo)
     );
     auth.out(
       `${command.json ? JSON.stringify(result) : `Orchestrators ${result.enabled ? "enabled" : "disabled"}: ${result.reason}`}\n`,
+    );
+    return 0;
+  }
+  if (command.action === "connections_list") {
+    const result = versioned(
+      await client.request<OrchestratorConnections>(
+        `${root}/${encodeURIComponent(command.id ?? "")}/connections?${command.query}`,
+      ),
+    );
+    auth.out(
+      `${command.json ? JSON.stringify(result) : result.connections.map((c) => `${c.id}\t${c.name}`).join("\n") || "No connections."}\n`,
     );
     return 0;
   }

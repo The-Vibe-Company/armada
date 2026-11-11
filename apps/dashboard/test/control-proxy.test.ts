@@ -81,12 +81,32 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const seen: Request[] = [];
   for (const path of [
+    ["templates", "create"],
+    ["templates", "list"],
+    ["templates", "get"],
+    ["templates", "publish"],
+    ["templates", "delete"],
+    ["templates", "launch"],
+    ["variables", "list"],
+    ["variables", "read"],
+    ["variables", "set"],
+    ["variables", "update"],
+    ["variables", "revoke"],
+    ["variables", "delete"],
+    ["secrets", "list"],
+    ["secrets", "set"],
+    ["secrets", "rotate"],
+    ["secrets", "revoke"],
+    ["secrets", "delete"],
+    ["secrets", "upload"],
+    ["secrets", "commit"],
     ["org", "list"],
     ["golden", "capabilities"],
     ["account", "status"],
     ["github", "status"],
     ["creds", "list"],
     ["sandbox", "advice"],
+    ["sandbox", "extend"],
     ["sandbox", "list"],
     ["sandbox", "wait"],
     ["sandbox", "exec"],
@@ -231,6 +251,7 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
       },
     );
     expect(blocked.status).toBe(404);
+    expect(await blocked.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
   }
   expect(forwarded).toBe(0);
 });
@@ -454,6 +475,7 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
       `orchestrators/${id}/events`,
       `orchestrators/${id}/settings`,
       `orchestrators/${id}/waits`,
+      `orchestrators/${id}/connections`,
     ]) {
       const query = "?orgId=org&cursor=opaque%2Fcursor%2Bvalue&limit=2";
       const count = received.length;
@@ -487,6 +509,8 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
       "waits",
       `waits/${id}/renew`,
       `waits/${id}/release`,
+      "connections/add",
+      "connections/remove",
     ]) {
       const path =
         action === "create"
@@ -531,6 +555,13 @@ test("orchestrator public origin preserves exact verbs, query, idempotency and a
       ["POST", `orchestrators/${id}/waits/not-a-uuid/renew`],
       ["POST", `orchestrators/${id}/waits/${id}/unknown`],
       ["GET", `orchestrators/${id}/waits/${id}/renew`],
+      ["GET", `orchestrators/${id}/connections/add`],
+      ["GET", `orchestrators/${id}/connections/remove`],
+      ["POST", `orchestrators/${id}/connections`],
+      ["POST", `orchestrators/${id}/connections/unknown`],
+      ["POST", `orchestrators/${id}/connections/add/extra`],
+      ["POST", "orchestrators/not-a-uuid/connections/add"],
+      ["DELETE", `orchestrators/${id}/connections/remove`],
       ["GET", "internal/runner/auth-state"],
     ]) {
       const response = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), {

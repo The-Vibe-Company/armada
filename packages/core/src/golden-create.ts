@@ -1,10 +1,12 @@
 import type { GitHubInstallationApp, GitHubResolveDeps } from "./github.ts";
 import { resolveGitHubAccess } from "./github.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import type { GoldenConfig, GoldenRepo } from "./golden-config.ts";
 import { GoldenError } from "./golden-config.ts";
 import { type GoldenCreateDeps, GoldenCreateService } from "./golden-create-service.ts";
 import { goldenGitHubAdapter } from "./golden-github.ts";
+import { verifyGoldenHelper } from "./golden-helper.ts";
 import { scanGoldenSandbox } from "./golden-scan.ts";
 import {
   captureGoldenPublication,
@@ -38,7 +40,7 @@ export interface GoldenCreateOptions {
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
     lock(sql: Sql): Promise<void>;
-    complete(sql: Sql, goldenId: string, snapshot: string): Promise<void>;
+    complete(sql: Sql, goldenId: string, snapshot: string, warnings: GoldenBuildWarning[]): Promise<void>;
   };
   /** The privileged database connection the server already holds (shared with the control API). */
   sql: Sql;
@@ -71,7 +73,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     app: options.installationApp,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     async accessToken(actor: GoldenActor) {
-      const access = await resolveGitHubAccess(options.github, actor.userId);
+      const access = await resolveGitHubAccess({ ...options.github, caller: "golden_create" }, actor.userId);
       if (access.status !== "connected") throw new GoldenError("forbidden", access.message);
       return access.token;
     },
@@ -83,7 +85,11 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
   let buildProvider: Provider | undefined;
   const deps: GoldenCreateDeps = {
     authorize: adapter.authorize,
-    ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
+    ssh:
+      options.ssh ??
+      ((provider, input) =>
+        sshStdinCheckout(provider, input, { ...(input.onWarning ? { onWarning: input.onWarning } : {}) })),
+    verifyHelper: verifyGoldenHelper,
     scan: (provider, sandboxId, context) => scanGoldenSandbox(provider, sandboxId, context),
     async reserve(provider, actor, existingGolden) {
       buildProvider = provider;
@@ -208,6 +214,8 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       snapshot,
       builderId,
       reservationId,
+      warnings,
+      helperReceipt,
     }) {
       const config: GoldenConfig = {
         repos: repos.map(
@@ -343,7 +351,15 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         step = "slot_finalize";
         if (reservationId) await sqlGoldenBackendSlots(sql).finalize(reservationId, inserted.id);
         step = "job_complete";
-        await options.job?.complete(sql, inserted.id, snapshot);
+        await sql.query("update public.goldens set build_warnings=$2::text[] where id=$1", [
+          inserted.id,
+          "{" + warnings.join(",") + "}",
+        ]);
+        await sql.query("update public.goldens set helper_receipt=$2::text::jsonb where id=$1", [
+          inserted.id,
+          JSON.stringify(helperReceipt ?? null),
+        ]);
+        await options.job?.complete(sql, inserted.id, snapshot, warnings);
         step = "commit";
         return inserted.id;
       };

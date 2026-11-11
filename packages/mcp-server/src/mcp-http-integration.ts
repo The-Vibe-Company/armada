@@ -10,6 +10,8 @@ import {
   type Provider,
   parsePinnedMcpStdio,
   type Sql,
+  sshHydrateGitHubToken,
+  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -25,6 +27,7 @@ import {
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
 import { createSqlData } from "./data.ts";
+import { createLegacyGitHubPreparation } from "./github-legacy.ts";
 import { createGitHubRuntime } from "./github-runtime.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
@@ -37,8 +40,13 @@ const sha = async (v: string) =>
 /** Production HTTP adapter. Upstream grants never cross the gateway/native boundary. */
 export function createMcpHttpIntegration(options: {
   sql: Sql;
+  /** Server boot owns initial draining/backoff before periodic database work starts. */
+  deferBackground?: boolean;
+  prepareReadableVariables?: TemplateService["prepare"];
   /** Trusted server opt-in, never a request parameter. Defaults off. */
   githubRuntimeEnabled?: boolean;
+  /** Default off until the coordinator verifies the legacy installer on a real Boat image. */
+  githubLegacyAutoPrepareEnabled?: boolean;
   github?: import("@armada/core/server").GitHubResolveDeps;
   encryptionKey: string | undefined;
   publicUrl: string;
@@ -68,9 +76,14 @@ export function createMcpHttpIntegration(options: {
           providerForSandbox: options.providerForSandbox,
         })
       : undefined;
+  const prepareLegacyGitHub =
+    options.githubLegacyAutoPrepareEnabled === true && options.githubRuntimeEnabled !== true && options.github
+      ? createLegacyGitHubPreparation({ sql, github: options.github, hydrate: sshHydrateGitHubToken })
+      : undefined;
   const lifecycle = createMcpLifecycle({
     sql,
     registry,
+    ...(options.prepareReadableVariables ? { prepareReadableVariables: options.prepareReadableVariables } : {}),
     ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
     encryptionKey: options.encryptionKey,
     origin: new URL(options.publicUrl).origin,
@@ -584,12 +597,17 @@ export function createMcpHttpIntegration(options: {
     });
     return draining;
   }
-  const timer = setInterval(() => {
-    // Provider expiry I/O must never delay durable revoke/disable stream closure.
-    void drainInvalidations().catch(() => gateway.close());
-    void renewActiveLeases().catch(() => gateway.close());
-  }, 250);
-  timer.unref();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const startBackground = () => {
+    if (timer) return;
+    timer = setInterval(() => {
+      // Provider expiry I/O must never delay durable revoke/disable stream closure.
+      void drainInvalidations().catch(() => gateway.close());
+      void renewActiveLeases().catch(() => gateway.close());
+    }, 250);
+    timer.unref();
+  };
+  if (!options.deferBackground) startBackground();
   return {
     registry,
     broker,
@@ -638,6 +656,7 @@ export function createMcpHttpIntegration(options: {
     beforePrompt: async (...args: Parameters<typeof lifecycle.beforePrompt>) => {
       const sandboxId = (await managedMcp.beforePrompt(...args)) ?? (await lifecycle.beforePrompt(...args));
       await refreshActiveExpiries(sandboxId);
+      await prepareLegacyGitHub?.(args[0], sandboxId);
     },
     beforeSnapshot: async (...args: Parameters<typeof lifecycle.beforeSnapshot>) => {
       await lifecycle.beforeSnapshot(...args);
@@ -648,6 +667,7 @@ export function createMcpHttpIntegration(options: {
       await refreshActiveExpiries(args[1].id);
     },
     drainInvalidations,
+    startBackground,
     renewActiveLeases,
     async close() {
       clearInterval(timer);

@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { ProviderError } from "@armada/core";
-import { GoldenCreateService, type GoldenRecord, scanGoldenSandbox } from "@armada/core/server";
+import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -338,7 +339,20 @@ describe("agent turns", () => {
   });
 
   test("a prompt without a conversation opens a new one on the right harness, with its options", async () => {
-    const boat = fakeBoat(queued("conv_new"));
+    const boat = fakeBoat(
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      queued("conv_new"),
+    );
     const receipt = await boat.provider.prompt({
       sandboxId: ID,
       harness: "claude",
@@ -348,8 +362,8 @@ describe("agent turns", () => {
       fast: true,
     });
     expect(receipt).toEqual({ promptId: "prompt_1", conversationId: "conv_new", status: "queued" });
-    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
-    expect(boat.requests[0]?.body).toEqual({
+    expect(boat.requests[1]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
+    expect(boat.requests[1]?.body).toEqual({
       provider: "claude-code",
       prompt: "Fix the tests",
       new: true,
@@ -360,9 +374,58 @@ describe("agent turns", () => {
   });
 
   test("a prompt with a conversation continues it, and codex maps to boat's codex", async () => {
-    const boat = fakeBoat(queued("conv_1"));
+    const boat = fakeBoat(
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      { body: { sandbox: sandbox({ state: "ready" }) } },
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+      queued("conv_1"),
+    );
     await boat.provider.prompt({ sandboxId: ID, harness: "codex", text: "Go on", conversationId: "conv_1" });
-    expect(boat.requests[0]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
+    expect(boat.requests[3]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
+  });
+
+  test("optional usage bridge installation failure cannot block an ordinary prompt", async () => {
+    const boat = fakeBoat(
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: false,
+          exitCode: 1,
+          stdout: "",
+          stderr: "unavailable",
+          timedOut: false,
+        },
+      },
+      queued("conv_new"),
+    );
+    await expect(boat.provider.prompt({ sandboxId: ID, harness: "claude", text: "Continue" })).resolves.toMatchObject({
+      promptId: "prompt_1",
+    });
+    expect(boat.requests.map((request) => request.path)).toEqual([
+      `/api/v1/sandboxes/${ID}/commands`,
+      `/api/v1/sandboxes/${ID}/prompt`,
+    ]);
   });
 
   test("an empty prompt is refused before any request", async () => {
@@ -610,7 +673,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
       "provisioning",
       "ready",
       "configure",
-      ...(fail ? [] : ["bridge", "prompt"]),
+      ...(fail ? [] : ["bridge", "ready", "bridge", "prompt"]),
     ]);
     await expect(provider.snapshot({ sandboxId: ID, name: "safe" })).rejects.toThrow("snapshot scrub I/O failed");
   }
@@ -813,3 +876,243 @@ test("prompt status cancellation reaches HTTP and suppresses late native capture
   expect(propagated).toBe(true);
   expect(captures).toBe(0);
 });
+
+// The real SDK must not send an idle interrupt; active turns must still settle
+// before local work capture can begin. No collector mocking at this boundary.
+test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Boat turns", async (state) => {
+  const conversations = (running: boolean) => ({ body: { ok: true, conversations: [{ id: "review", running }] } });
+  const boat = fakeBoat(
+    conversations(state !== "idle"),
+    ...(state === "idle" ? [] : [{ body: { ok: true } }, conversations(state === "pending")]),
+  );
+  if (!boat.provider.quiesce) throw new Error("Missing Boat quiescence support");
+  const result = boat.provider.quiesce({ sandboxId: ID });
+  if (state === "pending") await expect(result).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  else await result;
+  expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
+    ["GET", `/api/v1/sandboxes/${ID}/conversations`],
+    ...(state === "idle"
+      ? []
+      : [
+          ["POST", `/api/v1/sandboxes/${ID}/interrupt`],
+          ["GET", `/api/v1/sandboxes/${ID}/conversations`],
+        ]),
+  ]);
+});
+
+// The SDK boundary owns refusal classification/retry safety. Capture must finish
+// before stop, and a 409 refusal is safe to retry unlike an ambiguous 502.
+test("capture retries before physical stop", async () => {
+  const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
+  const boat = fakeBoat(
+    { body: { ok: true, conversations: [] } },
+    ready,
+    errorBody(409, "sandbox_not_ready", "Not ready"),
+    ready,
+    {
+      body: {
+        ok: true,
+        type: "command.finished",
+        success: true,
+        exitCode: 0,
+        stdout: '{"status":"clean"}',
+        stderr: "",
+        timedOut: false,
+      },
+    },
+    { body: { ok: true } },
+  );
+  if (!boat.provider.quiesce) throw new Error("Missing quiescence");
+  await boat.provider.quiesce({ sandboxId: ID });
+  expect(await preserveWork(boat.provider, ID)).toEqual({ status: "clean" });
+  await boat.provider.stop({ sandboxId: ID });
+  expect(boat.requests.map(({ method, path }) => [method, path.split("/").at(-1)])).toEqual([
+    ["GET", "conversations"],
+    ["GET", ID],
+    ["POST", "commands"],
+    ["GET", ID],
+    ["POST", "commands"],
+    ["POST", "stop"],
+  ]);
+});
+
+test("starting compute waits for readiness before a command", async () => {
+  const boat = fakeBoat(
+    { body: { ok: true, sandbox: sandbox({ state: "provisioning" }) } },
+    { body: { ok: true, sandbox: sandbox({ state: "ready" }) } },
+    {
+      body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout: "", stderr: "", timedOut: false },
+    },
+  );
+  await boat.provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true });
+  expect(boat.sleeps).toEqual([1000]);
+  expect(boat.requests.map((r) => r.method)).toEqual(["GET", "GET", "POST"]);
+});
+
+test("idle capture observations show command admission without a wake", async () => {
+  const log = spyOn(console, "info").mockImplementation(() => {});
+  try {
+    const boat = fakeBoat(
+      { body: { ok: true, sandbox: sandbox({ state: "idle" }) } },
+      {
+        body: {
+          ok: true,
+          type: "command.finished",
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      },
+    );
+    await boat.provider.exec({
+      sandboxId: ID,
+      command: "PRIVATE_COMMAND",
+      onlyIfRunning: true,
+      preservationStage: "collect_exec",
+    });
+    const observations = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(observations.find((e) => e.source === "state_guard")).toMatchObject({
+      providerState: "idle",
+      normalizedState: "ready",
+      stateMappingKnown: true,
+      decision: "command",
+      stage: "collect_exec",
+    });
+    expect(observations.some((e) => e.operation === "resume")).toBe(false);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat execution safely", async (outcome) => {
+  const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
+  const refused = errorBody(409, "sandbox_not_ready", "Not ready");
+  const replies =
+    outcome === "exhausted"
+      ? Array.from({ length: 5 }, () => [ready, refused]).flat()
+      : outcome === "stopped"
+        ? [ready, refused, { body: { ok: true, sandbox: sandbox({ state: "archived" }) } }]
+        : [ready, errorBody(502, "boat_direct_failed", "Command may have run")];
+  const boat = fakeBoat(...replies);
+  await expect(boat.provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true })).rejects.toMatchObject({
+    code: outcome === "ambiguous" ? "unavailable" : "sandbox_not_ready",
+    status: outcome === "stopped" ? undefined : outcome === "exhausted" ? 409 : 502,
+  });
+  expect(boat.requests.filter((r) => r.path.endsWith("/commands"))).toHaveLength(outcome === "exhausted" ? 5 : 1);
+  expect(boat.sleeps).toHaveLength(outcome === "exhausted" ? 4 : outcome === "stopped" ? 1 : 0);
+  expect(boat.requests.some((r) => r.path.endsWith("/resume") || r.path.endsWith("/stop"))).toBe(false);
+});
+
+test("capture cancellation during a readiness wait cannot admit a later command", async () => {
+  const controller = new AbortController();
+  const paths: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    sleep: async () => {
+      controller.abort();
+    },
+    fetch: (async (input) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return path.endsWith("/commands")
+        ? Response.json(errorBody(409, "sandbox_not_ready", "Not ready").body, { status: 409 })
+        : Response.json({ ok: true, sandbox: sandbox({ state: "ready" }) });
+    }) as typeof fetch,
+  });
+  await expect(
+    provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true, signal: controller.signal }),
+  ).rejects.toBeDefined();
+  expect(paths).toEqual([`/api/v1/sandboxes/${ID}`, `/api/v1/sandboxes/${ID}/commands`]);
+});
+
+test("matching live readable-variable receipt skips Boat wrapper installation and SSH", async () => {
+  const variables = { APP_REGION: "europe\n$(literal)", APP_EMPTY: "" };
+  const digest = createHash("sha256")
+    .update(JSON.stringify(Object.entries(variables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
+    .digest("hex");
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "command.finished",
+      success: true,
+      exitCode: 0,
+      stdout: digest + "\n",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    },
+  });
+  await boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables });
+  expect(boat.requests).toHaveLength(1);
+  expect(boat.requests[0]?.path).toBe(`/api/v1/sandboxes/${ID}/commands`);
+  expect(JSON.stringify(boat.requests[0]?.body)).not.toContain("literal");
+});
+
+test("cleared Boat /run receipt restarts SSH hydration instead of trusting a previous delivery", async () => {
+  const variables = { APP_REGION: "frozen" };
+  const digest = createHash("sha256")
+    .update(JSON.stringify(Object.entries(variables)))
+    .digest("hex");
+  const completed = (stdout: string) => ({
+    body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout, stderr: "", timedOut: false },
+  });
+  const boat = fakeBoat(completed(digest), completed("missing"), completed(""), {
+    status: 403,
+    body: errorBody(403, "FORBIDDEN", "Synthetic SSH authorization refused"),
+  });
+  await boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables });
+  // The VM has now lost /run state. Actual SSH authorization is deliberately refused,
+  // proving the owner re-enters hydration (and fails closed) without network transport.
+  await expect(
+    boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables }),
+  ).rejects.toThrow();
+  expect(boat.requests.map((request) => request.path)).toEqual([
+    `/api/v1/sandboxes/${ID}/commands`,
+    `/api/v1/sandboxes/${ID}/commands`,
+    `/api/v1/sandboxes/${ID}/commands`,
+    `/api/v1/sandboxes/${ID}/sshkey`,
+  ]);
+  expect(JSON.stringify(boat.requests.map((request) => request.body))).not.toContain("frozen");
+});
+// Preserve enough evidence to distinguish Armada admission from Boat rejection,
+// without exposing error bodies, labels, output, or new free-form state values.
+test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
+  "capture observations identify %s without waking or stopping compute",
+  async (state) => {
+    const log = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const reads = state === "archived" ? 1 : 5;
+      const boat = fakeBoat(
+        ...Array.from({ length: reads }, () => ({
+          body: { ok: true, sandbox: sandbox({ state, error: "PRIVATE_ERROR", labels: { secret: "PRIVATE_LABEL" } }) },
+        })),
+      );
+      await expect(
+        boat.provider.exec({
+          sandboxId: ID,
+          command: "PRIVATE_COMMAND",
+          onlyIfRunning: true,
+          preservationStage: "collect_exec",
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready", status: undefined });
+      const observations = log.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((e) => e.source === "state_guard");
+      expect(observations).toHaveLength(reads);
+      expect(observations.map((e) => e.attempt)).toEqual(Array.from({ length: reads }, (_, i) => i + 1));
+      expect(observations.at(-1)).toMatchObject({
+        stage: "collect_exec",
+        providerState: state === "PRIVATE_STATE" || state === "suspended" ? "unrecognized" : state,
+        stateMappingKnown: state === "provisioning" || state === "archived",
+        normalizedState: state === "archived" ? "stopped" : "starting",
+        decision: state === "archived" ? "refuse_terminal" : "startup_budget_exhausted",
+      });
+      expect(boat.requests.every((r) => r.method === "GET")).toBe(true);
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE");
+    } finally {
+      log.mockRestore();
+    }
+  },
+);

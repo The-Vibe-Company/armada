@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { resolveSkillpackCredential } from "../src/credentials.ts";
 import { decryptSecret, encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
 import {
@@ -258,6 +260,68 @@ describe("credentials", () => {
         harness: "claude",
       });
       expect(resolved.env).toEqual({ ANTHROPIC_API_KEY: "sk-ant-api03-two" });
+    });
+  });
+});
+
+describe("Skillpack registry credentials", () => {
+  test("tokens stay encrypted and user-over-org, without entering or changing model defaults", async () => {
+    await withVault(async ({ store, db, people }) => {
+      const org = await createOrg(store, people.stan, "Registry");
+      await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "member" });
+      const actor = { userId: people.ada, orgId: org.id };
+      const token = (digit: string) => `cmp_pat_${digit.repeat(48)}`; // Synthetic format-only fixtures.
+      const set = (userId: string, scope: "user" | "org", value: string) =>
+        setCredential(store, KEY, userId, { scope, org: org.id, kind: parseCredentialKind("skillpack"), value });
+      expect(await resolveSkillpackCredential(store, KEY, actor)).toBeNull();
+      for (const value of ["not-a-token", token("A"), token("a").slice(0, -1)]) {
+        const error = await set(people.ada, "user", value).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(VaultError);
+        expect(String(error)).not.toContain(value);
+      }
+      await expect(set(people.ada, "org", token("a"))).rejects.toThrow(/Only an org admin/);
+      await set(people.stan, "org", token("a"));
+      expect(await resolveSkillpackCredential(store, KEY, actor)).toEqual({ key: token("a"), scope: "org" });
+      await set(people.ada, "user", token("b"));
+      await expect(resolveCredentials(store, KEY, { ...actor, harness: "codex" })).rejects.toMatchObject({
+        code: "missing_credential",
+      });
+      await setCredential(store, KEY, people.ada, {
+        scope: "user",
+        org: undefined,
+        kind: "openai",
+        value: "synthetic-model-key",
+      });
+      const model = (await resolveCredentials(store, KEY, { ...actor, harness: "codex" })).binding;
+      if (!model) throw new Error("Missing model binding");
+      await set(people.ada, "user", token("c"));
+      expect(await resolveSkillpackCredential(store, KEY, actor)).toEqual({ key: token("c"), scope: "user" });
+      expect(await resolveCredentials(store, KEY, { ...actor, harness: "codex" })).toMatchObject({
+        binding: model,
+        env: { OPENAI_API_KEY: "synthetic-model-key" },
+        files: [],
+      });
+      const rows = await db.query<{ id: string; is_default: boolean; value_enc: Uint8Array }>(
+        "select id,is_default,value_enc from credentials where kind='skillpack' and owner_id=$1",
+        [people.ada],
+      );
+      expect(rows.rows).toHaveLength(1);
+      const stored = rows.rows[0];
+      if (!stored) throw new Error("Missing Skillpack credential");
+      expect(stored.is_default).toBe(false);
+      expect(Buffer.from(stored.value_enc).toString()).not.toContain(token("c"));
+      await expect(
+        mutateCredentialAccount(store, KEY, people.ada, {
+          action: "default",
+          scope: "user",
+          id: stored.id,
+        }),
+      ).rejects.toThrow(/No such account/);
+      await expect(db.query("update credentials set is_default=true where id=$1", [stored.id])).rejects.toThrow(
+        /credentials_nonmodel_default_chk/,
+      );
+      await removeCredential(store, people.ada, { scope: "user", org: undefined, kind: "skillpack" });
+      expect(await resolveSkillpackCredential(store, KEY, actor)).toEqual({ key: token("a"), scope: "org" });
     });
   });
 });
@@ -634,24 +698,13 @@ describe("GitHub connections", () => {
     });
   });
 
-  test("a refresh transaction holds its scoped callback until work settles and releases after errors", async () => {
+  test("a local refresh queue serializes scoped callbacks without a database transaction", async () => {
     await withVault(async ({ db, people }) => {
-      let tail = Promise.resolve();
       const serialSql: Sql = {
         query: db.query.bind(db),
         autonomousQuery: db.query.bind(db),
-        transaction: async <T>(work: (sql: Sql) => Promise<T>) => {
-          const previous = tail;
-          let release!: () => void;
-          tail = new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          await previous;
-          try {
-            return await work(serialSql);
-          } finally {
-            release();
-          }
+        transaction: async () => {
+          throw new Error("HTTP refresh must not reserve a transaction");
         },
       };
       const first = createSqlVaultStore(serialSql);
@@ -706,3 +759,6 @@ async function withVault(
     await db.close();
   }
 }
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

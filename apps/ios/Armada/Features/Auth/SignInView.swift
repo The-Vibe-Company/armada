@@ -53,7 +53,7 @@ struct SignInView: View {
                 Text("Armada")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(ArmadaTheme.textPrimary)
-                Text("Sign in to manage your orchestrators and sandboxes.")
+                Text("Sign in to manage your sandboxes.")
                     .font(.subheadline)
                     .foregroundStyle(ArmadaTheme.textSecondary)
                     .multilineTextAlignment(.center)

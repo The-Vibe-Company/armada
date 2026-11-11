@@ -1,4 +1,11 @@
-export { API_FAILURE_HELP, API_FAILURE_STATUS, type ApiFailureCode } from "./api-failure.ts";
+export {
+  API_FAILURE_HELP,
+  API_FAILURE_STATUS,
+  type ApiFailureCode,
+  GitHubHydrationError,
+  type GitHubHydrationPhase,
+  githubHydrationPhase,
+} from "./api-failure.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
@@ -26,6 +33,7 @@ export {
   resolveCredential,
   resolveCredentials,
   resolveModalTokens,
+  resolveSkillpackCredential,
   toHarnessCredentials,
 } from "./credentials.ts";
 export {
@@ -114,6 +122,8 @@ export {
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
+export { goldenBuildFailureText, providerPaymentRequiredMessage } from "./golden-build-status.ts";
+export type { GoldenBuildWarning } from "./golden-build-warning.ts";
 export {
   assignDirs,
   configFromFlags,
@@ -135,6 +145,7 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
+export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -168,6 +179,14 @@ export {
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
 export {
+  MODEL_PRICE_SOURCES,
+  MODEL_PRICES,
+  MODEL_PRICES_AS_OF,
+  type ModelPrice,
+  modelPrice,
+  type PriceVendor,
+} from "./model-prices.ts";
+export {
   type HarnessModels,
   MODEL_CATALOG,
   type ModelChoice,
@@ -175,7 +194,13 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export * from "./orchestrator.ts";
-export { dedupeEvents, type PromptOutcome, promptOutcome, turnInterruptionReason } from "./outcome.ts";
+export {
+  dedupeEvents,
+  type PromptOutcome,
+  promptOutcome,
+  readPromptEvents,
+  turnInterruptionReason,
+} from "./outcome.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
@@ -203,6 +228,7 @@ export {
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,
+  SANDBOX_STATES,
   type SandboxInfo,
   type SandboxState,
   type SnapshotInfo,
@@ -213,6 +239,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,
@@ -229,6 +256,7 @@ export {
   resourceInterval,
   type VmResourceReading,
 } from "./resource-observation.ts";
+export type { Routine } from "./routines.ts";
 export {
   type CleanupResult,
   cleanupSandboxes,
@@ -244,6 +272,16 @@ export {
   statusReasonOf,
 } from "./sandbox.ts";
 export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
+export {
+  COST_BASIS_LABELS,
+  type CostBasis,
+  combineCosts,
+  costBasis,
+  type SandboxCost,
+  sandboxCost,
+  type TurnCost,
+  turnCost,
+} from "./sandbox-cost.ts";
 export {
   DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
@@ -265,8 +303,25 @@ export {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
-export { reportedTurnUsage, type SandboxUsage, type TurnTokenUsage } from "./sandbox-usage.ts";
+export {
+  reportedTurnUsage,
+  type SandboxUsage,
+  type SandboxUsageSummary,
+  summarizeSandboxUsage,
+  sumSandboxUsage,
+  type TokenUsageTotals,
+  type TurnTokenUsage,
+  withUsageTotals,
+} from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
+export {
+  type LaunchTemplate,
+  TEMPLATE_REFUSAL_HELP,
+  type TemplateDefinition,
+  type TemplateRefusalReason,
+  templateRefusalHelp,
+} from "./templates.ts";
+export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,
   addMember,
@@ -288,6 +343,11 @@ export {
   setMemberRole,
   type VaultStore,
 } from "./vault.ts";
-export { VaultError, type VaultErrorCode } from "./vault-error.ts";
+export {
+  APPLICATION_VAULT_CONFLICT_MESSAGES,
+  CREDENTIAL_BUSY_MESSAGE,
+  VaultError,
+  type VaultErrorCode,
+} from "./vault-error.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

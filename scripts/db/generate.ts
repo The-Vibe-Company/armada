@@ -27,6 +27,15 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  routines: "RoutineRow",
+  launch_templates: "LaunchTemplateRow",
+  launch_template_revisions: "LaunchTemplateRevisionRow",
+  template_launch_requests: "TemplateLaunchRequestRow",
+  application_secrets: "ApplicationSecretRow",
+  application_secret_uploads: "ApplicationSecretUploadRow",
+  application_vault_audit: "ApplicationVaultAuditRow",
+  readable_variables: "ReadableVariableRow",
+  sandbox_turn_models: "SandboxTurnModelRow",
   sandbox_work_recovery: "SandboxWorkRecovery",
   orchestrator_activity: "OrchestratorActivity",
   orchestrator_child_operations: "OrchestratorChildOperation",
@@ -44,6 +53,7 @@ const ROW_ALIASES: Record<string, string> = {
   modal_server_apps: "ModalServerAppRow",
   modal_server_scopes: "ModalServerScopeRow",
   modal_server_harnesses: "ModalServerHarnessRow",
+  armada_access_parents: "ArmadaAccessParentRow",
   orchestrators: "OrchestratorIdentityRow",
   orchestrator_children: "OrchestratorChildRow",
   orchestrator_operations: "OrchestratorOperationRow",

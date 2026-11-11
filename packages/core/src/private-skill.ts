@@ -1,0 +1,117 @@
+import type { Harness } from "./contract.ts";
+import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
+import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "./private-skill-error.ts";
+import type { Provider } from "./provider.ts";
+import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
+import { PrivateSshError, sshPrivateSkillCommand } from "./ssh-executor.ts";
+import { cleanupGuestKey } from "./ssh-key-cleanup.ts";
+
+export { PRIVATE_SKILL_FAILURES, PrivateSkillError, type PrivateSkillFailure } from "./private-skill-error.ts";
+
+/** Native registry references are bare slugs, scoped by the key's workspace. */
+export const PRIVATE_SKILL_PATTERN = /^[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
+
+/** Shared private install boundary for orchestrator, launch and golden callers. No provider command journal. */
+export async function installPrivateSkill(
+  provider: Provider,
+  input: {
+    sandboxId: string;
+    projectDir: string;
+    reference: string;
+    harness: Harness;
+    key: string | null;
+    buildWarnings?: readonly string[];
+  },
+): Promise<OrchestratorSkillReceipt & { workspaceId: string }> {
+  if (!input.key) throw new PrivateSkillError("skillpack_credential_missing");
+  if (!new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(input.key))
+    throw new PrivateSkillError("skillpack_credential_unreadable", "credential");
+  if (
+    !PRIVATE_SKILL_PATTERN.test(input.reference) ||
+    input.reference.length > 256 ||
+    !input.projectDir.startsWith("/") ||
+    [...input.projectDir].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+  )
+    throw new PrivateSkillError("skillpack_request_rejected", "install");
+  const [slug, version] = input.reference.split("@");
+  const tool = input.harness === "claude" ? "claude-code" : "codex";
+  // Only fixed failure labels or the validated receipt leave the guest. Never forward CLI stderr/stdout.
+  const script = `set +x
+command -v node >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE node_missing\\n' >&2; exit 91; }
+command -v flock >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE flock_missing\\n' >&2; exit 91; }
+[ -d '/home/user' ] && [ -x '/home/user' ] || { printf 'ARMADA_PRIVATE_FAILURE home_unavailable\\n' >&2; exit 91; }
+armada_cleanup_pending=1
+trap 'if [ "$armada_cleanup_pending" = 1 ]; then printf "ARMADA_PRIVATE_FAILURE key_cleanup_failed\\n" >&2; fi' EXIT
+${cleanupGuestKey}
+armada_cleanup_pending=0
+trap - EXIT
+node <<'ARMADA_SKILL_INSTALL'
+const {spawnSync}=require('node:child_process'),fs=require('node:fs');
+const key=process.env.ARMADA_GIT_TOKEN;delete process.env.ARMADA_GIT_TOKEN;
+const env={...process.env,SKILLPACK_API_KEY:key,SKILLPACK_TELEMETRY:'0',PATH:(process.env.PATH||'')+':/home/user/.local/bin'};
+const base=['--api-url','https://skillpack.app/v1','--json'];
+const home=fs.statSync('/home/user');
+function run(args){return spawnSync('skillpack',args,{env,uid:home.uid,gid:home.gid,encoding:'utf8',timeout:240000,maxBuffer:1048576});}
+function execution(result){if(result.error?.code==='ENOENT'||result.error?.code==='EACCES')fail('skillpack_cli_unavailable');if(result.error?.code==='ETIMEDOUT'||result.signal)fail('skillpack_timeout');if(result.error)fail('skillpack_process_failed');}
+let stage="auth";
+function fail(reason){process.stdout.write(JSON.stringify({reason,stage}));process.exit(0);}
+try{
+ const status=run(['auth','status',...base]);
+ execution(status);
+ if(status.status!==0)fail((status.status===3||status.status===7)?'skillpack_credential_refused':status.status===2?'skillpack_cli_unavailable':'skillpack_auth_unavailable');
+ let s;try{s=JSON.parse(status.stdout);}catch{fail('skillpack_protocol_invalid');}const workspace=s?.workspace?.id;
+ if(typeof workspace!=='string'||!(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/).test(workspace))fail('skillpack_protocol_invalid');
+ stage='install';
+ const result=run(['install',${JSON.stringify(slug)},'--version',${JSON.stringify(version)},'--scope','project','--project',${JSON.stringify(input.projectDir)},'--tools',${JSON.stringify(tool)},'--pin','--yes',...base]);
+ delete env.SKILLPACK_API_KEY;
+ execution(result);
+ if(result.status!==0)fail(result.status===3?'skillpack_credential_refused':(result.status===4||result.status===7)?'skillpack_skill_unavailable':result.status===2?'skillpack_request_rejected':result.status===6?'skillpack_install_conflict':result.status===5?'skillpack_request_rejected':result.status===8?'skillpack_registry_unavailable':'skillpack_install_nonzero');
+ stage="receipt";
+ let lock;try{lock=JSON.parse(fs.readFileSync(${JSON.stringify(`${input.projectDir}/.companion/skills.lock.json`)},'utf8'));}catch{fail('skillpack_receipt_invalid');}
+ const w=lock.workspaces?.[workspace],e=w?.skills?.[${JSON.stringify(slug)}];
+ if(![2,3].includes(lock.lockfileVersion)||w?.apiUrl!=='https://skillpack.app/v1'||e?.version!==${JSON.stringify(version)}||e.pinned!==${JSON.stringify(version)}||!(/^[a-f0-9-]{36}$/).test(e.skillId)||!(/^sha256:[a-f0-9]{64}$/).test(e.checksum)||!e.targets?.some(t=>t.tool===${JSON.stringify(tool)}&&t.version===e.version&&t.packageChecksum===e.checksum))fail('skillpack_receipt_invalid');
+ process.stdout.write(JSON.stringify({reference:${JSON.stringify(input.reference)},version:e.version,skillId:e.skillId,checksum:e.checksum,origin:w.apiUrl,workspaceId:workspace}));
+}catch{fail(stage==='receipt'?'skillpack_receipt_invalid':stage==='auth'?'skillpack_protocol_invalid':'skillpack_install_state_invalid');}
+ARMADA_SKILL_INSTALL`;
+  try {
+    const value = JSON.parse(
+      await sshPrivateSkillCommand(provider, { sandboxId: input.sandboxId, key: input.key, script }),
+    );
+    if (
+      [...PRIVATE_SKILL_FAILURES, "skillpack_credential_refused", "skillpack_skill_unavailable"].includes(value.reason)
+    )
+      throw new PrivateSkillError(
+        value.reason,
+        ["auth", "install", "receipt"].includes(value.stage) ? value.stage : "transport",
+      );
+    if (
+      typeof value.workspaceId !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.workspaceId) ||
+      value.reference !== input.reference ||
+      value.version !== version ||
+      !/^[a-f0-9-]{36}$/.test(value.skillId) ||
+      !/^sha256:[a-f0-9]{64}$/.test(value.checksum) ||
+      value.origin !== "https://skillpack.app/v1"
+    )
+      throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
+    return {
+      reference: input.reference,
+      version: version!,
+      skillId: value.skillId,
+      checksum: value.checksum,
+      origin: value.origin,
+      workspaceId: value.workspaceId,
+    };
+  } catch (error) {
+    if (error instanceof PrivateSkillError) {
+      if (
+        error.reason === "skillpack_cli_unavailable" &&
+        input.buildWarnings?.includes("skillpack_download_unavailable")
+      )
+        throw new PrivateSkillError("skillpack_download_unavailable", error.stage);
+      throw error;
+    }
+    if (error instanceof PrivateSshError) throw new PrivateSkillError(error.reason, "transport");
+    throw new PrivateSkillError("skillpack_ssh_output_invalid", "transport");
+  }
+}

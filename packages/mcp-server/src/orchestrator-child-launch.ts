@@ -55,13 +55,13 @@ export async function launchOrchestratorChild(input: {
       const row = (
         await sql.query(
           `select c.id from public.orchestrator_child_operations c
-      join public.orchestrators o on o.id=c.orchestrator_id
+      join public.armada_access_parents o on o.id=c.orchestrator_id
       join public.sandboxes s on s.id=o.sandbox_id
       join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
       where c.id=$1 and c.target_id=$2 and c.owner_id=$3 and c.org_id=$4 and c.action='launch'
       and c.orchestrator_id=$5 and c.parent_generation=$6 and c.parent_epoch=$7
       and c.state='pending' and c.dispatched_at is not null and o.state='ready'
-      and s.lifecycle_generation=c.parent_generation and o.authority_epoch=c.parent_epoch`,
+      and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.authority_epoch=c.parent_epoch`,
           [op.id, op.sandboxId, op.ownerId, op.orgId, op.orchestratorId, op.parentGeneration, op.parentEpoch],
         )
       ).rows[0];
@@ -142,7 +142,7 @@ export async function launchOrchestratorChild(input: {
         )
           throw new Error("Child registration identity mismatch.");
         return sql.transaction(async (tx) => {
-          const saved = await createSqlSandboxStore(tx).insert({
+          const saved = await createSqlSandboxStore(tx, { turnModels: true }).insert({
             ...record,
             credentialId: selection.credentialId,
             credentialVersion: selection.credentialVersion,
@@ -195,6 +195,7 @@ export async function launchOrchestratorChild(input: {
         harness: selection.harness,
         model: selection.model,
         ...(selection.size === undefined ? {} : { size: selection.size }),
+        ...(selection.skills === undefined ? {} : { skills: selection.skills }),
         ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
         ...(selection.repo ? { repo: selection.repo } : {}),
         ...(selection.prompt ? { prompt: selection.prompt } : {}),

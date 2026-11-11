@@ -18,7 +18,7 @@ jobs:
   verify:
     name: Lint, typecheck and test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
@@ -106,20 +106,34 @@ jobs:
       - run: bun scripts/prepare-runtime.ts
       - run: bun scripts/golden-os-image.ts
       - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts
+      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 
   # The dashboard runs as a production build against a mock of Supabase and the Armada server.
   e2e:
     name: Dashboard e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Use the image for pre-baked Noble system libraries, not its bundled browsers.
+    # Install the lockfile-selected Chromium below so browser/package revisions match.
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble@sha256:f1e7e01021efd65dd1a2c56064be399f3e4de00fd021ac561325f2bfbb2b837a
+      options: --ipc=host
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
+      # The container has Node/npm, but not jq (used by setup-bun's fallback).
+      - name: Install pinned Bun
+        run: |
+          version=$(node -p "require('./package.json').packageManager.split('@')[1]")
+          npm install --global --prefix "$HOME/.bun-npm" "bun@$version"
+          echo "$HOME/.bun-npm/bin" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
-      - run: bunx playwright install --with-deps chromium
+      - name: Install Chromium
+        run: bunx playwright install chromium
         working-directory: apps/dashboard
       - run: bun run e2e
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

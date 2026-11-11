@@ -250,7 +250,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(await transport.requests.count == 4)
 }
 
-@Test func refusalsMapToLocalExplanationsAndOnlyValidationShowsTheServerReason() {
+@Test func refusalsKeepSafeServerRemediesAndHidePostStartOutput() throws {
     func classify(_ status: Int, _ body: String) -> SandboxLaunchFailure {
         SandboxLaunchFailure.classify(status: status, body: Data(body.utf8))
     }
@@ -263,7 +263,24 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
         Issue.record("Expected a refusal"); return
     }
     #expect(missing.title == "No model account for this agent")
-    #expect(missing.detail == nil)
+    #expect(missing.detail == "Run 'armada creds set claude-oauth'.")
+    // Credential-resolution messages are authored by Armada, not provider or init output.
+    // A provider credential failure must not be explained as merely a missing model account.
+    let credentialCases: [(String, String, String?)] = [
+        ("missing_credential", "Your org has no Modal token pair.\nAsk an org admin to connect Modal.", "Your org has no Modal token pair. Ask an org admin to connect Modal."),
+        ("no_credentials", "The stored Codex auth.json is not valid JSON.", "The stored Codex auth.json is not valid JSON."),
+        ("no_credentials", "no_credentials", nil),
+        ("missing_credential", " \n\t ", nil),
+    ]
+    for (code, message, expected) in credentialCases {
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "error": ["code": code, "message": message]
+        ]), as: UTF8.self)
+        guard case .refused(let credential) = classify(404, body) else {
+            Issue.record("Credential resolution failed before launch"); return
+        }
+        #expect(credential.detail == expected)
+    }
     // A provider's non-allocating refusal of the fork arrives as 503 with its code.
     guard case .refused(let plan) = classify(503, #"{"error":{"code":"payment_required","message":"x"}}"#) else {
         Issue.record("Expected a refusal"); return
@@ -290,10 +307,20 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     }
     #expect(setup.detail == nil)
     #expect(setup.title == "Golden setup failed")
-    // A missing route allocated nothing; a server error or an unknown 400 code proves nothing.
+    // A missing route allocated nothing; a server error or the legacy `unknown` code proves nothing.
     #expect(classify(404, "Not Found") == .refused(SandboxLaunchFailure.refusal(code: "", message: nil)))
     #expect(classify(500, #"{"error":{"code":"unavailable","message":"x"}}"#) == .unconfirmed)
     #expect(classify(400, #"{"error":{"code":"unknown","message":"x"}}"#) == .unconfirmed)
+    // #962: a code this build does not know, answered as a 4xx with the server's reason, is a
+    // refusal that shows that reason; without one, or with an uncertain code, nothing is proven.
+    guard case .refused(let later) = classify(422, #"{"error":{"code":"quota_exceeded","message":"Your organization reached\nits sandbox quota."}}"#) else {
+        Issue.record("Expected a refusal"); return
+    }
+    #expect(later.code == "quota_exceeded" && later.title == "Armada refused this launch")
+    #expect(later.detail == "Your organization reached its sandbox quota.")
+    #expect(classify(422, #"{"error":{"code":"quota_exceeded"}}"#) == .unconfirmed)
+    #expect(classify(400, #"{"error":{"code":"quota_exceeded","message":" "}}"#) == .unconfirmed)
+    #expect(classify(409, #"{"error":{"code":"outcome_unknown","message":"x"}}"#) == .unconfirmed)
     let long = String(repeating: "a", count: 400)
     guard case .refused(let bounded) = classify(409, #"{"error":{"code":"conflict","message":"\#(long)"}}"#) else {
         Issue.record("Expected a refusal"); return

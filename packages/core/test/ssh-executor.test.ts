@@ -268,3 +268,45 @@ test.each(["boat", "modal"] as const)(
     await expect(sshPrivateAuthState(selected, "native", deps)).rejects.toThrow("Private native auth exchange failed.");
   },
 );
+
+// Fixed protocol records are the only guest metadata admitted to build results.
+test.each(["warning", "integrity"])("SSH checkout carries closed build outcome %s", async (mode) => {
+  const warnings: string[] = [];
+  const spawn: any = (file: string) => {
+    const c: any = new EventEmitter();
+    c.stderr = new EventEmitter();
+    c.stdin = {
+      end: () =>
+        queueMicrotask(() => {
+          if (file === "ssh") {
+            c.stderr.emit("data", "opaque guest detail\nARMADA_BUILD_WARN");
+            c.stderr.emit(
+              "data",
+              mode === "warning"
+                ? "ING skillpack download_unavailable\nARMADA_BUILD_WARNING skillpack secret-not-allowed\n"
+                : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
+            );
+          }
+          c.emit("close", file === "ssh" && mode === "integrity" ? 98 : 0);
+        }),
+    };
+    return c;
+  };
+  const run = sshStdinCheckout(
+    provider,
+    { sandboxId: "bx", token: "synthetic", script: "unused" },
+    {
+      spawn,
+      onWarning: (warning) => warnings.push(warning),
+      chmod: async () => {},
+      writeFile: async () => {},
+      readPublicKey: async () => "ssh-ed25519 AAAA ephemeral",
+    },
+  );
+  if (mode === "integrity")
+    await expect(run).rejects.toMatchObject({ code: "build_failed", safeReason: "skillpack_integrity_failed" });
+  else {
+    await run;
+    expect(warnings).toEqual(["skillpack_download_unavailable"]);
+  }
+});

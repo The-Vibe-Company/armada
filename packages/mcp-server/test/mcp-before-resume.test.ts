@@ -12,6 +12,7 @@ import { sandbox as boatSandbox } from "../../provider-boat/test/support.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { nativeMcpInstallScript } from "../src/mcp-native.ts";
+import { createModelAuthOwnership } from "../src/model-auth.ts";
 
 // Boat actually preserves boot_id across archive/restore: authority must be fenced
 // before a possibly ambiguous resume, not inferred only from kernel identity.
@@ -323,6 +324,21 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
         ])
       ).rows[0]?.mcp_generation,
     ).toBe(1);
+    // Permanent taint is read by fresh service instances at the actual resume
+    // boundary, even when SQL still says ready and the provider autoarchived.
+    await db.query("update sandboxes set application_secret_tainted=true where id=$1", [record.id]);
+    state = "archived";
+    const previousResumes = resumes;
+    const previousWrites = writes;
+    const previousTurns = turns;
+    await expect(prompt()).rejects.toThrow("cannot resume");
+    await expect(replica().beforeResume(provider, record.providerSandboxId, actor)).rejects.toThrow("cannot resume");
+    await expect(
+      createModelAuthOwnership(db, key).beforeResume(provider, record.providerSandboxId, actor),
+    ).rejects.toThrow("cannot resume");
+    expect(resumes).toBe(previousResumes);
+    expect(writes).toBe(previousWrites);
+    expect(turns).toBe(previousTurns);
   } finally {
     await service?.close();
     await Promise.all(servers.map((server) => server.close()));

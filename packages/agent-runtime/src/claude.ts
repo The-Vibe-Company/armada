@@ -12,6 +12,9 @@ export class ClaudeDriver implements Driver {
   private configs = new Set<PrivateMcpFile>();
   private queries = new Set<ReturnType<typeof query>>();
   constructor(private options: { cwd: string; executable: string; env: Record<string, string> }) {}
+  configureReadableVariables(variables: Record<string, string>): void {
+    Object.assign(this.options.env, variables);
+  }
   start(c: DriverContext): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     if (c.request.fast && (c.request.model ?? "claude-opus-5-5") !== "claude-opus-5-5")
@@ -183,6 +186,8 @@ export class ClaudeDriver implements Driver {
               text: completedText.get(key) ?? "",
               partial: false,
               model: event.message.model,
+              responseKind: "assistant",
+              ...(event.parent_tool_use_id ? { parentToolUseId: event.parent_tool_use_id } : {}),
               tools,
             });
           } else if (event.type === "user") {
@@ -193,6 +198,8 @@ export class ClaudeDriver implements Driver {
                 if (block.type === "tool_result")
                   c.emit({
                     kind: "message",
+                    responseKind: "tool_result",
+                    ...(event.parent_tool_use_id ? { parentToolUseId: event.parent_tool_use_id } : {}),
                     text: "",
                     partial: false,
                     tools: [

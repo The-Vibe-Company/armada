@@ -186,3 +186,57 @@ This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queu
 ## License
 
 [MIT](LICENSE)
+
+### Reading event pages
+
+`armada logs ID` reads one page; `--since CURSOR` continues from a saved cursor.
+`--all` drains available pages immediately. `--follow` also drains the backlog
+without a polling delay, then polls once per second while the agent is active.
+Ctrl-C stops the local reader, not the agent.
+
+With `--json`, stdout is a stream of page objects (not one JSON array): each
+contains `events`, `cursor`, `hasMore` and `settled`. Existing fields and pretty
+formatting are unchanged. For scripts:
+
+```sh
+armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+```
+
+Save the last page's `cursor` and pass it with `--since` to resume. Errors go to
+stderr and return a nonzero exit code.
+
+Command discovery works before signing in: use `armada COMMAND --help` (or
+`-h`) for sandbox, golden, authentication, organization, credential and MCP
+commands. These show the shared command reference without reading a session or
+contacting a server. Template, variable, secret and skill commands keep their
+dedicated help. Help is only intercepted when it is the sole argument after
+the command; for example, `armada exec ID -- --help` remains remote command text.
+
+### Sandbox errors and scripts
+
+Sandbox failures go to stderr; stdout remains available for successful output.
+Use `--json` for `{"error":{"code":"not_found","message":"…","legacyCode":"conflict"}}`.
+`code` now classifies missing/inaccessible sandboxes as `not_found`, access
+denials as `forbidden`, and lifecycle refusals as `conflict`,
+`sandbox_not_ready` or `no_running_turn` when the server supplies that reason.
+Only fixed, recognized reasons are displayed; arbitrary provider/guest text is
+never echoed. For an unknown failure the CLI gives safe status/selection guidance,
+not an invented underlying cause.
+
+Existing `code` and `message` fields remain; when a sandbox code is corrected,
+the additive `legacyCode` field aliases the old CLI code. New integrations should
+use `error.code`; integrations migrating old code comparisons can use
+`error.legacyCode // error.code` in jq. Versioned API reasons (such as `extension_not_found`) are retained. Stop
+previously collapsed service/outcome reasons into `unavailable`; these now retain
+the versioned reason with `legacyCode: "unavailable"`. Exit 2 means a usage/invalid-request
+failure; exit 1 means access, state, unsupported operation or service failure.
+Check `armada list --json` for visible IDs and state; verify your org selection
+with `armada org current` or pass `--org UUID`.
+
+Sandbox mutations are not replayed after transport/server failures or state
+conflicts. Existing authentication recovery may refresh a personal session and
+retry once after HTTP401. On a transport/server failure,
+check its outcome before retrying: a prompt or stop may already have been
+accepted. If status/detail cannot be read during a transition, inspect
+`armada list --json` instead; this guidance does not repair a stuck provider
+lifecycle. `recovery --help` also works before login.

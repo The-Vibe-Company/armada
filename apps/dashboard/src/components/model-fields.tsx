@@ -5,19 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
+import { EFFORT_LABEL } from "@/lib/labels";
 
 export type ModelCatalog = Readonly<Record<Harness, HarnessModels>>;
 
 /** Must match `OTHER_MODEL` in `@/lib/model-choice`, which reads the form on the server. */
 const OTHER_MODEL = "other";
-export const EFFORT_LABEL: Record<string, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-  ultra: "Ultra",
-};
+
+export { EFFORT_LABEL };
 
 /**
  * The model and reasoning effort selects of a launch or a send. The suggested models of the harness are
@@ -31,6 +26,7 @@ export function ModelFields({
   keepLabel,
   launchedModel,
   onChoice,
+  initial,
 }: {
   idPrefix: string;
   harness: Harness;
@@ -39,13 +35,18 @@ export function ModelFields({
   launchedModel?: string | null;
   /** The model id and effort that will be sent, as they change: what a compact summary shows. */
   onChoice?: (choice: { model: string; effort: string }) => void;
+  /** Start on this choice instead of the harness default (a template's revision being edited). */
+  initial?: { model: string; effort: string };
 }) {
   const entry = catalog[harness];
-  const initialModel = keepLabel ? "" : entry.defaultModel;
-  const initialEffort = keepLabel ? "" : entry.defaultReasoningEffort;
+  // A model the catalog does not list starts as "Other model id", its id in the field.
+  const initialListed = initial ? entry.models.some((option) => option.id === initial.model) : true;
+  const initialModel = keepLabel ? "" : initial ? (initialListed ? initial.model : OTHER_MODEL) : entry.defaultModel;
+  const initialEffort = keepLabel ? "" : (initial?.effort ?? entry.defaultReasoningEffort);
+  const initialOther = initial && !initialListed ? initial.model : "";
   const [model, setModel] = useState(initialModel);
   const [effort, setEffort] = useState(initialEffort);
-  const [otherModel, setOtherModel] = useState("");
+  const [otherModel, setOtherModel] = useState(initialOther);
   const group = useRef<HTMLDivElement>(null);
   const selectedModel = model === OTHER_MODEL ? otherModel.trim() : model || launchedModel;
   const efforts =
@@ -63,11 +64,11 @@ export function ModelFields({
     const reset = () => {
       setModel(initialModel);
       setEffort(initialEffort);
-      setOtherModel("");
+      setOtherModel(initialOther);
     };
     form?.addEventListener("reset", reset);
     return () => form?.removeEventListener("reset", reset);
-  }, [initialModel, initialEffort]);
+  }, [initialModel, initialEffort, initialOther]);
 
   function chooseModel(next: string) {
     setModel(next);

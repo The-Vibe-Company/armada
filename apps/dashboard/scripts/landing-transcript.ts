@@ -49,7 +49,7 @@ const API: Record<string, unknown> = {
       deletedAt: null,
     },
     golden: golden("widgets", "boat", ["widgets", "widgets-api"]),
-    github: { status: "connected", login: "lea-acme", message: null },
+    github: { status: "connected", login: "lea-acme", message: null, tokenExpiresAt: "2026-11-09T17:30:00.000Z" },
     ttlSeconds: 14_400,
     expiresAt: "2026-11-09T13:30:00.000Z",
     conversationId: "conversation-1",

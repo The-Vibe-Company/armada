@@ -217,6 +217,11 @@ export function fakeBoat() {
     async interrupt() {},
     async events(request: EventsRequest) {
       const all = find(request.sandboxId).events;
+      if (request.direction === "backward") {
+        const end = request.cursor ? Number(request.cursor) : all.length;
+        const start = Math.max(0, end - (request.limit ?? 100));
+        return { events: all.slice(start, end), olderCursor: String(start), cursor: String(end), hasMore: start > 0 };
+      }
       const start = request.cursor ? Number(request.cursor) : 0;
       const limit = request.limit ?? 100;
       const events = all.slice(start, start + limit);
@@ -385,6 +390,7 @@ export async function harness(
     modalProviderFor?: HandlerOptions["modalProviderFor"];
     providerFor?: HandlerOptions["providerFor"];
     modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
+    connections?: HandlerOptions["connections"];
   } = {},
 ): Promise<TestServer> {
   const { db, people } = await database();
@@ -450,6 +456,7 @@ export async function harness(
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
+    ...(options.connections ? { connections: options.connections } : {}),
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
     ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),

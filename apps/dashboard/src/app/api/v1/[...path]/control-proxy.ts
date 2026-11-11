@@ -5,9 +5,29 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 const PUBLIC_POST_PATHS = new Set(["auth/refresh", "auth/exchange", "auth/email/start", "auth/email/verify"]);
 const PRIVATE_POST_PATHS = new Set([
+  "templates/create",
+  "templates/list",
+  "templates/get",
+  "templates/publish",
+  "templates/delete",
+  "templates/launch",
+  "variables/list",
+  "variables/read",
+  "variables/set",
+  "variables/update",
+  "variables/revoke",
+  "variables/delete",
+  "secrets/list",
+  "secrets/set",
+  "secrets/rotate",
+  "secrets/revoke",
+  "secrets/delete",
+  "secrets/upload",
+  "secrets/commit",
   "account/status",
   "account/logout",
   "github/status",
+  "github/refresh",
   "github/connect",
   "github/reconnect",
   "github/disconnect",
@@ -53,13 +73,17 @@ const PRIVATE_POST_PATHS = new Set([
   "launch/options",
   "sandbox/launch",
   "sandbox/launch-sized-v1",
+  "sandbox/launch-access-v1",
   "sandbox/bind-credential",
   "sandbox/list",
   "sandbox/detail",
   "sandbox/status",
+  "sandbox/recovery",
+  "sandbox/report",
   "sandbox/advice",
   "sandbox/send",
   "sandbox/stop",
+  "sandbox/extend",
   "sandbox/wait",
   "sandbox/exec",
   "sandbox/steer",
@@ -91,7 +115,10 @@ function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean
   if (method === "GET" && path.length === 2 && path[1] === "capabilities") return true;
   if (!path[1] || !ORCHESTRATOR_ID.test(path[1])) return false;
   if (method === "GET")
-    return path.length === 2 || (path.length === 3 && ["events", "settings", "waits"].includes(path[2] ?? ""));
+    return (
+      path.length === 2 || (path.length === 3 && ["events", "settings", "waits", "connections"].includes(path[2] ?? ""))
+    );
+  if (path.length === 4 && path[2] === "connections") return ["add", "remove"].includes(path[3] ?? "");
   if (path.length === 3)
     return ["message", "steer", "stop", "resume", "recover", "settings", "waits"].includes(path[2] ?? "");
   return (
@@ -103,7 +130,10 @@ function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean
 }
 
 function fail(status: number, error: string): Response {
-  return NextResponse.json({ error }, { status, headers: { "cache-control": "no-store" } });
+  return NextResponse.json(
+    status === 404 ? { error: { code: "unknown_route", message: "Unknown route." } } : { error },
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /** Bound raw streamed bytes before decoding/forwarding, including absent/chunked length. */

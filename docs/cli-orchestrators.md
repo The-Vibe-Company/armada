@@ -42,6 +42,80 @@ policy or infer capacity from a size label. Idle period is optional, in seconds;
 server defaults apply when omitted. No default child limit, daily-start quota or
 provider pacing is sent.
 
+## MCP connections
+
+Creation accepts `--connections ID1,ID2` or `--no-connections` (mutually exclusive).
+Omitting both uses ordinary launch defaults at creation. Each connection must be
+connected and usable by the owner in this organization; private parent visibility
+does not authorize another member's personal connections.
+An inaccessible selection is refused synchronously with `404 not_found`, before
+reserving an asynchronous create or allocating a provider sandbox. The launcher
+rechecks grants before binding them.
+
+```sh
+armada orchestrator create reviews --org ORG --golden GOLDEN --provider boat \
+  --agent codex --model MODEL --model-account ACCOUNT \
+  --connections CONNECTION1 --idempotency-key CREATE_KEY --json
+armada orchestrator connections list ID --org ORG --json
+armada orchestrator connections add ID CONNECTION2 --org ORG \
+  --expected-revision REVISION --idempotency-key ADD_KEY --json
+# Read detail for the new revision, then send the next instruction.
+armada orchestrator connections remove ID CONNECTION2 --org ORG \
+  --expected-revision NEW_REVISION --idempotency-key REMOVE_KEY --json
+```
+
+`add` and `remove` accept comma-separated connection IDs. Identical retries return
+the original operation; a changed payload under the same key or a stale revision
+conflicts. A pending/uncertain operation, a non-ready parent, an active turn, or
+unproven native quiescence prevents changes. Running turns are **not queued**:
+the response is a closed `409 conflict`, without selection/revision changes.
+Wait until idle, read detail and submit a new request.
+Removing an ID that is not currently bound succeeds with an operation receipt
+and still advances the parent revision and MCP generation. This no-op receipt
+policy is tracked in [#860](https://github.com/The-Vibe-Company/armada/issues/860).
+
+A successful mutation commits the desired set and fences old gateway leases.
+Native preparation happens before the next admitted message. No VM or
+conversation is recreated:
+- **Boat × Codex:** the existing stdio bridge reloads native MCP configuration
+  using acknowledged `config/mcpServer/reload` before the next turn.
+- **Boat × Claude:** the stream-json bridge sends acknowledged `mcp_set_servers`
+  controls and explicitly disables removed servers with `mcp_toggle` before
+  forwarding the next user message. Unsupported controls or connection errors
+  fail closed; no user message is forwarded. Fresh non-stream processes read the
+  updated user configuration at startup.
+  This Python bridge is installed only for managed parents, with an interpreter
+  precheck; ordinary Claude repository/cwd preparation keeps its direct native
+  wrapper. Native mid-turn steer messages always pass through without attempting
+  an MCP refresh, even if configuration on disk has changed. Pending changes are
+  picked up at the next idle user message; the active turn keeps its current MCP
+  tools and native process. A private durable installation receipt
+  includes the physical boot, MCP generation and generated wrapper hash, so
+  unchanged messages do not reinstall the wrapper. Generic GitHub preparation
+  preserves the managed installation under the same root-owned installer lock.
+- **Modal × Codex:** the runtime takes the new configuration snapshot for the
+  next fresh app-server and resumes the existing native thread. The private epoch
+  accepts external refresh only when quiescent and preserves its internal server.
+  Modal × Claude remains disabled.
+
+Preparation failure does not start a turn or silently clear connections: inspect
+the operation/detail and repair the connection rather than assuming tools loaded.
+Detail's `connections` and `connections` events contain only `{id, name}` entries.
+`armada_orchestrator` and scoped internal authority are not registry connections,
+are never listed here, and cannot be removed by these commands.
+
+**Children do not inherit the parent's set.** A child always uses ordinary
+owner-authorized launch defaults; scoped child launch has no connection override.
+Parent selection grants no access to children; owner/grant checks still apply to
+every child.
+
+HTTP: `GET /api/v1/orchestrators/ID/connections` (query `orgId`) and
+`POST /api/v1/orchestrators/ID/connections/add|remove` (JSON `orgId`,
+`expectedRevision`, `connections`, plus `Idempotency-Key`). MCP tools:
+`orchestrator_connections_list`, `orchestrator_connections_add` and
+`orchestrator_connections_remove`, using the same fields in `args` and the
+existing `idempotencyKey` envelope.
+
 ## Receipts, errors and reconnect
 
 Every write requires a caller-chosen key. Keep the exact key and arguments for
@@ -102,7 +176,8 @@ not permission to resume initialization or adopt a newer generation.
 
 Create accepts `--skill example/notes@1.0.0` (API/MCP create: `skill`). This first
 slice requires one exact public catalog pin. Install the released native
-`skillpack` CLI in the golden beforehand; Armada does not download an installer.
+`skillpack` CLI in the golden. `armada golden create/update` provisions the pinned,
+checksum-verified native CLI automatically; rebuild older goldens with `golden update`.
 Both Claude Code and Codex receive project-local discovery files before the first
 turn. Detail includes `configuration.skill` and `skillReceipt` (origin, UUID,
 version, checksum). Missing CLI/releases, conflicts and invalid receipts block

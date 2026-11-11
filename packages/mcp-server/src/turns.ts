@@ -5,14 +5,17 @@ import {
   type PromptOutcome,
   type Provider,
   promptOutcome,
+  readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
   type SandboxPatch,
   type SandboxStatus,
   type SandboxUsage,
   type TaskOutcome,
+  type TurnModelEvidence,
+  turnModelEvidence,
 } from "@armada/core";
-import type { SandboxView, ServerSandboxStore } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -26,6 +29,10 @@ const EVENT_PAGES = 50;
 export const WAIT_POLL_MS = 1000;
 
 export interface PromptReport {
+  requestedModel?: string | null;
+  observedModel?: string | null;
+  modelSelectionReason?: TurnModelEvidence["modelSelectionReason"];
+  modelSelectionMessage?: string | null;
   promptId: string;
   conversationId: string | null;
   state: PromptOutcome["state"];
@@ -46,8 +53,9 @@ export interface StatusReport {
   /** Persisted native repository directory; not an access boundary. */
   repositoryDir: string | null;
   machineSize: MachineSizeEvidence | null;
-  /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
+  /** Requested next-send default; not evidence of execution. */
   model: string | null;
+  skills?: SandboxView["skills"];
   reasoningEffort: string | null;
   /** Armada's status, after this read. */
   status: SandboxStatus;
@@ -78,6 +86,8 @@ export async function readStatus(
   // after its lease expires) may publish completion; status must remain readable.
   if (
     sandbox.status === "starting" ||
+    sandbox.status === "stopping" ||
+    sandbox.stopRequestedAt ||
     isInterruptedLaunch(sandbox) ||
     (sandbox.status === "failed" && sandbox.stoppedAt !== null)
   )
@@ -87,34 +97,105 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  if (store.recordUsage) {
-    // Usage is optional telemetry: unavailable/truncated event history must not make status fail.
-    try {
-      const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
-      const collected = reportedTurnUsage(events);
-      await store.recordUsage(sandbox.id, collected);
-      sandbox = { ...sandbox, usage: { computeSeconds: sandbox.usage?.computeSeconds ?? null, ...collected } };
-    } catch {
-      /* Retain the last complete observation. */
-    }
-  }
   const info = await provider.get(sandbox.providerSandboxId);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
-    : await latestPrompt(provider, sandbox.providerSandboxId);
+    : sandbox.taskPromptId
+      ? { promptId: sandbox.taskPromptId, conversationId: null }
+      : await latestPrompt(provider, sandbox.providerSandboxId);
   let prompt: PromptReport | null = null;
   if (target) {
-    const outcome = await promptOutcome(provider, {
+    let recorded: { requestedModel: string | null; evidence: unknown } | null = null;
+    try {
+      recorded = (await store.readTurnModel?.(sandbox.id, target.promptId)) ?? null;
+    } catch {
+      /* Telemetry unavailable: neutral unknown. */
+    }
+    const cached = recorded?.evidence as (TurnModelEvidence & { terminalOutcome?: PromptOutcome }) | null;
+    const retained =
+      recorded?.requestedModel && cached && cached.modelSelectionReason !== "model_selection_unverified"
+        ? cached
+        : null;
+    const request = {
       sandboxId: sandbox.providerSandboxId,
       promptId: target.promptId,
       ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-    });
+    };
+    let outcome: PromptOutcome;
+    let evidence: TurnModelEvidence;
+    // Terminal observations survive provider history retention. Never substitute the sandbox default.
+    if (retained?.terminalOutcome) {
+      outcome = retained.terminalOutcome;
+      evidence = {
+        requestedModel: retained.requestedModel,
+        observedModel: retained.observedModel,
+        modelSelectionReason: retained.modelSelectionReason,
+        modelSelectionMessage: retained.modelSelectionMessage,
+      };
+    } else {
+      const state = await provider.getPrompt(request);
+      if (state.status === "running" || state.status === "queued") {
+        outcome = { state: "running" };
+        evidence = {
+          requestedModel: recorded?.requestedModel ?? null,
+          observedModel: null,
+          modelSelectionReason: null,
+          modelSelectionMessage: null,
+        };
+      } else {
+        let events: AgentEvent[] = [];
+        let complete = false;
+        try {
+          const read = await readPromptEvents(provider, {
+            sandboxId: sandbox.providerSandboxId,
+            promptId: target.promptId,
+            ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+          });
+          events = read.events;
+          complete = read.complete;
+        } catch {
+          /* Missing history cannot prove exact-model execution. */
+        }
+        outcome = await promptOutcome(provider, request, { state, events });
+        evidence = turnModelEvidence(events, {
+          promptId: target.promptId,
+          requestedModel: recorded?.requestedModel ?? null,
+          complete,
+        });
+        // Unknown observations can be retried; telemetry persistence cannot change the outcome.
+        if (recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
+          try {
+            await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
+              ...evidence,
+              terminalOutcome: outcome,
+            });
+          } catch {
+            /* Next read can retry telemetry storage. */
+          }
+        }
+      }
+    }
+    const selectionFailed =
+      outcome.state === "finished" &&
+      recorded?.requestedModel != null &&
+      evidence.modelSelectionReason === "model_selection_mismatch";
     prompt = {
+      ...evidence,
       promptId: target.promptId,
       conversationId: target.conversationId,
-      state: outcome.state,
-      reason: outcome.state === "failed" || outcome.state === "interrupted" ? (outcome.reason ?? null) : null,
+      state: selectionFailed ? "failed" : outcome.state,
+      reason: selectionFailed
+        ? evidence.modelSelectionReason
+        : outcome.state === "failed" || outcome.state === "interrupted"
+          ? (outcome.reason ?? null)
+          : null,
     };
+  }
+
+  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
+    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId);
+    const refreshed = await store.get(sandbox.id);
+    if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
 
   const next = nextStatus(sandbox.status, info, prompt);
@@ -132,12 +213,26 @@ export async function readStatus(
     };
     if (next === "failed" && info.physicalExitConfirmed) {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      patch.usageRuntimeUnknown = !info.stoppedAt;
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
-    await store.update(sandbox.id, patch);
+    try {
+      await store.update(sandbox.id, patch);
+    } catch (error) {
+      if (!(error instanceof DataError && error.code === "sandbox_not_ready")) throw error;
+      // Observation is not an activity: a concurrent lifecycle owner wins, but
+      // must not turn an authorized read into a lease conflict or stale publish.
+      const current = await store.get(sandbox.id);
+      if (!current) throw error;
+      return {
+        ...report(current, current.status, null, null, null),
+        settled:
+          !current.stopRequestedAt &&
+          (current.status === "stopped" ||
+            current.status === "deleted" ||
+            (current.status === "failed" && current.stoppedAt !== null)),
+      };
+    }
   }
   const refreshed = store.recordUsage ? await store.get(sandbox.id) : null;
   return report(
@@ -176,7 +271,7 @@ function report(
   prompt: PromptReport | null,
   expiresAt: Date | null,
 ): StatusReport {
-  const machineDown = status === "stopped" || status === "deleted" || status === "failed";
+  const machineDown = status === "stopped" || status === "deleted" || (status === "failed" && !sandbox.stopRequestedAt);
   return {
     usage: sandbox.usage ?? null,
     taskOutcome: sandbox.taskOutcome ?? null,
@@ -187,17 +282,26 @@ function report(
     repositoryDir: sandbox.repositoryDir ?? null,
     machineSize: sandbox.machineSize ?? null,
     model: sandbox.model,
+    skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,
     status,
-    statusReason: status === "failed" || status === "stopped" || status === "stopping" ? sandbox.statusReason : null,
+    statusReason:
+      status === "stopping"
+        ? (sandbox.lifecycleError ?? sandbox.statusReason)
+        : status === "failed" || status === "stopped"
+          ? sandbox.statusReason
+          : null,
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
     expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
     prompt,
-    settled: machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting"),
+    settled:
+      !sandbox.stopRequestedAt &&
+      (machineDown ||
+        (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping")),
   };
 }
 
@@ -208,9 +312,23 @@ export async function latestPrompt(
   complete = false,
 ): Promise<{ promptId: string; conversationId: string | null } | null> {
   let latest: AgentEvent | undefined;
-  for (const event of await allEvents(provider, sandboxId, complete)) {
-    if (event.kind !== "prompt" || !event.promptId) continue;
-    if (!latest || event.at >= latest.at) latest = event;
+  let cursor: string | undefined;
+  for (let page = 0; page < EVENT_PAGES; page++) {
+    const read = await provider.events({
+      sandboxId,
+      direction: "backward",
+      limit: EVENT_PAGE_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const event of read.events) {
+      if (event.kind === "prompt" && event.promptId && (!latest || event.at >= latest.at)) latest = event;
+    }
+    if (latest || !read.hasMore) break;
+    if (!read.olderCursor || read.olderCursor === cursor) {
+      if (complete) throw new Error("Cannot prove latest turn: provider event cursor did not advance.");
+      break;
+    }
+    cursor = read.olderCursor;
   }
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
 }
@@ -256,5 +374,81 @@ export async function waitSettled(
     const left = deadline - options.now().getTime();
     if (left <= 0) return { ...status, timedOut: true };
     await options.sleep(Math.min(WAIT_POLL_MS, left));
+  }
+}
+
+/** Best-effort, bounded usage pull shared by terminal observation and controlled stop.
+ * Keep persisted rows when provider history or the guest is temporarily unavailable. */
+export async function collectSandboxUsage(
+  provider: Provider,
+  store: ServerSandboxStore,
+  sandbox: SandboxView,
+  targetPromptId?: string,
+): Promise<void> {
+  if (!store.recordUsage) return;
+  targetPromptId ??= sandbox.taskPromptId ?? undefined;
+  try {
+    const history = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => null);
+    const events = history ?? [];
+    const collected = reportedTurnUsage(events);
+    const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
+    const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
+    for (const row of collected.turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
+    if (provider.collectTurnUsage) {
+      const prompts = new Map<string, string | undefined>();
+      for (const event of events) {
+        if (event.kind === "prompt" && event.promptId) prompts.set(event.promptId, event.conversationId ?? undefined);
+      }
+      if (targetPromptId && !prompts.has(targetPromptId)) prompts.set(targetPromptId, undefined);
+      // A native read is bounded independently of provider event history.
+      for (const [promptId, conversationId] of [...prompts].slice(-20)) {
+        try {
+          const native = await provider.collectTurnUsage({
+            sandboxId: sandbox.providerSandboxId,
+            promptId,
+            ...(conversationId ? { conversationId } : {}),
+            harness: sandbox.harness,
+          });
+          for (const row of native) {
+            if (row.promptId === promptId) rows.set(JSON.stringify([row.promptId, row.model]), row);
+          }
+        } catch {
+          /* A missing native file must not erase an earlier observation. */
+        }
+      }
+    }
+    // An admitted but unmeasured target is a real turn, not a falsely complete subtotal.
+    if (targetPromptId && ![...rows.values()].some((row) => row.promptId === targetPromptId)) {
+      rows.set(JSON.stringify([targetPromptId, null]), {
+        promptId: targetPromptId,
+        model: null,
+        inputTokens: null,
+        outputTokens: null,
+        cachedTokens: null,
+      });
+    }
+    const measuredPrompts = new Set([...rows.values()].filter((row) => row.model !== null).map((row) => row.promptId));
+    for (const [key, row] of rows) {
+      if (
+        row.model === null &&
+        measuredPrompts.has(row.promptId) &&
+        [row.inputTokens, row.outputTokens, row.cachedTokens, row.cacheWriteTokens, row.reasoningTokens].every(
+          (value) => value == null,
+        )
+      )
+        rows.delete(key);
+    }
+    const knownTurns = Math.max(
+      retained?.turnCount ?? 0,
+      collected.turnCount,
+      targetPromptId ? 1 : 0,
+      new Set([...rows.values()].map((r) => r.promptId)).size,
+    );
+    await store.recordUsage(sandbox.id, {
+      turnCount: history === null && knownTurns === 0 ? null : knownTurns,
+      turns: [...rows.values()],
+    });
+  } catch {
+    /* Optional telemetry never changes lifecycle success. */
   }
 }

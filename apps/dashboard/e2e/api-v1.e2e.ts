@@ -27,7 +27,7 @@ test("API v1 reaches its bearer route without a dashboard cookie", async ({ requ
     headers: { authorization: "Bearer e2e-valid-bearer" },
   });
   expect(unknownResponse.status()).toBe(404);
-  expect(await unknownResponse.json()).toEqual({ error: "Not found." });
+  expect(await unknownResponse.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
 
   const dashboardResponse = await request.get("/sandboxes", { maxRedirects: 0 });
   expect(dashboardResponse.status()).toBe(307);

@@ -175,6 +175,12 @@ export interface Provider {
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
   list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
+  /** Trusted final-harness-only bootstrap. Never applied to exec, golden build or init. */
+  configureReadableVariables?(request: {
+    sandboxId: string;
+    harness: Harness;
+    variables: Record<string, string>;
+  }): Promise<void>;
   /** Queues work for a harness. Without `conversationId` it opens a new conversation. */
   prompt(request: PromptRequest): Promise<PromptReceipt>;
   getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState>;
@@ -183,6 +189,14 @@ export interface Provider {
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
   exec(request: ExecRequest): Promise<ExecResult>;
+  /** Optional one-shot native usage observation. Empty means unavailable, never zero tokens.
+   * Rows are final per-prompt/model snapshots; retries replace rather than add counters. */
+  collectTurnUsage?(request: {
+    sandboxId: string;
+    promptId: string;
+    conversationId?: string;
+    harness: Harness;
+  }): Promise<import("./sandbox-usage.ts").TurnTokenUsage[]>;
   /** Prepares a forked VM's native harness executable to start in a recorded working directory. */
   prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   /** Registers a transient public key and returns a pinned SSH endpoint. */
@@ -223,13 +237,9 @@ export interface HarnessCapabilities {
   approvals: boolean;
 }
 
-export type SandboxState =
-  | "starting" // machine being created or prepared; commands wait for it
-  | "ready" // accepts commands and prompts
-  | "running" // an agent turn is in progress
-  | "stopping" // the disk is being saved
-  | "stopped" // machine removed, disk kept
-  | "failed";
+/** Canonical provider-neutral compute states; shared by types and safe diagnostics. */
+export const SANDBOX_STATES = ["starting", "ready", "running", "stopping", "stopped", "failed"] as const;
+export type SandboxState = (typeof SANDBOX_STATES)[number];
 
 export interface SandboxInfo {
   id: string;
@@ -389,8 +399,12 @@ export interface PrepareNativeHarnessCwdRequest {
 }
 
 export interface ExecRequest {
+  /** Caller cancellation for provider admission/retries where supported. */
+  signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
   onlyIfRunning?: boolean;
+  /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
+  preservationStage?: "collect_exec" | "chunk_exec";
   sandboxId: string;
   command: string;
   cwd?: string;
@@ -465,6 +479,12 @@ export type AgentEvent =
       /** Append a delta; replace the message text with a snapshot. Absent on legacy events. */
       textMode?: "delta" | "snapshot";
       model?: string;
+      /** Native nested-agent parent. A non-null value is not main-thread model evidence. */
+      parentToolUseId?: string;
+      /** Tool results are not assistant response model evidence. */
+      responseKind?: "assistant" | "tool_result";
+      /** Provider-retracted response; retained in history but not execution evidence. */
+      retracted?: boolean;
       tools: ToolCall[];
     })
   | (EventBase & { kind: "steer"; text: string; mode?: string })

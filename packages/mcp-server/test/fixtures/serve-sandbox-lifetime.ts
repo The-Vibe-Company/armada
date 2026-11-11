@@ -4,6 +4,13 @@ import assert from "node:assert/strict";
 import { createServiceToken, createSqlAuthStore } from "@armada/auth";
 import * as core from "@armada/core/server";
 import { createSqlModalStore, type Machine, type Scope } from "@armada/provider-modal";
+
+// Load the Next.js boundary only in this isolated runtime. Statically importing it
+// into the server TS project also loads browser ambient types into native harnesses.
+const proxyPath = new URL("../../../../apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts", import.meta.url)
+  .pathname;
+const { forwardControl } = await import(proxyPath);
+
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 
@@ -13,8 +20,12 @@ const sql: core.Sql = {
   query: (q, values) => db.query(q, values),
   transaction: (work) => db.transaction((tx) => work({ query: (q, values) => tx.query(q, values) })),
 };
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 const key = Buffer.alloc(32, 19).toString("base64");
 // Work preservation uses the process environment, just as the deployed server does.
 process.env.ARMADA_ENCRYPTION_KEY = key;
@@ -170,14 +181,20 @@ type BoatMachine = {
   snapshotAvailable: boolean;
   conversation?: string;
   turnRunning?: boolean;
+  promptId?: string;
   bootId: string;
 };
 const boats = new Map<string, BoatMachine>();
+const modalPrompts = new Map<string, { id: string; conversationId: string; status: "running" | "interrupted" }>();
 let shortBoatConfirmation = false;
 const nativeFetch = globalThis.fetch;
 const realFetch = nativeFetch.bind(globalThis);
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.origin === "https://supabase.invalid") {
+    const token = new Headers(init?.headers).get("authorization")?.slice(7);
+    return Response.json({ id: token === "fixture.personal.owner" ? ownerId : adminId });
+  }
   if (url.hostname === "127.0.0.1") return realFetch(input, init);
   if (url.origin === modal.tunnelOrigin) {
     const physicalId = url.pathname.slice(1);
@@ -186,6 +203,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       version: number;
       requestId: string;
       op: string;
+      promptId?: string;
       input?: { command?: string; conversationId?: string };
     };
     if (packet.op === "prompt") {
@@ -196,13 +214,27 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       );
       conversations.set(id, conversationId);
       effects.push({ id, op: "prompt" });
+      const promptId = crypto.randomUUID();
+      modalPrompts.set(promptId, { id, conversationId, status: "running" });
       return Response.json({
         version: 1,
         requestId: packet.requestId,
-        result: { promptId: crypto.randomUUID(), conversationId, status: "running" },
+        result: { promptId, conversationId, status: "running" },
       });
     }
-    if (packet.op === "interrupt") effects.push({ id, op: "interrupt" });
+    if (packet.op === "getPrompt") {
+      const prompt = modalPrompts.get(packet.promptId ?? "");
+      assert(prompt?.id === id, "Only accepted fixture prompts can be read");
+      return Response.json({
+        version: 1,
+        requestId: packet.requestId,
+        result: { promptId: packet.promptId, ...prompt, done: prompt.status !== "running" },
+      });
+    }
+    if (packet.op === "interrupt") {
+      effects.push({ id, op: "interrupt" });
+      for (const prompt of modalPrompts.values()) if (prompt.id === id) prompt.status = "interrupted";
+    }
     if (packet.op === "exec" && packet.input?.command?.includes("ARMADA_RECOVERY"))
       effects.push({ id, op: "preserve" });
     if (packet.op === "checkpoint") effects.push({ id, op: "checkpoint" });
@@ -279,7 +311,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     machine.conversation ??= crypto.randomUUID();
     machine.turnRunning = true;
     assert(!body.conversationId || body.conversationId === machine.conversation, "Boat conversation changed");
-    return json({ promptId: crypto.randomUUID(), conversationId: machine.conversation, status: "running" }, 202);
+    machine.promptId = crypto.randomUUID();
+    return json({ promptId: machine.promptId, conversationId: machine.conversation, status: "running" }, 202);
   }
   if (suffix === "/conversations")
     return json({
@@ -287,6 +320,17 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
         ? [{ id: machine.conversation, running: machine.turnRunning ?? false, lastHarness: "codex" }]
         : [],
     });
+  if (suffix.startsWith("/prompts/") && method === "GET") {
+    assert.equal(suffix, `/prompts/${machine.promptId}`);
+    return json({
+      promptRun: {
+        promptId: machine.promptId,
+        conversationId: machine.conversation,
+        status: machine.turnRunning ? "running" : "interrupted",
+        done: !machine.turnRunning,
+      },
+    });
+  }
   if (suffix === "/events") return json({ events: [], pageInfo: { hasMore: false } });
   throw Error(`Unexpected Boat route ${method} ${url.pathname}`);
 }) as typeof fetch;
@@ -315,11 +359,16 @@ let server = await start();
 async function request<T = unknown>(action: string, body: object, expected = 200, userId = ownerId): Promise<T> {
   // The real background observer can briefly own a row. Retry only the closed admission conflict.
   for (let attempt = 0; attempt < 20; attempt++) {
-    const response = await fakeFetch(`http://127.0.0.1:${server.port}/api/v1/sandbox/${action}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${tokens.get(userId)}`, "content-type": "application/json" },
-      body: JSON.stringify({ ...body, org: orgId }),
-    });
+    process.env.ARMADA_MCP_URL = `http://127.0.0.1:${server.port}/mcp`;
+    const response = await forwardControl(
+      new Request(`https://dashboard.test/api/v1/sandbox/${action}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.get(userId)}`, "content-type": "application/json" },
+        body: JSON.stringify({ ...body, org: orgId }),
+      }),
+      ["sandbox", action],
+      fakeFetch,
+    );
     const result = (await response.json()) as T & { error?: { code?: string } };
     if (expected !== 409 && response.status === 409 && result.error?.code === "sandbox_not_ready") continue;
     assert.equal(
@@ -384,6 +433,12 @@ const scenarios: {
   conversation: string | null;
 }[] = [];
 try {
+  const missing = await request<{ error: { code: string } }>(
+    "extend",
+    { id: crypto.randomUUID(), ttl_seconds: 600 },
+    404,
+  );
+  assert.equal(missing.error.code, "extension_not_found");
   for (const provider of ["boat", "modal"] as const) {
     for (const active of [false, true]) {
       const launch = await request<{ sandbox: { id: string } }>("launch", {
@@ -391,6 +446,7 @@ try {
         provider,
         harness: "codex",
         credentialId: modelId,
+        repo: "fixture",
         connections: [],
         ttlSeconds: 120,
       });
@@ -408,15 +464,27 @@ try {
           "A two-minute Modal launch must have only the configured 30-minute headroom plus five-minute preservation margin, not a 24h timer",
         );
       const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
-      const deniedBefore = effects.length;
-      await request("extend", { id, ttl_seconds: 600 }, 404, memberId);
-      assert.equal(effects.length, deniedBefore, "Denied member must not mutate provider state");
+      // Prior scenarios may be stopping in the real background worker. This
+      // denied request must not mutate its own target; unrelated cleanup is valid.
+      const targetEffects = () => effects.filter((item) => item.id === before.provider_sandbox_id).length;
+      const deniedBefore = targetEffects();
+      const denied = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 600 }, 403, memberId);
+      assert.equal(denied.error.code, "extension_not_allowed");
+      assert.equal(targetEffects(), deniedBefore, "Denied member must not mutate the target provider state");
+      let conversation: string | null = null;
+      if (active)
+        conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
+          .conversationId;
+      await request("extend", { id, ttl_seconds: 500 }, 200, active ? adminId : ownerId);
+      const serviceToken = tokens.get(active ? adminId : ownerId)!;
+      tokens.set(active ? adminId : ownerId, active ? "fixture.personal.admin" : "fixture.personal.owner");
       const extended = await request<{ id: string; ttlSeconds: number; expiresAt: string }>(
         "extend",
         { id, ttl_seconds: 600 },
         200,
         active ? adminId : ownerId,
       );
+      tokens.set(active ? adminId : ownerId, serviceToken);
       if (unusedLease) {
         const renewed = (
           await sql.query<{ expires_at: Date }>("select expires_at from mcp_leases where id=$1", [unusedLease])
@@ -444,20 +512,23 @@ try {
           900,
         );
       const acceptedDeadline = new Date((await row(id)).expires_at).toISOString();
-      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101])
-        await request("extend", { id, ttl_seconds }, 400);
+      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101]) {
+        const refusal = await request<{ error: { code: string } }>(
+          "extend",
+          { id, ttl_seconds },
+          ttl_seconds === 1 ? 409 : 400,
+        );
+        if (ttl_seconds > 0)
+          assert.equal(refusal.error.code, ttl_seconds === 1 ? "extension_state" : "extension_maximum");
+      }
       assert.equal(
         new Date((await row(id)).expires_at).toISOString(),
         acceptedDeadline,
         "Invalid/non-extending TTL must not publish",
       );
-      let conversation: string | null = null;
-      if (active)
-        conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
-          .conversationId;
       if (provider === "boat") {
         shortBoatConfirmation = true;
-        await request("extend", { id, ttl_seconds: 900 }, 400);
+        await request("extend", { id, ttl_seconds: 900 }, 409);
         shortBoatConfirmation = false;
         const shortened = await row(id);
         assert(
@@ -481,7 +552,18 @@ try {
           native.grantExpiresAt = Date.now() + 900_000;
           await save(native);
         });
-        await request("extend", { id, ttl_seconds: 1200 }, 400);
+        const refusal = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 1200 }, 400);
+        assert.equal(refusal.error.code, "extension_maximum");
+        assert.equal(
+          (
+            await sql.query<{ activity_lease_id: string | null }>(
+              "select activity_lease_id from sandboxes where id=$1",
+              [id],
+            )
+          ).rows[0]?.activity_lease_id,
+          null,
+          "A definite refusal must release activity ownership for immediate retry/stop",
+        );
         assert.equal(new Date((await row(id)).expires_at).toISOString(), acceptedDeadline);
         await nativeStore.lease(before.provider_sandbox_id, async (native, save) => {
           native.grantExpiresAt = originalGrant;
@@ -511,13 +593,23 @@ try {
     const stopped = await row(scenario.id);
     assert.equal(stopped.status, "stopped", JSON.stringify({ scenario, stopped, logs, effects }));
     assert.equal(stopped.status_reason, "expired");
-    assert.equal(stopped.preservation_note, "unpushed work could not be preserved (missing_bun)");
+    assert.equal(
+      stopped.preservation_note,
+      "could not check for unpushed work (capture_missing_bun). If this sandbox had local work, resume it and push or copy it before stopping again.",
+    );
     const operations = effects
       .slice(expirationStart)
       .filter((item) => item.id === scenario.nativeId)
       .map((item) => item.op);
-    assert(operations.indexOf("interrupt") >= 0, JSON.stringify({ scenario, operations }));
-    assert(operations.indexOf("preserve") > operations.indexOf("interrupt"), JSON.stringify({ scenario, operations }));
+    if (scenario.provider === "boat" && !scenario.active) {
+      assert.equal(operations.includes("interrupt"), false, "Idle Boat capture needs no harness interruption");
+    } else {
+      assert(operations.indexOf("interrupt") >= 0, JSON.stringify({ scenario, operations }));
+      assert(
+        operations.indexOf("preserve") > operations.indexOf("interrupt"),
+        JSON.stringify({ scenario, operations }),
+      );
+    }
     assert(operations.indexOf("stop") > operations.indexOf("preserve"), JSON.stringify({ scenario, operations }));
     if (scenario.provider === "modal") {
       assert(operations.indexOf("checkpoint") > operations.indexOf("preserve"));
@@ -527,7 +619,7 @@ try {
       assert.equal(native.phase, "stopped");
       assert(native.recoveryImageId, "Expiry must retain the verified disk checkpoint");
     } else assert.equal(boats.get(scenario.nativeId)?.state, "archived");
-    await request("extend", { id: scenario.id, ttl_seconds: 1200 }, 400);
+    await request("extend", { id: scenario.id, ttl_seconds: 1200 }, 409);
     // Model an expiry stop still being confirmed when its owner explicitly retries stop.
     await sql.query("update sandboxes set status='stopping',stopped_at=null where id=$1", [scenario.id]);
     await request("stop", { id: scenario.id });

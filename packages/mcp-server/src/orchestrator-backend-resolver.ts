@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createSqlGoldenStore,
   createSqlSandboxStore,
@@ -18,6 +19,12 @@ import {
   type SandboxRow,
   type Sql,
 } from "@armada/core/server";
+import {
+  installNativeCwdWrapper,
+  NATIVE_HARNESS_PATHS,
+  nativeCwdCommand,
+  nativeCwdInstallScript,
+} from "@armada/provider-boat";
 import { createBoatOrchestratorProvider } from "./boat-orchestrator-provider.ts";
 import { launchOrchestratorParent } from "./orchestrator-launch.ts";
 import type { ManagedMachine, ManagedNativeBackend, ManagedSelection } from "./orchestrator-managed-runtime.ts";
@@ -151,7 +158,7 @@ export function createOrchestratorBackendResolver(input: {
     const selected = await named(actor, configuration, pinnedVersion);
     const target: ProviderTarget = identity?.sandboxId
       ? await persistedTarget(identity.sandboxId, ownerId, configuration.orgId)
-      : golden;
+      : { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility };
     const rawProvider = await input.providers.resolve(target, { userId: ownerId });
     const provider =
       configuration.provider === "boat"
@@ -172,6 +179,7 @@ export function createOrchestratorBackendResolver(input: {
       provider,
       ...(adapter.continuity ? { continuity: adapter.continuity } : {}),
       selection: choice,
+      buildWarnings: golden.buildWarnings ?? [],
       projectDir: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
       mcpUrl: input.mcpUrl,
       consent: await input.consent(actor, configuration),
@@ -188,6 +196,27 @@ export function createOrchestratorBackendResolver(input: {
               current.sandboxId,
               current.state === "stopped" || current.state === "resuming",
             ]);
+        }
+      },
+      assertIdle: async (current) => {
+        if (!current.providerSandboxId) throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        const physical = await provider.get(current.providerSandboxId);
+        if (!["ready", "running"].includes(physical.state) || !physical.physicalGeneration)
+          throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        if (provider.id === "boat") {
+          const conversations = Reflect.get(provider, "conversations");
+          if (typeof conversations !== "function") throw new OrchestratorRuntimeError("unavailable");
+          const rows = (await Reflect.apply(conversations, provider, [current.providerSandboxId])) as Array<{
+            running: boolean;
+          }>;
+          if (rows.some((row) => row.running)) throw new OrchestratorRuntimeError("conflict", "not_admitted");
+        } else {
+          if (!provider.observeOrchestrator) throw new OrchestratorRuntimeError("unavailable");
+          const observed = await provider.observeOrchestrator({
+            sandboxId: current.providerSandboxId,
+            physicalGeneration: physical.physicalGeneration,
+          });
+          if (observed.state !== "quiescent") throw new OrchestratorRuntimeError("conflict", "not_admitted");
         }
       },
       prepareMcp: async (current) => {
@@ -207,6 +236,58 @@ export function createOrchestratorBackendResolver(input: {
         ).rows[0];
         if (!row) throw new OrchestratorRuntimeError("conflict");
         await input.connections.prepare(provider, mapSandboxRow(row), fresh);
+        // Claude's persistent stream-json process needs its MCP control bridge
+        // even for a repository-less parent. Keep this extra installation scoped
+        // to managed parents; ordinary Claude send behavior is unchanged.
+        if (configuration.provider === "boat" && configuration.harness === "claude") {
+          const physical = await provider.get(current.providerSandboxId);
+          if (!physical.physicalGeneration) throw new OrchestratorRuntimeError("unavailable");
+          const receipt = (
+            await input.sql.query<{ mcp_generation: number; mcp_wrapper_revision: string | null }>(
+              `select s.mcp_generation,r.mcp_wrapper_revision from public.orchestrator_runtime r
+             join public.orchestrators o on o.id=r.orchestrator_id join public.sandboxes s on s.id=o.sandbox_id
+             where o.id=$1 and o.revision=$2 and s.id=$3 and s.lifecycle_generation=$4`,
+              [current.id, current.revision, current.sandboxId, current.generation],
+            )
+          ).rows[0];
+          if (!receipt) throw new OrchestratorRuntimeError("conflict");
+          const cwd = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
+          const revision = createHash("sha256")
+            .update(
+              JSON.stringify([
+                physical.physicalGeneration,
+                receipt.mcp_generation,
+                nativeCwdInstallScript(
+                  NATIVE_HARNESS_PATHS.claude,
+                  nativeCwdCommand(NATIVE_HARNESS_PATHS.claude, "claude", cwd, true),
+                  cwd,
+                  true,
+                ),
+              ]),
+            )
+            .digest("hex");
+          if (receipt.mcp_wrapper_revision === revision) return;
+          await installNativeCwdWrapper(
+            async (request) => {
+              const result = await provider.exec(request);
+              if (result.detached || result.exitCode !== 0) throw new OrchestratorRuntimeError("unavailable");
+            },
+            current.providerSandboxId,
+            "claude",
+            cwd,
+            true,
+          );
+          if ((await provider.get(current.providerSandboxId)).physicalGeneration !== physical.physicalGeneration)
+            throw new OrchestratorRuntimeError("conflict");
+          const written = await input.sql.query(
+            `update public.orchestrator_runtime r set mcp_wrapper_revision=$5
+             from public.orchestrators o,public.sandboxes s where o.id=r.orchestrator_id
+             and o.id=$1 and o.revision=$2 and o.sandbox_id=s.id and s.id=$3
+             and s.lifecycle_generation=$4 and s.mcp_generation=$6 returning r.orchestrator_id`,
+            [current.id, current.revision, current.sandboxId, current.generation, revision, receipt.mcp_generation],
+          );
+          if (written.rows.length !== 1) throw new OrchestratorRuntimeError("conflict");
+        }
       },
       launch: (reservation, diagnostics, hooks) =>
         launchOrchestratorParent({
@@ -218,13 +299,14 @@ export function createOrchestratorBackendResolver(input: {
             provider: configuration.provider,
             harness: configuration.harness,
             model: configuration.model,
+            ...(configuration.connections === undefined ? {} : { connections: configuration.connections }),
             ...(configuration.reasoningEffort === undefined ? {} : { reasoningEffort: configuration.reasoningEffort }),
             ...(configuration.repo === undefined ? {} : { repo: configuration.repo }),
             ...(configuration.size === undefined ? {} : { size: configuration.size }),
           },
           stores: {
             goldens: scopedGoldens,
-            sandboxes: createSqlSandboxStore(input.sql),
+            sandboxes: createSqlSandboxStore(input.sql, { turnModels: true }),
             credentials: input.credentials,
             ...(input.connections ? { connections: input.connections } : {}),
           },

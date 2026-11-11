@@ -1,0 +1,70 @@
+import { dedupeEvents } from "./outcome.ts";
+import type { AgentEvent } from "./provider.ts";
+
+export type ModelSelectionReason = "model_selection_mismatch" | "model_selection_unverified";
+
+export interface TurnModelEvidence {
+  requestedModel: string | null;
+  observedModel: string | null;
+  modelSelectionReason: ModelSelectionReason | null;
+  modelSelectionMessage: string | null;
+}
+
+/**
+ * Response metadata, not assistant prose or the provider's requested-model echo, is evidence.
+ * Read the complete target turn before declaring a match or mismatch. In-place rewrites/retractions win;
+ * nested-agent and streaming responses do not establish the main thread's model.
+ * Alias expansion is deliberately not guessed: provider aliases can change over time.
+ */
+export function turnModelEvidence(
+  events: readonly AgentEvent[],
+  request: { promptId: string; requestedModel: string | null; complete: boolean },
+): TurnModelEvidence {
+  const responses = dedupeEvents(events).filter(
+    (event) =>
+      event.promptId === request.promptId &&
+      event.kind === "message" &&
+      !event.partial &&
+      event.responseKind !== "tool_result" &&
+      !event.parentToolUseId &&
+      !event.retracted,
+  );
+  const models = new Set(responses.flatMap((event) => (event.kind === "message" && event.model ? [event.model] : [])));
+  const observedModel = models.size === 1 ? ([...models][0] ?? null) : null;
+  const truncated = events.some(
+    (event) =>
+      event.kind === "other" &&
+      (event.type === "event_truncated" || event.type === "context_truncated") &&
+      (!event.promptId ||
+        event.promptId === request.promptId ||
+        (typeof event.data === "object" &&
+          event.data !== null &&
+          "contextTruncated" in event.data &&
+          event.data.contextTruncated === true)),
+  );
+  const decisive =
+    request.complete &&
+    !truncated &&
+    request.requestedModel !== null &&
+    observedModel !== null &&
+    responses.every((event) => event.kind === "message" && event.model !== undefined);
+  // A concrete response ID cannot disprove a native alias selection without an authoritative alias map.
+  const nativeAlias =
+    request.requestedModel !== null &&
+    (["sonnet", "opus", "haiku", "opusplan", "default", "best", "fable"].includes(request.requestedModel) ||
+      request.requestedModel.endsWith("[1m]"));
+  const mismatch = decisive && !nativeAlias && observedModel !== request.requestedModel;
+  const verified = decisive && observedModel === request.requestedModel;
+  const modelSelectionReason = mismatch ? "model_selection_mismatch" : verified ? null : "model_selection_unverified";
+  return {
+    requestedModel: request.requestedModel,
+    observedModel,
+    modelSelectionReason,
+    modelSelectionMessage:
+      modelSelectionReason === null
+        ? null
+        : mismatch
+          ? "The observed response model differs from the requested model. Work may already have occurred. Do not retry automatically."
+          : "The model selection has not been verified from available response evidence.",
+  };
+}

@@ -3,6 +3,7 @@ import { machineCapacity, type ProviderResourceObservation, type Sql } from "@ar
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { Caller } from "../src/caller.ts";
 import { createResourceStore, pruneResourceObservations } from "../src/resource-store.ts";
+import { pruneServerRetention } from "../src/retention-maintenance.ts";
 
 // Synthetic protocol/counter inputs only; these are not measured provider usage.
 const now = new Date("2026-11-09T12:00:00Z");
@@ -257,6 +258,36 @@ test("retention prunes elapsed and excess samples while malformed payloads canno
     [id],
   );
   expect(expired.rows[0]?.count).toBe(0);
+});
+
+test("vault purge failure cannot skip expired resource evidence pruning or leak its cause", async () => {
+  const f = await fixture(),
+    id = await f.sandbox();
+  const token = await f.admit(id, now);
+  await f.store.append(id, f.reading(id), now, token);
+  const canary = crypto.randomUUID();
+  let error: unknown;
+  try {
+    await pruneServerRetention(
+      sql,
+      {
+        purgeExpired: async () => {
+          throw new Error(canary);
+        },
+      },
+      new Date(now.getTime() + 15 * 86400000),
+    );
+  } catch (failure) {
+    error = failure;
+  }
+  const rows = await db.query<{ count: number }>(
+    "select count(*)::integer as count from resource_observations where sandbox_id=$1",
+    [id],
+  );
+  expect(rows.rows[0]?.count).toBe(0);
+  expect(error instanceof Error).toBe(true);
+  expect(error instanceof Error && error.message === "Server retention maintenance unavailable.").toBe(true);
+  expect(error instanceof Error && error.cause === undefined).toBe(true);
 });
 
 test("unknown launch/capacity and arbitrary extra transport fields never become evidence", async () => {

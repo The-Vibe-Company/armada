@@ -736,7 +736,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const row = await store.get(id);
       assertMachineSource(row);
       if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
-      if (row.phase === "active" && (await (await physical(row)).poll()) !== null)
+      // bound() and assertMachineSource above already verified this read. Do not
+      // repeat the remote App lookup through physical(); keep the live exit poll.
+      let exited = false;
+      if (row.phase === "active") {
+        if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
+        exited = (await (await client.sandboxes.fromId(row.physicalId)).poll()) !== null;
+      }
+      if (exited)
         return {
           ...sandboxInfo(row),
           state: "failed",
@@ -919,6 +926,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (result?.acknowledged !== true)
           throw refusal("unavailable", "GitHub runtime did not acknowledge configuration.");
         return { acknowledged: true };
+      });
+    },
+    async configureReadableVariables({ sandboxId, harness, variables }) {
+      await admit(sandboxId, async (row, save) => {
+        if (row.golden) throw refusal("invalid_request", "Golden builders cannot receive variables.");
+        const active = await healthyAdmission(row, save);
+        const result = await runner.call<{ acknowledged?: boolean }>(active, "configureReadableVariables", {
+          harness,
+          variables,
+        });
+        if (result.acknowledged !== true) throw refusal("unavailable", "Readable variable bootstrap unavailable.");
       });
     },
     async configureMcp({ sandboxId, configuration }) {
@@ -1256,7 +1274,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       r.signal?.throwIfAborted();
       await bound();
       r.signal?.throwIfAborted();
-      await store.get(r.sandboxId);
+      const row = await store.get(r.sandboxId);
+      // History is readable without live compute, but still belongs to this
+      // immutable source/management authority and must not be a deleted machine.
+      assertMachineSource(row);
+      if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
       r.signal?.throwIfAborted();
       const page = await store.events(r);
       r.signal?.throwIfAborted();

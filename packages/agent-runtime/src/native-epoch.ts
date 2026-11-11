@@ -28,6 +28,18 @@ export class NativeEpoch {
     return this.installed !== undefined;
   }
 
+  connections(configuration: McpConfiguration): McpConfiguration {
+    if (!this.installed) return configuration;
+    if (
+      !this.quiescent() ||
+      Object.keys(configuration.servers).some((name) => name === SERVER || name.startsWith(`${SERVER}_`))
+    )
+      return deny();
+    const internal = this.configuration()?.servers[SERVER];
+    if (!internal) return deny();
+    return { ...configuration, servers: { ...configuration.servers, [SERVER]: internal } };
+  }
+
   install(token: string, binding: OrchestratorEpochBinding, url: string): { acknowledged: boolean } {
     if (
       typeof token !== "string" ||

@@ -20,6 +20,7 @@ import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { ModKey } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -53,6 +54,7 @@ import {
   type ModelAccount,
 } from "@/lib/model-accounts";
 import { isSubmitShortcut } from "@/lib/shortcut";
+import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
@@ -75,6 +77,8 @@ type LaunchProps = {
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
   sizing?: LaunchSizing;
+  /** The templates that start from this environment: choosing one preselects everything but the run (#949). */
+  templates?: readonly TemplateLaunchTarget[];
 };
 
 /**
@@ -92,10 +96,56 @@ export function LaunchDialog(props: LaunchProps) {
         </Button>
       </DialogTrigger>
       {/* Header and footer stay put; only the fields scroll, so Launch is always on screen. */}
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0">
-        <LaunchForm {...props} />
+      <DialogContent
+        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0"
+        // The task comes first, even below the template choice: it is what every launch needs.
+        onOpenAutoFocus={(event) => {
+          const task = (event.target as HTMLElement | null)?.querySelector<HTMLElement>('textarea[name="prompt"]');
+          if (!task) return;
+          event.preventDefault();
+          task.focus();
+        }}
+      >
+        <LaunchStart {...props} />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * With templates for this environment, the dialog starts with a choice: everything chosen here, or a template's
+ * preset (its agent, model, tools and variables), where only the task and the run remain to choose.
+ */
+function LaunchStart(props: LaunchProps) {
+  const id = useId();
+  const [start, setStart] = useState("");
+  const templates = props.templates ?? [];
+  const template = templates.find((item) => item.id === start);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <DialogHeader className="px-6 pt-6 pb-4 pr-12">
+        <DialogTitle className="truncate">Launch from {props.golden}</DialogTitle>
+        <DialogDescription>
+          On {PROVIDER_LABELS[props.provider]}
+          {template ? `, with ${template.name} (revision ${template.revision})` : ""}
+        </DialogDescription>
+      </DialogHeader>
+      {/* Rendered once above either form, so changing it keeps the focus on it. */}
+      {templates.length > 0 && (
+        <div className="space-y-2 px-6 pb-4" data-launch-start>
+          <Label htmlFor={`${id}-start`}>Start from</Label>
+          <NativeSelect id={`${id}-start`} value={start} onChange={(event) => setStart(event.target.value)}>
+            <option value="">No template: choose below</option>
+            {templates.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} (revision {item.revision})
+              </option>
+            ))}
+          </NativeSelect>
+        </div>
+      )}
+      {template ? <TemplateLaunchForm key={template.id} target={template} /> : <LaunchForm {...props} />}
+    </div>
   );
 }
 
@@ -172,10 +222,6 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
 
   return (
     <div ref={root} className="flex min-h-0 flex-1 flex-col">
-      <DialogHeader className="px-6 pt-6 pb-4 pr-12">
-        <DialogTitle className="truncate">Launch from {golden}</DialogTitle>
-        <DialogDescription>On {PROVIDER_LABELS[provider]}</DialogDescription>
-      </DialogHeader>
       <ActionForm
         action={launchFromGolden}
         className="flex min-h-0 flex-1 flex-col"
@@ -427,7 +473,7 @@ function AccountField({
 }
 
 /** The shortcut Launch answers to, on the button itself; hidden from its accessible name. */
-function LaunchShortcut() {
+export function LaunchShortcut() {
   return (
     <Kbd
       aria-hidden="true"
@@ -454,7 +500,7 @@ function optionLabel(account: ModelAccount, now: number, orgName: string): strin
 }
 
 /** A compact radio group: every option visible, one choice, arrow keys move between them. */
-function Segmented<T extends string>({
+export function Segmented<T extends string>({
   legend,
   name,
   value,
@@ -496,7 +542,7 @@ function Segmented<T extends string>({
  * The configured checkout the agent starts in. A golden with one repository starts there; with several, in the
  * default directory until one is chosen. Every repository stays available either way.
  */
-function RepositoryField({
+export function RepositoryField({
   idPrefix,
   repositories,
   onChange,

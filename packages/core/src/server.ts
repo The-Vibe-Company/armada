@@ -5,6 +5,7 @@
  * The dashboard (and anything else that ships to a browser) must import `@armada/core` instead.
  */
 
+export { type ApplicationVault, type ApplicationVaultActor, createApplicationVault } from "./application-vault.ts";
 export { boatSnapshotName } from "./boat-snapshot-name.ts";
 export {
   githubAppJwt,
@@ -43,8 +44,16 @@ export {
   type OrchestratorAuthorityTransport,
 } from "./orchestrator-authority.ts";
 export { reserveOrchestratorOperation } from "./orchestrator-operations.ts";
+export {
+  installPrivateSkill,
+  PRIVATE_SKILL_FAILURES,
+  PRIVATE_SKILL_PATTERN,
+  PrivateSkillError,
+} from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
+export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
+export * from "./skillpack.ts";
 export {
   type SshExecDeps,
   shellQuote,
@@ -53,6 +62,8 @@ export {
   sshPrivateAuthState,
   sshStdinCheckout,
 } from "./ssh-executor.ts";
+export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
-
-export { preserveWork, type WorkPreservation } from "./work-preservation.ts";
+export { sshReadableVariables } from "./ssh-readable-variables.ts";
+export { createTemplateService, type TemplateRuntime, type TemplateService } from "./template-service.ts";
+export { preserveWork, type WorkPreservation, workPreservationError } from "./work-preservation.ts";

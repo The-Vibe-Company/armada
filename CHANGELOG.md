@@ -1,5 +1,86 @@
 # Changelog
 
+## [2.20.0](https://github.com/The-Vibe-Company/armada/compare/v2.19.0...v2.20.0) (2026-11-11)
+
+
+### Features
+
+* **cli:** create, publish and launch templates ([#950](https://github.com/The-Vibe-Company/armada/issues/950)) ([61e9379](https://github.com/The-Vibe-Company/armada/commit/61e93793ef5fffd8e8f0542f693ada6e897ad88d))
+* **cli:** manage variables and write-only secrets ([#937](https://github.com/The-Vibe-Company/armada/issues/937)) ([05e6366](https://github.com/The-Vibe-Company/armada/commit/05e63660c540edb6b0478d0389c67dbb763428c7))
+* **dashboard:** add and replace the Skillpack key in Build &gt; Skills ([#961](https://github.com/The-Vibe-Company/armada/issues/961)) ([6b2cffa](https://github.com/The-Vibe-Company/armada/commit/6b2cffa3d358cd60748a97219164d4204ddc4fbd))
+* **dashboard:** Build &gt; Templates page and launch from a template ([#951](https://github.com/The-Vibe-Company/armada/issues/951)) ([5ab0acd](https://github.com/The-Vibe-Company/armada/commit/5ab0acd872e24f92be9561266d51c38713a198e3))
+* **dashboard:** Build &gt; Variables page for variables and write-only secrets ([#939](https://github.com/The-Vibe-Company/armada/issues/939)) ([b81d398](https://github.com/The-Vibe-Company/armada/commit/b81d3988e6c73981775d7cd15af30d74b2a6146f))
+* **golden:** install the inert Armada helper with a verified receipt ([#928](https://github.com/The-Vibe-Company/armada/issues/928)) ([d3439cb](https://github.com/The-Vibe-Company/armada/commit/d3439cb29752c323cd4f92ceee6fca70bba31264))
+* **secrets:** gate secret-tainted sandbox preservation and reuse ([#958](https://github.com/The-Vibe-Company/armada/issues/958)) ([fca5f6b](https://github.com/The-Vibe-Company/armada/commit/fca5f6b199c9a891409ed6f29c59d5da9d9b794b))
+* **skillpack:** accept any valid Skillpack key ([#965](https://github.com/The-Vibe-Company/armada/issues/965)) ([251df48](https://github.com/The-Vibe-Company/armada/commit/251df487da7fcd4959fc3025a14a0355c13409ce))
+* **templates:** add launch preset revisions and shared API ([#938](https://github.com/The-Vibe-Company/armada/issues/938)) ([e9737b1](https://github.com/The-Vibe-Company/armada/commit/e9737b116d6a327241fa53a82452aa9512df04ca))
+
+
+### Bug Fixes
+
+* **cli:** include variable values in explicit JSON reads ([#945](https://github.com/The-Vibe-Company/armada/issues/945)) ([44b6d64](https://github.com/The-Vibe-Company/armada/commit/44b6d64e021436c19e9060ea8c02a1258bb4639f))
+* **deploy:** recover from database admission pressure at boot ([#924](https://github.com/The-Vibe-Company/armada/issues/924)) ([0da44a3](https://github.com/The-Vibe-Company/armada/commit/0da44a3e1547a5778c0b1ec88587f416da4ab6fb))
+* **github:** diagnose early shared token rotation ([#953](https://github.com/The-Vibe-Company/armada/issues/953)) ([320d61b](https://github.com/The-Vibe-Company/armada/commit/320d61bec04617535b857e68088c7ff974b628ff))
+* **github:** repair legacy Boat token hydration ([#925](https://github.com/The-Vibe-Company/armada/issues/925)) ([94f41a8](https://github.com/The-Vibe-Company/armada/commit/94f41a82d893fef3ae457272819604ac4c862c8f))
+* **golden:** correct Boat snapshot names and report safe refusals ([#932](https://github.com/The-Vibe-Company/armada/issues/932)) ([2a56383](https://github.com/The-Vibe-Company/armada/commit/2a5638363a7fddfa79056c5b4c0c1b2752c1366f))
+* **ios:** decode 2.19 orchestrator receipts and explain create failures ([#943](https://github.com/The-Vibe-Company/armada/issues/943)) ([67cb7dd](https://github.com/The-Vibe-Company/armada/commit/67cb7dd44e596815f7f93b7f12ee08c530a2b18b))
+* **ios:** never fail to decode when the server adds a state, reason or kind ([#963](https://github.com/The-Vibe-Company/armada/issues/963)) ([f62b645](https://github.com/The-Vibe-Company/armada/commit/f62b645601729d3f397b2c2d8e03f67f27c90b39))
+* **orchestrators:** preserve busy account refusal before allocation ([#959](https://github.com/The-Vibe-Company/armada/issues/959)) ([faa8d04](https://github.com/The-Vibe-Company/armada/commit/faa8d049be26167700b54e56c07130c80ba34339))
+* **orchestrator:** wait for requested skills before reporting ready ([#946](https://github.com/The-Vibe-Company/armada/issues/946)) ([dd44317](https://github.com/The-Vibe-Company/armada/commit/dd44317d9feae557b23497ca40e6d5185cc14b2b))
+* **sandbox:** trace work-preservation attempts and stop ordering ([#929](https://github.com/The-Vibe-Company/armada/issues/929)) ([378cbd0](https://github.com/The-Vibe-Company/armada/commit/378cbd04f1df454f6324c03d30bb00a1b1a8a8e7))
+* **templates:** report unavailable model accounts at launch ([#960](https://github.com/The-Vibe-Company/armada/issues/960)) ([3477e1c](https://github.com/The-Vibe-Company/armada/commit/3477e1cf7003a53befe9a69f47126756df5d200a))
+* **vault:** answer a readable conflict when a revoked name is reused ([#940](https://github.com/The-Vibe-Company/armada/issues/940)) ([b6144c3](https://github.com/The-Vibe-Company/armada/commit/b6144c386ba1a9cc0485f2aee6db78063484f415))
+
+## [2.19.0](https://github.com/The-Vibe-Company/armada/compare/v2.18.0...v2.19.0) (2026-11-11)
+
+
+### Features
+
+* **orchestrators:** manage coordinator MCP connections ([#806](https://github.com/The-Vibe-Company/armada/issues/806)) ([68cc809](https://github.com/The-Vibe-Company/armada/commit/68cc80917af35599863c1d82f3372acf6e1bb25a))
+* **vault:** add readable variables and write-only application secrets ([#921](https://github.com/The-Vibe-Company/armada/issues/921)) ([4ce8a6b](https://github.com/The-Vibe-Company/armada/commit/4ce8a6b9b0535f92c8950b9e5689e427a3714721))
+
+
+### Bug Fixes
+
+* **boat:** retry preservation exec while compute becomes ready ([#915](https://github.com/The-Vibe-Company/armada/issues/915)) ([545b6d2](https://github.com/The-Vibe-Company/armada/commit/545b6d25ac48f0a5c0e6d317d3e91523daa29feb))
+* **dashboard:** create an environment in a dialog, not a side panel ([#901](https://github.com/The-Vibe-Company/armada/issues/901)) ([dcd0749](https://github.com/The-Vibe-Company/armada/commit/dcd07495b033f335ee99ddfddadf546738402122))
+* **github:** forward credential refresh through dashboard proxy ([#911](https://github.com/The-Vibe-Company/armada/issues/911)) ([1bfd0df](https://github.com/The-Vibe-Company/armada/commit/1bfd0dfba5b96af9f3bf1b06255c0a20e2aba28e))
+* **golden:** surface Boat payment refusals without phantom recovery ([#919](https://github.com/The-Vibe-Company/armada/issues/919)) ([420f3bd](https://github.com/The-Vibe-Company/armada/commit/420f3bd67dba529afbe5a94afa26502b5d78e141))
+* **launch:** delay and log ownership retry outcomes ([#913](https://github.com/The-Vibe-Company/armada/issues/913)) ([276a2f0](https://github.com/The-Vibe-Company/armada/commit/276a2f0caf6c51d1c4b155e1629cf4a8d02ba14b))
+* **skillpack:** authorize the private install key on Modal without root login ([#930](https://github.com/The-Vibe-Company/armada/issues/930)) ([cccdaa4](https://github.com/The-Vibe-Company/armada/commit/cccdaa461d47c9dcb0515d94d4c6ff4e6596f6ef))
+* **skillpack:** diagnose Modal private SSH transport and settle failed creates ([#916](https://github.com/The-Vibe-Company/armada/issues/916)) ([a2fc32e](https://github.com/The-Vibe-Company/armada/commit/a2fc32ea99c8e425bc286d2bf9b3ef6d54b95e0d))
+
+## [2.18.0](https://github.com/The-Vibe-Company/armada/compare/v2.17.0...v2.18.0) (2026-11-10)
+
+
+### Features
+
+* **ci:** gate release-only production on exact-commit staging smoke ([#828](https://github.com/The-Vibe-Company/armada/issues/828)) ([494dd08](https://github.com/The-Vibe-Company/armada/commit/494dd081bd72c1b68961e153f2c870fc53a0f541))
+* **dashboard:** show what each sandbox cost ([#894](https://github.com/The-Vibe-Company/armada/issues/894)) ([fcdd162](https://github.com/The-Vibe-Company/armada/commit/fcdd162d7ae821ece04290b38e3a25d561437cd2))
+* **orchestrators:** select a public Skillpack skill at create ([#839](https://github.com/The-Vibe-Company/armada/issues/839)) ([969bcb0](https://github.com/The-Vibe-Company/armada/commit/969bcb0d4341361ebd95ad7a88d712c09c6e3ba2))
+* **sandbox:** install pinned Skillpack skills at launch ([#869](https://github.com/The-Vibe-Company/armada/issues/869)) ([eab5f64](https://github.com/The-Vibe-Company/armada/commit/eab5f64af09009fec617381abe6c30f2ace67110))
+
+
+### Bug Fixes
+
+* **api:** preserve message text across history page boundaries ([#820](https://github.com/The-Vibe-Company/armada/issues/820)) ([0229761](https://github.com/The-Vibe-Company/armada/commit/0229761f33a3ae6cc5ef4489ea994204156c75d2))
+* **dashboard:** add a tool through a dialog and one services section ([#900](https://github.com/The-Vibe-Company/armada/issues/900)) ([c9c8970](https://github.com/The-Vibe-Company/armada/commit/c9c8970634e889f31445ea61688e9fd55e459a3c))
+* **github:** preserve launch lifetime and repair running sandbox access ([#881](https://github.com/The-Vibe-Company/armada/issues/881)) ([4355878](https://github.com/The-Vibe-Company/armada/commit/4355878b46f8df8a19cdb55cdd8688c722b6ca62))
+* **ios:** send a follow-up after the turn finished as a new message, not a steer ([#853](https://github.com/The-Vibe-Company/armada/issues/853)) ([2fce2ef](https://github.com/The-Vibe-Company/armada/commit/2fce2ef6bc993d0516e1642f3f0ca42f198b8270))
+* **ios:** sort orchestrators and sandboxes by status, then newest first ([#850](https://github.com/The-Vibe-Company/armada/issues/850)) ([c51a807](https://github.com/The-Vibe-Company/armada/commit/c51a8072fc665b0673d9614d68cdba50cf53aaf4))
+* **launch:** retry intermittent repository ownership refusal once ([#893](https://github.com/The-Vibe-Company/armada/issues/893)) ([35bfb18](https://github.com/The-Vibe-Company/armada/commit/35bfb180820716f5ea1c5c82342a0ece37feb396))
+* **models:** report observed turn models honestly ([#891](https://github.com/The-Vibe-Company/armada/issues/891)) ([768ee87](https://github.com/The-Vibe-Company/armada/commit/768ee87cbde3a317dcc9618b474db042d2d860a0))
+* **orchestrators:** refuse steer when no turn is running ([#848](https://github.com/The-Vibe-Company/armada/issues/848)) ([140589f](https://github.com/The-Vibe-Company/armada/commit/140589f51e5647a589c05b000bfca84ac20cb60a))
+* **sandbox:** allow lifetime extensions through the public API ([#888](https://github.com/The-Vibe-Company/armada/issues/888)) ([0c2cb7f](https://github.com/The-Vibe-Company/armada/commit/0c2cb7f39b8f421a4bd28ee34f5c6d285fa691cd))
+* **sandbox:** make stop preservation failures actionable ([#903](https://github.com/The-Vibe-Company/armada/issues/903)) ([946d568](https://github.com/The-Vibe-Company/armada/commit/946d5685768ba9f0377f4fa21ac8c318ec1d67ac))
+* **skillpack:** diagnose private install failures and settle failed creates ([#899](https://github.com/The-Vibe-Company/armada/issues/899)) ([5189abe](https://github.com/The-Vibe-Company/armada/commit/5189abe0a09656d10ea8688c54a1413fdbba4a90))
+* **usage:** record per-sandbox token usage from real harness streams ([#889](https://github.com/The-Vibe-Company/armada/issues/889)) ([4a6fb4c](https://github.com/The-Vibe-Company/armada/commit/4a6fb4cdba2ed239f441b6679915e9a6e3abacd9))
+
+
+### Reverts
+
+* **skills:** restore ship-pr-dev exactly before [#831](https://github.com/The-Vibe-Company/armada/issues/831) ([#845](https://github.com/The-Vibe-Company/armada/issues/845)) ([c686530](https://github.com/The-Vibe-Company/armada/commit/c68653051f8941acd78426d3d15eb1634827551f))
+
 ## [2.17.0](https://github.com/The-Vibe-Company/armada/compare/v2.16.0...v2.17.0) (2026-11-10)
 
 

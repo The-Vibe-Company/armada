@@ -6,6 +6,251 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      application_secret_uploads: {
+        Row: {
+          hash: string;
+          actor_id: string;
+          org_id: string;
+          operation: string;
+          target_id: string | null;
+          expected_version: number | null;
+          scope: string;
+          name: string;
+          value_enc: string;
+          secret_expires_at: string | null;
+          expires_at: string;
+        };
+        Insert: {
+          hash: string;
+          actor_id: string;
+          org_id: string;
+          operation: string;
+          target_id?: string | null;
+          expected_version?: number | null;
+          scope: string;
+          name: string;
+          value_enc: string;
+          secret_expires_at?: string | null;
+          expires_at?: string;
+        };
+        Update: {
+          hash?: string;
+          actor_id?: string;
+          org_id?: string;
+          operation?: string;
+          target_id?: string | null;
+          expected_version?: number | null;
+          scope?: string;
+          name?: string;
+          value_enc?: string;
+          secret_expires_at?: string | null;
+          expires_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "application_secret_uploads_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_secret_uploads_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      application_secrets: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value_enc: string | null;
+          version: number;
+          epoch: number;
+          status: string;
+          expires_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value_enc?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          expires_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          value_enc?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          expires_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "application_secrets_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_secrets_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      application_vault_audit: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          actor_id: string;
+          resource_id: string;
+          kind: string;
+          operation: string;
+          version: number;
+          epoch: number;
+          outcome: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          actor_id: string;
+          resource_id: string;
+          kind: string;
+          operation: string;
+          version: number;
+          epoch: number;
+          outcome?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          actor_id?: string;
+          resource_id?: string;
+          kind?: string;
+          operation?: string;
+          version?: number;
+          epoch?: number;
+          outcome?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "application_vault_audit_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_vault_audit_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_vault_audit_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      armada_access_parents: {
+        Row: {
+          id: string;
+          kind: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id: string | null;
+          state: string;
+          authority_epoch: number;
+          generation: number;
+          golden_ids: string[];
+          credential_ids: string[];
+        };
+        Insert: {
+          id?: string;
+          kind: string;
+          org_id: string;
+          owner_id: string;
+          sandbox_id?: string | null;
+          state: string;
+          authority_epoch?: number;
+          generation?: number;
+          golden_ids?: string[];
+          credential_ids?: string[];
+        };
+        Update: {
+          id?: string;
+          kind?: string;
+          org_id?: string;
+          owner_id?: string;
+          sandbox_id?: string | null;
+          state?: string;
+          authority_epoch?: number;
+          generation?: number;
+          golden_ids?: string[];
+          credential_ids?: string[];
+        };
+        Relationships: [
+          {
+            foreignKeyName: "armada_access_parents_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "armada_access_parents_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "armada_access_parents_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       credentials: {
         Row: {
           id: string;
@@ -364,6 +609,9 @@ export type Database = {
           provider: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id: string | null;
           revision_known: boolean;
+          build_warnings: string[];
+          failure_reason: string | null;
+          legacy_payment_recovery_eligible: boolean;
         };
         Insert: {
           id: string;
@@ -389,6 +637,9 @@ export type Database = {
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id?: string | null;
           revision_known?: boolean;
+          build_warnings?: string[];
+          failure_reason?: string | null;
+          legacy_payment_recovery_eligible?: boolean;
         };
         Update: {
           id?: string;
@@ -414,6 +665,9 @@ export type Database = {
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id?: string | null;
           revision_known?: boolean;
+          build_warnings?: string[];
+          failure_reason?: string | null;
+          legacy_payment_recovery_eligible?: boolean;
         };
         Relationships: [
           {
@@ -674,6 +928,8 @@ export type Database = {
           modal_app_id: string | null;
           removed_at: string | null;
           size_policy: Json | null;
+          build_warnings: string[];
+          helper_receipt: Json | null;
         };
         Insert: {
           id?: string;
@@ -693,6 +949,8 @@ export type Database = {
           modal_app_id?: string | null;
           removed_at?: string | null;
           size_policy?: Json | null;
+          build_warnings?: string[];
+          helper_receipt?: Json | null;
         };
         Update: {
           id?: string;
@@ -712,6 +970,8 @@ export type Database = {
           modal_app_id?: string | null;
           removed_at?: string | null;
           size_policy?: Json | null;
+          build_warnings?: string[];
+          helper_receipt?: Json | null;
         };
         Relationships: [
           {
@@ -723,6 +983,102 @@ export type Database = {
           },
           {
             foreignKeyName: "goldens_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      launch_template_revisions: {
+        Row: {
+          id: string;
+          template_id: string;
+          revision: number;
+          definition: Json;
+          digest: string;
+          created_by: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          template_id: string;
+          revision: number;
+          definition: Json;
+          digest: string;
+          created_by: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          template_id?: string;
+          revision?: number;
+          definition?: Json;
+          digest?: string;
+          created_by?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "launch_template_revisions_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "launch_template_revisions_template_id_fkey";
+            columns: ["template_id"];
+            isOneToOne: false;
+            referencedRelation: "launch_templates";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      launch_templates: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          current_revision: number;
+          status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          current_revision?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          current_revision?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "launch_templates_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "launch_templates_owner_id_fkey";
             columns: ["owner_id"];
             isOneToOne: false;
             referencedRelation: "users";
@@ -1700,17 +2056,10 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "orchestrator_child_operations_orchestrator_id_fkey";
-            columns: ["orchestrator_id"];
-            isOneToOne: false;
-            referencedRelation: "orchestrators";
-            referencedColumns: ["id"];
-          },
-          {
             foreignKeyName: "orchestrator_child_operations_orchestrator_id_org_id_owner_fkey";
             columns: ["orchestrator_id", "org_id", "owner_id"];
             isOneToOne: false;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id", "org_id", "owner_id"];
           },
           {
@@ -1753,7 +2102,7 @@ export type Database = {
             foreignKeyName: "orchestrator_children_orchestrator_id_org_id_owner_id_fkey";
             columns: ["orchestrator_id", "org_id", "owner_id"];
             isOneToOne: false;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id", "org_id", "owner_id"];
           },
           {
@@ -1816,7 +2165,7 @@ export type Database = {
             foreignKeyName: "orchestrator_delegations_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: false;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id"];
           },
         ];
@@ -1890,7 +2239,7 @@ export type Database = {
             foreignKeyName: "orchestrator_lifecycle_orchestrator_id_fkey";
             columns: ["orchestrator_id"];
             isOneToOne: true;
-            referencedRelation: "orchestrators";
+            referencedRelation: "armada_access_parents";
             referencedColumns: ["id"];
           },
         ];
@@ -2012,6 +2361,7 @@ export type Database = {
           blocked_reason: string | null;
           created_at: string;
           skill_receipt: Json | null;
+          mcp_wrapper_revision: string | null;
         };
         Insert: {
           orchestrator_id: string;
@@ -2027,6 +2377,7 @@ export type Database = {
           blocked_reason?: string | null;
           created_at?: string;
           skill_receipt?: Json | null;
+          mcp_wrapper_revision?: string | null;
         };
         Update: {
           orchestrator_id?: string;
@@ -2042,6 +2393,7 @@ export type Database = {
           blocked_reason?: string | null;
           created_at?: string;
           skill_receipt?: Json | null;
+          mcp_wrapper_revision?: string | null;
         };
         Relationships: [
           {
@@ -2325,6 +2677,63 @@ export type Database = {
         };
         Relationships: [];
       };
+      readable_variables: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value: string | null;
+          version: number;
+          epoch: number;
+          status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          value?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "readable_variables_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "readable_variables_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       resource_observations: {
         Row: {
           id: number;
@@ -2362,6 +2771,111 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "resource_observations_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      routines: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          interval_hours: number;
+          max_runs_per_day: number;
+          ttl_seconds: number;
+          status: string;
+          version: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          interval_hours: number;
+          max_runs_per_day: number;
+          ttl_seconds: number;
+          status?: string;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          template_id?: string;
+          template_revision?: number;
+          prompt?: string;
+          interval_hours?: number;
+          max_runs_per_day?: number;
+          ttl_seconds?: number;
+          status?: string;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "routines_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routines_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routines_template_id_template_revision_fkey";
+            columns: ["template_id", "template_revision"];
+            isOneToOne: false;
+            referencedRelation: "launch_template_revisions";
+            referencedColumns: ["template_id", "revision"];
+          },
+        ];
+      };
+      sandbox_turn_models: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          requested_model: string | null;
+          evidence: Json | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          requested_model?: string | null;
+          evidence?: Json | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          requested_model?: string | null;
+          evidence?: Json | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_turn_models_sandbox_id_fkey";
             columns: ["sandbox_id"];
             isOneToOne: false;
             referencedRelation: "sandboxes";
@@ -2447,6 +2961,10 @@ export type Database = {
           usage_runtime_seconds: number | null;
           usage_running_since: string | null;
           usage_turns: Json | null;
+          skills: Json;
+          stop_generation: number;
+          preservation_stop_generation: number | null;
+          application_secret_tainted: boolean;
         };
         Insert: {
           id?: string;
@@ -2496,6 +3014,10 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
+          stop_generation?: number;
+          preservation_stop_generation?: number | null;
+          application_secret_tainted?: boolean;
         };
         Update: {
           id?: string;
@@ -2545,6 +3067,10 @@ export type Database = {
           usage_runtime_seconds?: number | null;
           usage_running_since?: string | null;
           usage_turns?: Json | null;
+          skills?: Json;
+          stop_generation?: number;
+          preservation_stop_generation?: number | null;
+          application_secret_tainted?: boolean;
         };
         Relationships: [
           {
@@ -2622,6 +3148,89 @@ export type Database = {
           },
         ];
       };
+      template_launch_requests: {
+        Row: {
+          id: string;
+          org_id: string;
+          actor_id: string;
+          client_key: string;
+          digest: string;
+          template_id: string;
+          revision_id: string;
+          manifest: Json;
+          golden_operation_fence_id: string;
+          sandbox_id: string;
+          state: string;
+          result: Json | null;
+          reason: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          actor_id: string;
+          client_key: string;
+          digest: string;
+          template_id: string;
+          revision_id: string;
+          manifest: Json;
+          golden_operation_fence_id: string;
+          sandbox_id: string;
+          state?: string;
+          result?: Json | null;
+          reason?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          actor_id?: string;
+          client_key?: string;
+          digest?: string;
+          template_id?: string;
+          revision_id?: string;
+          manifest?: Json;
+          golden_operation_fence_id?: string;
+          sandbox_id?: string;
+          state?: string;
+          result?: Json | null;
+          reason?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "template_launch_requests_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "template_launch_requests_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "template_launch_requests_revision_id_fkey";
+            columns: ["revision_id"];
+            isOneToOne: false;
+            referencedRelation: "launch_template_revisions";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "template_launch_requests_template_id_fkey";
+            columns: ["template_id"];
+            isOneToOne: false;
+            referencedRelation: "launch_templates";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -2631,7 +3240,7 @@ export type Database = {
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal";
+      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal" | "skillpack";
       credential_scope: "user" | "org";
       harness: "claude" | "codex";
       member_role: "admin" | "member";
@@ -2646,6 +3255,10 @@ export type Database = {
   };
 };
 
+export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
+export type ApplicationSecretRow = Database["public"]["Tables"]["application_secrets"]["Row"];
+export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];
+export type ArmadaAccessParentRow = Database["public"]["Tables"]["armada_access_parents"]["Row"];
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
@@ -2659,6 +3272,8 @@ export type GoldenOperationFence = Database["public"]["Tables"]["golden_operatio
 export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
 export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
+export type LaunchTemplateRevisionRow = Database["public"]["Tables"]["launch_template_revisions"]["Row"];
+export type LaunchTemplateRow = Database["public"]["Tables"]["launch_templates"]["Row"];
 export type McpActorEpoch = Database["public"]["Tables"]["mcp_actor_epochs"]["Row"];
 export type McpBinding = Database["public"]["Tables"]["mcp_bindings"]["Row"];
 export type McpBootstrapReceipt = Database["public"]["Tables"]["mcp_bootstraps"]["Row"];
@@ -2695,10 +3310,14 @@ export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
+export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
+export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];
+export type TemplateLaunchRequestRow = Database["public"]["Tables"]["template_launch_requests"]["Row"];
 export type CredentialKind = Database["public"]["Enums"]["credential_kind"];
 export type CredentialScope = Database["public"]["Enums"]["credential_scope"];
 export type MemberRole = Database["public"]["Enums"]["member_role"];

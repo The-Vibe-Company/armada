@@ -5,14 +5,19 @@ import {
   createSqlVaultStore,
   mapSandboxRow,
   OrchestratorAuthority,
+  PrivateSkillError,
+  ProviderError,
   type ProviderRegistry,
   reserveOrchestratorOperation,
   resolveCredentials,
+  resolveSkillpackCredential,
   type SandboxRow,
   type Sql,
   sandboxActivity,
+  VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
+import { isPrivateModelEvent } from "./model-usage.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import {
   createOrchestratorBackendResolver,
@@ -28,7 +33,7 @@ import { createModalOrchestratorNativeAdapter } from "./orchestrator-modal-nativ
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import { createOrchestratorServices } from "./orchestrator-services.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { preserveBeforeStop } from "./work-preservation.ts";
+import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** Real production composition. Modal Codex retains its native checkpoint lane;
  * Boat is explicitly best-effort ordinary archival/activation. Deployment intent
@@ -100,7 +105,7 @@ export function createProductionOrchestrators(input: {
   });
   const stores = {
     goldens: createSqlGoldenStore(sql),
-    sandboxes: createSqlSandboxStore(sql),
+    sandboxes: createSqlSandboxStore(sql, { turnModels: true }),
     credentials: input.credentials,
     ...(input.connections ? { connections: input.connections } : {}),
   };
@@ -110,7 +115,7 @@ export function createProductionOrchestrators(input: {
         `select s.* from public.sandboxes s join public.orchestrator_children c on c.sandbox_id=s.id
        join public.members m on m.org_id=c.org_id and m.user_id=c.owner_id
        where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and c.owner_id=s.owner_id and c.org_id=s.org_id
-       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+       and not exists(select 1 from public.armada_access_parents o where o.sandbox_id=s.id)`,
         [sandboxId, ownerId, orgId],
       )
     ).rows[0];
@@ -158,14 +163,27 @@ export function createProductionOrchestrators(input: {
       });
     },
     async read(id, ownerId, orgId) {
-      const { saved } = await child(id, ownerId, orgId);
-      return saved;
+      const { saved, provider } = await child(id, ownerId, orgId);
+      const events = await provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 });
+      return {
+        ...saved,
+        events: events.events.filter((event) => !isPrivateModelEvent(event)),
+        cursor: events.cursor ?? null,
+        hasMore: events.hasMore,
+      };
     },
     async message(operation, text) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       await input.credentials.assertTurn?.(actor, saved.id, saved.status === "stopped");
-      await sandboxActivity(stores.sandboxes, saved, { status: "running" }, async (signal) => {
+      const scoped = createSqlData(sql)({
+        via: "service",
+        userId: operation.ownerId,
+        orgs: [{ orgId: operation.orgId, role: "member" }],
+      }).sandboxes;
+      // Explicit new work cancels the pending stop epoch under the same activity
+      // fences used by ordinary send, so an older receipt cannot cover this turn.
+      await sandboxActivity(scoped, saved, { status: "running", stopRequested: false }, async (signal) => {
         const receipt = await provider.prompt({
           sandboxId: saved.providerSandboxId,
           harness: saved.harness,
@@ -175,6 +193,15 @@ export function createProductionOrchestrators(input: {
           ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
           ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
         });
+        try {
+          await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
+        } catch {
+          try {
+            console.error("armada: turn model request record unavailable; accepted prompt continues.");
+          } catch {
+            /* Logging must not change accepted work. */
+          }
+        }
         return {
           result: undefined,
           patch: {
@@ -203,7 +230,18 @@ export function createProductionOrchestrators(input: {
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       await sandboxActivity(stores.sandboxes, saved, { stopRequested: true }, async () => {
-        await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId).catch(() => {});
+        if (
+          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop").catch(
+            () => {},
+          )) === "pending"
+        )
+          throw new ProviderError({
+            provider: provider.id,
+            code: "sandbox_not_ready",
+            retryable: true,
+            message: "Interruption is pending; retry stop after turns settle.",
+          });
+        recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
         await provider.stop({ sandboxId: saved.providerSandboxId });
         return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
       });
@@ -229,9 +267,41 @@ export function createProductionOrchestrators(input: {
   return createOrchestratorServices(sql, {
     scopedMcpUrl: input.scopedMcpUrl,
     runtime: {
+      validateConnections: async (configuration, ownerId) => {
+        const member = (
+          await sql.query<{ role: "admin" | "member" }>(
+            "select role from public.members where org_id=$1 and user_id=$2",
+            [configuration.orgId, ownerId],
+          )
+        ).rows[0];
+        if (!member) throw new OrchestratorRuntimeError("not_found");
+        const actor = { userId: ownerId, orgId: configuration.orgId, role: member.role };
+        const connections = input.managedConnections ?? input.connections;
+        const ids = configuration.connections ?? (await connections?.defaults?.(actor, "private")) ?? [];
+        if (ids.length && !connections) throw new OrchestratorRuntimeError("invalid_request");
+        await connections?.validate(actor, ids, "private");
+      },
       authority,
       reserveOperation: reserveOrchestratorOperation,
       skillRevision,
+      skillpackKey: async (ownerId, orgId) => {
+        try {
+          return (
+            (
+              await resolveSkillpackCredential(createSqlVaultStore(sql), input.encryptionKey, {
+                userId: ownerId,
+                orgId,
+              })
+            )?.key ?? null
+          );
+        } catch (error) {
+          throw new PrivateSkillError(
+            error instanceof VaultError && error.code === "credential_refused"
+              ? "skillpack_credential_refused"
+              : "skillpack_credential_unreadable",
+          );
+        }
+      },
       ...(input.diagnosticLog ? { diagnosticLog: input.diagnosticLog } : {}),
       enabledPairs,
       recoverCreate: async (request, diagnostics) => {

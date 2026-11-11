@@ -10,10 +10,18 @@ import {
   type LaunchCredentialResolver,
   resolveCredentials,
   resolveGitHubAccess,
+  resolveSkillpackCredential,
   toHarnessCredentials,
 } from "@armada/core";
 
-import { sshHydrateAuthState } from "@armada/core/server";
+import {
+  installPrivateSkill,
+  PrivateSkillError,
+  sshHydrateAuthState,
+  sshHydrateGitHubToken,
+  VaultError,
+} from "@armada/core/server";
+import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
@@ -40,6 +48,30 @@ export function launchCredentials(
   ownership?: ModelAuthOwnership,
 ): LaunchCredentialResolver {
   return {
+    installPrivateSkill,
+    async skillpackKey(actor) {
+      try {
+        return (await resolveSkillpackCredential(reader, encryptionKey, actor))?.key ?? null;
+      } catch (error) {
+        throw new PrivateSkillError(
+          error instanceof VaultError && error.code === "credential_refused"
+            ? "skillpack_credential_refused"
+            : "skillpack_credential_unreadable",
+        );
+      }
+    },
+    async refreshGitHub(actor, provider, sandboxId) {
+      if (!github) throw new VaultError("unavailable", "GitHub authorization is not configured.");
+      const repaired = await refreshLegacyGitHub(
+        provider,
+        sandboxId,
+        actor.userId,
+        { ...github, encryptionKey },
+        sshHydrateGitHubToken,
+      );
+      if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
+      return repaired;
+    },
     async admit(actor, credentials, sandboxId) {
       if (!credentials.codexAuthJson) return;
       if (!ownership) return; // Embedders without managed auth retain their legacy native path.
@@ -121,7 +153,12 @@ export function launchCredentials(
         ...(credentialId !== undefined ? { credentialId } : {}),
         ...(credentialVersion !== undefined ? { credentialVersion } : {}),
       });
-      const access = github ? await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId) : undefined;
+      const access = github
+        ? await resolveGitHubAccess(
+            { ...github, caller: "launch", encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
+            actor.userId,
+          )
+        : undefined;
       return toHarnessCredentials(resolved, access);
     },
   };

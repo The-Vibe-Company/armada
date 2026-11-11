@@ -43,6 +43,36 @@ const receipt = {
   errorCode: null,
 };
 
+test("connection CLI preserves list/add/remove paths, CAS and selection", async () => {
+  for (const action of ["list", "add", "remove"]) {
+    const response =
+      action === "list"
+        ? { version: 1, connections: [{ id: "connection", name: "Tools" }] }
+        : { ...receipt, kind: `connections_${action}`, state: "succeeded" };
+    const h = harness(() => Response.json(response));
+    const result = await h.invoke([
+      "connections",
+      action,
+      "parent-1",
+      ...(action === "list" ? [] : ["connection"]),
+      "--org",
+      "org-1",
+      ...(action === "list" ? [] : ["--expected-revision", "7", "--idempotency-key", "same-key"]),
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    expect(h.requests).toHaveLength(1);
+    const request = h.requests[0]!;
+    expect(new URL(request.url).pathname).toBe(
+      `/api/v1/orchestrators/parent-1/connections${action === "list" ? "" : `/${action}`}`,
+    );
+    if (action !== "list") {
+      expect(request.headers.get("idempotency-key")).toBe("same-key");
+      expect(await request.json()).toEqual({ orgId: "org-1", expectedRevision: 7, connections: ["connection"] });
+    }
+  }
+});
+
 test.each(["resume", "recover"])(
   "registered %s sends exact candidate route, org selector, key and revision without prompt",
   async (action) => {
@@ -260,7 +290,11 @@ test("unstructured HTTP failures identify the actual origin without relaying ups
     ]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.err)).toEqual({
-      error: { code: "unavailable", message: "Armada server request failed (404) at https://armada.test." },
+      error: {
+        code: "unavailable",
+        message:
+          "This Armada deployment at https://armada.test does not serve /api/v1/orchestrators/parent-1/recover; the dashboard or server may be out of date. Ask an administrator to verify the deployment.",
+      },
     });
     expect(result.err).not.toContain("private-upstream");
     expect(result.err).not.toContain("test-armada-bearer");
@@ -287,4 +321,47 @@ test("stop transport loss gives reconciliation instructions and never retries", 
   expect(JSON.parse(result.err).error.message).toContain("armada orchestrator detail parent-1 --org org-1");
   expect(JSON.parse(result.err).error.message).toContain("same idempotency key");
   expect(h.requests).toHaveLength(1);
+});
+
+test("detail prints own and aggregate child measurements without converting unknown fields to zero", async () => {
+  const tokens = {
+    inputTokens: 13136,
+    outputTokens: 5,
+    cachedTokens: 0,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  };
+  const detail = {
+    version: 1,
+    orchestrator: {
+      id: "parent-1",
+      configuration: { name: "Coordinator", harness: "codex", model: "gpt-5", provider: "modal" },
+      state: "ready",
+      continuity: "native",
+      revision: 1,
+      idleDeadline: null,
+    },
+    operations: [],
+    waits: [],
+    childSandboxIds: ["child-1"],
+    usage: {
+      own: { computeSeconds: 12.5, turnCount: 1, turns: [{ promptId: "turn-1", model: "gpt-5", ...tokens }] },
+      children: { computeSeconds: null, turnCount: 2, ...tokens },
+    },
+  };
+  const result = await harness(() => Response.json(detail)).invoke(["detail", "parent-1", "--org", "org-1"]);
+  expect(result.code).toBe(0);
+  expect(result.err).toBe("");
+  expect(result.out).toContain(
+    "Own usage: compute 12.5 seconds; turns 1; input 13136; output 5; cached 0; cache write unknown; reasoning unknown",
+  );
+  expect(result.out).toContain(
+    "Child aggregate usage: compute unknown seconds; turns 2; input 13136; output 5; cached 0; cache write unknown; reasoning unknown",
+  );
+  expect(result.out).toContain("not provider-billed seconds");
+  const { usage: _usage, ...legacy } = detail;
+  const older = await harness(() => Response.json(legacy)).invoke(["detail", "parent-1", "--org", "org-1"]);
+  expect(older.code).toBe(0);
+  expect(older.out).toContain("Own usage: compute unknown seconds; turns unknown; input unknown");
+  expect(older.out).toContain("Child aggregate usage: compute unknown seconds; turns unknown; input unknown");
 });

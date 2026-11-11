@@ -9,6 +9,7 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
+import { SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
@@ -20,7 +21,7 @@ import { isUuid } from "@/lib/action";
 import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { listGoldenHistory } from "@/lib/data/goldens";
-import { getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
+import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
@@ -32,7 +33,9 @@ import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
+import { usageRevision } from "@/lib/usage-revision";
 
 export const metadata: Metadata = { title: "Sandbox" };
 export const dynamic = "force-dynamic";
@@ -70,7 +73,11 @@ export default async function SandboxPage({ params }: Props) {
   const golden = goldens.find((item) => item.id === sandbox.golden_id);
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
-  const applied = await listSandboxConnections(sandbox);
+  const [applied, kinds] = await Promise.all([
+    listSandboxConnections(sandbox),
+    credentialKinds(supabase, [sandbox.credential_id]),
+  ]);
+  const cost = costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null);
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
@@ -160,6 +167,7 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            initialUsageRevision={usageRevision(sandbox.usage_turns)}
             live={isActiveStatus(sandbox.status)}
             harness={sandbox.harness}
             catalog={MODEL_CATALOG}
@@ -177,6 +185,8 @@ export default async function SandboxPage({ params }: Props) {
               <Facts facts={facts} />
             </CardContent>
           </Card>
+
+          <SandboxCostCard cost={cost} />
 
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">

@@ -1,6 +1,7 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
 import { assertGoldenMutation, waitSnapshot } from "./golden.ts";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import {
   assignDirs,
   type GitHubGoldenConfig,
@@ -10,8 +11,11 @@ import {
   GoldenError,
   parseGoldenName,
 } from "./golden-config.ts";
+import { GOLDEN_HELPER_SETUP } from "./golden-helper.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
-import { type Provider, ProviderError } from "./provider.ts";
+import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
+import type { HelperReceipt } from "./helper.ts";
+import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
 
 const MAX_REPOS = 16;
@@ -48,9 +52,13 @@ export interface GoldenCreateDeps {
    * means checkout falls back to the caller's own token from `authorize`, which is never revoked.
    */
   mint?(installationId: number, repoIds: number[]): Promise<{ token: string; revoke(): Promise<void> }>;
-  ssh(provider: Provider, input: { sandboxId: string; token: string; script: string }): Promise<void>;
+  ssh(
+    provider: Provider,
+    input: { sandboxId: string; token: string; script: string; onWarning?: (warning: GoldenBuildWarning) => void },
+  ): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
   scan(provider: Provider, sandboxId: string, context?: { buildId: string }): Promise<void>;
+  verifyHelper?(provider: Provider, sandboxId: string): Promise<Omit<HelperReceipt, "snapshotId">>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
   /** Legacy factory hook; production persistence finalizes atomically itself. */
@@ -80,6 +88,8 @@ export interface GoldenCreateDeps {
     snapshot: string;
     builderId: string;
     reservationId?: string;
+    warnings: GoldenBuildWarning[];
+    helperReceipt?: HelperReceipt;
   }): Promise<string | void>;
 }
 
@@ -100,7 +110,7 @@ export class GoldenCreateService {
       modal?: ModalBinding;
     },
     limits: GoldenLimits = {},
-  ): Promise<{ snapshot: string }> {
+  ): Promise<{ snapshot: string; warnings: GoldenBuildWarning[] }> {
     if (!isSandboxProvider(provider.id)) throw new GoldenError("invalid_config", "Unknown golden provider.");
     const providerId = provider.id;
     const modal = input.existingGolden?.modal ?? input.modal ?? null;
@@ -131,10 +141,13 @@ export class GoldenCreateService {
     const installations = new Set(repos.map((r) => r.installationId));
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
+    const warnings: GoldenBuildWarning[] = [];
+    let refusedBuilder = false;
     let persisted = false;
     let uncertainSnapshot = false;
     let persistAttempted = false;
     let snapshotAttempted = false;
+    let saveAccepted = false;
     let knownUnpublished = false;
     let uncertainPublication = false;
     let requestedSnapshot: string | undefined;
@@ -173,11 +186,17 @@ export class GoldenCreateService {
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,
+        onWarning: (warning) => {
+          if (!warnings.includes(warning)) warnings.push(warning);
+        },
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId });
-      requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
+      const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
+      requestedSnapshot = input.existingGolden
+        ? `golden-r-${crypto.randomUUID()}`
+        : `golden-${builder.id.replaceAll("_", "-")}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       await enter("snapshot");
@@ -188,6 +207,7 @@ export class GoldenCreateService {
       snapshotAttempted = true;
       uncertainSnapshot = providerId === "modal";
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
+      saveAccepted = true;
       const snapshot = started.name;
       // The provider's reference is authoritative, not necessarily the requested label.
       // A remap needs source correlation before we may publish or reclaim that artifact.
@@ -246,6 +266,8 @@ export class GoldenCreateService {
       persistAttempted = true;
       {
         const goldenId = await this.deps.persist({
+          warnings,
+          ...(helperReceipt ? { helperReceipt: { ...helperReceipt, snapshotId: snapshot } } : {}),
           actor,
           provider: providerId,
           modal,
@@ -261,14 +283,28 @@ export class GoldenCreateService {
         persisted = true;
         if (reservation && goldenId && this.deps.finalize) await this.deps.finalize(reservation, goldenId);
       }
-      return { snapshot };
+      return { snapshot, warnings };
     } catch (error) {
+      // Only Boat's save-call refusal proves no artifact was accepted. A later
+      // provenance/read failure must retain capacity even before ownership is known.
+      // Modal keeps its conservative unknown-outcome/source-retention contract.
+      if (providerId === "boat" && phase === "snapshot" && !saveAccepted && isNonMutatingProviderRefusal(error)) {
+        snapshotAttempted = false;
+      }
+      refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
       console.error(
         JSON.stringify({
           event: "golden_build_failed",
           buildId,
           phase,
           code: error instanceof GoldenError || error instanceof ProviderError ? error.code : "unknown",
+          ...(error instanceof ProviderError
+            ? {
+                provider: error.provider,
+                status: error.status,
+                detail: error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure",
+              }
+            : {}),
           elapsedMs: Date.now() - startedAt,
         }),
       );
@@ -357,7 +393,9 @@ export class GoldenCreateService {
           cleanupSafe = false;
         }
       }
-      this.deps.execution?.cleaned(cleanupSafe && (stopped || (!builder && phase === "authorization")));
+      this.deps.execution?.cleaned(
+        cleanupSafe && (stopped || (!builder && (phase === "authorization" || refusedBuilder))),
+      );
     }
   }
 }
@@ -455,6 +493,8 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     'if [ "$(/usr/local/bin/claude --version 2>/dev/null || true)" != "2.1.322 (Claude Code)" ]; then sudo -n npm install --global --prefix /usr/local @anthropic-ai/claude-code@2.1.322; fi',
     '[ "$(/usr/local/bin/claude --version)" = "2.1.322 (Claude Code)" ] || { printf "%s\\n" "Claude Code at /usr/local/bin/claude does not match the managed pin." >&2; exit 96; }',
     "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
+    GOLDEN_SKILLPACK_SETUP,
+    GOLDEN_HELPER_SETUP,
   ].join("\n");
 }
 
@@ -543,4 +583,12 @@ function shellQuote(value: string): string {
 function safe(v: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v)) throw new GoldenError("invalid_config", "Unsafe repository path.");
   return v;
+}
+
+/** Closed diagnostic classes: upstream text, codes and details may contain credentials. */
+function snapshotRejectionClass(message: string): string {
+  if (/name/i.test(message) && /invalid|reserved|characters|pattern/i.test(message)) return "snapshot_name_invalid";
+  if (/trial|subscription|plan|billing|credit/i.test(message)) return "snapshot_account_restricted";
+  if (/quota|limit|capacity/i.test(message)) return "snapshot_limit_reached";
+  return "request_rejected";
 }

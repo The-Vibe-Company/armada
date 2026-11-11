@@ -1,0 +1,22 @@
+[
+  {
+    "id": "0d7af255-c58d-41c6-87cb-c5e6b90f356c",
+    "at": 1794311622555,
+    "conversationId": "7cf343d0-3218-49dd-9c5d-c42982c32b94",
+    "promptId": "ab4d7324-6327-44da-8e0f-eb50e13db9ea",
+    "kind": "prompt",
+    "text": "Reply with exactly: OK",
+    "status": "finished"
+  },
+  {
+    "id": "5f88bb67-072b-4138-8898-47ad3082b9ac",
+    "at": 1794311632549,
+    "conversationId": "7cf343d0-3218-49dd-9c5d-c42982c32b94",
+    "promptId": "ab4d7324-6327-44da-8e0f-eb50e13db9ea",
+    "kind": "message",
+    "text": "OK",
+    "partial": false,
+    "model": "gpt-6.1-sol",
+    "tools": []
+  }
+]

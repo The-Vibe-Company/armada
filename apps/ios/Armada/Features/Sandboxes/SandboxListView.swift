@@ -180,7 +180,7 @@ struct SandboxListView: View {
             if model.items.isEmpty {
                 SurfaceStateView(state: .empty(
                     title: "No sandboxes",
-                    message: "Sandboxes launched in this organization appear here, including the workers your orchestrators start.",
+                    message: "Sandboxes launched in this organization appear here.",
                     symbol: "shippingbox"
                 ))
                 .listRowBackground(Color.clear)

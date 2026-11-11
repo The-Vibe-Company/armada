@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import * as core from "@armada/core/server";
 import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provider-modal";
 import type { Caller } from "../src/caller.ts";
+import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { preserveBeforeStop } from "../src/work-preservation.ts";
+import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // SQL composition regression, not native conformance. Placement I/O is fake;
@@ -28,7 +31,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let nativeReads = 0;
   let fault: "none" | "launcher" | "fork" | "initialization" | "skills" | "epoch" = "none";
   let throwLogger = false;
+  let stopUnconfirmed = false;
+  let deletePending = false;
   const lines: string[] = [];
+  const childPreparation: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
   const provider: core.Provider &
     Pick<ModalProvider, "checkpointOrchestrator" | "readOrchestratorCheckpoint" | "restoreOrchestratorCheckpoint"> = {
@@ -49,9 +55,27 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     },
     async exec(request) {
       const result = await placement.provider.exec(request);
+      if (request.command.includes("skillpack install ")) {
+        childPreparation.push("install");
+        return { ...result, stdout: catalogLock("codex") };
+      }
       return fault === "initialization" || (fault === "skills" && request.command.includes("/skills/armada-tools"))
         ? { ...result, exitCode: 127, stdout: privateText, stderr: privateText }
         : result;
+    },
+    async stop(request) {
+      if (stopUnconfirmed) throw new Error(privateText);
+      return placement.provider.stop(request);
+    },
+    async delete(request) {
+      if (deletePending) return { status: "pending" };
+      if (stopUnconfirmed) throw new Error(privateText);
+      await placement.provider.stop(request);
+      return { status: "deleted" };
+    },
+    async prompt(request) {
+      childPreparation.push("prompt");
+      return placement.provider.prompt(request);
     },
     async get(id, options) {
       nativeReads++;
@@ -268,34 +292,112 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           body: JSON.stringify(body),
         }),
       );
-    const childResponse = await scoped(
-      "launch",
-      {
-        selection: {
-          goldenId: golden.id,
-          harness: "codex",
-          credentialId: account.id,
-          credentialVersion: account.version,
-          model: "gpt-6.1-sol",
-        },
-      },
-      "production-child",
-    );
+    childPreparation.length = 0;
+    const childSelection = {
+      goldenId: golden.id,
+      harness: "codex",
+      credentialId: account.id,
+      credentialVersion: account.version,
+      model: "gpt-6.1-sol",
+      skills: [catalogReference],
+      prompt: "Read the installed notes skill before coding.",
+    };
+    const childResponse = await scoped("launch", { selection: childSelection }, "production-child");
     expect(childResponse?.status).toBe(200);
     const childReceipt = (await childResponse?.json()) as { result: { state: string; sandboxId: string } };
     expect(childReceipt.result.state).toBe("succeeded");
+    expect(childPreparation).toEqual(["install", "prompt"]);
+    expect(
+      (
+        await sql.query<{ skills: unknown; conversation_ids: string[] }>(
+          "select skills,conversation_ids from public.sandboxes where id=$1",
+          [childReceipt.result.sandboxId],
+        )
+      ).rows[0],
+    ).toEqual({ skills: [catalogReceipt], conversation_ids: ["conv_2"] });
+    const unrelatedStore = createSqlData(sql)({ ...caller, userId: p.admin }).sandboxes;
+    await expect(unrelatedStore.recordSkills!(childReceipt.result.sandboxId, [])).rejects.toThrow(
+      "Skill receipts could not be recorded.",
+    );
+    const replayedChild = await scoped("launch", { selection: childSelection }, "production-child");
+    expect(await replayedChild?.json()).toEqual({ result: childReceipt.result });
+    const conflictingSkills = await scoped(
+      "launch",
+      {
+        selection: { ...childSelection, skills: ["example/other@1.0.0"] },
+      },
+      "production-child",
+    );
+    expect(conflictingSkills?.status).toBe(503);
+    expect(await conflictingSkills?.json()).toEqual({
+      error: {
+        code: "scoped_operation_unavailable",
+        message: "scoped_operation_unavailable",
+      },
+    });
+    expect(childPreparation).toEqual(["install", "prompt"]);
+
     expect(
       (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
     ).toEqual([{ sandbox_id: childReceipt.result.sandboxId }]);
     expect(placement.forks.map((fork) => fork.from)).toEqual(["modal-image", "modal-image"]);
+    // A prior successful stop epoch must not cover newly admitted child work.
+    await sql.query("update sandboxes set stop_requested_at=clock_timestamp(),stop_generation=1 where id=$1", [
+      childReceipt.result.sandboxId,
+    ]);
+    placement.setExecOutput({ stdout: '{"status":"clean"}' });
+    await preserveBeforeStop(
+      sql,
+      provider,
+      childReceipt.result.sandboxId,
+      (
+        await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from sandboxes where id=$1", [
+          childReceipt.result.sandboxId,
+        ])
+      ).rows[0]!.provider_sandbox_id,
+      "managed_child_stop",
+    );
+    const capturesBeforeMessage = placement.execs.filter((r) => r.preservationStage === "collect_exec").length;
+    placement.setExecOutput({
+      stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills\n`,
+    });
     const messagedChild = await scoped(
       "message",
       { sandboxId: childReceipt.result.sandboxId, text: "child hello" },
       "production-child-message",
     );
     expect(await messagedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    const priorQuiesce = provider.quiesce;
+    const priorStops = placement.stops.length;
+    provider.quiesce = async () => {
+      throw new core.ProviderError({
+        provider: "modal",
+        code: "sandbox_not_ready",
+        retryable: true,
+        message: "Interruption pending",
+      });
+    };
+    const pendingStop = await scoped(
+      "stop",
+      { sandboxId: childReceipt.result.sandboxId },
+      "production-child-stop-pending",
+    );
+    expect(await pendingStop?.json()).toMatchObject({ result: { state: "uncertain" } });
+    expect(placement.stops).toHaveLength(priorStops);
+    if (priorQuiesce) provider.quiesce = priorQuiesce;
+    else delete provider.quiesce;
+    expect(
+      (
+        await sql.query("select requested_model from sandbox_turn_models where sandbox_id=$1", [
+          childReceipt.result.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([{ requested_model: "gpt-6.1-sol" }, { requested_model: "gpt-6.1-sol" }]);
     const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
     expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    expect(placement.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(
+      capturesBeforeMessage + 1,
+    );
     const childRead = await scoped("read", { sandboxId: childReceipt.result.sandboxId });
     expect(await childRead?.json()).toMatchObject({
       result: { status: "stopped", ownerId: p.owner, credentialId: account.id },
@@ -358,11 +460,19 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "registration",
       "initialization",
       "skills",
+      "private-skill",
+      "private-skill-stop-unconfirmed",
+      "private-skill-delete-pending",
+      "expired-skill-key",
+      "undecryptable-skill-key",
       "epoch",
       "completion",
       "failure_publication",
     ] as const) {
       lines.length = 0;
+      stopUnconfirmed = scenario === "private-skill-stop-unconfirmed";
+      deletePending = scenario === "private-skill-delete-pending";
+      const privateSkill = scenario === "private-skill" || stopUnconfirmed || deletePending;
       fault = ["launcher", "fork", "initialization", "skills", "epoch"].includes(scenario)
         ? (scenario as typeof fault)
         : "none";
@@ -374,9 +484,29 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         await db.exec(`create function diagnostic_publication_fault() returns trigger language plpgsql as $$ begin
         if new.state='succeeded' or (new.state='uncertain' and ${scenario === "failure_publication" ? "true" : "false"}) then raise exception using errcode='40001',message='synthetic-private-sql'; end if; return new; end $$;
         create trigger diagnostic_publication_fault before update on orchestrator_operations for each row execute function diagnostic_publication_fault()`);
+      const storedSkillKey = scenario === "expired-skill-key" || scenario === "undecryptable-skill-key";
+      if (storedSkillKey) {
+        const orgKey = await core.encryptSecret("cmp_pat_" + "b".repeat(48), ENCRYPTION_KEY);
+        await sql.query(
+          "insert into public.credentials(scope,owner_id,kind,value_enc) values('org',$1,'skillpack',$2::bytea)",
+          [p.org, orgKey],
+        );
+        await sql.query(
+          "insert into public.credentials(scope,owner_id,kind,value_enc,expires_at) values('user',$1,'skillpack',$2::bytea,$3::timestamptz)",
+          [
+            p.owner,
+            scenario === "expired-skill-key" ? orgKey : new Uint8Array([1, 2, 3]),
+            scenario === "expired-skill-key" ? "2000-01-01T00:00:00Z" : null,
+          ],
+        );
+      }
       const admitted = await bundle.runtime.create(
         caller,
-        { ...config, name: `diagnostic-${scenario}` },
+        {
+          ...config,
+          name: `diagnostic-${scenario}`,
+          ...(privateSkill || storedSkillKey ? { skill: "notes@1.0.0" } : {}),
+        },
         `diagnostic-${scenario}`,
       );
       expect(admitted.state).toBe("pending");
@@ -385,8 +515,58 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         (item) => item.id === admitted.id,
       );
       expect(operation?.state).toBe(
-        scenario === "launcher" ? "failed" : scenario === "failure_publication" ? "pending" : "uncertain",
+        scenario === "launcher" || privateSkill || storedSkillKey
+          ? "failed"
+          : scenario === "failure_publication"
+            ? "pending"
+            : "uncertain",
       );
+      if (storedSkillKey || privateSkill) {
+        const failedParent = (await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator;
+        expect(failedParent.state).toBe(stopUnconfirmed || deletePending ? "blocked" : "stopped");
+        expect(failedParent.conversationId).toBeNull();
+        expect(failedParent.skillReceipt).toBeNull();
+        await expect(
+          bundle.runtime.mutate(caller, {
+            orgId: p.org,
+            id: failedParent.id,
+            action: "resume",
+            key: `resume-failed-${scenario}`,
+            expectedRevision: failedParent.revision,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+        const sandbox = (
+          await sql.query<{ status: string; stopped_at: unknown }>(
+            "select status,stopped_at from public.sandboxes where id=$1",
+            [failedParent.sandboxId],
+          )
+        ).rows[0];
+        if (!stopUnconfirmed && !deletePending) {
+          expect(sandbox?.status).toBe("deleted");
+          expect(sandbox?.stopped_at).not.toBeNull();
+        } else {
+          expect(sandbox?.status).not.toBe("deleted");
+          expect(sandbox?.stopped_at).toBeNull();
+        }
+      }
+      if (storedSkillKey) {
+        const expectedReason =
+          scenario === "expired-skill-key" ? "skillpack_credential_refused" : "skillpack_credential_unreadable";
+        expect(operation?.errorCode).toBe(expectedReason);
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          expectedReason,
+        );
+        await sql.query("delete from public.credentials where kind='skillpack' and owner_id in ($1,$2)", [
+          p.owner,
+          p.org,
+        ]);
+      }
+      if (privateSkill) {
+        expect(operation?.errorCode).toBe("skillpack_credential_missing");
+        expect((await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator.blockedReason).toBe(
+          "skillpack_credential_missing",
+        );
+      }
       if (scenario === "registration")
         await db.exec(
           "drop trigger diagnostic_registration_fault on sandboxes; drop function diagnostic_registration_fault()",
@@ -402,6 +582,11 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         registration: ["registration", "sql_check"],
         initialization: ["initialization_repository", "launcher_init_failed"],
         skills: ["skills", "skill_command_missing"],
+        "private-skill": ["skills_credential", "skillpack_credential_missing"],
+        "private-skill-stop-unconfirmed": ["skills_credential", "skillpack_credential_missing"],
+        "private-skill-delete-pending": ["skills_credential", "skillpack_credential_missing"],
+        "expired-skill-key": ["skills_credential", "skillpack_credential_refused"],
+        "undecryptable-skill-key": ["skills_credential", "skillpack_credential_unreadable"],
         epoch: ["epoch_install", "authority_denied"],
         completion: ["completion", "sql_serialization"],
         failure_publication: ["completion", "sql_serialization"],
@@ -409,10 +594,20 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       expect(records[0]).toMatchObject({
         component: "owner",
         action: "create",
-        outcome: scenario === "launcher" ? "failed" : "uncertain",
+        outcome: scenario === "launcher" || privateSkill || storedSkillKey ? "failed" : "uncertain",
         stage: expected[0],
         reason: expected[1],
       });
+      const cleanupRecords = records.filter((record) => record.event === "orchestrator_create_cleanup_failure");
+      if (stopUnconfirmed || deletePending) {
+        expect(cleanupRecords).toHaveLength(1);
+        expect(cleanupRecords[0]).toMatchObject({
+          action: "create",
+          outcome: "unconfirmed",
+          step: deletePending ? "unconfirmed" : "delete",
+          reason: deletePending ? "cleanup_unconfirmed" : "unexpected_error",
+        });
+      } else expect(cleanupRecords).toHaveLength(0);
       expect(records[0].operationId).toMatch(/^[a-f0-9-]{36}$/);
       expect(records[0].orchestratorId).toMatch(/^[a-f0-9-]{36}$/);
       if (scenario === "failure_publication")

@@ -108,9 +108,11 @@ for (const outcome of [
       );
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
-      // This wire fixture supplies no physical stop timestamp: observation time is not runtime.
-      if (["external-stop", "expired", "expired-external-stop", "manual-stop"].includes(outcome))
-        expect(row.usage_runtime_seconds).toBeNull();
+      // Without a provider timestamp, confirmed stops close the observed interval locally.
+      if (["external-stop", "expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+        expect(row.usage_runtime_seconds).not.toBeNull();
+        expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
+      }
       if (outcome === "unconfirmed" || outcome === "stop-error" || outcome === "interrupt-pending")
         expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
@@ -200,7 +202,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         expect(row?.last_observed_at).not.toBeNull();
         expect(row?.lifecycle_error).toBeNull();
         expect(methods).toEqual(
-          observation === "expired" ? ["GET", "POST", "GET", "GET", "POST", "POST", "POST", "GET"] : ["GET"],
+          observation === "expired" ? ["GET", "GET", "GET", "GET", "GET", "POST", "POST", "GET"] : ["GET"],
         );
       }
       // Re-due historical failures: only unknown outcomes may consume provider work again.

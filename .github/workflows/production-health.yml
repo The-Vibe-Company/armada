@@ -1,0 +1,59 @@
+name: Production health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+  deployment_status:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: production-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    # Failed/crashed production deployment events must alert too, not only successes.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      github.event.deployment.environment == (vars.ARMADA_PRODUCTION_DEPLOYMENT_ENVIRONMENT || 'armada / production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Read expected version from successful production deployment
+        if: github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEPLOYMENT_SHA: ${{ github.event.deployment.sha }}
+        run: |
+          [[ "$DEPLOYMENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]] || { echo "::error::Deployment SHA missing"; exit 1; }
+          version="$(gh api "repos/$GH_REPO/contents/packages/core/package.json?ref=$DEPLOYMENT_SHA" --jq .content | base64 --decode | jq -er .version)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$ ]] || { echo "::error::Deployment version invalid"; exit 1; }
+          echo "ARMADA_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Probe public production server (no staging or credentials)
+        env:
+          ARMADA_PRODUCTION_ORIGIN: ${{ vars.ARMADA_PRODUCTION_ORIGIN || 'https://armada-mcp-production.up.railway.app' }}
+        run: bun scripts/production-health.ts
+      - name: Alert on production outage
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='Production Armada health check failing'
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [[ -z "$existing" ]]; then
+            gh issue create --title "$title" --body "Public production readiness failed. Investigate immediately. Workflow: $RUN_URL"
+          else
+            echo "::error::Production health incident remains open: #$existing ($RUN_URL)"
+          fi

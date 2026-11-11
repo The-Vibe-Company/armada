@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore, encryptSecret, mutateCredentialAccount } from "@armada/core/server";
 import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { database, ENCRYPTION_KEY, SECRETS } from "./support.ts";
@@ -34,7 +35,7 @@ test.each(["claude", "codex"] as const)(
           return Response.json({
             access_token: `ghu-fresh-${refreshes}`,
             refresh_token: `ghr-next-${refreshes}`,
-            expires_in: 3600,
+            expires_in: 28_800,
             refresh_token_expires_in: 86400,
           });
         }
@@ -118,7 +119,8 @@ test.each(["claude", "codex"] as const)(
       expect(Object.values(first.execEnv)).not.toContain(modelSecret);
       expect(selected.GH_TOKEN).toBe("ghu-fresh-1");
       expect(selected.GITHUB_TOKEN).toBe("ghu-fresh-1");
-      clock += 7200_000;
+      // Restoring with six minutes left must renew, not inherit a nearly expired owner token.
+      clock += (7 * 60 + 54) * 60_000;
       const restored = await resolver({ ...enabled, generation: 2 }, {});
       expect(restored.execEnv.GH_TOKEN).toBe("ghu-fresh-2");
       expect((harness === "claude" ? restored.claudeEnv : restored.codexEnv).GH_TOKEN).toBe("ghu-fresh-2");
@@ -287,3 +289,6 @@ test("Modal native Codex bootstrap still requires actual rotating-account owners
     await db.close();
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

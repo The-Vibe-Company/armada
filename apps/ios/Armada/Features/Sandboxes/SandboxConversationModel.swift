@@ -33,6 +33,7 @@ final class SandboxConversationModel {
     private(set) var readIssue: String?
     /// Bumped when live follow must start again (after it stopped, or the sandbox was deleted).
     private(set) var followGeneration = 0
+    private var recoveringPrompt = true
     var draft = ""
     let feed: ConversationFeed
 
@@ -63,7 +64,7 @@ final class SandboxConversationModel {
 
     /// Why the composer cannot send now, or nil when it can.
     var composerUnavailableReason: String? {
-        guard let state else { return "Loading…" }
+        guard !recoveringPrompt, let state else { return "Loading…" }
         if pending.contains(where: { $0.status == .sending }) { return "Sending…" }
         if pending.contains(where: { $0.status == .unconfirmed }) {
             return "Check whether your last prompt arrived, then dismiss it to write again."
@@ -159,7 +160,7 @@ final class SandboxConversationModel {
     }
 
     private var fetch: ConversationFeed.Fetch {
-        { [service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage in
+        { [service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage in
             try await service.sandboxEvents(id: sandboxID, orgID: orgID, cursor: cursor, backward: backward)
         }
     }
@@ -168,6 +169,17 @@ final class SandboxConversationModel {
     private func loadState() async -> Bool {
         do throws(ServiceFailure) {
             state = try await service.sandboxState(id: sandboxID, orgID: orgID)
+            // Any first successful authorized read can finish recovery, including a refresh after
+            // the initial detail read failed while history loaded in parallel. Never enable send
+            // until local tracking was read successfully.
+            if recoveringPrompt {
+                if let recovery = service as? any SandboxPromptRecovery, pending.isEmpty,
+                   let saved = try await recovery.unconfirmedPrompt(sandboxID: sandboxID, orgID: orgID) {
+                    pending = [PendingBubble(id: saved.id.uuidString, text: saved.text, intent: .message,
+                                             sentAt: saved.sentAt, status: .unconfirmed)]
+                }
+                recoveringPrompt = false
+            }
             readIssue = nil
             if phase == .loading { phase = .loaded }
             return true
@@ -202,8 +214,6 @@ final class SandboxConversationModel {
                 case .rejected(let reason), .unavailable(let reason):
                     removeBubble(bubbleID, restoreDraft: true)
                     notice = (reason, true)
-                case .staleRevision:
-                    removeBubble(bubbleID, restoreDraft: true)
                 }
             }
             _ = await loadState()
@@ -213,7 +223,15 @@ final class SandboxConversationModel {
     /// Hides an unconfirmed prompt locally. It still appears in the transcript if Armada received it.
     func dismiss(_ bubble: PendingBubble) {
         guard bubble.status == .unconfirmed else { return }
-        removeBubble(bubble.id, restoreDraft: false)
+        Task {
+            do throws(ServiceFailure) {
+                if let recovery = service as? any SandboxPromptRecovery,
+                   let saved = try await recovery.unconfirmedPrompt(sandboxID: sandboxID, orgID: orgID) {
+                    try await recovery.dismissPrompt(id: saved.id, orgID: orgID)
+                }
+                removeBubble(bubble.id, restoreDraft: false)
+            } catch { notice = (error.message, true) }
+        }
     }
 
     /// Called after confirmation. Stopping keeps the disk and conversations and is safe to repeat.
@@ -233,8 +251,6 @@ final class SandboxConversationModel {
                     notice = ("Armada did not confirm the stop. Its latest state is shown; you can stop again.", true)
                 case .rejected(let reason), .unavailable(let reason):
                     notice = (reason, true)
-                case .staleRevision:
-                    break
                 }
             }
             _ = await loadState()

@@ -106,7 +106,24 @@ describe("preservationView", () => {
       text: "Unpushed work could not be preserved (size_limit)",
       reason: "size_limit",
     });
+    const actionable =
+      "unpushed work could not be preserved (exec_failed). Resume the sandbox and push or copy any local work before stopping again.";
+    expect(preservationView(actionable, "stopped", ID, true)).toEqual({
+      kind: "failed",
+      reason: "exec_failed",
+      text: actionable.replace(/^unpushed/, "Unpushed"),
+    });
     expect(preservationView("something else", "stopped", ID, true)).toEqual({ kind: "other", text: "something else" });
+  });
+
+  test("unknown work is informational, not a confirmed preservation failure", () => {
+    const note =
+      "could not check for unpushed work (collect_exec_not_ready). If this sandbox had local work, resume it and push or copy it before stopping again.";
+    expect(preservationView(note, "stopped", ID, true)).toEqual({
+      kind: "unknown",
+      reason: "collect_exec_not_ready",
+      text: note.replace(/^could/, "Could"),
+    });
   });
 
   test("only an ended sandbox with a note shows one; stopping a failed sandbox keeps it failed", () => {

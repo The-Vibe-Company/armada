@@ -61,6 +61,10 @@ describe("launch through the Armada API", () => {
             "--agent",
             "codex",
             "do it",
+            "--skill",
+            "example/notes@1.0.0",
+            "--skill",
+            "other@2.0.0",
             "--ttl",
             "30m",
             "--org",
@@ -119,6 +123,7 @@ describe("launch through the Armada API", () => {
         );
         expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
         expect(await launchRequest?.json()).toEqual({
+          skills: ["example/notes@1.0.0", "other@2.0.0"],
           golden: "web",
           ...(repo === undefined
             ? { credentialId: "33333333-3333-4333-8333-333333333333" }

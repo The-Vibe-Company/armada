@@ -79,6 +79,9 @@ test.each([
                 : reference,
         }),
     harness: "codex",
+    skillpackKey: async () => {
+      throw new Error("Public catalog install must never resolve private credentials");
+    },
     recordReceipt: async () => {
       calls.push("receipt");
     },
@@ -90,7 +93,7 @@ test.each([
     const receipt = await run;
     expect(calls).toEqual(["install", "receipt", "authority"]);
     if (mode === "pinned")
-      expect(commands[0]?.split(" && ")[0]).toBe(
+      expect(commands[0]?.split(" && ")[0]).toEndWith(
         "skillpack install 'example/notes' --version '1.0.0' --api-url https://skillpack.app/v1 --scope project --project '/home/user/repo'\\''$(false)' --tools codex --pin --yes --json >/dev/null",
       );
     expect(receipt).toEqual(
@@ -165,4 +168,36 @@ test("built-in reference preserves conflicting files", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// Missing private auth is rejected before guest commands, receipts or delegated authority.
+test.each(["boat", "modal"] as const)("private bootstrap without a key fails closed on %s", async (id) => {
+  const calls: string[] = [];
+  const diagnostics = new OrchestratorDiagnostics(() => {}, "create");
+  diagnostics.stage("skills");
+  await expect(
+    bootstrapOrchestrator(
+      {
+        id,
+        exec: async () => {
+          calls.push("exec");
+          throw Error("unexpected");
+        },
+      } as unknown as Provider,
+      {
+        sandboxId: "parent",
+        projectDir: "/home/user/repo",
+        skillRevision: "a".repeat(40),
+        skill: "notes@1.0.0",
+        diagnostics,
+        recordReceipt: async () => {
+          calls.push("receipt");
+        },
+        configureAuthority: async () => {
+          calls.push("authority");
+        },
+      },
+    ),
+  ).rejects.toThrow("skillpack_credential_missing");
+  expect(calls).toEqual([]);
 });

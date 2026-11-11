@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
 import { createSqlVaultStore } from "@armada/core";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubAccountApi } from "../src/github-account.ts";
+
+const auditEvents = captureGitHubAuditLogs();
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const other = "22222222-2222-4222-8222-222222222222";
@@ -192,6 +195,17 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     expect((await command("status", { flowId: started.flowId }, other)).status).toBe(404);
     const completed = await callback(started.authorizationUrl);
     expect(completed.status).toBe(200);
+    expect(auditEvents).toEqual([
+      {
+        event: "github_connection_replaced",
+        caller: "account_callback",
+        reason: "oauth_connect",
+        ownerId: owner,
+        accessTokenCached: true,
+        accessExpiresAt: expect.any(String),
+        observedRemainingLifetimeMs: expect.any(Number),
+      },
+    ]);
     expect(await completed.json()).toEqual({ ok: true, status: "connected" });
     expect(completed.headers.get("location")).toBeNull();
     expect(completed.headers.get("referrer-policy")).toBe("no-referrer");
@@ -230,6 +244,12 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     ).rows[0]?.connection_epoch;
     expect(nextEpoch).not.toBe(priorEpoch);
     expect((await command("disconnect")).status).toBe(200);
+    expect(auditEvents.at(-1)).toEqual({
+      event: "github_connection_disconnected",
+      caller: "account_disconnect",
+      ownerId: owner,
+      reason: "user_disconnect",
+    });
     const racing = await start();
     duringExchange = async () => {
       expect((await command("disconnect")).status).toBe(200);

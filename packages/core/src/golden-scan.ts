@@ -1,5 +1,6 @@
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
+import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 
 /**
  * GitHub's real token shapes: a one- or two-letter type prefix, an underscore, then a long run of
@@ -17,6 +18,8 @@ export const GITHUB_TOKEN_PATTERN = "gh[oprsu]_[A-Za-z0-9]{36,255}|github_pat_[A
  * Use its full budget; timeout still fails closed, never snapshots a partial scan.
  */
 const TIMEOUT_SECONDS = 600;
+
+export { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 
 /** Where a token could land: the repos' working trees, root's home (some tooling runs as root) and /tmp. */
 const SCAN_ROOTS = "/home/user /root /tmp";
@@ -43,7 +46,16 @@ export async function scanGoldenSandbox(
 ): Promise<void> {
   const script = [
     "set -u",
-    `pattern='${GITHUB_TOKEN_PATTERN}'`,
+    // Inert helper code is allowed; workload state and resident brokers are not.
+    "for path in /home/user/.armada-helper /root/.armada-helper /home/user/.local/state/armada/helper /root/.local/state/armada/helper /run/armada-helper /tmp/armada-helper /home/user/.armada/github-* /root/.armada/github-*; do",
+    '  if [ -e "$path" ] || [ -L "$path" ]; then exit 97; fi',
+    "done",
+    "for comm in /proc/[0-9]*/comm; do",
+    '  [ -r "$comm" ] || continue',
+    '  name=$(cat "$comm" 2>/dev/null) || { [ ! -e "$comm" ] && continue; exit 95; }',
+    '  case "$name" in armada-helper|armada-broker|armada-github-b*) exit 97 ;; esac',
+    "done",
+    `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|armada_gh_[a-f0-9]{64}'`,
     `roots='${SCAN_ROOTS}'`,
     // Classify paths in memory; only fixed labels and counts leave this process.
     "scan_location() {",

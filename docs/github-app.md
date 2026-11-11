@@ -18,7 +18,7 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 
 ## Limits to know
 
-- The token in a sandbox lasts 8 hours. A sandbox that outlives it keeps its git identity but pushes start failing: launch a new sandbox for a fresh token.
+- Static sandbox tokens share the owner connection: GitHub advertises eight hours from issuance, but rotation or revocation can invalidate them earlier. Launch does not reset that clock. See [Early rotation investigation](#shared-token-lifetime-and-diagnostics) for repair and automatic-refresh guidance.
 - `gh` must exist in the golden. Add an init command that installs the GitHub CLI. Without it git works as the user and `gh` does not (the launch says so).
 - The App acts only on repositories where it is installed and the person has access. Install it on each org or account whose repositories sandboxes push to.
 - Disconnect in Settings deletes Armada's row. To invalidate tokens already issued, also revoke the authorization in GitHub (Settings, Applications, Authorized GitHub Apps).
@@ -71,12 +71,52 @@ Nothing secret is printed or logged. Tokens are masked in command output (`gh[po
 ## Reconnect cache deployment (#585)
 
 Apply `20261110110100_github_reconnect_cache.sql` after the existing migrations,
-then deploy the server update that publishes profiles on the refresh transaction.
-Drain older server replicas before treating the concurrency fence as fully active:
-they publish profiles outside that transaction. No dashboard or CLI rollout is
-required. The RPC signature and encrypted-only column grants are unchanged.
+then deploy the current server. Drain older server replicas before relying on
+the current concurrency safeguards. No dashboard or CLI rollout is required.
+The RPC signature and encrypted-only column grants are unchanged.
 
-Reconnect now takes the refresh advisory lock and clears both cached access-token
-columns in the same transaction that replaces the identity and refresh token.
-A refresh already holding the lock finishes before reconnect saves the new grant;
-subsequent launches resolve that new grant, never the previous account's cache.
+Reconnect atomically clears both cached access-token columns while replacing
+the identity and refresh token. Although the reconnect RPC still takes its
+advisory lock, server refresh no longer holds that lock or a pooled transaction
+during GitHub HTTP. A per-process owner queue orders local refresh callers;
+across replicas, a durable consumed-token fence prevents replay, and token
+compare-and-swap guards rotation and profile publication. Validation re-reads
+the connection before returning a token.
+
+Reconnect can therefore finish while an older refresh is in flight. If that
+refresh observes the changed grant during publication or validation, it returns
+retryable `unavailable` rather than overwriting the new identity or handing out
+the old account's token. A caller that loses the consume fence re-reads once
+and returns retryable `unavailable`. If the token changed, it asks for a retry
+without asking the person to reconnect: another replica has published a rotation.
+If the token is unchanged, a rotation may still be pending, so retry shortly;
+if this persists, reconnect GitHub in the dashboard under Settings. An outage,
+timeout or crash after the durable fence was written can leave the token
+permanently unchanged, and reconnect is then the recovery path. No automatic
+retry reuses consumed refresh material. See the connection-residence and
+overlap budget in [Production readiness](production-readiness.md#connection-residence-during-github-operations).
+
+## Shared token lifetime and diagnostics
+
+GitHub advertises eight-hour access tokens, but refreshing the shared owner
+connection invalidates older copies. Armada uses the returned expiry, not a
+hardcoded eight-hour lifetime. Launch and Modal restore require more than one
+hour remaining; golden creation, account status and managed-runtime brokering
+use five minutes; legacy repair/prompt hydration uses zero. Repair may reuse an
+older token and does not reset its issuance time. See [#952](https://github.com/The-Vibe-Company/armada/issues/952)
+for the historical investigation and expiry/fence code trace.
+
+After deployment read `github_token_rotated` by `ownerId` for `caller`, `reason`,
+`previousRemainingLifetimeMs`, `minimumLifetimeMs`, `accessExpiresAt` and
+`observedRemainingLifetimeMs`. This records remote success before local CAS.
+`github_token_refresh_started` records fenced attempts;
+`github_connection_replaced` records OAuth saves with the same owner id.
+`github_connection_revoked` records a committed bad-refresh-token revocation;
+`github_connection_disconnected` records successful explicit disconnects.
+No credential material is logged. Historical events before this instrumentation
+cannot be reconstructed.
+
+Static copies have no guaranteed usable lifetime after another client's rotation.
+Push work frequently. Use `armada github refresh <sandbox>` for legacy Boat repair;
+reconnect only for revoked or uncertain grants. Automatic credential-helper
+refresh (#908) is the durable remedy, not weakening the refresh fence.

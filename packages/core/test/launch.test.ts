@@ -1,4 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
   type CredentialSource,
@@ -25,6 +30,7 @@ import {
   type SandboxRecord,
   type SandboxStore,
 } from "../src/index.ts";
+import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
@@ -191,7 +197,12 @@ describe("launch", () => {
         harness: "claude",
       },
     });
-    expect(world.execs.map((exec) => exec.cwd)).toEqual([`${GOLDEN_ROOT}/web`, `${GOLDEN_ROOT}/api`, GOLDEN_ROOT]);
+    expect(world.execs.map((exec) => exec.cwd)).toEqual([
+      `${GOLDEN_ROOT}/web`,
+      `${GOLDEN_ROOT}/api`,
+      GOLDEN_ROOT,
+      GOLDEN_ROOT,
+    ]);
     expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
     expect(world.execs[1]?.command).toContain("'dev'");
     expect(world.execs[2]?.command).toBe("pnpm i");
@@ -300,12 +311,56 @@ describe("launch", () => {
         "exec",
         "exec",
         "prepare",
+        "exec",
         "prompt",
       ]);
       expect(world.forks[0]?.ttlSeconds).toBe(7500);
       expect([...world.rows.values()][0]?.status).toBe("running");
     });
   }
+
+  // A VM can report ready while its restored CLI is broken; no model turn is needed.
+  test.each(["codex", "claude"] as const)(
+    "unstartable %s fails idle and prompted launch before publication",
+    async (harness) => {
+      const dir = mkdtempSync(join(tmpdir(), "armada-broken-harness-"));
+      try {
+        writeFileSync(
+          join(dir, harness),
+          `#!/bin/sh
+echo 'Node startup failed: ${OPENAI_KEY}' >&2
+exit 1
+`,
+          { mode: 0o755 },
+        );
+        for (const prompt of [undefined, "Go"]) {
+          const world = setup({
+            golden: golden("org"),
+            credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
+            exec: (command) => {
+              if (!command.startsWith(`${harness} --version`)) return { exitCode: 0 };
+              const result = spawnSync("/bin/sh", ["-c", command], { env: { PATH: dir }, timeout: 1000 });
+              return { exitCode: result.status ?? 1, stderr: result.stderr.toString() };
+            },
+          });
+          const failure = (await launchSandbox(world.provider, world.stores, owner, {
+            golden: "web",
+            harness,
+            ...(prompt ? { prompt } : {}),
+          }).catch((error: unknown) => error)) as LaunchError;
+          expect(failure).toBeInstanceOf(LaunchError);
+          expect(failure.code).toBe("start_failed");
+          expect(failure.safeReason).toBeUndefined();
+          expect(failure.message).toBe("The agent runtime could not start in this sandbox. Relaunch in a new sandbox.");
+          expect(world.rows.get(failure.sandboxId!)).toMatchObject({ status: "failed", statusReason: failure.message });
+          expect(world.stopped).toEqual(["bx_1"]);
+          expect(world.prompts).toEqual([]);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("idle explicit repo is prepared before launch returns and a later native send", async () => {
     const world = setup({ golden: golden("org"), prepare: true });
@@ -316,9 +371,9 @@ describe("launch", () => {
     });
     expect(result.sandbox.status).toBe("ready");
     expect(world.prompts).toEqual([]);
-    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prepare"]);
+    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prepare", "exec"]);
     await world.provider.prompt({ sandboxId: result.sandbox.providerSandboxId, harness: "claude", text: "Later" });
-    expect(world.order.slice(-2)).toEqual(["prepare", "prompt"]);
+    expect(world.order.slice(-3)).toEqual(["prepare", "exec", "prompt"]);
     expect(world.preparations).toHaveLength(1);
   });
 
@@ -347,7 +402,7 @@ describe("launch", () => {
     const world = setup({ golden: golden("org"), prepare: true });
     await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "Go" });
     expect(world.preparations).toEqual([]);
-    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prompt"]);
+    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "exec", "prompt"]);
   });
 
   test("the user's own credential wins over the org's, and the org's is the fallback", async () => {
@@ -416,6 +471,97 @@ describe("launch", () => {
       launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/git pull of web failed \(exit 128\)\.\nfatal: not possible to fast-forward/);
     expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+  });
+
+  test.each([
+    { repo: undefined, transient: true },
+    { repo: "example/web", transient: true },
+    { repo: undefined, transient: false },
+    { repo: "example/web", transient: false },
+  ])("ownership rejection retries once, then succeeds or cleans up (%j)", async ({ repo, transient }) => {
+    const diagnostics: string[] = [];
+    const waits: number[] = [];
+    const log = spyOn(console, "info").mockImplementation((line: string) => {
+      diagnostics.push(line);
+    });
+    let rejectedPulls = 0;
+    const world = setup({
+      golden: golden("org"),
+      prepare: true,
+      exec: (command) =>
+        command.includes("'pull'") && (!transient || rejectedPulls++ === 0)
+          ? {
+              exitCode: 128,
+              stderr: "fatal: detected dubious ownership in repository at '/home/user/web'\n" + "x".repeat(2500),
+            }
+          : { exitCode: 0 },
+    });
+    let failure: unknown;
+    try {
+      failure = await launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        {
+          golden: "web",
+          harness: "claude",
+          ...(repo === undefined ? {} : { repo }),
+          prompt: "go",
+        },
+        {
+          sleep: async (ms) => {
+            expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+            waits.push(ms);
+          },
+        },
+      ).catch((error: unknown) => error as LaunchError);
+    } finally {
+      log.mockRestore();
+    }
+    expect(waits).toEqual([1000]);
+    expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+      {
+        event: "launch_repository_ownership_retry",
+        sandboxId: [...world.rows.keys()][0],
+        provider: "boat",
+        providerSandboxId: "bx_1",
+        attempt: 2,
+        delayMs: 1000,
+        outcome: transient ? "recovered" : "failed",
+        retry: transient ? "succeeded" : "ownership_refused",
+      },
+    ]);
+    expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
+      2,
+    );
+    if (transient) {
+      expect(failure).not.toBeInstanceOf(LaunchError);
+      expect([...world.rows.values()][0]?.status).toBe("running");
+      expect(world.execs.filter((exec) => exec.command === "pnpm i")).toHaveLength(1);
+      expect(world.prompts).toHaveLength(1);
+      expect(world.stopped).toEqual([]);
+      return;
+    }
+    expect(failure).toBeInstanceOf(LaunchError);
+    const error = failure as LaunchError;
+    expect(error.code).toBe("init_failed");
+    expect(error.safeReason).toBe("repository_ownership_mismatch");
+    expect(error.cause).toBeInstanceOf(LaunchError);
+    expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
+    expect(error.sandboxId).toBeString();
+    expect(error.message).toContain(`sandbox ${error.sandboxId}:`);
+    expect(error.message).not.toContain("bx_1");
+    expect(error.message).not.toContain("selected machine size");
+    expect(error.message).toContain("checkout ownership");
+    expect(error.message).toContain("Report this golden and sandbox ID");
+    expect(error.message).not.toContain("rebuild");
+    expect(error.message).not.toContain("fatal:");
+    expect(error.message).not.toContain("safe.directory");
+    expect(world.rows.get(error.sandboxId ?? "")).toMatchObject({ status: "failed", statusReason: error.message });
+    expect(world.stopped).toEqual(["bx_1"]);
+    expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+    expect(world.prompts).toEqual([]);
   });
 
   test("a refused first prompt leaves a failed sandbox and says so", async () => {
@@ -473,6 +619,7 @@ describe("launch", () => {
       GOLDEN_ROOT,
       `${GOLDEN_ROOT}/web`,
       `${GOLDEN_ROOT}/api`,
+      GOLDEN_ROOT,
       GOLDEN_ROOT,
     ]);
     expect(world.execs[0]?.command).toContain(
@@ -918,7 +1065,11 @@ function outcomeProvider(status: PromptStatus, pages: AgentEvent[][]): Provider 
     async getPrompt() {
       return { promptId: "p1", status, done: status !== "running" && status !== "queued" };
     },
-    async events({ cursor }: { cursor?: string }) {
+    async events({ cursor, direction }: { cursor?: string; direction?: string }) {
+      if (direction === "backward") {
+        const index = cursor ? Number(cursor) : pages.length - 1;
+        return { events: pages[index] ?? [], olderCursor: String(index - 1), hasMore: index > 0 };
+      }
       const index = cursor ? Number(cursor) : 0;
       const page = pages[index] ?? [];
       const more = index + 1 < pages.length;
@@ -966,4 +1117,104 @@ test("launch resolves defaults once, respects exact and empty overrides, and fai
     launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
   ).rejects.toThrow("Reconnect");
   expect(world.forks).toEqual([]);
+});
+
+for (const harness of ["claude", "codex"] as const) {
+  test(`${harness} launch artifacts stay out of worker Git staging without changing tracked skills`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "armada-skill-exclude-"));
+    const run = (...args: string[]) => {
+      const result = Bun.spawnSync(args, { cwd: dir });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString();
+    };
+    try {
+      run("git", "init", "--quiet");
+      if (harness === "codex") rmSync(join(dir, ".git/info"), { recursive: true });
+      else writeFileSync(join(dir, ".git/info/exclude"), "*.log"); // Existing file lacks a final LF.
+      mkdirSync(join(dir, ".companion"), { recursive: true });
+      writeFileSync(
+        join(dir, ".companion/skills.lock.json"),
+        catalogLock(harness === "claude" ? "claude-code" : "codex"),
+      );
+      writeFileSync(join(dir, ".companion/skills.lock.json.lock"), "");
+      for (const tool of harness === "claude" ? [".agents", ".claude"] : [".agents"]) {
+        mkdirSync(join(dir, tool, "skills/notes"), { recursive: true });
+        writeFileSync(join(dir, tool, "skills/notes/SKILL.md"), "installed skill");
+      }
+      mkdirSync(join(dir, ".agents/skills/owned"), { recursive: true });
+      writeFileSync(join(dir, ".agents/skills/owned/SKILL.md"), "owned skill");
+      run("git", "add", ".agents/skills/owned/SKILL.md");
+      writeFileSync(join(dir, "worker.ts"), "worker change");
+      const world = setup({
+        golden: golden("org"),
+        prepare: true,
+        exec: (command) => {
+          if (command.includes("skillpack install"))
+            return { exitCode: 0, stdout: catalogLock(harness === "claude" ? "claude-code" : "codex") };
+          if (command.startsWith("exclude=")) run("sh", "-c", command);
+          return { exitCode: 0 };
+        },
+      });
+      world.stores.credentials.skillpackKey = async () => {
+        throw new Error("Public pins must not resolve Skillpack credentials.");
+      };
+      world.stores.sandboxes.recordSkills = async () => {};
+      await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness,
+        repo: "web",
+        skills: [catalogReference],
+      });
+      run("git", "add", "-A");
+      expect(run("git", "diff", "--cached", "--name-only").trim().split("\n")).toEqual([
+        ".agents/skills/owned/SKILL.md",
+        "worker.ts",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// Admission owns compatibility: an unsupported requirement must not allocate a worker.
+test("helper admission preserves legacy launches and refuses missing, stale or unknown capabilities before fork", async () => {
+  const receipt = {
+    version: "0.1.0",
+    protocol: 1,
+    platform: "x86_64" as const,
+    digest: helperManifest.x86_64.digest,
+    capabilities: ["diagnose"],
+    snapshotId: SNAPSHOT,
+  };
+  for (const variant of ["legacy", "missing", "new", "stale", "unknown", "bad-digest"] as const) {
+    const selected = golden("org");
+    if (!["legacy", "missing"].includes(variant))
+      selected.helperReceipt = {
+        ...receipt,
+        ...(variant === "stale" ? { snapshotId: "old-snapshot" } : {}),
+        ...(variant === "bad-digest" ? { digest: "0".repeat(64) } : {}),
+      };
+    const world = setup({ golden: selected });
+    const request = {
+      golden: "web",
+      harness: "claude" as const,
+      ...(variant === "legacy" ? {} : { helperCapabilities: [variant === "unknown" ? "github" : "diagnose"] }),
+    };
+    if (variant === "legacy" || variant === "new") {
+      const result = await launchSandbox(world.provider, world.stores, owner, request);
+      expect(result.helper.status).toBe(variant === "new" ? "supported" : "unsupported");
+    } else {
+      await expect(launchSandbox(world.provider, world.stores, owner, request)).rejects.toMatchObject({
+        code: "unsupported",
+        reason:
+          variant === "missing"
+            ? "helper_missing"
+            : variant === "unknown"
+              ? "helper_capability_unsupported"
+              : "helper_receipt_invalid",
+        action: "rebuild_golden",
+      });
+      expect(world.forks).toEqual([]);
+    }
+  }
 });

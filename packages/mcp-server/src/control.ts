@@ -16,20 +16,25 @@ import {
 } from "@armada/auth";
 import {
   API_FAILURE_STATUS,
+  GitHubHydrationError,
   goldenForSettings,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
 } from "@armada/core";
 import {
+  type ApplicationVault,
   addMember,
   assertGoldenMutation,
   connectGolden,
+  createApplicationVault,
   createGoldenAdoption,
   createOrg,
+  createRoutineService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
   createSqlVaultStore,
+  createTemplateService,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
   type GitHubApp,
@@ -64,6 +69,7 @@ import {
   parseCredentialKind,
   parseGoldenConfig,
   parseRole,
+  type RoutineService,
   removeCredential,
   removeMember,
   resolveBoatKey,
@@ -74,6 +80,7 @@ import {
   setCredential,
   setMemberRole,
   snapshotGolden,
+  type TemplateService,
   VaultError,
   type VaultErrorCode,
   type VaultStore,
@@ -83,6 +90,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode } from "./api-failure.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -91,6 +99,7 @@ import { InvitationError, type Invitations, invitationsFromEnv } from "./invitat
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
+import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
@@ -104,6 +113,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
@@ -116,6 +126,10 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
+  templates?: TemplateService;
+  routines?: RoutineService;
+  applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
@@ -167,6 +181,7 @@ export interface ControlOptions {
 export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
 
 const STATUS: Record<VaultErrorCode, number> = {
+  credential_busy: 409,
   credential_binding_required: 409,
   credential_binding_unsafe: 409,
   invalid: 400,
@@ -227,9 +242,22 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
+    if (
+      (route.startsWith("templates/") ||
+        route.startsWith("routines/") ||
+        route.startsWith("variables/") ||
+        route.startsWith("secrets/")) &&
+      url.search
+    )
+      throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : await readBody(request);
+      : route.startsWith("templates/") ||
+          route.startsWith("routines/") ||
+          route.startsWith("variables/") ||
+          route.startsWith("secrets/")
+        ? await readVaultBody(request)
+        : await readBody(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
@@ -256,7 +284,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             ? await options.invitations.accept(caller, body.token)
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
     } else result = await dispatch(deletion ? "sandbox/delete" : route, caller, body, options);
-    if (result === undefined) return fail(404, "not_found", "Unknown route.");
+    if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
         (route === "golden/create" || route === "golden/update") &&
@@ -275,6 +303,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           error: {
             code: failureCode,
             message: error instanceof Error ? error.message : failureCode,
+            ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
             ...(error instanceof ProviderError && error.details?.keepSource === true
               ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
               : {}),
@@ -287,7 +316,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
       return fail(status, error.code, error.action);
     }
-    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
+    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message, error.details);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
@@ -319,7 +348,15 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       );
     }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(
+        400,
+        error.code,
+        error.message,
+        error.reason
+          ? { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) }
+          : undefined,
+      );
     if (error instanceof InvitationError)
       return Response.json(
         {
@@ -332,7 +369,14 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         },
         { status: STATUS[error.code], headers: { "cache-control": "no-store" } },
       );
-    if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
+    if (error instanceof VaultError) {
+      if (error.code === "credential_busy")
+        return Response.json(
+          { error: { code: "conflict", reason: "credential_busy", message: error.message } },
+          { status: 409, headers: { "cache-control": "no-store" } },
+        );
+      return fail(STATUS[error.code], error.code, error.message);
+    }
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
       return fail(
@@ -506,7 +550,13 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(
+        400,
+        error.code,
+        error.message,
+        error.reason ? { reason: error.reason, action: error.action } : undefined,
+      );
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Login exchange was refused.");
   }
@@ -566,7 +616,13 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof LaunchError)
+      return fail(
+        400,
+        error.code,
+        error.message,
+        error.reason ? { reason: error.reason, action: error.action } : undefined,
+      );
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Refresh token was refused.");
   }
@@ -596,6 +652,48 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("routines/")) {
+    if (!options.routines) throw new VaultError("unavailable", "Routines unavailable.");
+    return options.routines.command(caller, route.slice(9), body);
+  }
+  if (route.startsWith("templates/")) {
+    if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+    const stores = options.data?.(caller);
+    return options.templates.command(
+      caller,
+      route.slice(10),
+      body,
+      stores
+        ? {
+            stores: {
+              goldens: stores.goldens,
+              sandboxes: stores.sandboxes,
+              credentials: launchCredentials(
+                options.store,
+                options.encryptionKey,
+                options.github ? { ...options.github, store: options.store } : undefined,
+                options.modelAuth,
+              ),
+              ...(options.connections ? { connections: options.connections } : {}),
+            },
+            provider: (golden) => providerForGolden(options, caller, golden),
+            ...(options.launch ? { options: options.launch } : {}),
+          }
+        : undefined,
+    );
+  }
+  if (route.startsWith("variables/") || route.startsWith("secrets/")) {
+    if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
+    if (!/^(variables|secrets)\/[a-z]+$/.test(route))
+      throw new VaultError("invalid", "Invalid application vault request.");
+    const [resource, operation] = route.split("/");
+    return options.applicationVault.command(
+      caller,
+      resource === "variables" ? "variable" : "secret",
+      operation as Parameters<ApplicationVault["command"]>[2],
+      body,
+    );
+  }
   if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
   if (route === "launch/options") return launchOptions;
   if (route === "creds/accounts/usage") {
@@ -608,7 +706,7 @@ async function dispatch(
     return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
-  if (route.startsWith("github/")) {
+  if (route.startsWith("github/") && route !== "github/refresh") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);
   }
@@ -644,6 +742,7 @@ async function dispatch(
     {
       "golden/capabilities": "golden_capabilities",
       "golden/adopt": "golden_adopt",
+      "github/refresh": "github_refresh",
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
@@ -661,6 +760,12 @@ async function dispatch(
     } as Record<string, string>
   )[route];
   if (toolName) {
+    if (
+      route === "sandbox/extend" &&
+      Number.isSafeInteger(body.ttl_seconds) &&
+      Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS
+    )
+      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
     if (
       route === "sandbox/extend" &&
       (!Number.isSafeInteger(body.ttl_seconds) ||
@@ -704,7 +809,12 @@ async function dispatch(
               providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
             }
           : {}),
-        launchCredentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
+        launchCredentials: launchCredentials(
+          options.store,
+          options.encryptionKey,
+          options.github ? { ...options.github, store: options.store } : undefined,
+          options.modelAuth,
+        ),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
         now: options.now ?? (() => new Date()),
@@ -731,6 +841,18 @@ async function dispatch(
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
+    case "skillpack/connection": {
+      // Reuse vault visibility, including live membership and token org scoping.
+      const credentials = await listCredentials(store, userId, org);
+      return {
+        authorization: { available: false, reason: "delegated_key_flow_unavailable" },
+        user: credentials.user.filter((credential) => credential.kind === "skillpack"),
+        orgs: credentials.orgs.map((entry) => ({
+          ...entry,
+          credentials: entry.credentials.filter((credential) => credential.kind === "skillpack"),
+        })),
+      };
+    }
     case "org/create":
       return { org: await createOrg(store, userId, required(body, "name")) };
     case "org/list":
@@ -830,6 +952,10 @@ async function dispatch(
         policy: golden.sizePolicy ?? null,
       };
     }
+    case "sandbox/launch-access-v1":
+      if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
+        throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
+      return launchRoute(options, caller, body);
     case "sandbox/launch-sized-v1":
       if (body.sizePolicyVersion !== 1)
         throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
@@ -922,6 +1048,7 @@ export interface GoldenJson {
   boatSnapshotId: string | null;
   boatSandboxId: string | null;
   repos: number;
+  buildWarnings: string[];
   config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
 }
 
@@ -940,6 +1067,7 @@ function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson
     boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
+    buildWarnings: row.buildWarnings ?? [],
   };
 }
 
@@ -1121,11 +1249,13 @@ async function readLogs(
     }
     cursor = next;
   }
-  const info = await target.provider.get(target.providerSandboxId);
+  // Ordinary history reads need only the authorized event stream. Live compute is
+  // consulted solely to decide whether a follow request should keep waiting.
+  const info = follow ? await target.provider.get(target.providerSandboxId) : null;
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    follow && latest && info.state !== "stopped" && info.state !== "failed"
+    follow && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
       : null;
   return {
@@ -1135,9 +1265,9 @@ async function readLogs(
     hasMore,
     settled:
       !follow ||
-      info.state === "stopped" ||
-      info.state === "failed" ||
-      (latest === null ? info.state !== "running" && info.state !== "starting" : prompt?.done === true),
+      info?.state === "stopped" ||
+      info?.state === "failed" ||
+      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
   };
 }
 
@@ -1168,6 +1298,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
   )
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
+  const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
+  if (armadaAccess && (!options.sandboxArmadaAccess || !options.orchestrators))
+    throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
+  if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
+    throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
   const name = required(body, "golden");
   const repo = body.repo === undefined ? undefined : required(body, "repo");
   const harness = required(body, "harness");
@@ -1181,6 +1316,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     optional(body, "provider") as "boat" | "modal" | undefined,
   );
   resolveRepositoryDir(golden, optional(body, "repo"));
+  if (
+    armadaAccess &&
+    (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
+  )
+    throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   const provider = await providerForGolden(options, caller, golden);
   const result = await launchSandbox(
     provider,
@@ -1208,15 +1348,33 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+      ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
+      ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
       ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
       ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
       ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
     },
-    options.launch ?? {},
+    {
+      ...options.launch,
+      ...(armadaAccess
+        ? {
+            privateVisibility: true as const,
+            beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
+              await options.launch?.beforeStart?.(provider, sandbox);
+              await options.sandboxArmadaAccess!.prepare(provider, sandbox, actor, armadaAccess);
+            },
+          }
+        : {}),
+    },
   );
-  return launchJson(result);
+  return {
+    ...launchJson(result),
+    ...(armadaAccess
+      ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
+      : {}),
+  };
 }
 
 async function launchActor(
@@ -1257,6 +1415,7 @@ async function providerForGolden(options: ControlOptions, caller: Caller, golden
 
 function launchJson(result: LaunchResult) {
   return {
+    helper: result.helper,
     sandbox: {
       ...result.sandbox,
       boatId: result.sandbox.provider === "boat" ? result.sandbox.providerSandboxId : null,
@@ -1273,6 +1432,7 @@ function launchJson(result: LaunchResult) {
     github: {
       status: result.github.status,
       login: result.github.login ?? null,
+      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
       message: result.github.message ?? null,
     },
   };
@@ -1377,8 +1537,16 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(status: number, code: string, message: string): Response {
-  return Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store" } });
+function fail(
+  status: number,
+  code: string,
+  message: string,
+  details?: ToolApiError["details"] | Pick<LaunchError, "reason" | "action">,
+): Response {
+  return Response.json(
+    { error: { code, message, ...(details ? { details } : {}) } },
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /**
@@ -1392,10 +1560,8 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     if (!value) throw new Error(`Set ${name}.`);
     return value;
   };
-  // The same adapter `armada serve` uses (`sql.ts`'s `bunSql`), not a hand-rolled one: it wires
-  // `.transaction` to `Bun.SQL.begin`, which `withGitHubConnectionRefresh`'s advisory lock (#492)
-  // needs to actually serialize concurrent refreshes. Without it, that lock is silently skipped.
-  const sql = bunSql(need("ARMADA_DATABASE_URL"));
+  // Share the server adapter and its validated pool budget, including transaction support.
+  const sql = bunSql(need("ARMADA_DATABASE_URL"), databasePoolMax(env.ARMADA_DATABASE_POOL_MAX));
   const encryptionKey = need(ENCRYPTION_KEY_ENV);
   const githubApp = githubAppFromEnv(env);
   const store = createSqlVaultStore(sql);
@@ -1410,7 +1576,22 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       env.NODE_ENV === "development",
     ),
   });
-  const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
+  const templates = createTemplateService(sql);
+  const lifecycle = () =>
+    createMcpLifecycle({
+      sql,
+      registry,
+      encryptionKey,
+      origin: need("ARMADA_PUBLIC_URL"),
+      prepareReadableVariables: templates.prepare,
+    });
+  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
+    createBoatProvider({
+      apiKey,
+      beforePrompt: async (provider, id) => {
+        if (caller) await lifecycle().beforePrompt(provider, id, caller);
+      },
+    });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () =>
     (modal ??= createModalIntegration({
@@ -1419,6 +1600,9 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       encryptionKey,
       publicUrl: need("ARMADA_PUBLIC_URL"),
       github: { store, app: githubApp },
+      beforePrompt: async (provider, id, caller) => {
+        await lifecycle().beforePrompt(provider, id, caller);
+      },
     }));
   const providers = providerRegistry({
     vault: store,
@@ -1439,6 +1623,9 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
+    templates,
+    routines: createRoutineService(sql),
+    applicationVault: createApplicationVault(sql, encryptionKey),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
@@ -1569,4 +1756,33 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
   if (ref === undefined) return caller;
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
+}
+
+/** Bounded streaming UTF-8 decode: never buffer an unlimited secret body or replace malformed bytes. */
+async function readVaultBody(request: Request): Promise<Record<string, unknown>> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new VaultError("invalid", "Invalid application vault request.");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let text = "",
+    bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 64 * 1024) {
+        await reader.cancel();
+        throw new Error("limit");
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object");
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new VaultError("invalid", "Invalid application vault request.");
+  } finally {
+    reader.releaseLock();
+  }
 }

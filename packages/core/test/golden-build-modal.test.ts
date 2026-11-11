@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
-import type { Provider } from "../src/provider.ts";
+import { type Provider, ProviderError } from "../src/provider.ts";
 import type { ModalBinding, ProviderTarget } from "../src/sandbox-provider.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
+import { goldenHelperReport } from "./support/golden-helper.ts";
 
 const key = Buffer.alloc(32, 37).toString("base64");
 const binding: ModalBinding = { workspace: "verified-workspace", environment: "production", appId: "ap_pinned" };
@@ -59,7 +61,14 @@ async function fixture() {
       },
       getSnapshot: async (name) => ({ name, status: "ready" }),
       deleteSnapshot: async () => {},
-      exec: async () => ({ detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+      exec: async ({ command }) => ({
+        detached: false,
+        exitCode: 0,
+        stdout: command.includes("/helper/0.1.0/armada-helper") ? goldenHelperReport : "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
       findGoldenBuilder: async ({ requestKey }) => {
         const id = builders.get(requestKey);
         return id ? { sandboxId: id, disposition: "disposable" } : null;
@@ -271,31 +280,41 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
   }
 });
 
-test("an unknown Modal snapshot preserves its original source and pinned context for reconciliation without replay", async () => {
-  const f = await fixture();
-  try {
-    f.snapshot(async () => {
-      throw new Error("fixture lost remote snapshot response");
-    });
-    const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    await f.jobs.runOne();
-    expect(await f.jobs.status(f.actor.userId, job.jobId)).toMatchObject({
-      state: "recovery_required",
-      phase: "snapshot",
-    });
-    expect(f.deleted).toEqual([]);
-    f.rotate();
-    await f.jobs.reconcileOne();
-    expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("recovery_required");
-    expect(f.contexts.at(-1)?.modal).toEqual(binding);
-    expect(f.deleted).toEqual([]);
-    expect(await f.jobs.runOne()).toBe(false);
-    expect(f.allocations()).toBe(1);
-    expect((await f.db.query("select 1 from goldens")).rows).toEqual([]);
-  } finally {
-    await f.db.close();
-  }
-});
+test.each(["unknown", "refusal"])(
+  "an uncertain Modal snapshot retains its original source without replay (%s)",
+  async (outcome) => {
+    const f = await fixture();
+    try {
+      f.snapshot(async () => {
+        if (outcome === "refusal")
+          throw new ProviderError({
+            provider: "modal",
+            code: "invalid_request",
+            message: "refused save",
+            retryable: false,
+          });
+        throw new Error("fixture lost remote snapshot response");
+      });
+      const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
+      await f.jobs.runOne();
+      expect(await f.jobs.status(f.actor.userId, job.jobId)).toMatchObject({
+        state: "recovery_required",
+        phase: "snapshot",
+      });
+      expect(f.deleted).toEqual([]);
+      f.rotate();
+      await f.jobs.reconcileOne();
+      expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("recovery_required");
+      expect(f.contexts.at(-1)?.modal).toEqual(binding);
+      expect(f.deleted).toEqual([]);
+      expect(await f.jobs.runOne()).toBe(false);
+      expect(f.allocations()).toBe(1);
+      expect((await f.db.query("select 1 from goldens")).rows).toEqual([]);
+    } finally {
+      await f.db.close();
+    }
+  },
+);
 
 test("an older retained recovery queue head does not starve an interrupted builder", async () => {
   const f = await fixture();
@@ -334,3 +353,6 @@ test("an older retained recovery queue head does not starve an interrupted build
     await f.db.close();
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

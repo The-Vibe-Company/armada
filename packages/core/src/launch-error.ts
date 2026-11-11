@@ -1,3 +1,5 @@
+import type { HelperRefusal } from "./helper.ts";
+import type { PrivateSkillError, PrivateSkillFailure } from "./private-skill-error.ts";
 export const LAUNCH_INITIALIZATION_STAGES = [
   "initialization_bind",
   "initialization_ready",
@@ -15,6 +17,7 @@ export const LAUNCH_FAILURE_REASONS = [
   "github_setup_timeout",
   "github_setup_nonzero",
   "native_auth_write_failed",
+  "repository_ownership_mismatch",
   "visibility_not_persisted",
 ] as const;
 export type LaunchFailureReason = (typeof LAUNCH_FAILURE_REASONS)[number];
@@ -24,6 +27,7 @@ import type { ApiFailureCode } from "./api-failure.ts";
 export type LaunchErrorCode =
   | ApiFailureCode
   | "invalid_request"
+  | "unsupported"
   /** The harness has no credential for the caller or the org. */
   | "no_credentials"
   /** The sandbox failed to start, or a provider call failed while launching. */
@@ -39,15 +43,29 @@ export class LaunchError extends Error {
   /** Armada's id of the sandbox that was recorded before the failure, when there was one. */
   readonly sandboxId: string | undefined;
   readonly safeReason: LaunchFailureReason | undefined;
+  readonly reason: HelperRefusal["reason"] | PrivateSkillFailure | undefined;
+  readonly stage: PrivateSkillError["stage"] | undefined;
+  readonly skillFailure: { reason: PrivateSkillFailure; stage: PrivateSkillError["stage"] } | undefined;
+  readonly action: HelperRefusal["action"] | undefined;
 
   constructor(
     code: LaunchErrorCode,
     message: string,
-    options?: { cause?: unknown; sandboxId?: string; safeReason?: LaunchFailureReason },
+    options?: {
+      cause?: unknown;
+      sandboxId?: string;
+      safeReason?: LaunchFailureReason;
+      helperRefusal?: HelperRefusal;
+      skillFailure?: { reason: PrivateSkillFailure; stage: PrivateSkillError["stage"] };
+    },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.sandboxId = options?.sandboxId;
     this.safeReason = options?.safeReason;
+    this.reason = options?.skillFailure?.reason ?? options?.helperRefusal?.reason;
+    this.stage = options?.skillFailure?.stage;
+    this.skillFailure = options?.skillFailure;
+    this.action = options?.helperRefusal?.action;
   }
 }

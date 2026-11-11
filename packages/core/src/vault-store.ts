@@ -5,6 +5,8 @@ import type { Sql } from "./golden-store.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
 
+const githubRefreshQueues = new WeakMap<Sql, Map<string, Promise<void>>>();
+
 /**
  * The vault over SQL. The connection must be privileged: it reads ciphertext columns, and it reads
  * `auth.users` to find a person by email. Use the Supabase `postgres` role or `service_role`,
@@ -27,12 +29,14 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         }
         const existing = input.id
           ? await tx.query<{ kind: CredentialKind; version: number }>(
-              "select kind, version from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind not in ('boat','modal') and status <> 'deleted' for update",
+              "select kind, version from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind in ('claude_oauth','anthropic','openai','codex_auth') and status <> 'deleted' for update",
               [input.id, input.scope, owner],
             )
           : { rows: [] };
         if (input.id && !existing.rows.length) throw new VaultError("not_found", "No such account.");
         const kind = existing.rows[0]?.kind ?? input.kind;
+        if (!kind || !["claude_oauth", "anthropic", "openai", "codex_auth"].includes(kind))
+          throw new VaultError("invalid", "Named accounts require a model credential.");
         if (input.kind && existing.rows[0] && input.kind !== kind)
           throw new VaultError("invalid", "An account kind cannot change.");
         if (input.action !== "set" && !input.id) throw new VaultError("invalid", "Account id is required.");
@@ -59,7 +63,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           await tx.query("update public.credentials set status='deleted' where id=$1", [id]);
         } else {
           await tx.query(
-            "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal')",
+            "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind in ('claude_oauth','anthropic','openai','codex_auth')",
             [input.scope, owner, kind],
           );
           await tx.query("update public.credentials set is_default=true where id=$1", [id]);
@@ -169,7 +173,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     },
 
     async upsertCredential(scope, ownerId, kind, valueEnc) {
-      if (kind !== "boat" && kind !== "modal") {
+      if (kind !== "boat" && kind !== "modal" && kind !== "skillpack") {
         if (!sql.transaction) throw new VaultError("unavailable", "Credential writes require a transaction.");
         await sql.transaction(async (tx) => {
           await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [ownerId]);
@@ -179,7 +183,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           );
           if (found.rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
           const ambiguous = await tx.query(
-            "select kind from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status <> 'deleted' and kind not in ('boat','modal') and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) group by kind having count(*) > 1",
+            "select kind from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status <> 'deleted' and kind in ('claude_oauth','anthropic','openai','codex_auth') and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) group by kind having count(*) > 1",
             [scope, ownerId, kind],
           );
           if (ambiguous.rows.length) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
@@ -195,16 +199,16 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             );
           // Legacy kind writes preserve the old harness preference through explicit defaults.
           const preferred = await tx.query<{ id: string }>(
-            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status='active' and name='Default' and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal') order by case when kind in ('claude_oauth','openai') then 0 else 1 end limit 1",
+            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and status='active' and name='Default' and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind in ('claude_oauth','anthropic','openai','codex_auth') order by case when kind in ('claude_oauth','openai') then 0 else 1 end limit 1",
             [scope, ownerId, kind],
           );
           const named = await tx.query(
-            "select 1 from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and name <> 'Default' and kind not in ('boat','modal')",
+            "select 1 from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and name <> 'Default' and kind in ('claude_oauth','anthropic','openai','codex_auth')",
             [scope, ownerId],
           );
           if (preferred.rows[0] && !named.rows.length) {
             await tx.query(
-              "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind not in ('boat','modal')",
+              "update public.credentials set is_default=false where scope=$1::public.credential_scope and owner_id=$2 and ((kind in ('claude_oauth','anthropic')) = ($3::text in ('claude_oauth','anthropic'))) and kind in ('claude_oauth','anthropic','openai','codex_auth')",
               [scope, ownerId, kind],
             );
             await tx.query("update public.credentials set is_default=true where id=$1", [preferred.rows[0].id]);
@@ -213,7 +217,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         return;
       }
       await sql.query(
-        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind in ('boat','modal') do update set value_enc=excluded.value_enc`,
+        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind not in ('claude_oauth','anthropic','openai','codex_auth') do update set value_enc=excluded.value_enc`,
         [scope, ownerId, kind, valueEnc],
       );
     },
@@ -228,7 +232,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         if (rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
         if (!rows[0]) return false;
         await tx.query(
-          kind === "boat" || kind === "modal"
+          kind === "boat" || kind === "modal" || kind === "skillpack"
             ? "delete from public.credentials where id=$1"
             : "update public.credentials set status='deleted' where id=$1",
           [rows[0].id],
@@ -311,14 +315,27 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(sql, userId, expected),
 
     async withGitHubConnectionRefresh(userId, work) {
-      // A single-connection adapter cannot make an autonomous commit while a transaction holds it.
-      // Its atomic consumed-fence CAS still single-flights refresh; production has a separate pool.
-      if (!sql.transaction || !sql.autonomousQuery)
-        return work(refreshStore(sql), await readGitHubConnection(sql, userId));
-      return sql.transaction(async (transaction) => {
-        await transaction.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
-        return work(refreshStore(transaction, true, sql), await readGitHubConnection(transaction, userId));
+      // Queue local callers without reserving a database connection during HTTP.
+      // Across processes the durable consumed-token fence prevents replay.
+      let queues = githubRefreshQueues.get(sql);
+      if (!queues) {
+        queues = new Map();
+        githubRefreshQueues.set(sql, queues);
+      }
+      const previous = queues.get(userId) ?? Promise.resolve();
+      let release!: () => void;
+      const current = new Promise<void>((resolve) => {
+        release = resolve;
       });
+      queues.set(userId, current);
+      await previous;
+      try {
+        const connection = await readGitHubConnection(sql, userId);
+        return await work(refreshStore(sql, connection?.refreshTokenEnc), connection);
+      } finally {
+        release();
+        if (queues.get(userId) === current) queues.delete(userId);
+      }
     },
 
     async rotateGitHubToken(userId, expected, next) {
@@ -429,12 +446,12 @@ async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGit
   };
 }
 
-function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitHubConnectionStore {
+function refreshStore(sql: Sql, expectedRefresh: Uint8Array | undefined): GitHubConnectionStore {
   return {
-    consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(durable, userId, expected),
+    consumeGitHubRefresh: (userId, expected) => consumeGitHubRefresh(sql, userId, expected),
     getGitHubConnection: (userId) => readGitHubConnection(sql, userId),
     withGitHubConnectionRefresh: async () => {
-      throw new Error("Nested GitHub refresh transactions are not supported.");
+      throw new Error("Nested GitHub refresh scopes are not supported.");
     },
     async rotateGitHubToken(userId, expected, next) {
       const result = await sql.query(
@@ -452,6 +469,7 @@ function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitH
           next.accessExpiresAt.toISOString(),
         ],
       );
+      if (result.rows.length) expectedRefresh = next.refreshTokenEnc;
       return result.rows.length > 0;
     },
     async markGitHubRevoked(userId, expected) {
@@ -464,27 +482,18 @@ function refreshStore(sql: Sql, transactional = false, durable: Sql = sql): GitH
       return result.rows.length > 0;
     },
     async updateGitHubProfile(userId, profile) {
-      // Profile sync is best-effort, but an SQL error must not roll back a
-      // refresh token GitHub has already consumed. Keep the advisory lock held.
-      if (transactional) await sql.query("savepoint github_profile");
-      try {
-        await sql.query(
-          `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
-           where user_id = $1`,
-          [userId, profile.id, profile.login, profile.name],
-        );
-      } catch (error) {
-        if (transactional) await sql.query("rollback to savepoint github_profile");
-        throw error;
-      } finally {
-        if (transactional) await sql.query("release savepoint github_profile");
-      }
+      // A reconnect may publish during HTTP. Never overwrite its newer identity.
+      await sql.query(
+        `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
+         where user_id = $1 and refresh_token_enc = $5::bytea and revoked_at is null`,
+        [userId, profile.id, profile.login, profile.name, expectedRefresh],
+      );
     },
   };
 }
 
-/** Autocommit on the root pool while the separate owner advisory transaction is held.
- * If HTTP or the later rotation COMMIT is uncertain, this row survives to forbid replay. */
+/** Autocommit before remote HTTP. If HTTP or rotation publication is uncertain,
+ * this row survives to forbid replay even when another process reads the old token. */
 async function consumeGitHubRefresh(sql: Sql, userId: string, expected: Uint8Array): Promise<boolean> {
   const hash = createHash("sha256").update(expected).digest("hex");
   const result = await (sql.autonomousQuery ?? sql.query).call(

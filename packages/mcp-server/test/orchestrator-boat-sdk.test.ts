@@ -113,18 +113,16 @@ test("Boat owner polling and stopped-history use ordinary SDK requests and bound
     await latestPrompt(provider, id);
     await runtime.collectEvents(p.owner, p.org, created.identity.id);
     const ordinary = requests[0]!;
-    const ordinaryCursor = requests[1]!;
-    const managed = requests[2]!;
-    expect(ordinary.query).toEqual({ sort: "asc", limit: "200" });
-    expect(managed).toEqual({ ...ordinary, query: { ...ordinary.query, conversation: "conv-1" } });
+    const managed = requests[1]!;
+    expect(ordinary.query).toEqual({ sort: "desc", limit: "200" });
+    expect(managed).toEqual({ ...ordinary, query: { sort: "asc", limit: "200", conversation: "conv-1" } });
     expect(managed.authorization).toBe("Bearer synthetic-org-boat-key");
-    expect(ordinaryCursor.query).toEqual({ ...ordinary.query, cursor: "opaque-next" });
     await sql.query("update orchestrator_runtime set provider_cursor='opaque-next' where orchestrator_id=$1", [
       created.identity.id,
     ]);
     await runtime.collectEvents(p.owner, p.org, created.identity.id);
-    const managedCursor = requests[3]!;
-    expect(managedCursor).toEqual({ ...ordinaryCursor, query: { ...ordinaryCursor.query, conversation: "conv-1" } });
+    const managedCursor = requests[2]!;
+    expect(managedCursor).toEqual({ ...managed, query: { ...managed.query, cursor: "opaque-next" } });
 
     const operation = await core.reserveOrchestratorOperation(sql, {
       orchestratorId: created.identity.id,
@@ -157,7 +155,7 @@ test("Boat owner polling and stopped-history use ordinary SDK requests and bound
     expect(stops).toHaveLength(2);
     expect(stops[1]).toEqual(stops[0]);
     expect(stops[0]).toMatchObject({ path: `/api/v1/sandboxes/${id}/stop`, body: null });
-    const history = requests.filter((request) => request.path.endsWith("/events")).slice(4);
+    const history = requests.filter((request) => request.path.endsWith("/events")).slice(3);
     expect(history).toEqual([
       managedCursor,
       { ...managedCursor, query: { ...managedCursor.query, cursor: "history-end" } },

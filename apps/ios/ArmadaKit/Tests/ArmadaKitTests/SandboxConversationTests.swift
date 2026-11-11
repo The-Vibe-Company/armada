@@ -5,17 +5,26 @@ import Testing
 private final class MemoryStorage: SessionStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var data: Data?
+    init(data: Data? = nil) { self.data = data }
+    private var failingWrites = false
+    func failWrites() { lock.withLock { failingWrites = true } }
     func load() -> Data? { lock.withLock { data } }
-    func save(_ value: Data) { lock.withLock { data = value } }
+    func save(_ value: Data) throws { try lock.withLock {
+        if failingWrites { throw ArmadaError.secureStorage }
+        data = value
+    } }
     func remove() { lock.withLock { data = nil } }
 }
 private actor ScriptedTransport: ArmadaTransport {
     struct Reply: Sendable { let status: Int; let body: String }
     private var replies: [Reply]
+    private let storage: MemoryStorage?
+    private(set) var storageAtSend: Data?
     private(set) var requests: [URLRequest] = []
-    init(_ replies: [Reply]) { self.replies = replies }
+    init(_ replies: [Reply], storage: MemoryStorage? = nil) { self.replies = replies; self.storage = storage }
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         requests.append(request)
+        if request.url?.path == "/api/v1/sandbox/send" { storageAtSend = storage?.load() }
         guard !replies.isEmpty else { throw URLError(.notConnectedToInternet) }
         let next = replies.removeFirst()
         return (Data(next.body.utf8), HTTPURLResponse(url: request.url!, statusCode: next.status, httpVersion: nil, headerFields: nil)!)
@@ -77,7 +86,7 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     await #expect(throws: ArmadaError.forbidden) { _ = try await client.sandboxDetail(id: sandboxID) }
     await #expect(throws: ArmadaError.http(404)) { _ = try await client.sandboxEvents(id: sandboxID) }
     // A malformed id is refused before any request leaves the device.
-    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sandboxDetail(id: "../orchestrators") }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sandboxDetail(id: "../outside") }
     #expect(await transport.requests.count == 4)
 }
 
@@ -96,8 +105,12 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     #expect(receipt.promptId == "pr_2")
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Again"); Issue.record("Expected a failure") }
     catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
+    // A person checked the transcript and explicitly dismissed this unknown outcome.
+    try await client.dismissSandboxPrompt(id: try #require(await client.unconfirmedSandboxPrompt(id: sandboxID)).id)
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Unknown"); Issue.record("Expected a failure") }
     catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
+    // A person checked the transcript and explicitly dismissed this unknown outcome.
+    try await client.dismissSandboxPrompt(id: try #require(await client.unconfirmedSandboxPrompt(id: sandboxID)).id)
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Early"); Issue.record("Expected a refusal") }
     catch { #expect(SandboxMutationFailure.classify(error) == .refused) }
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "No key"); Issue.record("Expected a refusal") }
@@ -188,4 +201,119 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
         #expect(read.admission == .open)
         #expect((read.prompt?.resendHint != nil) == (reason != "future_reason"))
     }
+}
+
+// A response lost during background termination must not make the next app instance send again.
+// This uses the same secure-session storage across two independent client lifetimes.
+@Test func anInterruptedSandboxSendCannotBeRepeatedAfterRelaunch() async throws {
+    let storage = MemoryStorage()
+    let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)], storage: storage)
+    let first = try ArmadaClient(transport: transport, storage: storage)
+    try await first.verifyEmail(email: "person@example.test", code: "123456")
+    try await first.selectOrganization("org-a")
+    await #expect(throws: ArmadaError.unavailable) {
+        _ = try await first.sendSandboxPrompt(id: sandboxID, text: "Keep this prompt")
+    }
+
+    let afterRelaunch = ScriptedTransport([])
+    // Restore the bytes that existed at dispatch, not anything saved after the lost response.
+    let snapshot = try #require(await transport.storageAtSend)
+    let restored = try ArmadaClient(transport: afterRelaunch, storage: MemoryStorage(data: snapshot))
+    try await restored.restore()
+    await #expect(throws: ArmadaError.conflict) {
+        _ = try await restored.sendSandboxPrompt(id: sandboxID, text: "Do not send another prompt")
+    }
+    #expect(await afterRelaunch.requests.isEmpty)
+}
+
+@Test func sandboxPromptRecoveryKeepsTextAndExplicitDismissalSurvivesRestore() async throws {
+    let storage = MemoryStorage()
+    let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)])
+    let first = try ArmadaClient(transport: transport, storage: storage)
+    try await first.verifyEmail(email: "person@example.test", code: "123456")
+    try await first.selectOrganization("org-a")
+    await #expect(throws: ArmadaError.unavailable) {
+        _ = try await first.sendSandboxPrompt(id: sandboxID, text: "A prompt that may have arrived")
+    }
+    let restored = try ArmadaClient(transport: ScriptedTransport([]), storage: storage)
+    try await restored.restore()
+    let saved = try #require(await restored.unconfirmedSandboxPrompt(id: sandboxID))
+    #expect(saved.text == "A prompt that may have arrived" && saved.orgID == "org-a")
+    try await restored.dismissSandboxPrompt(id: saved.id)
+    let afterDismissal = try ArmadaClient(transport: ScriptedTransport([]), storage: storage)
+    try await afterDismissal.restore()
+    #expect(try await afterDismissal.unconfirmedSandboxPrompt(id: sandboxID) == nil)
+}
+
+@Test func sandboxSendJournalSettlesOnlyDefiniteOutcomesAndIsClearedByNewLogin() async throws {
+    for (status, body, uncertain) in [
+        (200, #"{"id":"\#(sandboxID)","promptId":"p-1","conversationId":"c-1","status":"running"}"#, false),
+        (400, #"{"error":{"code":"invalid_request","message":"invalid_request"}}"#, false),
+        (403, #"{"error":{"code":"forbidden"}}"#, false),
+        (503, #"{"error":{"code":"unavailable"}}"#, true),
+    ] {
+        let (client, transport) = try await signedIn([.init(status: status, body: body), .init(status: 200, body: login)])
+        do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Once only") } catch {}
+        #expect((try await client.unconfirmedSandboxPrompt(id: sandboxID) != nil) == uncertain)
+        #expect(await transport.requests.filter { $0.url?.path == "/api/v1/sandbox/send" }.count == 1)
+        try await client.verifyEmail(email: "person@example.test", code: "654321")
+        #expect(await client.pendingSandboxPrompts.isEmpty)
+    }
+}
+
+@Test func sandboxSendAndDismissalFailClosedWhenSecureStorageCannotBeWritten() async throws {
+    let storage = MemoryStorage()
+    let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)])
+    let client = try ArmadaClient(transport: transport, storage: storage)
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    storage.failWrites()
+    await #expect(throws: ArmadaError.secureStorage) {
+        _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Must not be dispatched")
+    }
+    #expect(await transport.requests.count == 2)
+    #expect(await client.pendingSandboxPrompts.isEmpty)
+
+    let secondStorage = MemoryStorage()
+    let secondTransport = ScriptedTransport([.init(status: 200, body: login), .init(status: 200, body: orgs)])
+    let second = try ArmadaClient(transport: secondTransport, storage: secondStorage)
+    try await second.verifyEmail(email: "person@example.test", code: "123456")
+    try await second.selectOrganization("org-a")
+    await #expect(throws: ArmadaError.unavailable) {
+        _ = try await second.sendSandboxPrompt(id: sandboxID, text: "Keep uncertain")
+    }
+    let saved = try #require(await second.unconfirmedSandboxPrompt(id: sandboxID))
+    secondStorage.failWrites()
+    await #expect(throws: ArmadaError.secureStorage) { try await second.dismissSandboxPrompt(id: saved.id) }
+    #expect(try await second.unconfirmedSandboxPrompt(id: sandboxID)?.id == saved.id)
+}
+
+@Test func sandboxPromptTrackingIsOriginAndOrganizationScopedAndSignOutClearsIt() async throws {
+    let storage = MemoryStorage()
+    let twoOrgs = #"{"orgs":[{"id":"org-a","name":"A","role":"member"},{"id":"org-b","name":"B","role":"member"}]}"#
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login), .init(status: 200, body: twoOrgs),
+        .init(status: 503, body: "{}"),
+        .init(status: 200, body: twoOrgs), .init(status: 200, body: twoOrgs),
+        .init(status: 200, body: #"{"ok":true}"#),
+    ])
+    let client = try ArmadaClient(transport: transport, storage: storage)
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    await #expect(throws: ArmadaError.unavailable) {
+        _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Private draft")
+    }
+    let otherOrigin = try ArmadaClient(origin: URL(string: "https://other.example.test")!, transport: ScriptedTransport([]), storage: storage)
+    try await otherOrigin.restore()
+    #expect(await otherOrigin.pendingSandboxPrompts.isEmpty)
+    #expect(await !otherOrigin.isSignedIn)
+    try await client.selectOrganization("org-b")
+    #expect(try await client.unconfirmedSandboxPrompt(id: sandboxID) == nil)
+    try await client.selectOrganization("org-a")
+    #expect(try await client.unconfirmedSandboxPrompt(id: sandboxID)?.text == "Private draft")
+    try await client.signOut()
+    let afterSignOut = try ArmadaClient(transport: ScriptedTransport([]), storage: storage)
+    try await afterSignOut.restore()
+    #expect(await afterSignOut.pendingSandboxPrompts.isEmpty)
+    #expect(await !afterSignOut.isSignedIn)
 }

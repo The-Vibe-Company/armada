@@ -78,6 +78,7 @@ export async function GET(request: NextRequest) {
 
   const supabase = await createClient();
   const deps: ConnectDeps = {
+    ownerId: viewer.id,
     app,
     encrypt: (plaintext) => encryptSecret(plaintext),
     log(fields) {

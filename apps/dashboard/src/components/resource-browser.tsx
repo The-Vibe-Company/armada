@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import {
   type ComponentProps,
@@ -18,14 +18,14 @@ import {
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { type Blocker, FILTER_FROM, ITEM_PARAM, matchesQuery, NEW_ITEM } from "@/lib/resource-list";
+import { type Blocker, FILTER_FROM, ITEM_PARAM, matchesQuery } from "@/lib/resource-list";
 import { cn } from "@/lib/utils";
 
 /**
  * The skeleton every Build page shares (#808): the readiness strip on top, one dense list (a row per item, its
- * state and its one expected action), a detail panel on the right for everything rare (a sheet on a phone), and
- * one New button that opens the create form in that same panel. The page renders each row's cells and panel on
- * the server; this component only chooses which panel shows.
+ * state and its one expected action), and a detail panel on the right for everything rare (a sheet on a phone). A
+ * page's create flow is a `CreateDialog` passed as `actions` (#896, #898), never this panel. The page renders
+ * each row's cells and panel on the server; this component only chooses which panel shows.
  *
  * Every panel stays mounted, hidden when another is selected: a form that follows a build keeps its state while
  * the person looks at another row.
@@ -71,7 +71,7 @@ export function ResourceBrowser({
   rows,
   blockers,
   notices,
-  create,
+  actions,
   footer,
   empty,
   initial,
@@ -85,19 +85,16 @@ export function ResourceBrowser({
   blockers: Blocker[];
   /** Page-level notices (a removal confirmed, a sign-in that came back) between the strip and the list. */
   notices?: ReactNode;
-  /** The New button and the form it opens; absent when nothing can be created here. */
-  create?: { label: string; title: string; subtitle?: ReactNode; content: ReactNode };
-  /** One quiet line under the list (the capacity). */
+  /** Header controls: the page's create flow, a `CreateDialog` (#896). */
+  actions?: ReactNode;
+  /** What follows the list: a quiet line (the capacity), or a section of its own. */
   footer?: ReactNode;
   empty: ReactNode;
   /** The panel open on the first render: the `?item=` of the URL, or what the page follows. */
   initial: string | null;
 }) {
   const keys = useMemo(() => new Set(rows.map((row) => row.key)), [rows]);
-  const valid = useCallback(
-    (key: string | null) => (key === NEW_ITEM ? Boolean(create) : key !== null && keys.has(key)),
-    [create, keys],
-  );
+  const valid = useCallback((key: string | null) => key !== null && keys.has(key), [keys]);
   const [chosen, setChosen] = useState<string | null>(initial);
   // A row removed by an action, or a stale link, closes the panel rather than showing nothing.
   const selected = chosen !== null && valid(chosen) ? chosen : null;
@@ -141,9 +138,7 @@ export function ResourceBrowser({
   }, [selected, select]);
 
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
-  const current = selected === NEW_ITEM ? null : (rows.find((row) => row.key === selected) ?? null);
-  const panelTitle = selected === NEW_ITEM ? create?.title : current?.name;
-  const panelSubtitle = selected === NEW_ITEM ? create?.subtitle : current?.subtitle;
+  const current = rows.find((row) => row.key === selected) ?? null;
   const filterId = useId();
   const context = useMemo(() => ({ select, selected }), [select, selected]);
   // Below the lg breakpoint the panel is a sheet over the list: a modal dialog, the list behind it inert.
@@ -167,16 +162,7 @@ export function ResourceBrowser({
   return (
     <Context.Provider value={context}>
       <PageHeader title={title} description={description} meta={meta}>
-        {create && (
-          <Button
-            onClick={() => select(NEW_ITEM)}
-            aria-expanded={selected === NEW_ITEM}
-            aria-controls="resource-panel"
-            data-select-item={NEW_ITEM}
-          >
-            <PlusIcon /> {create.label}
-          </Button>
-        )}
+        {actions}
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
@@ -236,20 +222,15 @@ export function ResourceBrowser({
                 tabIndex={-1}
                 className="truncate text-base font-semibold tracking-tight outline-none"
               >
-                {panelTitle}
+                {current?.name}
               </h2>
-              {panelSubtitle && <div className="text-xs text-muted-foreground">{panelSubtitle}</div>}
+              {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
             </div>
             <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
               <XIcon />
             </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
-            {create && (
-              <div hidden={selected !== NEW_ITEM} data-panel={NEW_ITEM}>
-                {create.content}
-              </div>
-            )}
             {rows.map((row) => (
               <div key={row.key} hidden={selected !== row.key} data-panel={row.key} {...row.panelAttrs}>
                 {row.detail}

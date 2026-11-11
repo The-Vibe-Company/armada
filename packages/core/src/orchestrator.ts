@@ -2,6 +2,7 @@ import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { AgentEvent } from "./provider.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
+import type { SandboxUsage, SandboxUsageSummary } from "./sandbox-usage.ts";
 
 /** Proposed v1 wire contract. No routes or authorization are enabled by this module. */
 export const ORCHESTRATOR_CONTRACT_VERSION = 1 as const;
@@ -28,7 +29,7 @@ export interface OrchestratorCreate {
   provider: SandboxProviderId;
   harness: Harness;
   repo?: string;
-  /** Public Skillpack catalog reference, pinned as org/slug@version. */
+  /** Exact Skillpack pin: org/slug@version for catalog, slug@version for the authenticated workspace. */
   skill?: string;
   /** Optional override; absent still uses the selected repository/golden policy. */
   size?: MachineSize;
@@ -36,6 +37,8 @@ export interface OrchestratorCreate {
   reasoningEffort?: string;
   /** Opaque authorized model-account reference; not a credential or MCP connection ID. */
   modelAccountId: string;
+  /** Omit for launch defaults; [] explicitly disables user MCP connections. */
+  connections?: string[];
   idleSeconds?: number;
   maxActiveChildren?: number;
 }
@@ -59,11 +62,23 @@ export interface Orchestrator {
   skillRevision: string;
   skillReceipt?: OrchestratorSkillReceipt | null;
   blockedReason: string | null;
+  failureMessage?: string | null;
 }
 
 /** Required on message/steer/stop/resume and wait mutations; create uses only Idempotency-Key. */
 export interface OrchestratorFence {
   expectedRevision: number;
+}
+export interface OrchestratorConnection {
+  id: string;
+  name: string;
+}
+export interface OrchestratorConnections {
+  version: typeof ORCHESTRATOR_CONTRACT_VERSION;
+  connections: OrchestratorConnection[];
+}
+export interface OrchestratorConnectionMutation extends OrchestratorFence {
+  connections: string[];
 }
 export interface OrchestratorMessage extends OrchestratorFence {
   text: string;
@@ -72,11 +87,13 @@ export interface OrchestratorOperation {
   version: typeof ORCHESTRATOR_CONTRACT_VERSION;
   id: string;
   orchestratorId: string;
-  kind: "create" | "message" | "steer" | "stop" | "resume";
+  kind: "create" | "message" | "steer" | "stop" | "resume" | "connections_add" | "connections_remove";
   state: "pending" | "succeeded" | "failed" | "uncertain";
   revision: number;
   /** Safe stable code, never a raw SDK exception. */
   errorCode: string | null;
+  /** Readable safe action for a closed failure code, when available. */
+  errorMessage?: string | null;
 }
 export interface OrchestratorWait extends OrchestratorFence {
   kind: "ci" | "child" | "external" | "task";
@@ -116,6 +133,7 @@ export type OrchestratorEvent = {
   | { kind: "state"; state: OrchestratorState; continuity: OrchestratorContinuity }
   | { kind: "operation"; operation: OrchestratorOperation }
   | { kind: "wait"; lease: OrchestratorWaitLease; status: "active" | "released" | "expired" }
+  | { kind: "connections"; connections: OrchestratorConnection[] }
   | { kind: "child"; sandboxId: string; operationId: string }
 );
 export interface OrchestratorEventPage {
@@ -137,9 +155,14 @@ export interface OrchestratorDetail {
   waits: OrchestratorWaitLease[];
   delegation: OrchestratorDelegation | null;
   childSandboxIds: string[];
+  /** Only user connections; internal authority servers are never removable. */
+  connections: OrchestratorConnection[];
+  usage?: { own: SandboxUsage | null; children: SandboxUsageSummary };
 }
 
 export interface OrchestratorSkillReceipt {
+  /** Authenticated registry workspace; absent for anonymous public catalog receipts. */
+  workspaceId?: string;
   reference: string;
   version: string;
   skillId: string;
@@ -147,6 +170,6 @@ export interface OrchestratorSkillReceipt {
   origin: string;
 }
 
-/** Only anonymous catalog references are supported in the first slice. */
+/** Qualified references select anonymous catalog; bare slugs select the authenticated workspace. */
 export const ORCHESTRATOR_SKILL_PATTERN =
-  /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
+  /^(?:[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;

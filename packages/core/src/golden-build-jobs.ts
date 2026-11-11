@@ -3,6 +3,7 @@ import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { GoldenActor } from "./golden.ts";
 import { assertGoldenMutation } from "./golden.ts";
 import type { GoldenBuildStatus } from "./golden-build-status.ts";
+import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError, parseGoldenName } from "./golden-config.ts";
 import {
   createGoldenCreateService,
@@ -12,7 +13,7 @@ import {
 } from "./golden-create.ts";
 import type { GoldenCreateService } from "./golden-create-service.ts";
 import type { Sql } from "./golden-store.ts";
-import type { Provider } from "./provider.ts";
+import { type Provider, ProviderError } from "./provider.ts";
 import {
   assertProviderOf,
   isSandboxProvider,
@@ -42,6 +43,8 @@ interface Job {
   builder_id: string | null;
   golden_id: string | null;
   snapshot: string | null;
+  build_warnings: GoldenBuildWarning[];
+  failure_reason: "skillpack_integrity_failed" | "provider_payment_required" | "provider_snapshot_rejected" | null;
 }
 export interface GoldenBuildJobsOptions {
   sql: Sql;
@@ -257,9 +260,15 @@ export class GoldenBuildJobs {
       state: job.state,
       phase: job.phase,
       errorCode: job.error_code,
+      failureReason: job.failure_reason,
       result:
         job.state === "succeeded" && job.snapshot
-          ? { name: name ?? job.name, visibility: job.visibility, snapshot: job.snapshot }
+          ? {
+              name: name ?? job.name,
+              visibility: job.visibility,
+              snapshot: job.snapshot,
+              warnings: job.build_warnings ?? [],
+            }
           : null,
     };
   }
@@ -469,12 +478,12 @@ export class GoldenBuildJobs {
               await sql.query("update public.golden_build_jobs set builder_id=$2 where id=$1", [job.id, id]);
             }),
           lock: (sql) => this.lock(sql, job),
-          complete: async (sql, goldenId, snapshot) => {
+          complete: async (sql, goldenId, snapshot, warnings) => {
             // Recheck with wall time at the final write: PostgreSQL now() is frozen at
             // transaction start, and the lease may have expired while publication waited.
             const completed = await sql.query(
-              "update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,lease_until=null,updated_at=now() where id=$1 and fence=$2 and state='running' and lease_until>clock_timestamp() and deadline>clock_timestamp() returning id",
-              [job.id, job.fence, goldenId, snapshot],
+              "update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,build_warnings=$5::text[],lease_until=null,updated_at=now() where id=$1 and fence=$2 and state='running' and lease_until>clock_timestamp() and deadline>clock_timestamp() returning id",
+              [job.id, job.fence, goldenId, snapshot, "{" + warnings.join(",") + "}"],
             );
             if (!completed.rows.length)
               throw new GoldenError("build_failed", "Build lease expired before publication.");
@@ -487,7 +496,7 @@ export class GoldenBuildJobs {
           await new Promise<void>((resolve) => setTimeout(resolve, ms));
         },
       });
-    } catch {
+    } catch (error) {
       // No exception object: arbitrary provider errors and payloads may carry secrets.
       await this.transaction(async (sql) => {
         const current = (
@@ -496,8 +505,22 @@ export class GoldenBuildJobs {
         if (current?.state !== "running" || current.fence !== job.fence) return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          "update public.golden_build_jobs set state=$2,error_code='build_failed',lease_until=null,updated_at=now() where id=$1",
-          [job.id, safeToRelease ? "failed" : "recovery_required"],
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,lease_until=null,updated_at=now() where id=$1",
+          [
+            job.id,
+            safeToRelease ? "failed" : "recovery_required",
+            error instanceof GoldenError
+              ? (error.safeReason ?? null)
+              : safeToRelease && error instanceof ProviderError && error.code === "payment_required"
+                ? "provider_payment_required"
+                : safeToRelease &&
+                    error instanceof ProviderError &&
+                    error.code === "invalid_request" &&
+                    error.status === 400 &&
+                    current.phase === "snapshot"
+                  ? "provider_snapshot_rejected"
+                  : null,
+          ],
         );
       });
     } finally {

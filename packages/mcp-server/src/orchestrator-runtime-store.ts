@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   AgentEvent,
+  OrchestratorConnection,
   OrchestratorContinuity,
   OrchestratorCreate,
   OrchestratorEventPage,
@@ -8,8 +9,8 @@ import type {
   OrchestratorState,
   PromptStatus,
 } from "@armada/core";
-import { boundEventEntries, coalesceEventMessages, truncateEvent } from "@armada/core";
-import type { Sql } from "@armada/core/server";
+import { boundEventEntries, coalesceEventMessages, reportedTurnUsage, truncateEvent } from "@armada/core";
+import { CREDENTIAL_BUSY_MESSAGE, createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
 export class OrchestratorRuntimeError extends Error {
@@ -47,6 +48,8 @@ export interface RuntimeReservation {
   fresh: boolean;
   createDispatchId?: string;
   createForkDispatched?: boolean;
+  /** Set only by a positively refused provider fork, never inferred from missing resources. */
+  createForkRefusal?: "provider_payment_required";
 }
 
 /** Canonical JSON deliberately rejects exotic values rather than digesting lossy JSON. */
@@ -304,6 +307,7 @@ export class OrchestratorRuntimeStore {
           state: receipt.state as OrchestratorOperation["state"],
           revision: receipt.revision,
           errorCode: persisted.rows[0]?.error_code ?? null,
+          ...(persisted.rows[0]?.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
         },
       };
     });
@@ -454,6 +458,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
+      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
     }));
   }
 
@@ -487,12 +492,13 @@ export class OrchestratorRuntimeStore {
         [identity.id],
       );
       if (cursor.rows[0]?.provider_cursor !== expectedCursor) return false;
+      const accepted: AgentEvent[] = [];
       for (const event of page.events) {
         if (!identity.conversationId || event.conversationId !== identity.conversationId)
           throw new OrchestratorRuntimeError("conflict");
-        await tx.query(
+        const inserted = await tx.query(
           `insert into public.orchestrator_runtime_events(orchestrator_id,revision,generation,conversation_id,upstream_id,event)
-          select $1,$2,$3,$4,$5,$6::jsonb where not exists (select 1 from public.orchestrator_runtime_events where orchestrator_id=$1 and conversation_id=$4 and upstream_id=$5) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing`,
+          select $1,$2,$3,$4,$5,$6::jsonb where not exists (select 1 from public.orchestrator_runtime_events where orchestrator_id=$1 and conversation_id=$4 and upstream_id=$5) on conflict(orchestrator_id,generation,conversation_id,upstream_id) do nothing returning upstream_id`,
           [
             identity.id,
             identity.revision,
@@ -502,6 +508,7 @@ export class OrchestratorRuntimeStore {
             JSON.stringify({ kind: "agent", event }),
           ],
         );
+        if (inserted.rows.length) accepted.push(event);
       }
       if (this.lifecycle && identity.sandboxId && identity.providerSandboxId && identity.generation !== null) {
         const scoped: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(tx) };
@@ -516,6 +523,50 @@ export class OrchestratorRuntimeStore {
             },
             event,
           );
+      }
+      if (identity.sandboxId && page.events.some(usageEvent)) {
+        type Snapshot = ReturnType<typeof reportedTurnUsage> & { promptIds?: string[] };
+        const previous = (
+          await tx.query<{ usage: Snapshot | null }>(
+            `select usage_turns as usage from public.sandboxes
+           where id=$1 and owner_id=$2 and org_id=$3 for update`,
+            [identity.sandboxId, identity.ownerId, identity.orgId],
+          )
+        ).rows[0]?.usage;
+        if (!previous?.promptIds || accepted.some(usageEvent)) {
+          // Bootstrap old snapshots once; subsequent pages touch only new events
+          // and the compact per-turn snapshot, never replay the growing journal.
+          const initial = !previous?.promptIds;
+          const events = initial
+            ? (
+                await tx.query<{ event: AgentEvent }>(
+                  `select event->'event' as event from public.orchestrator_runtime_events
+             where orchestrator_id=$1 and event->>'kind'='agent'
+             and (event#>>'{event,kind}'='prompt' or
+               (event#>>'{event,kind}'='other' and event#>>'{event,type}' in ('result','armada/turnUsage')))
+             order by sequence`,
+                  [identity.id],
+                )
+              ).rows.map((row) => row.event)
+            : accepted.filter(usageEvent);
+          const prompts = new Set(initial ? [] : previous.promptIds);
+          for (const event of events) if (event.kind === "prompt" && event.promptId) prompts.add(event.promptId);
+          const rows = new Map(
+            (initial ? [] : previous.turns).map((row) => [JSON.stringify([row.promptId, row.model]), row]),
+          );
+          for (const row of reportedTurnUsage(events).turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
+          // JSON snapshot cost grows with reported turns, not with text/tool event
+          // volume. recordUsage deliberately cannot overwrite managed parents.
+          await tx.query(
+            `update public.sandboxes set usage_turns=$4::jsonb where id=$1 and owner_id=$2 and org_id=$3`,
+            [
+              identity.sandboxId,
+              identity.ownerId,
+              identity.orgId,
+              JSON.stringify({ turnCount: prompts.size, turns: [...rows.values()], promptIds: [...prompts] }),
+            ],
+          );
+        }
       }
       // Cursor moves only in the transaction which durably mirrored every event.
       await tx.query(`update public.orchestrator_runtime set provider_cursor=$2 where orchestrator_id=$1`, [
@@ -598,7 +649,103 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
+      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
     };
+  }
+
+  async connections(identity: RuntimeIdentity, sql = this.sql): Promise<OrchestratorConnection[]> {
+    if (!identity.sandboxId) return [];
+    return (
+      await sql.query<OrchestratorConnection>(
+        `select c.id,c.name from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id
+       where b.sandbox_id=$1 order by c.id`,
+        [identity.sandboxId],
+      )
+    ).rows;
+  }
+
+  /** No native I/O in this transaction. The next admitted turn reconciles the
+   * managed MCP configuration before submission, retaining the native session. */
+  async changeConnections(input: {
+    ownerId: string;
+    orgId: string;
+    id: string;
+    action: "connections_add" | "connections_remove";
+    key: string;
+    expectedRevision: number;
+    connections: string[];
+  }): Promise<OrchestratorOperation> {
+    return this.transaction(async (tx) => {
+      const identity = await this.read(input.ownerId, input.orgId, input.id, tx, true);
+      const scoped = new OrchestratorRuntimeStore(
+        { query: tx.query.bind(tx), transaction: async (work) => work(tx) },
+        this.reserveOrchestratorOperation,
+      );
+      const reservation = await scoped.reserve({
+        ...input,
+        payload: {
+          expectedRevision: input.expectedRevision,
+          connections: input.connections,
+        },
+      });
+      if (!reservation.fresh) return reservation.operation;
+      if (identity.state !== "ready" || !identity.sandboxId)
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      // The runtime sampled quiescence at this revision before reservation. The
+      // parent/member/machine locks plus reserve's busy gate exclude new turns,
+      // lifecycle transitions and membership removal until atomic publication.
+      const current = await this.connections(identity, tx);
+      const ids =
+        input.action === "connections_add"
+          ? [...new Set([...current.map((c) => c.id), ...input.connections])]
+          : current.map((c) => c.id).filter((id) => !input.connections.includes(id));
+      if (ids.length > 100) throw new OrchestratorRuntimeError("invalid_request");
+      if (input.action === "connections_add") {
+        const port = createSqlMcpLaunchPort(tx, createSqlMcpRegistry(tx, undefined));
+        // Lock before validation: a concurrent delete must not turn an approved
+        // requested selection into a successful INSERT SELECT of zero rows.
+        // The binding
+        // trigger rechecks effective authorization, including owner and org.
+        await tx.query(
+          `select g.id from public.mcp_grants g join public.mcp_connections c on c.id=g.connection_id
+          where c.id=any($1::uuid[]) for share of g,c`,
+          [input.connections],
+        );
+        await port.validate({ userId: input.ownerId, orgId: input.orgId }, input.connections, "private");
+        await tx.query(
+          `insert into public.mcp_bindings(sandbox_id,connection_id,grant_id)
+          select $1,c.id,g.id from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id
+          where c.id=any($2::uuid[]) on conflict do nothing`,
+          [identity.sandboxId, input.connections],
+        );
+      } else {
+        await tx.query("delete from public.mcp_bindings where sandbox_id=$1 and connection_id=any($2::uuid[])", [
+          identity.sandboxId,
+          input.connections,
+        ]);
+      }
+      // A binding-set revision is also a credential fence: never resurrect a
+      // removed/re-added lease or reuse a native configuration revision.
+      await tx.query("update public.sandboxes set mcp_generation=mcp_generation+1 where id=$1", [identity.sandboxId]);
+      const selected = await this.connections(identity, tx);
+      if (
+        input.action === "connections_add" &&
+        input.connections.some((id) => !selected.some((connection) => connection.id === id.toLowerCase()))
+      )
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      await tx.query(
+        `update public.orchestrator_runtime set configuration=jsonb_set(configuration,'{connections}',$2::jsonb),updated_at=now()
+        where orchestrator_id=$1`,
+        [identity.id, JSON.stringify(selected.map((c) => c.id))],
+      );
+      await tx.query(
+        `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event)
+        values($1,$2,$3::jsonb)`,
+        [identity.id, reservation.operation.revision, JSON.stringify({ kind: "connections", connections: selected })],
+      );
+      if (!(await scoped.complete(reservation, { state: "succeeded" }))) throw new OrchestratorRuntimeError("conflict");
+      return { ...reservation.operation, state: "succeeded" };
+    });
   }
 
   async reserve(input: {
@@ -644,6 +791,7 @@ export class OrchestratorRuntimeStore {
             state: existing.state,
             revision: Number(existing.revision),
             errorCode: existing.error_code,
+            ...(existing.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
           },
         };
       }
@@ -652,6 +800,8 @@ export class OrchestratorRuntimeStore {
         [input.id],
       );
       if (["message", "steer"].includes(input.action) && identity.state !== "ready")
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      if (identity.state === "stopped" && !identity.sandboxId && identity.continuity === "not_started")
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
       if (busy.rows.length || identity.revision !== input.expectedRevision)
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
@@ -821,24 +971,30 @@ export class OrchestratorRuntimeStore {
     );
   }
 
-  /** Local positive control-flow proof: the worker never passed the fork fence.
+  /** Local positive proof: the worker never forked, or the provider explicitly refused it.
    * This may fail a request, not publish native success or adopt a machine. */
-  async failCreateBeforeFork(reservation: RuntimeReservation): Promise<boolean> {
+  async failCreateBeforeFork(
+    reservation: RuntimeReservation,
+    errorCode:
+      | "create_preallocation_failed"
+      | "provider_payment_required"
+      | "credential_busy" = "create_preallocation_failed",
+  ): Promise<boolean> {
     return this.transaction(async (tx) => {
       const row = await tx.query(
-        `update public.orchestrator_operations p set state='failed',error_code='create_preallocation_failed',runtime_result=p.runtime_result || '{"stage":"settled","noFork":true}'::jsonb
-        from public.orchestrators o where p.id=$1 and p.runtime_result->>'dispatchId'=$2 and p.state='pending' and o.id=p.orchestrator_id
+        `update public.orchestrator_operations p set state='failed',error_code=$3,runtime_result=p.runtime_result || '{"stage":"settled","noFork":true}'::jsonb
+        from public.orchestrators o where p.id=$1 and p.runtime_result->>'dispatchId'=$2 and p.state='pending' and p.action='create' and p.runtime_result->>'kind'='create_job' and not (p.runtime_result ? 'binding') and o.id=p.orchestrator_id
         and o.revision=p.revision and o.sandbox_id is null and p.runtime_result->>'stage' in ('running','fork_dispatched') returning p.orchestrator_id,p.revision`,
-        [reservation.operation.id, reservation.createDispatchId ?? null],
+        [reservation.operation.id, reservation.createDispatchId ?? null, errorCode],
       );
       if (!row.rows.length) return false;
-      await tx.query(`update public.orchestrators set state='blocked' where id=$1 and revision=$2`, [
+      await tx.query(`update public.orchestrators set state='stopped' where id=$1 and revision=$2`, [
         reservation.identity.id,
         reservation.operation.revision,
       ]);
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason='create_preallocation_failed',updated_at=now() where orchestrator_id=$1`,
-        [reservation.identity.id],
+        `update public.orchestrator_runtime set blocked_reason=$2,continuity='not_started',updated_at=now() where orchestrator_id=$1`,
+        [reservation.identity.id, errorCode],
       );
       await tx.query(
         `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event) values($1,$2,$3::jsonb)`,
@@ -847,7 +1003,12 @@ export class OrchestratorRuntimeStore {
           reservation.operation.revision,
           JSON.stringify({
             kind: "operation",
-            operation: { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" },
+            operation: {
+              ...reservation.operation,
+              state: "failed",
+              errorCode,
+              ...(errorCode === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+            },
           }),
         ],
       );
@@ -905,11 +1066,11 @@ export class OrchestratorRuntimeStore {
         [row.id],
       );
       await tx.query(
-        `update public.orchestrators set state='blocked' where id=$1 and revision=$2 and sandbox_id is null`,
+        `update public.orchestrators set state='stopped' where id=$1 and revision=$2 and sandbox_id is null`,
         [row.orchestrator_id, row.revision],
       );
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',updated_at=now() where orchestrator_id=$1`,
+        `update public.orchestrator_runtime set blocked_reason='create_authority_revoked',continuity='not_started',updated_at=now() where orchestrator_id=$1`,
         [row.orchestrator_id],
       );
       await tx.query(
@@ -918,7 +1079,7 @@ export class OrchestratorRuntimeStore {
           row.orchestrator_id,
           row.revision,
           JSON.stringify({ kind: "operation", operation }),
-          JSON.stringify({ kind: "state", state: "blocked", continuity: "not_started" }),
+          JSON.stringify({ kind: "state", state: "stopped", continuity: "not_started" }),
         ],
       );
       return operation;
@@ -976,7 +1137,10 @@ export class OrchestratorRuntimeStore {
     });
   }
 
-  async preparing(reservation: RuntimeReservation): Promise<RuntimeIdentity> {
+  async preparing(
+    reservation: RuntimeReservation,
+    { publishReady = true }: { publishReady?: boolean } = {},
+  ): Promise<RuntimeIdentity> {
     return this.transaction(async (tx) => {
       const identity = await this.read(
         reservation.identity.ownerId,
@@ -1007,6 +1171,15 @@ export class OrchestratorRuntimeStore {
           identity.sandboxId !== reservation.identity.sandboxId ||
           identity.providerSandboxId !== reservation.identity.providerSandboxId ||
           identity.generation !== reservation.identity.generation)
+      )
+        throw new OrchestratorRuntimeError("conflict");
+      if (!publishReady) return identity;
+      // Epoch installation requires ready, but a requested skill must already
+      // have its verified receipt before any reader can observe that state.
+      if (
+        reservation.operation.kind === "create" &&
+        identity.configuration.skill &&
+        identity.skillReceipt?.reference !== identity.configuration.skill
       )
         throw new OrchestratorRuntimeError("conflict");
       await tx.query(`update public.orchestrators set state='ready' where id=$1`, [identity.id]);
@@ -1079,6 +1252,7 @@ export class OrchestratorRuntimeStore {
     result: {
       state: OrchestratorOperation["state"];
       parentState?: OrchestratorState;
+      discardedCreate?: boolean;
       conversationId?: string;
       promptReceipt?: { promptId: string; conversationId: string; status: string };
       errorCode?: string;
@@ -1110,15 +1284,36 @@ export class OrchestratorRuntimeStore {
         ],
       );
       if (!updated.rows.length) return false;
+      if (operation.kind === "create" && result.state === "succeeded")
+        await tx.query(
+          `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event)
+          values($1,$2,$3::jsonb)`,
+          [
+            identity.id,
+            operation.revision,
+            JSON.stringify({
+              kind: "connections",
+              connections: await this.connections(current, tx),
+            }),
+          ],
+        );
       if (result.parentState)
         await tx.query(`update public.orchestrators set state=$2 where id=$1`, [identity.id, result.parentState]);
+      if (operation.kind === "create" && result.state === "failed" && result.parentState === "stopped")
+        await tx.query(
+          `update public.sandboxes set status=case when $4 then 'deleted'::public.sandbox_status else 'stopped'::public.sandbox_status end,stopped_at=coalesce(stopped_at,now()),deleted_at=case when $4 then coalesce(deleted_at,now()) else deleted_at end,last_observed_at=now()
+           where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3`,
+          [identity.sandboxId, identity.generation, identity.providerSandboxId, result.discardedCreate ?? false],
+        );
       await tx.query(
         `update public.orchestrator_runtime set updated_at=now(),blocked_reason=$2,
         last_activity_at=case when $3 then now() else last_activity_at end,
         continuity=case when $5::text is not null then $5 when $4 then 'unverified' else continuity end where orchestrator_id=$1`,
         [
           identity.id,
-          result.parentState === "blocked" ? (result.errorCode ?? null) : null,
+          (operation.kind === "create" && result.state === "failed") || result.parentState === "blocked"
+            ? (result.errorCode ?? null)
+            : null,
           result.state === "succeeded" && ["message", "steer"].includes(operation.kind),
           !!result.conversationId && current.continuity === "not_started",
           result.continuity ?? null,
@@ -1144,4 +1339,9 @@ export class OrchestratorRuntimeStore {
       return true;
     });
   }
+}
+
+/** Accounting observations only: never retain message text/tools in the accumulator. */
+function usageEvent(event: AgentEvent): boolean {
+  return event.kind === "prompt" || (event.kind === "other" && ["result", "armada/turnUsage"].includes(event.type));
 }

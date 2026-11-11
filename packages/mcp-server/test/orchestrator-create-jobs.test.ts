@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import * as core from "@armada/core/server";
+import { catalogLock, catalogReceipt, catalogReference } from "../../core/test/support/skillpack-catalog.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { launchOrchestratorParent } from "../src/orchestrator-launch.ts";
-import { LifecycleRuntimeStore } from "../src/orchestrator-lifecycle-integration.ts";
+import { LifecycleRuntimeStore, lifecycleDetail } from "../src/orchestrator-lifecycle-integration.ts";
 import { OrchestratorRuntime } from "../src/orchestrator-runtime.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -13,7 +14,7 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-async function fixture() {
+async function fixture(skillpackKey?: () => Promise<string | null>) {
   const { db, people: p } = await database();
   const sql: core.Sql = {
     query: (q, v) => db.query(q, v),
@@ -61,6 +62,8 @@ async function fixture() {
   const diagnostics: string[] = [];
   const runtime = new OrchestratorRuntime({
     diagnosticLog: (line) => diagnostics.push(line),
+    lifecycleDetail: lifecycleDetail(sql),
+    ...(skillpackKey ? { skillpackKey } : {}),
     store,
     authority,
     skillRevision: "a".repeat(40),
@@ -116,6 +119,7 @@ async function fixture() {
     gate,
     entered,
     diagnostics,
+    credentials,
     replace: () => {
       replaceGeneration = true;
     },
@@ -235,6 +239,10 @@ test("revoked membership fails only tagged queued intent, emits a correlated fai
       (await f.sql.query("select state,error_code from orchestrator_operations where id=$1", [queued.operation.id]))
         .rows,
     ).toEqual([{ state: "failed", error_code: "create_authority_revoked" }]);
+    expect(
+      (await f.sql.query("select state,sandbox_id from orchestrators where id=$1", [queued.identity.id])).rows,
+    ).toEqual([{ state: "stopped", sandbox_id: null }]);
+
     expect(f.diagnostics.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         stage: "create_reconciliation",
@@ -251,3 +259,187 @@ test("revoked membership fails only tagged queued intent, emits a correlated fai
     await f.db.close();
   }
 }, 20_000);
+
+test.each([false, true])(
+  "a parent billing refusal is terminal only without retained resource evidence (keepSource=%s)",
+  async (keepSource) => {
+    const f = await fixture();
+    try {
+      f.provider.provider.fork = async () => {
+        throw new core.ProviderError({
+          provider: "boat",
+          code: "payment_required",
+          retryable: false,
+          message: "opaque upstream",
+          ...(keepSource ? { details: { keepSource: true } } : {}),
+        });
+      };
+      const admitted = await f.runtime.create(f.caller, f.configuration, "billing-refusal");
+      f.gate.resolve();
+      await f.runtime.createWorker.drain();
+      expect(
+        (
+          await f.db.query(
+            "select state,error_code,runtime_result->>'noFork' as no_fork from orchestrator_operations where id=$1",
+            [admitted.id],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          state: keepSource ? "uncertain" : "failed",
+          error_code: keepSource ? "runtime_uncertain" : "provider_payment_required",
+          no_fork: keepSource ? null : "true",
+        },
+      ]);
+      expect(
+        (await f.db.query("select sandbox_id from orchestrators where id=$1", [admitted.orchestratorId])).rows,
+      ).toEqual([{ sandbox_id: null }]);
+      expect(f.provider.forks).toHaveLength(0);
+    } finally {
+      f.gate.resolve();
+      await f.runtime.createWorker.drain();
+      await f.db.close();
+    }
+  },
+);
+
+// Owner detail/list must expose the logical preparation phase, not the already
+// running physical worker. Hold the actual async skill boundary without sleeps.
+test.each(["refused", "succeeded"])("requested skill readiness stays creating until %s", async (outcome) => {
+  const installing = deferred<void>(),
+    release = deferred<void>();
+  const f = await fixture(async () => {
+    installing.resolve();
+    await release.promise;
+    throw new core.PrivateSkillError("skillpack_credential_refused", "auth");
+  });
+  const originalGet = f.provider.provider.get;
+  f.provider.provider.get = async (id) => ({ ...(await originalGet(id)), physicalGeneration: "1" });
+  f.provider.provider.installOrchestratorEpoch = async () => ({ acknowledged: true });
+  f.provider.provider.scrubOrchestratorEpoch = async () => ({ acknowledged: true });
+  f.provider.provider.exec = async (request) => {
+    if (request.command.includes("skillpack install")) {
+      installing.resolve();
+      await release.promise;
+    }
+    return {
+      detached: false,
+      exitCode: 0,
+      stdout: request.command.includes("skillpack install") ? catalogLock("claude-code") : "",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    };
+  };
+  try {
+    const operation = await f.runtime.create(
+      f.caller,
+      { ...f.configuration, skill: outcome === "refused" ? "notes@1.0.0" : catalogReference },
+      "skill-readiness",
+    );
+    f.gate.resolve();
+    await installing.promise;
+    const detail = await f.runtime.detail(f.caller, f.p.org, operation.orchestratorId);
+    expect(detail.orchestrator.state).toBe("creating");
+    expect(detail.orchestrator.skillReceipt).toBeNull();
+    expect(detail.operations.find((item) => item.id === operation.id)?.state).toBe("pending");
+    expect(
+      (await f.runtime.list(f.caller, f.p.org)).items.find((item) => item.id === operation.orchestratorId)?.state,
+    ).toBe("creating");
+    expect(f.provider.sandbox("bx_1").info.state).toBe("ready");
+    await expect(
+      f.runtime.mutate(f.caller, {
+        orgId: f.p.org,
+        id: operation.orchestratorId,
+        action: "message",
+        key: "early-message",
+        expectedRevision: detail.orchestrator.revision,
+        text: "Do not run before skill readiness",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    release.resolve();
+    await f.runtime.createWorker.drain();
+    const final = await f.runtime.detail(f.caller, f.p.org, operation.orchestratorId);
+    expect(final.operations.find((item) => item.id === operation.id)?.state).toBe(
+      outcome === "refused" ? "failed" : "succeeded",
+    );
+    expect(final.orchestrator.state).toBe(outcome === "refused" ? "stopped" : "ready");
+    expect(final.orchestrator.skillReceipt).toEqual(outcome === "refused" ? null : catalogReceipt);
+    if (outcome === "refused") expect(final.orchestrator.blockedReason).toBe("skillpack_credential_refused");
+  } finally {
+    f.gate.resolve();
+    release.resolve();
+    await f.runtime.createWorker.drain();
+    await f.db.close();
+  }
+});
+
+test("busy account refusal is terminal before allocation and retains the reason in detail, replay and events", async () => {
+  const f = await fixture();
+  try {
+    f.credentials.admit = async () => {
+      throw new core.VaultError("credential_busy", core.CREDENTIAL_BUSY_MESSAGE);
+    };
+    const admitted = await f.runtime.create(f.caller, f.configuration, "busy-account");
+    f.gate.resolve();
+    await f.runtime.createWorker.drain();
+    const detail = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
+    expect(detail.orchestrator).toMatchObject({
+      state: "stopped",
+      continuity: "not_started",
+      sandboxId: null,
+      blockedReason: "credential_busy",
+      failureMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    // Build 5 synthesizes Codable for precisely these six parent state values.
+    const build5States = ["creating", "ready", "stopping", "stopped", "resuming", "blocked"];
+    const listed = await f.runtime.list(f.caller, f.p.org);
+    expect(listed.items.some((row) => row.id === admitted.orchestratorId)).toBe(true);
+    for (const row of [...listed.items, detail.orchestrator])
+      expect(build5States).toContain(JSON.parse(JSON.stringify(row)).state);
+    expect(detail.operations[0]).toMatchObject({
+      state: "failed",
+      errorCode: "credential_busy",
+      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    expect(await f.runtime.create(f.caller, f.configuration, "busy-account")).toMatchObject({
+      state: "failed",
+      errorCode: "credential_busy",
+      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    const events = await f.db.query<{ event: unknown }>(
+      "select event from orchestrator_runtime_events where orchestrator_id=$1",
+      [admitted.orchestratorId],
+    );
+    expect(events.rows.map((r) => r.event)).toContainEqual({
+      kind: "operation",
+      operation: {
+        ...admitted,
+        state: "failed",
+        errorCode: "credential_busy",
+        errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+      },
+    });
+    await expect(
+      f.runtime.mutate(f.caller, {
+        orgId: f.p.org,
+        id: admitted.orchestratorId,
+        action: "stop",
+        key: "stop-failed",
+        expectedRevision: detail.orchestrator.revision,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const afterStop = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
+    expect(afterStop.orchestrator).toMatchObject({
+      state: "stopped",
+      blockedReason: "credential_busy",
+      revision: detail.orchestrator.revision,
+    });
+    expect(afterStop.operations).toHaveLength(1);
+    expect(f.provider.forks).toHaveLength(0);
+  } finally {
+    f.gate.resolve();
+    await f.runtime.createWorker.drain();
+    await f.db.close();
+  }
+});

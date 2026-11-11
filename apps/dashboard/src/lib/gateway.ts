@@ -161,6 +161,7 @@ export function sandboxGateway(gateway: Gateway) {
   return {
     logs: (sandboxId: string, since?: string | null, read: { all?: true; limit?: number } = {}) =>
       gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}), ...read }),
+    status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string) =>
       gateway.call("send", { id: sandboxId, prompt, ...conversation(conversationId), ...override }),

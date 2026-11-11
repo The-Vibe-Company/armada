@@ -64,6 +64,7 @@ const CAN_SEND: readonly SandboxStatus[] = ["ready", "running", "stopped"];
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
+  initialUsageRevision: string;
   live: boolean;
   harness: Harness;
   catalog: ModelCatalog;
@@ -87,10 +88,27 @@ export function SandboxChat(props: Props) {
   const [status, setStatus] = useState(initialStatus);
   const [poll, setPoll] = useState<Poll>({ error: null, configured: true });
   const [hasMore, setHasMore] = useState(false);
+  const [turnModel, setTurnModel] = useState<{
+    promptId?: string;
+    conversationId?: string | null;
+    requestedModel?: string | null;
+    observedModel?: string | null;
+    modelSelectionReason?: string | null;
+    modelSelectionMessage?: string | null;
+  } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [chosen, setChosen] = useState<string | null>(null);
   const cursor = useRef<string | null>(null);
   const known = useRef(initialStatus);
+  const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
+  const refreshing = useRef(false);
+  const [refreshPending, startRefresh] = useTransition();
+  useLayoutEffect(() => {
+    rendered.current = { status: initialStatus, usage: props.initialUsageRevision };
+  }, [initialStatus, props.initialUsageRevision]);
+  useLayoutEffect(() => {
+    refreshing.current = refreshPending;
+  }, [refreshPending]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reading = useRef(false);
   const mounted = useRef(true);
@@ -106,11 +124,19 @@ export function SandboxChat(props: Props) {
       setPoll((current) => ({ ...current, error: "The dashboard lost contact with the server. Retrying…" }));
       return { more: false, active: true };
     }
+    if (typeof body.prompt === "object" && body.prompt !== null) setTurnModel(body.prompt);
     const next = typeof body.status === "string" ? (body.status as SandboxStatus) : known.current;
-    if (next !== known.current) {
+    const statusChanged = next !== known.current;
+    const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
+    if (statusChanged) {
       known.current = next;
       setStatus(next);
-      router.refresh();
+    }
+    // Only committed page props acknowledge the card's revision. A discarded or
+    // stale RSC refresh must remain retryable on the next successful poll.
+    const refreshNeeded = next !== rendered.current.status || usageChanged;
+    if (!refreshing.current && refreshNeeded) {
+      startRefresh(() => router.refresh());
     }
     const error = typeof body.error === "string" ? body.error : null;
     const configured = body.configured !== false;
@@ -122,10 +148,10 @@ export function SandboxChat(props: Props) {
     if (page.cursor) cursor.current = page.cursor;
     if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
     setHasMore(page.hasMore);
-    return { more: page.hasMore, active: isActiveStatus(next) };
+    return { more: page.hasMore, active: isActiveStatus(next) || refreshNeeded };
   }, [sandboxId, router]);
 
-  /** Reads now, then keeps reading while there is more or the sandbox is active. One loop at a time. */
+  /** Read until drained, inactive and rendered metadata is acknowledged. One loop at a time. */
   const tick = useCallback(async () => {
     if (reading.current) return;
     reading.current = true;
@@ -191,6 +217,31 @@ export function SandboxChat(props: Props) {
           </div>
         </div>
 
+        {turnModel && (
+          <div className="px-4 py-2 text-sm" role="status">
+            <p>
+              Latest turn {turnModel.promptId ?? "unknown"} · Conversation {turnModel.conversationId ?? "unknown"}
+            </p>
+            <p>
+              Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
+            </p>
+            {turnModel.modelSelectionReason && (
+              <p
+                className={
+                  turnModel.modelSelectionReason === "model_selection_mismatch"
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                }
+                title={turnModel.modelSelectionReason}
+              >
+                {turnModel.modelSelectionReason === "model_selection_mismatch"
+                  ? "Model selection changed"
+                  : "Model not verified"}
+                : {turnModel.modelSelectionMessage}
+              </p>
+            )}
+          </div>
+        )}
         <Notices status={status} reason={reason} poll={poll} />
 
         <Transcript
@@ -279,7 +330,7 @@ function Notices({ status, reason, poll }: { status: SandboxStatus; reason: stri
 }
 
 /**
- * The messages, oldest first (shared with the orchestrator chat). The view follows new messages only while it is at the bottom; scrolled up into the
+ * The messages, oldest first. The view follows new messages only while it is at the bottom; scrolled up into the
  * history it stays put and offers a way back to the latest.
  */
 export function Transcript({

@@ -67,6 +67,10 @@ struct SandboxTurnState: Hashable, Sendable {
     let promptID: String
     let status: PromptStatus
     let reason: String?
+    var requestedModel: String? = nil
+    var observedModel: String? = nil
+    var modelSelectionReason: String? = nil
+    var modelSelectionMessage: String? = nil
 }
 
 /// The server's acceptance of a prompt: the turn it opened.

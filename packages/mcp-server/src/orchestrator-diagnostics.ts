@@ -4,11 +4,14 @@ import {
   LAUNCH_INITIALIZATION_STAGES,
   LaunchError,
   OrchestratorAuthorityDenied,
+  PRIVATE_SKILL_FAILURES,
   ProviderError,
   VaultError,
 } from "@armada/core/server";
 
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
+
+export type OrchestratorCleanupStep = "fence" | "resolve" | "revalidate" | "delete" | "stop" | "unconfirmed";
 
 type DiagnosticLevel = "info" | "warn" | "error";
 export type OrchestratorDiagnosticLog = (line: string, level: DiagnosticLevel) => void;
@@ -45,6 +48,11 @@ const STAGES = [
   "native_hydration",
   "preparing",
   "skills",
+  "skills_credential",
+  "skills_auth",
+  "skills_install",
+  "skills_receipt",
+  "skills_transport",
   "epoch_revalidation",
   "epoch_transport",
   "epoch_install",
@@ -90,6 +98,11 @@ const REASONS = [
   "lifecycle_owner_removed",
   "lifecycle_idle",
   "skill_configuration_invalid",
+  "skillpack_credential_missing",
+  "skillpack_credential_refused",
+  "skillpack_skill_unavailable",
+  "skillpack_install_failed",
+  ...PRIVATE_SKILL_FAILURES,
   "skill_command_missing",
   "skill_install_nonzero",
   "skill_install_timeout",
@@ -100,6 +113,7 @@ const REASONS = [
 type LiteralReason = (typeof REASONS)[number];
 
 const CODES = new Set([
+  "credential_busy",
   "not_found",
   "conflict",
   "unavailable",
@@ -456,6 +470,29 @@ export class OrchestratorDiagnostics {
       ).catch(() => {});
     } catch {
       /* Diagnostics cannot change effects. */
+    }
+  }
+  /** Cleanup cannot replace the installation failure or serialize its exception. */
+  cleanupFailure(step: OrchestratorCleanupStep, error?: unknown): void {
+    if (!["fence", "resolve", "revalidate", "delete", "stop", "unconfirmed"].includes(step)) return;
+    try {
+      void Promise.resolve(
+        this.log?.(
+          JSON.stringify({
+            event: "orchestrator_create_cleanup_failure",
+            action: "create",
+            outcome: "unconfirmed",
+            step,
+            reason: error === undefined ? "cleanup_unconfirmed" : baseReason(error),
+            ...(this.operationId ? { operationId: this.operationId } : {}),
+            ...(this.orchestratorId ? { orchestratorId: this.orchestratorId } : {}),
+            ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
+          }),
+          "error",
+        ),
+      ).catch(() => {});
+    } catch {
+      /* A diagnostic cannot affect settlement. */
     }
   }
   stage(stage: OrchestratorDiagnosticStage): void {

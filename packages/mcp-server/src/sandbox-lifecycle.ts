@@ -1,7 +1,7 @@
 import { type Provider, ProviderError, type Sql } from "@armada/core/server";
 
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
-import { preserveBeforeStop } from "./work-preservation.ts";
+import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
@@ -70,13 +70,15 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         if (
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
+          !(provider.id === "boat" && info.state === "stopping") &&
           (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
         ) {
           signal?.throwIfAborted();
           const owned = await sql.query<{ id: string }>(
             `update public.sandboxes
             set reconcile_lease_until=now()+interval '2 minutes',
-              stop_requested_at=coalesce(stop_requested_at,now()),
+              stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
+              stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
               status=case when status in ('starting','failed') then status else 'stopping'::public.sandbox_status end,
               status_reason=case when $4 and status not in ('starting','failed') then 'expired' else status_reason end
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
@@ -92,13 +94,18 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
             );
           signal?.throwIfAborted();
           if (
-            !(
-              (row.status === "stopping" || row.stop_requested_at !== null) &&
-              row.preservation_note?.startsWith("unpushed work could not be preserved")
-            )
+            (await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id, "lifecycle_stop").catch(
+              () => {},
+            )) === "pending"
           )
-            await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id).catch(() => {});
+            throw new ProviderError({
+              provider: provider.id,
+              code: "sandbox_not_ready",
+              retryable: true,
+              message: "Interruption is pending; retry stop after turns settle.",
+            });
           signal?.throwIfAborted();
+          recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () => provider.stop({ sandboxId: row.provider_sandbox_id }));
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         }
@@ -106,7 +113,8 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         physicalExit = info.physicalExitConfirmed === true;
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
-        if (!terminal && expired) error = "Lifetime expired; provider stop is not yet confirmed. Retrying.";
+        if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
+          error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.
@@ -121,7 +129,6 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
         stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
-        usage_runtime_seconds=case when $4 and stopped_at is null and $9::timestamptz is null then null else usage_runtime_seconds end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
         activity_lease_id=null,activity_until=null,
         lifecycle_error=$5::text,reconcile_after=now()+interval '1 minute',

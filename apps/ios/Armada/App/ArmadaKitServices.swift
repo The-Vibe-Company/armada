@@ -6,212 +6,8 @@ import Foundation
 /// `ArmadaKit.EventStream` merge rule `ConversationFeed` imports alone). Kit types are always written
 /// `ArmadaKit.X` because the app declares presentation types with the same names.
 ///
-/// What ArmadaKit publishes is used as-is: capabilities, list, detail, events, the durable
-/// prepare/submit command store, #680 sandbox metadata and a sandbox's interior (detail, events,
-/// send, stop), and for create the server's pairs and model catalog, goldens and model accounts.
-struct ArmadaKitServices: OrchestratorService, SandboxService {
+struct ArmadaKitServices: SandboxService {
     let client: ArmadaClient
-
-    // MARK: Reads
-
-    func list(orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorPage {
-        try await requireOrganization(orgID)
-        try await requireEnabled()
-        do {
-            let page = try await client.orchestrators(cursor: cursor, limit: 25)
-            return OrchestratorPage(items: try page.items.map(Self.summary), cursor: page.cursor)
-        } catch {
-            throw Self.readFailure(error)
-        }
-    }
-
-    func detail(id: String) async throws(ServiceFailure) -> OrchestratorDetail {
-        do {
-            let detail = try await client.orchestratorDetail(id: id)
-            return OrchestratorDetail(
-                summary: try Self.summary(detail.orchestrator),
-                operations: detail.operations.map(Self.operation),
-                waits: try detail.waits.map(Self.lease),
-                delegation: try detail.delegation.map { delegation in
-                    DelegationSummary(
-                        scopes: delegation.scopes,
-                        expiresAt: try Self.date(delegation.expiresAt),
-                        revokedAt: try delegation.revokedAt.map(Self.date)
-                    )
-                },
-                childSandboxIDs: detail.childSandboxIds
-            )
-        } catch {
-            throw Self.readFailure(error)
-        }
-    }
-
-    func events(id: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
-        do {
-            let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100, backward: backward)
-            let supported = page.events.filter { event in
-                switch event.body {
-                case .unknown: return false
-                case .agent(let agent):
-                    if case .unknown = agent.body { return false }
-                    return true
-                default: return true
-                }
-            }
-            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore, olderCursor: page.olderCursor)
-        } catch {
-            throw Self.readFailure(error)
-        }
-    }
-
-    /// Capabilities (pairs and per-harness catalog), goldens and model accounts, all from the server
-    /// over the CLI's routes. Nothing is offered that the server did not report.
-    func createOptions(orgID: String) async throws(ServiceFailure) -> CreateOptions {
-        try await requireOrganization(orgID)
-        let capabilities = try await fetchCapabilities()
-        guard capabilities.enabled || !(capabilities.pairs ?? []).isEmpty else {
-            throw .unavailable(ArmadaKit.OrchestratorExplanation.text(for: capabilities.reason ?? "native_conformance_required"))
-        }
-        do {
-            // The New sandbox form's reads (#750): the same goldens and named accounts.
-            async let goldens = client.launchGoldens()
-            async let accounts = client.launchAccounts()
-            return CreateOptions(catalog: ArmadaKit.OrchestratorCreateCatalog(
-                capabilities: capabilities, goldens: try await goldens, accounts: try await accounts
-            ))
-        } catch {
-            throw Self.readFailure(error)
-        }
-    }
-
-    // MARK: Commands
-
-    func prepareCreate(_ request: OrchestratorCreateRequest) async throws(ServiceFailure) -> String {
-        try await requireOrganization(request.orgID)
-        // Never save a command the server would not accept now: a saved command can only be
-        // cleared once it has a final outcome.
-        try await requireEnabled()
-        let configuration = request.configuration
-        do {
-            return try await client.prepareOrchestratorCreate(configuration).id.uuidString
-        } catch {
-            throw await prepareFailure(error, orgID: request.orgID, orchestratorID: nil)
-        }
-    }
-
-    func prepareMutation(
-        _ action: OrchestratorAction,
-        orchestratorID: String,
-        expectedRevision: Int
-    ) async throws(ServiceFailure) -> String {
-        let kitAction: ArmadaKit.OrchestratorAction
-        let text: String?
-        switch action {
-        case .message(let value): kitAction = .message; text = value
-        case .steer(let value): kitAction = .steer; text = value
-        case .stop: kitAction = .stop; text = nil
-        case .resume: kitAction = .resume; text = nil
-        case .recover: kitAction = .recover; text = nil
-        }
-        try await requireEnabled()
-        do {
-            return try await client.prepareOrchestratorMutation(
-                id: orchestratorID,
-                action: kitAction,
-                expectedRevision: expectedRevision,
-                text: text
-            ).id.uuidString
-        } catch {
-            let orgID = await client.selectedOrgID ?? ""
-            throw await prepareFailure(error, orgID: orgID, orchestratorID: orchestratorID)
-        }
-    }
-
-    func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
-        guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
-        do {
-            if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
-               receipt.state == .succeeded || receipt.state == .failed {
-                // SDK validates the current organization even for cached results.
-                return Self.operation(try await client.submitOrchestratorOperation(id))
-            }
-            if let receipt = try await client.reconcileOrchestratorOperation(id),
-               receipt.state == .succeeded || receipt.state == .failed {
-                return Self.operation(receipt)
-            }
-            let receipt = try await client.submitOrchestratorOperation(id)
-            if receipt.state == .uncertain { throw ServiceFailure.uncertain }
-            // Keep terminal knowledge available to concurrent same-handle callers.
-            // It does not block preparing a new command; explicit cleanup is separate.
-            return Self.operation(receipt)
-        } catch {
-            if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
-               receipt.state == .succeeded || receipt.state == .failed {
-                do { return Self.operation(try await client.submitOrchestratorOperation(id)) }
-                catch { throw await submitFailure(error, id: id) }
-            }
-            throw await submitFailure(error, id: id)
-        }
-    }
-
-    func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation? {
-        if let operation = await client.pendingOperations.first(where: {
-            $0.orgId == orgID && $0.orchestratorId == orchestratorID && ($0.state == .pending || $0.state == .uncertain)
-        }) {
-            _ = try? await client.reconcileOrchestratorOperation(operation.id)
-        }
-        let saved = await client.pendingOperations.first { operation in
-            operation.orgId == orgID && operation.orchestratorId == orchestratorID
-                && (operation.state == .pending || operation.state == .uncertain)
-        }
-        return saved.map {
-            UnresolvedOperation(
-                handle: $0.id.uuidString,
-                kind: OperationKind(rawValue: $0.action.rawValue),
-                receipt: $0.receipt.map(Self.operation)
-            )
-        }
-    }
-
-    func discard(handle: String) async {
-        guard let id = UUID(uuidString: handle) else { return }
-        try? await client.discardOrchestratorOperation(id)
-    }
-
-    func discardUncertain(handle: String) async throws(ServiceFailure) {
-        guard let id = UUID(uuidString: handle) else { throw .rejected("This request is no longer saved.") }
-        do {
-            // Try a final read first; disappearance/mismatch is never rejection evidence.
-            _ = try? await client.reconcileOrchestratorOperation(id)
-            if let saved = await client.pendingOperations.first(where: { $0.id == id }), saved.canDiscard {
-                try await client.discardOrchestratorOperation(id)
-            } else {
-                try await client.discardUncertainOrchestratorOperation(id, acknowledgingPossibleEffects: true)
-            }
-        } catch { throw Self.readFailure(error) }
-    }
-
-    func settle(handle: String) async {
-        guard let id = UUID(uuidString: handle) else { return }
-        _ = try? await client.reconcileOrchestratorOperation(id)
-    }
-
-    func followCreate(handle: String) async throws(ServiceFailure) -> CreateSettlement {
-        guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
-        let progress: ArmadaKit.OrchestratorCreateProgress
-        do {
-            progress = try await client.followOrchestratorCreate(id)
-        } catch {
-            if error is CancellationError { throw .offline }
-            throw Self.readFailure(error)
-        }
-        switch progress {
-        case .ready: return .ready
-        case .failed(let reason): return .failed(reason)
-        // Not settled: the list keeps showing it in progress.
-        case .creating: throw .offline
-        }
-    }
 
     // MARK: Sandboxes
 
@@ -237,13 +33,12 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> OrchestratorEventPage {
+    func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage {
         try await requireOrganization(orgID)
         do {
             let page = try await client.sandboxEvents(id: id, cursor: cursor, backward: backward)
-            // A sandbox stream has no orchestrator revision; every event is an agent event.
-            return OrchestratorEventPage(
-                events: page.events.map { OrchestratorEvent(id: $0.id, at: Date(timeIntervalSince1970: $0.at / 1_000), revision: 0, body: .agent(Self.agentEvent($0))) },
+            return ConversationEventPage(
+                events: page.events.map(Self.agentEvent),
                 cursor: page.cursor,
                 hasMore: page.hasMore,
                 olderCursor: page.olderCursor
@@ -295,27 +90,6 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         guard await client.selectedOrgID == orgID else { throw .noAccess }
     }
 
-    /// The server's own capability decides. Today's handler answers `enabled: false`
-    /// (`native_conformance_required`); that is shown, never worked around.
-    private func requireEnabled() async throws(ServiceFailure) {
-        let capabilities = try await fetchCapabilities()
-        guard capabilities.enabled else {
-            throw .unavailable(
-                "Orchestrators aren't enabled on this Armada server yet. They appear here once the server enables them."
-            )
-        }
-    }
-
-    private func fetchCapabilities() async throws(ServiceFailure) -> ArmadaKit.OrchestratorCapabilities {
-        do {
-            return try await client.orchestratorCapabilities()
-        } catch ArmadaError.http(404), ArmadaError.http(405), ArmadaError.http(501) {
-            throw .unavailable("This Armada server doesn't offer orchestrators yet.")
-        } catch {
-            throw Self.readFailure(error)
-        }
-    }
-
     // MARK: Failures
 
     private static func readFailure(_ error: any Error) -> ServiceFailure {
@@ -329,126 +103,12 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .http(405), .http(501):
             return .unavailable("This Armada server doesn't offer this yet.")
         case .unavailable, .http(429): return .offline
-        case .conflict: return .staleRevision
+        case .conflict: return .rejected("The resource changed. Refresh and try again.")
         case .invalidRequest: return .rejected("Armada refused this request.")
         case .invalidResponse: return .rejected("Armada returned a response this app version doesn't understand.")
         case .secureStorage: return .rejected("This device's secure storage is unavailable.")
         case .invalidOrigin, .http: return .rejected("The request could not be completed.")
         }
-    }
-
-    /// Prepare is local: nothing was sent. A conflict means another command for the same target is
-    /// still open on this device.
-    private func prepareFailure(_ error: any Error, orgID: String, orchestratorID: String?) async -> ServiceFailure {
-        guard let armada = error as? ArmadaError else { return .rejected("The request could not be saved.") }
-        switch armada {
-        case .conflict:
-            let open = await unresolved(orgID: orgID, orchestratorID: orchestratorID)
-            if open?.receipt != nil {
-                return .rejected("Armada is still processing the previous request. Try again when it finishes.")
-            }
-            return .rejected("An earlier request is still unconfirmed. Retry it before sending another.")
-        case .signedOut: return .signedOut
-        case .forbidden: return .noAccess
-        default: return .rejected("The request could not be saved on this device.")
-        }
-    }
-
-    /// The current durable journal, not an HTTP status, decides whether a request
-    /// is safely discardable. Generic409 can follow effects; a refused retry does
-    /// not resolve earlier ambiguity. Never advertise a new-key retry in that case.
-    private func submitFailure(_ error: any Error, id: UUID) async -> ServiceFailure {
-        if let failure = error as? ServiceFailure {
-            switch failure {
-            case .signedOut, .noAccess, .unavailable: return failure
-            default: break
-            }
-        }
-        if let armada = error as? ArmadaError, armada == .signedOut { return .signedOut }
-        // Absence after concurrent cleanup is not proof of non-admission.
-        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .uncertain }
-        if let armada = error as? ArmadaError {
-            switch armada {
-            case .forbidden, .http(404): return .noAccess
-            case .conflict, .invalidRequest, .http(400):
-                let neverDispatched = saved.state == .pending && saved.receipt == nil && saved.canDiscard
-                // Permission to clean up a succeeded receipt is NOT rejection evidence.
-                guard saved.rejectedBeforeAdmission || neverDispatched else { return .uncertain }
-                do { try await client.discardOrchestratorOperation(id) }
-                catch { return .uncertain }
-                return armada == .conflict ? .staleRevision : .rejected("Armada refused this request.")
-            default: break
-            }
-        }
-        if saved.state == .pending, saved.receipt == nil { return .offline }
-        return .uncertain
-    }
-
-    // MARK: Mapping
-
-    private static func summary(_ value: ArmadaKit.Orchestrator) throws(ServiceFailure) -> OrchestratorSummary {
-        let configuration = value.configuration
-        return OrchestratorSummary(
-            id: value.id,
-            ownerID: value.ownerId,
-            orgID: configuration.orgId,
-            name: configuration.name,
-            goldenID: configuration.goldenId,
-            provider: ProviderID(rawValue: configuration.provider.rawValue),
-            harness: Harness(rawValue: configuration.harness.rawValue),
-            harnessRaw: configuration.harness.rawValue,
-            model: configuration.model,
-            reasoningEffort: configuration.reasoningEffort,
-            modelAccountID: configuration.modelAccountId,
-            repository: configuration.repo,
-            idleSeconds: configuration.idleSeconds,
-            maxActiveChildren: configuration.maxActiveChildren,
-            state: OrchestratorState(rawValue: value.state.rawValue),
-            revision: value.revision,
-            sandboxID: value.sandboxId,
-            continuity: OrchestratorContinuity(rawValue: value.continuity.rawValue),
-            createdAt: try date(value.createdAt),
-            updatedAt: try date(value.updatedAt),
-            lastActivityAt: try date(value.lastActivityAt),
-            idleDeadline: try value.idleDeadline.map(date),
-            blockedReason: value.blockedReason
-        )
-    }
-
-    private static func operation(_ value: ArmadaKit.OrchestratorOperation) -> OperationSummary {
-        OperationSummary(
-            id: value.id,
-            orchestratorID: value.orchestratorId,
-            kind: OperationKind(rawValue: value.kind.rawValue),
-            state: OperationState(rawValue: value.state.rawValue),
-            revision: value.revision,
-            errorCode: value.errorCode
-        )
-    }
-
-    private static func lease(_ value: ArmadaKit.OrchestratorWaitLease) throws(ServiceFailure) -> WaitLease {
-        WaitLease(
-            id: value.id,
-            kind: value.kind,
-            reference: value.reference,
-            reason: value.reason,
-            expiresAt: try date(value.expiresAt),
-            deadline: try date(value.deadline)
-        )
-    }
-
-    private static func event(_ value: ArmadaKit.OrchestratorEvent) throws(ServiceFailure) -> OrchestratorEvent {
-        let body: OrchestratorEvent.Body
-        switch value.body {
-        case .agent(let agent): body = .agent(agentEvent(agent))
-        case .state(let state, let continuity):
-            body = .state(OrchestratorState(rawValue: state.rawValue), OrchestratorContinuity(rawValue: continuity.rawValue))
-        case .operation(let operation): body = .operation(Self.operation(operation))
-        case .wait(let lease, let status): body = .wait(try Self.lease(lease), status: status)
-        case .child(let sandboxID, let operationID): body = .child(sandboxID: sandboxID, operationID: operationID)
-        case .unknown(let kind, let payload): body = .unknown(kind: technicalEvent(kind: kind, payload: payload))
-        }
-        return OrchestratorEvent(id: value.id, at: try date(value.at), revision: value.revision, body: body)
     }
 
     /// The existing presentation keeps technical entries as text. Retain the
@@ -522,7 +182,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         return SandboxState(
             status: SandboxStatus(rawValue: value.status),
             statusReason: value.statusReason,
-            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason) },
+            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason, requestedModel: $0.requestedModel, observedModel: $0.observedModel, modelSelectionReason: $0.modelSelectionReason, modelSelectionMessage: $0.modelSelectionMessage) },
             admission: admission,
             canStop: value.canStop,
             isWorking: value.isWorking

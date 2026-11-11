@@ -1,4 +1,5 @@
 import {
+  createSqlSandboxStore,
   GoldenError,
   type GoldenRow,
   type GoldenStore,
@@ -16,6 +17,7 @@ import {
   statusReasonOf,
   type TaskOutcome,
   type Visibility,
+  withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
@@ -35,9 +37,12 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
+  assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
-  preserveWork?(id: string, provider: Provider, providerId: string): Promise<void>;
+  preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
@@ -72,10 +77,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
-  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.created_at`;
+  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.helper_receipt, g.created_at`;
 const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
+  s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.stop_requested_at,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
   g.modal_environment, g.modal_app_id`;
 /** `$1` is the caller's orgs and `$2` the caller. */
@@ -232,6 +237,25 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordTurnModel(id, promptId, requestedModel) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
+      },
+      async readTurnModel(id, promptId) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        return createSqlSandboxStore(sql, { turnModels: true }).readTurnModel!(id, promptId);
+      },
+      async recordTurnModelEvidence(id, promptId, evidence) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
+      },
+      async recordSkills(id, skills) {
+        const result = await sql.query(
+          "update public.sandboxes s set skills=$3::text::jsonb where s.id=$1::uuid and s.owner_id=$2::uuid returning id",
+          [id, caller.userId, JSON.stringify(skills)],
+        );
+        if (result.rows.length !== 1) throw new DataError("Skill receipts could not be recorded.");
+      },
       async insert(input) {
         if (!orgIds.includes(input.orgId) || input.ownerId !== caller.userId) {
           throw new DataError("A sandbox is recorded for its caller only.");
@@ -241,7 +265,7 @@ export function createSqlData(sql: Sql): DataSource {
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
              reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,visible.visibility,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb from visible
+             $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb from visible
            returning credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
              conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
@@ -264,11 +288,25 @@ export function createSqlData(sql: Sql): DataSource {
             JSON.stringify(input.machineSize ?? null),
             JSON.stringify(input.resourceProject ?? null),
             input.expiresAt ?? null,
+            input.visibility ?? null,
           ],
         );
         const row = result.rows[0];
         if (!row) throw new DataError("The sandbox could not be recorded.");
         return mapSandboxRow(row);
+      },
+      async assertExtensionAllowed(id) {
+        if (!UUID.test(id)) throw new GoldenError("not_found", "Sandbox not found.");
+        const row = (
+          await sql.query<{ allowed: boolean }>(
+            `select exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
+             and (s.owner_id=$2::uuid or m.role='admin')) as allowed
+           from public.sandboxes s where ${SANDBOX_MEMBER} and s.id=$3::uuid`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new GoldenError("not_found", "Sandbox not found.");
+        if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
       async assertDeletionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
@@ -291,14 +329,66 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async recordUsage(id, usage) {
         await sql.query(
-          `update public.sandboxes s set usage_turns=$4::text::jsonb
-          where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          `update public.sandboxes s set usage_turns=(
+            with snapshots as (
+              select value, ordinality as ordinal
+              from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb) ||
+                coalesce(($4::text::jsonb)->'turns','[]'::jsonb)) with ordinality
+            ), merged as (
+              select distinct on (value->>'promptId', value->>'model')
+                value || jsonb_strip_nulls(jsonb_build_object(
+                  'inputTokens', max((value->>'inputTokens')::bigint) over identity,
+                  'outputTokens', max((value->>'outputTokens')::bigint) over identity,
+                  'cachedTokens', max((value->>'cachedTokens')::bigint) over identity,
+                  'cacheWriteTokens', max((value->>'cacheWriteTokens')::bigint) over identity,
+                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) as value
+              from snapshots
+              window identity as (partition by value->>'promptId', value->>'model')
+              order by value->>'promptId', value->>'model', ordinal desc
+            ), retained as (
+              select value from merged m where m.value->>'model' is not null
+                or m.value->>'inputTokens' is not null or m.value->>'outputTokens' is not null
+                or m.value->>'cachedTokens' is not null or m.value->>'cacheWriteTokens' is not null
+                or m.value->>'reasoningTokens' is not null
+                or not exists (select 1 from merged known
+                  where known.value->>'promptId'=m.value->>'promptId' and known.value->>'model' is not null)
+            )
+            select jsonb_build_object(
+              'turnCount', greatest((s.usage_turns->>'turnCount')::int,
+                (($4::text::jsonb)->>'turnCount')::int,
+                (select nullif(count(distinct value->>'promptId'),0)::int from retained)),
+              'turns', coalesce((select jsonb_agg(value order by value->>'promptId', value->>'model') from retained),'[]'::jsonb))
+          )
+          where ${SANDBOX_VISIBLE} and s.id=$3::uuid
+            -- Managed parents use their durable journal as the sole usage writer.
+            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
           [...scope, id, JSON.stringify(usage)],
         );
       },
+      async assertExecAllowed(id) {
+        const row = (
+          await sql.query<{ stop_requested_at: unknown; application_secret_tainted: boolean }>(
+            `select s.stop_requested_at,s.application_secret_tainted from public.sandboxes s join public.goldens g on g.id=s.golden_id
+           where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+            [...scope, id],
+          )
+        ).rows[0];
+        if (!row) throw new DataError("No such sandbox.");
+        // Refuse all exec, not a racy provider-state sample: Boat commands can
+        // restore retained disks without invoking the prompt resume hooks.
+        if (row.application_secret_tainted)
+          throw new DataError(
+            "Application-secret exposed sandboxes cannot execute commands or restore retained disks.",
+          );
+        if (row.stop_requested_at !== null)
+          throw new DataError(
+            "Sandbox is stopping; wait for stop or send explicit new work before exec.",
+            "sandbox_not_ready",
+          );
+      },
       async preserveWork(id, provider, providerId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        await preserveBeforeStop(sql, provider, id, providerId);
+        return preserveBeforeStop(sql, provider, id, providerId, "user_stop");
       },
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -317,8 +407,17 @@ export function createSqlData(sql: Sql): DataSource {
         }
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
-          set("stop_requested_at", patch.stopRequested ? new Date().toISOString() : null, "::timestamptz");
-          if (patch.stopRequested) sets.push("reconcile_after = now()");
+          // Retries of an in-flight stop share one epoch; send/resume clears it.
+          sets.push(
+            patch.stopRequested
+              ? "stop_requested_at = coalesce(s.stop_requested_at, clock_timestamp())"
+              : "stop_requested_at = null",
+          );
+          if (patch.stopRequested)
+            sets.push(
+              "reconcile_after = now()",
+              "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
+            );
         }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
@@ -352,9 +451,18 @@ export function createSqlData(sql: Sql): DataSource {
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        // Only an explicit send/resume may cancel an in-flight stop. Other
+        // workspace operations must not mutate data covered by its receipt.
+        if (
+          patch.advanceGeneration &&
+          patch.activityToken &&
+          patch.stopRequested === undefined &&
+          !patch.deleteRequested
+        )
+          fence += " and s.stop_requested_at is null";
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
-          fence = ` and s.lifecycle_generation = $${params.length}`;
+          fence += ` and s.lifecycle_generation = $${params.length}`;
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
@@ -439,6 +547,7 @@ export function createSqlData(sql: Sql): DataSource {
             .filter((row): row is SandboxListMetadata & { total: number } => row.id !== null)
             .map(({ total: _total, ...row }) => ({
               ...row,
+              usage: withUsageTotals(row.usage),
               createdAt: new Date(row.createdAt).toISOString(),
               stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
               expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),

@@ -1,5 +1,6 @@
-import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
+  type ApplicationVault,
   assertGoldenMutation,
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -33,6 +34,7 @@ import {
   type SandboxStatus,
   scanGoldenSandbox,
   snapshotGolden,
+  type TemplateService,
   VaultError,
   type Visibility,
 } from "@armada/core/server";
@@ -55,10 +57,20 @@ import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import {
+  collectSandboxUsage,
+  isInterruptedLaunch,
+  latestPrompt,
+  readStatus,
+  type StatusReport,
+  waitSettled,
+} from "./turns.ts";
+import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  templates?: TemplateService;
+  applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   caller: Caller;
@@ -70,7 +82,7 @@ export interface ToolContext {
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
   /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
   provider(target: ProviderTarget): Promise<Provider>;
-  /** Deletion only: resolve the sandbox owner's immutable source management authority after authorization. */
+  /** Authorized lifecycle management: resolve the sandbox owner's immutable source management authority after authorization. */
   deletionProvider?(sandbox: SandboxView): Promise<Provider>;
   providerMetadata?: (selection: { orgId: string; provider: SandboxProviderId }) => Promise<GoldenProviderMetadata>;
   goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
@@ -110,6 +122,10 @@ const buildOutput = {
   state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
   phase: z.string(),
   errorCode: z.literal("build_failed").nullable(),
+  failureReason: z
+    .enum(["skillpack_integrity_failed", "provider_payment_required", "provider_snapshot_rejected"])
+    .nullable()
+    .optional(),
   result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
 };
 
@@ -128,7 +144,7 @@ const effortInput = z.string().min(1).optional().describe("The reasoning effort;
 const modelOutput = {
   credentialId: z.string().nullable().optional(),
   credentialVersion: z.number().int().nullable().optional(),
-  model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
+  model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
   reasoningEffort: z.string().nullable(),
 };
 
@@ -177,6 +193,15 @@ const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
     turnCount: z.number().nullable(),
+    tokenTotals: z
+      .object({
+        inputTokens: z.number().nullable(),
+        outputTokens: z.number().nullable(),
+        cachedTokens: z.number().nullable(),
+        cacheWriteTokens: z.number().nullable(),
+        reasoningTokens: z.number().nullable(),
+      })
+      .optional(),
     turns: z.array(
       z.object({
         promptId: z.string(),
@@ -184,6 +209,8 @@ const sandboxUsage = z
         inputTokens: z.number().nullable(),
         outputTokens: z.number().nullable(),
         cachedTokens: z.number().nullable(),
+        cacheWriteTokens: z.number().nullable().optional(),
+        reasoningTokens: z.number().nullable().optional(),
       }),
     ),
   })
@@ -219,9 +246,26 @@ const prompt = z.object({
   conversationId: z.string().nullable(),
   state: z.enum(["running", "finished", "interrupted", "failed"]),
   reason: z.string().nullable(),
+  requestedModel: z.string().nullable().optional(),
+  observedModel: z.string().nullable().optional(),
+  modelSelectionReason: z.enum(["model_selection_mismatch", "model_selection_unverified"]).nullable().optional(),
+  modelSelectionMessage: z.string().nullable().optional(),
 });
 
+const skillReceipts = z
+  .array(
+    z.object({
+      reference: z.string(),
+      version: z.string(),
+      skillId: z.string(),
+      checksum: z.string(),
+      origin: z.string(),
+    }),
+  )
+  .optional();
+
 const status = {
+  skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
@@ -299,6 +343,193 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     );
   };
 
+  const vaultOrg = z.string().uuid().describe("Organization UUID; the caller must be a current member.");
+  const vaultId = z.string().uuid().describe("Application variable or secret UUID returned by its metadata list.");
+  const vaultVersion = z.number().int().min(1).describe("Current metadata version; stale writes fail with conflict.");
+  const vaultName = z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]{0,127}$/)
+    .describe("Application key; managed auth and execution names are reserved.");
+  const vaultValue = z
+    .string()
+    .describe(
+      "Intentionally readable configuration, at most 8 KiB UTF-8. Empty and multiline values are allowed. Never enter secrets.",
+    );
+  const vaultInputs = {
+    list: z.strictObject({ org: vaultOrg }),
+    read: z.strictObject({ org: vaultOrg, id: vaultId }),
+    set: z.strictObject({ org: vaultOrg, scope: z.enum(["personal", "org"]), name: vaultName, value: vaultValue }),
+    update: z.strictObject({
+      org: vaultOrg,
+      id: vaultId,
+      expectedVersion: vaultVersion,
+      name: vaultName.optional(),
+      value: vaultValue.optional(),
+    }),
+    delete: z.strictObject({ org: vaultOrg, id: vaultId, expectedVersion: vaultVersion }),
+    revoke: z.strictObject({ org: vaultOrg, id: vaultId, expectedVersion: vaultVersion }),
+    commit: z.strictObject({
+      org: vaultOrg,
+      uploadReference: z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{43}$/)
+        .describe(
+          "One-use reference returned by authenticated POST /api/v1/secrets/upload; expires after five minutes and is bound to this actor and org. Never submit a secret value here.",
+        ),
+    }),
+  };
+  const templateDefinition = z
+    .object({
+      goldenId: z.string().uuid(),
+      provider: z.enum(["boat", "modal"]),
+      harness: z.enum(HARNESSES),
+      model: z.string().optional(),
+      reasoningEffort: z.string().optional(),
+      modelAccount: z.object({ id: z.string().uuid(), version: z.number().int().positive() }).strict().optional(),
+      connections: z.array(z.string().uuid()).max(100).optional(),
+      variables: z
+        .array(
+          z.object({ key: z.string(), variableId: z.string().uuid(), version: z.number().int().positive() }).strict(),
+        )
+        .max(64)
+        .optional(),
+      skills: z.array(z.string()).max(20).optional(),
+    })
+    .strict();
+  const templateInputs = {
+    create: z
+      .object({
+        org: z.string().uuid(),
+        name: z.string(),
+        scope: z.enum(["personal", "org"]),
+        definition: templateDefinition,
+      })
+      .strict(),
+    list: z.object({ org: z.string().uuid() }).strict(),
+    get: z
+      .object({ org: z.string().uuid(), id: z.string().uuid(), revision: z.number().int().positive().optional() })
+      .strict(),
+    publish: z
+      .object({
+        org: z.string().uuid(),
+        id: z.string().uuid(),
+        expectedRevision: z.number().int().positive(),
+        definition: templateDefinition,
+      })
+      .strict(),
+    delete: z
+      .object({ org: z.string().uuid(), id: z.string().uuid(), expectedRevision: z.number().int().positive() })
+      .strict(),
+    launch: z
+      .object({
+        org: z.string().uuid(),
+        id: z.string().uuid(),
+        revision: z.number().int().positive().optional(),
+        requestKey: z.string(),
+        prompt: z.string().optional(),
+        ttlSeconds: z.number().int().positive().optional(),
+        size: z.enum(MACHINE_SIZES).optional(),
+        repo: z.string().optional(),
+      })
+      .strict(),
+  };
+  for (const operation of ["create", "list", "get", "publish", "delete", "launch"] as const) {
+    server.registerTool(
+      `template_${operation}`,
+      {
+        description:
+          operation === "launch"
+            ? "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides."
+            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account and readable variable versions. No secrets.",
+        inputSchema: templateInputs[operation],
+        outputSchema: z.object({}).passthrough(),
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          if (!context.templates) throw new VaultError("unavailable", "Templates unavailable.");
+          const result = await context.templates.command(caller, operation, args, {
+            stores: {
+              goldens: data.goldens,
+              sandboxes: data.sandboxes,
+              credentials: context.launchCredentials,
+              ...(context.connections ? { connections: context.connections } : {}),
+            },
+            provider: context.provider,
+            ...(context.launch ? { options: context.launch } : {}),
+          });
+          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              { type: "text" as const, text: error instanceof VaultError ? error.message : "Templates unavailable." },
+              {
+                type: "text" as const,
+                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
+              },
+            ],
+          };
+        }
+      },
+    );
+  }
+
+  const vaultDescriptions = {
+    variable_list:
+      "List safe variable metadata, without values. Personal entries are owner-only; org entries require membership.",
+    variable_read:
+      "Read an active variable's intentionally readable value. Personal entries are owner-only; org entries require membership.",
+    variable_set:
+      "Create readable configuration in personal or org scope; org writes require admin. Values are intentionally readable: do not store secrets.",
+    variable_update:
+      "Rename or replace readable configuration using its current version. Supply name or value; org writes require admin.",
+    variable_delete:
+      "Delete a readable variable using its current version, retaining a value-free tombstone; org writes require admin.",
+    secret_list:
+      "List safe application-secret metadata only. Secret values, ciphertext and value fingerprints are never returned.",
+    secret_commit:
+      "Create or rotate a write-only application secret from an authenticated API upload reference. The upload fixes the operation, target and version. No plaintext secret arguments; returns safe metadata only.",
+    secret_revoke:
+      "Revoke a write-only application secret using its current version. Removes active ciphertext and advances the revocation epoch; org writes require admin.",
+    secret_delete:
+      "Delete a write-only application secret using its current version. Removes active ciphertext and retains a value-free tombstone; org writes require admin.",
+  };
+
+  // Secret plaintext ingress is API-only. MCP commits actor-bound one-use upload references.
+  for (const [kind, operations] of [
+    ["variable", ["list", "read", "set", "update", "delete"]],
+    ["secret", ["list", "commit", "revoke", "delete"]],
+  ] as const) {
+    for (const operation of operations) {
+      server.registerTool(
+        `${kind}_${operation}`,
+        {
+          description: vaultDescriptions[`${kind}_${operation}` as keyof typeof vaultDescriptions],
+          inputSchema: vaultInputs[operation],
+          outputSchema: z.object({}).passthrough(),
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            if (!context.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
+            const result = await context.applicationVault.command(caller, kind, operation, args, "mcp");
+            return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          } catch (error) {
+            // Never log SDK/database causes or submitted vault arguments.
+            const code = error instanceof VaultError ? error.code : "unavailable";
+            const message = error instanceof VaultError ? error.message : "Application vault unavailable.";
+            return {
+              isError: true,
+              content: [
+                { type: "text" as const, text: message },
+                { type: "text" as const, text: `error code: ${code}` },
+              ],
+            };
+          }
+        },
+      );
+    }
+  }
+
   for (const action of [
     "capabilities",
     "create",
@@ -311,6 +542,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     "resume",
     "recover",
     "reconcile",
+    "connections_list",
+    "connections_add",
+    "connections_remove",
   ]) {
     server.registerTool(
       `orchestrator_${action}`,
@@ -379,6 +613,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     const provider =
       found.status === "deleted" ||
       found.status === "starting" ||
+      found.status === "stopping" ||
+      found.stopRequestedAt ||
       isInterruptedLaunch(found) ||
       (found.status === "failed" && found.stoppedAt !== null)
         ? null
@@ -388,6 +624,34 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       now: context.now(),
     });
   };
+
+  tool(
+    "github_refresh",
+    {
+      title: "Repair sandbox GitHub access",
+      description:
+        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+      input: { id },
+      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+    },
+    async (args) => {
+      const { sandbox: found, provider } = await live(args.id);
+      if (found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      const machine = await provider.get(found.providerSandboxId);
+      if (!["ready", "running"].includes(machine.state))
+        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
+      if (!context.launchCredentials.refreshGitHub)
+        throw new ToolError("unavailable", "GitHub repair is not configured.");
+      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
+      const result = await context.launchCredentials.refreshGitHub(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        provider,
+        found.providerSandboxId,
+      );
+      return { id: found.id, status: "connected" as const, login: result.login };
+    },
+  );
 
   tool(
     "golden_list",
@@ -665,6 +929,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         input: {
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
           visibility: z.enum(["private", "org"]).optional(),
+          skills: z.array(z.string()).max(20).optional(),
+          helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
           connections: z.array(z.string().uuid()).max(100).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
           org: z
@@ -706,6 +972,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: z.string(),
           visibility: z.enum(["org", "private"]),
           harness: z.enum(HARNESSES),
+          helper: z.unknown(),
+          skills: skillReceipts,
           repositoryDir: z
             .string()
             .nullable()
@@ -721,6 +989,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             .object({
               status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
               login: z.string().nullable(),
+              tokenExpiresAt: z.string().nullable(),
               message: z.string().nullable(),
             })
             .describe(
@@ -752,6 +1021,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skills === undefined ? {} : { skills: args.skills }),
+            ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),
             ...(args.credentialId ? { credentialId: args.credentialId } : {}),
             ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
@@ -763,9 +1034,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         return {
           id: result.sandbox.id,
           ...sandboxIds(result.sandbox),
+          helper: result.helper,
           golden: result.golden.name,
           visibility: result.sandbox.visibility ?? result.golden.visibility,
           harness: result.sandbox.harness,
+          skills: result.sandbox.skills ?? [],
           repositoryDir: result.sandbox.repositoryDir ?? null,
           model: result.sandbox.model,
           reasoningEffort: result.sandbox.reasoningEffort,
@@ -780,6 +1053,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           github: {
             status: result.github.status,
             login: result.github.login ?? null,
+            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
             message: result.github.message ?? null,
           },
         };
@@ -1034,7 +1308,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         await data.sandboxes.update(found.id, {
           status: "stopped",
           stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
-          ...(machine.stoppedAt ? {} : { usageRuntimeUnknown: true }),
           ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
         });
       }
@@ -1065,6 +1338,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             })
             .catch(unknownMutationOutcome);
           acknowledged = true;
+          try {
+            await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          } catch {
+            try {
+              (context.logError ?? console.error)(
+                "armada: turn model request record unavailable; accepted prompt continues.",
+              );
+            } catch {
+              /* Logging must not change accepted work. */
+            }
+          }
           const conversationIds = found.conversationIds.includes(receipt.conversationId)
             ? found.conversationIds
             : [...found.conversationIds, receipt.conversationId];
@@ -1119,17 +1403,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         );
       const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
       if (!member) throw new ToolError("forbidden", "No current organization membership.");
-      await context.connections?.prepare?.(provider, found, {
-        userId: caller.userId,
-        orgId: found.orgId,
-        role: member.role,
-      });
       let acknowledged = false;
       return sandboxActivity(
         data.sandboxes,
         found,
         { clearTaskOutcome: true },
         async () => {
+          await context.connections?.prepare?.(provider, found, {
+            userId: caller.userId,
+            orgId: found.orgId,
+            role: member.role,
+          });
+
           const receipt = await provider
             .steer({
               sandboxId: found.providerSandboxId,
@@ -1227,6 +1512,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
+      // Applies to managed and ordinary exec before any native preparation or
+      // provider command can implicitly resume a retained disk.
+      await data.sandboxes.assertExecAllowed?.(found.id);
       const managedNative = await context.launchCredentials.assertExec?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
@@ -1293,7 +1581,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           );
         }
       };
-      if (!managedNative) return execute();
+      if (!managedNative) {
+        // Admission-only check: already-running ordinary commands remain concurrent
+        // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
+        return execute();
+      }
       // Stop and native-file mutation must not interleave: a stop receipt sampled
       // before this command cannot authenticate output produced after auto-resume.
       return sandboxActivity(
@@ -1383,7 +1675,21 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
     },
     async (args) => {
-      const { sandbox, provider } = await live(args.id);
+      await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
+        if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
+          throw new ToolError(
+            error.code === "forbidden" ? "extension_not_allowed" : "extension_not_found",
+            error.message,
+          );
+        throw error;
+      });
+      const sandbox = await data.sandboxes.get(args.id);
+      if (!sandbox) throw new ToolError("extension_not_found", "Sandbox not found or not accessible.");
+      const provider = await (context.deletionProvider?.(sandbox) ?? context.provider(sandbox)).catch((error) => {
+        if (error instanceof ProviderError && error.code === "forbidden")
+          throw new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
+        throw error;
+      });
       return extendSandbox(
         data.sandboxes,
         sandbox,
@@ -1407,7 +1713,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       destructive: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id, true);
+      const found = await visible(args.id);
+      // A repeated stop observes the admitted request; it must not compete with
+      // its activity/reconciliation lease or replay provider hooks on archiving compute.
+      if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
+        return { id: found.id, status: found.status };
+      const { provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1419,14 +1730,29 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         },
         async (signal) => {
           signal.throwIfAborted();
-          if (
-            !(found.status === "stopping" && found.preservationNote?.startsWith("unpushed work could not be preserved"))
-          )
-            await data.sandboxes.preserveWork?.(found.id, provider, found.providerSandboxId).catch(() => {});
+          // A historical warning is not proof that this stop has captured current work.
+          const preservation = await data.sandboxes
+            .preserveWork?.(found.id, provider, found.providerSandboxId)
+            .catch(() => {});
+          signal.throwIfAborted();
+          if (preservation === "pending")
+            return {
+              result: {
+                id: found.id,
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+              },
+              patch: {
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+                stopRequested: true,
+              },
+            };
           let terminal = false;
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;
           try {
+            if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
+            signal.throwIfAborted();
+            recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);
@@ -1448,7 +1774,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
               ...(terminal
                 ? {
                     stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                    usageRuntimeUnknown: !stoppedAt && found.stoppedAt === null,
                   }
                 : {}),
             },
@@ -1617,9 +1942,16 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   }
   return {
     isError: true,
+    ...(error instanceof LaunchError && error.reason
+      ? { structuredContent: { error: { code, message, details: { reason: error.reason, action: error.action } } } }
+      : {}),
+    ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [
       { type: "text", text: message },
       { type: "text", text: `error code: ${code}` },
+      ...(error instanceof GitHubHydrationError
+        ? [{ type: "text" as const, text: JSON.stringify({ error: { code, message, details: error.details } }) }]
+        : []),
     ],
   };
 }
@@ -1642,11 +1974,12 @@ function describe(error: unknown): { code: string; message: string } {
   }
   if (error instanceof VaultError)
     return {
-      code: error.code.startsWith("credential_binding_")
-        ? error.code
-        : error.code === "unavailable"
-          ? "dependency_unavailable"
-          : "missing_credential",
+      code:
+        error.code === "credential_busy" || error.code.startsWith("credential_binding_")
+          ? error.code
+          : error.code === "unavailable"
+            ? "dependency_unavailable"
+            : "missing_credential",
       message: error.message,
     };
   if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };

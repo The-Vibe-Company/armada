@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createSshPreparation } from "../../provider-modal/src/ssh.ts";
+import { installPrivateSkill } from "../src/private-skill.ts";
 import { goldenScript, type Provider, scanGoldenSandbox, sshStdinCheckout, withGoldenDirs } from "../src/server.ts";
 
 /** Opt-in real OS/SSH conformance, not a fake tool-version probe.
@@ -30,6 +32,8 @@ test.skipIf(!process.env.ARMADA_GOLDEN_OS_IMAGE).each(["user-standard", "root-nn
         ...(rootSsh ? ["--security-opt", "no-new-privileges:true"] : []),
         "-p",
         "127.0.0.1::22",
+        "-p",
+        "127.0.0.1::2222",
         image,
         "/bin/sh",
         "-c",
@@ -86,13 +90,15 @@ test.skipIf(!process.env.ARMADA_GOLDEN_OS_IMAGE).each(["user-standard", "root-nn
           "ln -s /opt/armada/runtime-bun /home/user/.local/runner-link",
           'test "$(/usr/local/bin/bun --version)" = 1.3.14',
           'test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2',
+          'test "$(skillpack --version)" = "skillpack 0.3.5"',
+          "skillpack auth status --help >/dev/null",
         ]),
       });
       const versions = docker(
         [
           "bash",
           "-c",
-          'test "$(id -u)" -ne 0 && test "$(bun --version)" = 1.3.14 && test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2',
+          'test "$(id -u)" -ne 0 && test "$(skillpack --version)" = "skillpack 0.3.5" && test "$(bun --version)" = 1.3.14 && test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2',
         ],
         undefined,
         "user",
@@ -117,6 +123,81 @@ test.skipIf(!process.env.ARMADA_GOLDEN_OS_IMAGE).each(["user-standard", "root-nn
         "user",
       );
       expect(ownership.status).toBe(0);
+      if (!rootSsh) {
+        // Actual Modal worker registration/tunnel/host pin and SSH under NNP;
+        // only the registry CLI is replaced, avoiding network/auth credentials.
+        const port = Number(docker(["port", name, "2222/tcp"]).stdout.trim().split(":").at(-1));
+        const preparation = createSshPreparation();
+        const sdk = {
+          exec: async (argv: string[]) => {
+            const proc = Bun.spawn(["docker", "exec", "-i", name, "setpriv", "--no-new-privs", ...argv], {
+              stdin: "pipe",
+              stdout: "pipe",
+              stderr: "ignore",
+            });
+            return {
+              stdin: {
+                writeText: async (text: string) => {
+                  proc.stdin.write(text);
+                },
+                close: async () => {
+                  proc.stdin.end();
+                },
+              },
+              stdout: { readText: () => new Response(proc.stdout).text() },
+              wait: () => proc.exited,
+            };
+          },
+          tunnels: async () => ({ 2222: { tcpSocket: ["127.0.0.1", port] } }),
+        };
+        const modalProvider = {
+          sshKey: async ({ key }: { key: string }) => {
+            const c = await preparation.prepare(
+              sdk as unknown as Parameters<typeof preparation.prepare>[0],
+              { golden: false } as Parameters<typeof preparation.prepare>[1],
+              key,
+            );
+            return { sshEndpoint: c.endpoint, hostKey: c.hostPublicKey, username: c.username };
+          },
+        } as unknown as Provider;
+        const fake =
+          '#!/usr/bin/env node\nif(process.argv[2]!=="auth")process.exit(3);console.log(JSON.stringify({workspace:{id:"11111111-1111-4111-8111-111111111111"},token:{scopes:["skills:read","secrets:read"]}}));\n';
+        expect(
+          docker(
+            [
+              "bash",
+              "-c",
+              "cat >/tmp/skillpack-fixture; chmod 755 /tmp/skillpack-fixture; mv /usr/local/bin/skillpack /tmp/native-skillpack-link; ln -s /tmp/skillpack-fixture /usr/local/bin/skillpack",
+            ],
+            fake,
+            "0",
+          ).status,
+        ).toBe(0);
+        const install = () =>
+          installPrivateSkill(modalProvider, {
+            sandboxId: name,
+            projectDir: "/home/user/app",
+            reference: "notes@1.0.0",
+            harness: "codex",
+            key: "cmp_pat_" + "a".repeat(48),
+          });
+        await expect(install()).rejects.toMatchObject({ reason: "skillpack_credential_refused", stage: "install" });
+        expect(
+          docker(
+            [
+              "bash",
+              "-c",
+              "touch /home/user/.ssh/authorized_keys.armada.lock; chown root:root /home/user/.ssh/authorized_keys.armada.lock; chmod 600 /home/user/.ssh/authorized_keys.armada.lock",
+            ],
+            undefined,
+            "0",
+          ).status,
+        ).toBe(0);
+        await expect(install()).rejects.toMatchObject({
+          reason: "skillpack_ssh_key_cleanup_failed",
+          stage: "transport",
+        });
+      }
     } finally {
       docker(["rm", "-f", name]);
     }

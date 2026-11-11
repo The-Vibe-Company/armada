@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
@@ -7,7 +8,7 @@ import { createSqlVaultStore } from "../src/vault-store.ts";
 
 // This URL must allow CREATE DATABASE. Each case owns a disposable database.
 describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (PostgreSQL)", () => {
-  test("reconnect waits for refresh and profile publication, then invalidates their cache", async () => {
+  test("reconnect completes during profile HTTP and stale publication cannot overwrite its identity", async () => {
     const postgresUrl = process.env.ARMADA_TEST_POSTGRES_URL;
     if (!postgresUrl) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
     const admin = new Bun.SQL(postgresUrl);
@@ -45,8 +46,7 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
         "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 1, 'old', $2)",
         [userId, await encryptSecret("refresh-a", key)],
       );
-      // A transaction-local audit observes profile publication even though reconnect
-      // immediately replaces it. Only public profile fields are recorded.
+      // Record public profile changes to prove stale HTTP completion never replaces reconnect.
       await one.unsafe(`
         create table profile_changes (login text);
         create function record_profile() returns trigger language plpgsql as $$
@@ -85,7 +85,6 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
         userId,
       );
       await fetchingProfile;
-      const pid = (await two.unsafe("select pg_backend_pid() as pid"))[0].pid;
       reconnect = two.begin(async (tx) => {
         await tx.unsafe("select set_config('request.jwt.claim.sub', $1, true)", [userId]);
         await tx.unsafe("set local role authenticated");
@@ -93,26 +92,17 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
           await encryptSecret("refresh-b", key),
         ]);
       });
-      // Observe an actual database wait, not a timer-based ordering assumption.
-      for (let attempt = 0; ; attempt++) {
-        const [state] = await observer.unsafe(
-          "select wait_event_type, wait_event from pg_stat_activity where pid = $1",
-          [pid],
-        );
-        if (state?.wait_event_type === "Lock") {
-          expect(state.wait_event).toBe("advisory");
-          break;
-        }
-        if (attempt === 1000) throw new Error("Reconnect never waited for the refresh transaction");
-      }
+      // Reconnect must finish while GitHub is still held, not wait on an owner transaction.
+      await reconnect;
       release();
-      // Profile publication must use the locked transaction, not a second pool connection.
-      await Promise.all([first, reconnect]);
+      // The stale profile write is fenced by the refresh token that the request observed.
+      expect(await first).toMatchObject({ status: "unavailable" });
+      await reconnect;
       expect(
         Array.from(await observer.unsafe<{ login: string }[]>("select login from profile_changes")).map(
           (row) => row.login,
         ),
-      ).toEqual(["renamed-a", "account-b"]);
+      ).toEqual(["account-b"]);
       const saved = await createSqlVaultStore(
         sqlOver({
           unsafe: (text, params) => one.unsafe(text, params),
@@ -130,3 +120,6 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
     }
   }, 60000);
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();
