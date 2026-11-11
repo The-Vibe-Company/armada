@@ -101,7 +101,7 @@ export function NavLinks({ className }: { className?: string }) {
                 title={hint}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex min-w-0 flex-col items-center gap-1 rounded-md px-1 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:flex-row md:gap-2.5 md:px-2 md:py-1.5 md:text-sm",
+                  "flex min-w-0 flex-col items-center gap-1 rounded-md px-0.5 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:flex-row md:gap-2.5 md:px-2 md:py-1.5 md:text-sm",
                   active
                     ? "bg-background text-foreground shadow-xs ring-1 ring-border md:bg-background"
                     : "text-muted-foreground",
@@ -110,7 +110,7 @@ export function NavLinks({ className }: { className?: string }) {
                 <LinkPendingIcon>
                   <Icon />
                 </LinkPendingIcon>
-                {/* A phone's five columns take a shorter word where the full one would be cut. */}
+                {/* A phone's six columns take a shorter word where the full one would be cut. */}
                 <span className="truncate md:hidden">
                   {short}
                   {/* The visible word starts the accessible name (label in name), the full one follows. */}
