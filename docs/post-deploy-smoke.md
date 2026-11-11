@@ -256,3 +256,73 @@ list consistency and timings/leftover summaries; GitHub refresh; vault; template
 public/private skills and golden pinned digest verification. These are
 verification follow-ups, not new product capabilities. Per the owner decision
 on #969, orchestrators are excluded; their removal belongs to a separate ticket.
+
+### Template and skill pins slice (#969)
+
+The next staging slice exercises personal readable-variable templates and pinned
+public/private skills on the explicitly selected provider × harness cases when
+the corresponding exact pins are configured.
+Orchestrators are excluded. A random disposable value must be read by the native
+agent (not included in the prompt), while a plain exec must not inherit its
+environment binding. Installation receipts must match the requested exact pins.
+Private installation is skipped only when Skillpack connection metadata confirms
+no personal or matching-org key is configured; a configured but unusable key is
+a failure. Template, variable and sandbox cleanup runs even after a failed check.
+
+Both staging entrypoints pass `--templates-skills` in addition to
+`--work-preservation`. The new mode also refuses any origin other than the exact
+staging API origin before requests. It can be run independently with:
+
+```sh
+bun scripts/post-deploy-smoke.ts --templates-skills
+```
+
+For this mode every case additionally requires `goldenId`. Optional `publicSkill`
+(`org/slug@exact-version`) and `privateSkill` (`slug@exact-version`) enable their
+individual install checks. Omit either pin to emit an explicit
+`skill_pin_not_configured` SKIP for that step, while the readable-variable template
+launch, answer and exec-isolation checks still run. For example,
+add `"publicSkill": "your-catalog/public-smoke@1.0.0"` and
+`"privateSkill": "your-private-smoke@1.0.0"` to each existing case, using real
+accessible pins. There are no default pins; malformed supplied pins fail configuration.
+The selected `modelAccountId` is pinned to its current metadata version through
+`creds/list`; no silent default-account substitution is used. The existing
+`repo` remains the absolute exec cwd, not a template repository selector;
+template launches use the golden's default native cwd.
+
+Cases are the explicit enabled provider × harness matrix, as in the baseline.
+There is still no ordinary sandbox capabilities API; a configured unsupported
+pair fails rather than silently skipping. Keep the staging cases current.
+The existing staging token needs readable-variable/template create/delete,
+credential metadata, launch, interior access and stop permissions. Provider/model
+keys and Skillpack keys remain in Armada's staging store, never in the cases.
+
+Per pair, the first template carries the random variable, with a public pin only
+when configured; a second template launch checks a configured private pin if a
+key is available. Both the completed launch
+manifest and sandbox status must carry matching receipts (reference, exact
+version, skill ID, SHA-256 checksum and registry origin). The agent answer must
+equal the random value exactly, and plain exec must see the variable as unset.
+A private-key skip is a separate structured `skip: true` receipt, not a pass.
+
+Budget: this adds one public and up to one private sandbox/model turn per pair,
+roughly 3–8 minutes extra per pair depending on install/provider/model latency.
+Combined with work preservation, expect three or four sandbox allocations and
+model turns per pair, plus Skillpack install traffic; compute/model charges are
+roughly three or four times the original one-worker baseline. The shared
+35-minute work deadline and five-minute cleanup reserve are unchanged; slow
+matrices fail closed rather than extending the run. Each new sandbox has a
+15-minute TTL. Stopped disks and tombstoned metadata use normal retention.
+
+Cleanup attempts every known sandbox, template and variable even if an earlier
+cleanup fails. Lost variable/template create responses are reconciled by their
+unique random names. An unknown launch response is never retried: without a
+cleanup handle the run reports `cleanup_unconfirmed` and requires operator
+reconciliation before rerunning. A final `template_cleanup_summary` reports
+`leftoverSandboxIds` for failed stops and `uncertainLaunches` with the template
+ID/name, exact durable launch request key and returned request ID when available.
+These handles survive template deletion; never retry a launch with a new key to
+reconcile it. Non-success launch receipts retain allowlisted `state`/`reason`
+labels (including Skillpack transport/authorization and allocation uncertainty);
+unknown remote text is replaced by `unrecognized_refusal`. This remains a smoke, not a resource janitor.
+No live staging run or deployment is implied by the offline API tests.

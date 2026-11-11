@@ -68,7 +68,7 @@ final class ConversationFeed {
             pollDelay: { self.conversation.running ? .seconds(2) : .seconds(6) },
             onRead: { self.connection = .live },
             onFailure: { (error: ServiceFailure, failures: Int) -> Duration? in
-                switch error {
+                switch error.category {
                 case .signedOut:
                     onSignedOut()
                     return nil

@@ -108,6 +108,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   // Negative controls prove the gate rejects command removal and a flag moved
   // to an unrelated command, not just a broken fixture or missing skill file.
   expect(validate("armada nonexistent-command", contract)).toContain("Unknown command");
+  expect(validate("armada orchestrator list", contract)).toContain("Unknown command");
   expect(validate("armada golden nonexistent-subcommand", contract)).toContain("Unknown command");
   expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");

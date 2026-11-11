@@ -104,7 +104,15 @@ for (const [view, size] of [
     await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
     const use = choice.getByRole("button", { name: "Use this account" });
     await expect(use).toBeDisabled();
-    await choice.getByRole("radio", { name: /Team plan/ }).check();
+    const accounts = choice.getByRole("radiogroup", { name: "Account", exact: true });
+    const first = accounts.getByRole("radio").first();
+    await first.focus();
+    await page.keyboard.press("Space");
+    await expect(first).toBeChecked();
+    await page.keyboard.down("ArrowDown");
+    await expect(accounts.getByRole("radio").nth(1)).toBeChecked();
+    await page.keyboard.up("ArrowDown");
+    await accounts.getByRole("radio", { name: /Team plan/ }).check();
     await use.click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText("Use Team plan for this sandbox?");

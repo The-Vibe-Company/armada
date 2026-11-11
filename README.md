@@ -32,7 +32,7 @@ Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and ag
 - **Choose the agent and the brain.** Claude Code or Codex, with the exact model and reasoning effort you name. Armada never swaps in another model.
 - **One task, one sandbox.** Each launch gets its own Boat or Modal machine, only that agent's credentials, and your GitHub identity once you connect it.
 - **See and steer every move.** Follow events live, send the next prompt, steer or interrupt the running turn, run a command beside it.
-- **Stop without losing work.** Stopping removes the machine but keeps the disk and the conversation; the next prompt resumes it.
+- **Stop and pick up later.** Stopping normally preserves the disk and conversation for the next prompt. If a Modal checkpoint fails, the current disk is not retained and resume is refused; [push work before stopping](docs/modal-stop-recovery.md).
 - **Bring your tools and your team.** Attach the MCP servers you connected, share goldens with your org or keep them private, and give bots a service token.
 
 ## How it works
@@ -121,13 +121,17 @@ armada logs <sandbox-id> --follow
 armada steer <sandbox-id> "Keep the public API unchanged"   # Codex restarts the turn with it
 armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh   # this turn only
 armada extend <sandbox-id> --ttl 270m        # extend the 4h launch to 4h30m from now
-armada stop <sandbox-id>                     # the machine goes; the disk and conversation stay
-armada send <sandbox-id> "Push the branch"   # resumes the stopped sandbox
+armada stop <sandbox-id>                     # normally retains disk/conversation; Modal checkpoint failure does not
+armada send <sandbox-id> "Push the branch"   # resumes only if the stopped sandbox was retained
 ```
 
 Extend an accessible running or idle sandbox as its owner or an org admin. The new deadline must be later than the current one and within server/provider limits. Boat resets its hard timer; Modal extensions must fit before the existing physical deadline minus a five-minute stop margin, without replacing the machine. Modal launch headroom is server-configured; see [sandbox lifetime limits](docs/sandbox-expiry-investigation.md#initial-delivery-scope).
 
 `armada --help` lists every command. Without flags, Claude Code runs `claude-opus-5-5` and Codex `gpt-6.1-sol`, both at `medium` effort.
+
+### Claude Fable 5.2
+
+Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is known not to honour that selection and rejects it with a readable `model_selection_mismatch` explanation. Modal forwards custom model IDs to Claude Code, but Fable execution has not been re-verified with an entitled account. Defaults remain unchanged; no substitution is permitted. See [provider evidence and production checks](docs/fable-provider-check.md).
 
 ## Bring your MCP servers
 
@@ -162,18 +166,11 @@ Your orchestrator decides what to work on and when to merge; Armada gives each t
 | Create private goldens and private sandboxes | ✓ | ✓ |
 | Change organization goldens, members and provider keys | ✓ | |
 
-A private golden or sandbox is visible only to its owner, not even to admins. Members are people who have signed in once; there are no pending invitations.
+A private golden or sandbox is visible only to its owner, not even to admins. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
-| Read this | When you want to |
-| --- | --- |
-| [Production onboarding](docs/dave-onboarding.md) | Go from nothing to a running agent, CLI or MCP, step by step |
-| [Golden creation](docs/golden-create.md) | Understand the secure build, its security model and its API |
-| [GitHub identity in sandboxes](docs/github-app.md) | Know what `git` and `gh` can do as you, and set up the GitHub App |
-| [Run, deploy and develop](docs/self-hosting.md) | Run `armada-server` and the dashboard yourself, or work on this repository |
-| [Releasing](docs/releasing.md) | Publish the CLI to npm |
-| [Specification](https://github.com/The-Vibe-Company/armada/issues/455) | Read the v2 design |
+Start with the [Use / Develop / Operate reader map](docs/README.md) for canonical guides, contracts and operational runbooks. The [v2 specification](https://github.com/The-Vibe-Company/armada/issues/455) records the original design, not a promise that every proposal is shipped.
 
 ## Armada v1
 
@@ -236,3 +233,5 @@ check its outcome before retrying: a prompt or stop may already have been
 accepted. If status/detail cannot be read during a transition, inspect
 `armada list --json` instead; this guidance does not repair a stuck provider
 lifecycle. `recovery --help` also works before login.
+
+Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.

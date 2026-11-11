@@ -820,6 +820,9 @@ describe("control API", () => {
         expect(harness.models).toEqual(catalog.models);
         expect(harness.credentialKinds).toEqual(HARNESS_KINDS[harness.id as keyof typeof HARNESS_KINDS]);
       }
+      expect(body.harnesses.find((harness) => harness.id === "claude")?.models).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "claude-fable-5-2" })]),
+      );
       expect(body.machineSizes).toEqual([...MACHINE_SIZES]);
       expect(body.ttl).toEqual({
         defaultSeconds: DEFAULT_LAUNCH_TTL_SECONDS,

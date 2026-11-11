@@ -132,7 +132,7 @@ struct SandboxConversationView: View {
         case .noAccess:
             SurfaceStateView(state: .empty(
                 title: "No access",
-                message: "Armada did not open this sandbox for you. Only its owner or a current organization admin can read its conversation; members see its details only.",
+                message: model.notice?.text ?? "Armada did not open this sandbox for you. Only its owner or a current organization admin can read its conversation; members see its details only.",
                 symbol: "lock"
             ))
         case .failed(let message):
@@ -213,8 +213,8 @@ struct SandboxConversationView: View {
                     InlineBanner(text: "\(mismatch ? "Model selection changed" : "Model not verified"): \(turn.modelSelectionMessage ?? "Model evidence is unavailable.")", style: mismatch ? .warning : .info)
                 }
             }
-            if case .reconnecting = model.feed.connection {
-                InlineBanner(text: "Reconnecting… The conversation continues from where it stopped.", style: .info)
+            if case .reconnecting(let reason) = model.feed.connection {
+                InlineBanner(text: reason + " Reconnecting… The conversation continues from where it stopped.", style: .info)
             }
             if case .stopped = model.feed.connection, !model.isDeleted {
                 InlineBanner(text: "Live updates paused. Pull to refresh to resume.", style: .warning)

@@ -106,7 +106,7 @@ or orchestration are provided.
 
 ```sh
 armada send SANDBOX "Continue with the next agreed task"
-armada wait SANDBOX --json
+armada wait SANDBOX --timeout 120 --json
 armada logs SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
@@ -117,10 +117,12 @@ Send starts a new turn; steer redirects an active turn:
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 
-Use blocking wait instead of tight status loops. The default wait is bounded
-to 60 seconds; a still-running result can be waited on again, not relaunched. A wait response is an
-observation, not proof tests passed or work was pushed; inspect outcome and
-logs. Do not add an imagined timeout flag. For longer event inspection use
+Use blocking wait instead of tight status loops. --timeout is in seconds,
+accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
+still-running result can be waited on again, not relaunched. A wait response is
+an observation, not proof tests passed or work was pushed; inspect outcome and
+logs. If a send times out ambiguously, inspect detail, status and logs before
+considering another send; do not replay a possibly accepted instruction. For longer event inspection use
 `armada logs SANDBOX --follow --json`; `armada logs SANDBOX --all --json`
 drains available pages. Keep output bounded with tail for routine diagnostics.
 Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.
@@ -131,14 +133,17 @@ Use `armada extend SANDBOX --ttl 1h --json` before expiry if more time is
 justified. Confirm the returned expiry; do not assume extension succeeded.
 Ask the agent to commit and push, and verify branch/PR/head SHA independently
 before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
-a substitute for a pushed branch. `armada rm SANDBOX --yes` permanently deletes
+a substitute for a pushed branch. Modal retains disk only after a successful
+checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
 and confirmed recovery first.
 
-Read [failure and recovery](references/recovery.md) for stopped machines,
-credential failures, or unpushed work. This CLI version has no general sandbox
-resume/recover command. Do not substitute undocumented endpoints or promise
-that a stopped machine can be restarted through this terminal interface.
+Read [failure and recovery](references/recovery.md) before recovering stopped
+machines or unpushed work. One authorized armada send to a retained stopped
+sandbox resumes it and continues its conversation, subject to current credential
+and access gates. This is a new agent turn, not a read-only restart. There is no
+standalone sandbox resume/recover command; do not invent one or substitute
+undocumented endpoints.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { createServiceStore, createSqlAuthStore } from "@armada/auth";
+import { createSqlAuthStore } from "@armada/auth";
 import {
   CREDENTIAL_BUSY_MESSAGE,
   createSqlVaultStore,
@@ -191,26 +191,32 @@ describe("http", () => {
 });
 
 describe("when the auth lookup fails", () => {
-  const SERVICE_KEY = "service-role-key-that-supabase-rejects";
-
-  test("a rejected PostgREST key is a 503 whose real cause is logged, without the token or the key", async () => {
+  test("a SQL session membership failure is a 503 with a sanitized diagnostic", async () => {
     const lines: string[] = [];
-    const rejecting = createServiceStore({
-      env: { SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY },
-      fetch: async () =>
-        Response.json(
-          { message: "Invalid API key" },
-          { status: 401, headers: { "sb-error-code": "UNAUTHORIZED_INVALID_API_KEY" } },
-        ),
+    const credential = "postgres://armada:synthetic-password@database.test/armada";
+    let jwt = "";
+    const broken = createSqlAuthStore({
+      query: async () => {
+        throw new Error(`membership query failed: ${credential} Bearer ${jwt}`);
+      },
     });
-    const { handler, session, people } = await start({ authStore: () => rejecting, log: (line) => lines.push(line) });
-    const jwt = session(people.member);
-    const response = await rpc(handler, jwt).tool("list", {});
+    const { handler, session, people } = await start({ authStore: () => broken, log: (line) => lines.push(line) });
+    jwt = session(people.member);
+    const response = await rpc(handler, jwt).post({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "list", arguments: {} },
+    });
     expect(response.status).toBe(503);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("Supabase answered 401 (UNAUTHORIZED_INVALID_API_KEY) for GET members");
-    expect(lines[0]).not.toContain(jwt);
-    expect(lines[0]).not.toContain(SERVICE_KEY);
+    expect(lines[0]).toContain("The membership store is unavailable.");
+    expect(lines[0]).toContain("membership query failed");
+    for (const text of [lines[0] ?? "", await response.text()]) {
+      expect(text).not.toContain(jwt);
+      expect(text).not.toContain(credential);
+      expect(text).not.toContain("synthetic-password");
+    }
   });
 
   test("a database failure on an Armada token is a 503 with its cause logged", async () => {
@@ -318,20 +324,8 @@ describe("tools", () => {
         "launch_sized_v1",
         "list",
         "logs",
-        "orchestrator_capabilities",
-        "orchestrator_connections_list",
-        "orchestrator_connections_add",
-        "orchestrator_connections_remove",
-        "orchestrator_create",
-        "orchestrator_list",
-        "orchestrator_detail",
-        "orchestrator_events",
-        "orchestrator_message",
-        "orchestrator_steer",
-        "orchestrator_stop",
-        "orchestrator_resume",
-        "orchestrator_recover",
-        "orchestrator_reconcile",
+        "skill_defaults_get",
+        "skill_defaults_set",
         "template_create",
         "template_list",
         "template_get",
@@ -1652,20 +1646,24 @@ describe("tools", () => {
   });
 });
 
-test("authenticated MCP forwards the configured shared orchestrator runtime rather than a disabled copy", async () => {
-  const seen: string[] = [];
+test("cached retired MCP tool calls return removal guidance without dispatching the runtime", async () => {
+  let called = false;
   const runtime = {
-    list: async (caller: { userId: string }, orgId: string) => {
-      seen.push(caller.userId, orgId);
-      return { version: 1, items: [], cursor: null };
+    list: async () => {
+      called = true;
+      throw new Error("retired runtime must not dispatch");
     },
   } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
   const s = await start({ orchestrators: runtime });
   const mcp = await s.client(await s.token(s.people.owner));
   const result = await mcp.callTool({ name: "orchestrator_list", arguments: { args: { orgId: s.people.org } } });
-  expect(result.isError).not.toBe(true);
-  expect(result.structuredContent).toEqual({ version: 1, items: [], cursor: null });
-  expect(seen).toEqual([s.people.owner, s.people.org]);
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain("removed");
+  expect(JSON.stringify(result.content)).toContain("--armada-access");
+  expect(JSON.stringify(result.content)).toContain("#1002");
+  expect(called).toBe(false);
+  expect((await mcp.listTools()).tools.some((tool) => tool.name.startsWith("orchestrator_"))).toBe(false);
+  expect((await call(mcp, "list")).isError).not.toBe(true);
 });
 
 // Token resolution in these fixtures must not leak audit records to stdout.

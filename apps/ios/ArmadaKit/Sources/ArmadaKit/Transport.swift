@@ -48,3 +48,27 @@ public final class URLSessionTransport: NSObject, ArmadaTransport, URLSessionTas
 
 struct OK: Codable, Sendable { let ok: Bool }
 struct Empty: Encodable, Sendable {}
+
+/// Presentation detail is independent of HTTP/admission semantics. Never treat an explained
+/// server outage as a definite refusal, or an explained denial as permission to keep content.
+public struct ArmadaServerFailure: Error, Sendable, Equatable, LocalizedError {
+    public let cause: ArmadaError
+    public let explanation: String
+    public var errorDescription: String? { explanation }
+
+    public static func underlying(_ error: any Error) -> ArmadaError? {
+        (error as? Self)?.cause ?? error as? ArmadaError
+    }
+
+    static func explaining(_ cause: ArmadaError, body: Data) -> any Error {
+        struct Envelope: Decodable {
+            struct Detail: Decodable { let code: String; let message: String? }
+            let error: Detail
+        }
+        guard let detail = try? JSONDecoder().decode(Envelope.self, from: body).error,
+              !["unknown", "internal", "start_failed", "init_failed", "prompt_failed"].contains(detail.code),
+              let message = detail.message.flatMap(SandboxLaunchFailure.oneLine),
+              message != detail.code else { return cause }
+        return Self(cause: cause, explanation: message)
+    }
+}

@@ -483,7 +483,7 @@ def relay():
                     thread=params.get("threadId") if isinstance(params,dict) else None
                     if isinstance(thread,str):
                         try:
-                            ticket=usage["capture"]("codex",thread,thread in usage_fresh,usage["prompt_digest"](params.get("input")))
+                            ticket=usage["capture"]("codex",thread,thread in usage_fresh,usage["prompt_digest"](params.get("input")),usage["INPUT_ENCODING"])
                             usage_fresh.discard(thread)
                             if ticket: usage_tickets[thread]=ticket
                         except Exception: pass

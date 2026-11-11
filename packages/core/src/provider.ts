@@ -189,7 +189,8 @@ export interface Provider {
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
   exec(request: ExecRequest): Promise<ExecResult>;
-  /** Optional one-shot native usage observation. Empty means unavailable, never zero tokens.
+  /** Optional one-shot native usage observation. Empty or an all-null diagnostic
+   * row means unavailable, never zero tokens.
    * Rows are final per-prompt/model snapshots; retries replace rather than add counters. */
   collectTurnUsage?(request: {
     sandboxId: string;

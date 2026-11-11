@@ -13,6 +13,8 @@ const PRIVATE_POST_PATHS = new Set([
   "routines/pause",
   "routines/delete",
   "routines/history",
+  "skills/defaults/get",
+  "skills/defaults/set",
   "templates/create",
   "templates/list",
   "templates/get",

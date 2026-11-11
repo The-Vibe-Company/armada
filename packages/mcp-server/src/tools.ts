@@ -1,4 +1,10 @@
-import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import {
+  GitHubHydrationError,
+  goldenForSettings,
+  MACHINE_SIZES,
+  parseMachineSizePolicy,
+  USAGE_UNAVAILABLE_CODES,
+} from "@armada/core";
 import {
   type ApplicationVault,
   assertGoldenMutation,
@@ -32,6 +38,7 @@ import {
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStatus,
+  type SkillDefaultsService,
   scanGoldenSandbox,
   snapshotGolden,
   type TemplateService,
@@ -39,7 +46,7 @@ import {
   type Visibility,
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import { apiFailureCode } from "./api-failure.ts";
@@ -50,9 +57,7 @@ import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import { callOrchestrator, orchestratorFailureCode } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
-import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -72,6 +77,7 @@ export interface ToolContext {
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProvider?(target: ProviderTarget): Promise<Provider>;
   templates?: TemplateService;
+  skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
@@ -213,6 +219,7 @@ const sandboxUsage = z
         cachedTokens: z.number().nullable(),
         cacheWriteTokens: z.number().nullable().optional(),
         reasoningTokens: z.number().nullable().optional(),
+        unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
       }),
     ),
   })
@@ -309,6 +316,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
+  // Intercept only the retired public names while installing the SDK's own dispatch
+  // handler. They are not registered/discoverable tools; all other calls keep SDK
+  // validation and dispatch. The private delegated sandbox gateway is separate.
+  const retiredTools = new Set(
+    [
+      "capabilities",
+      "create",
+      "list",
+      "detail",
+      "events",
+      "message",
+      "steer",
+      "stop",
+      "resume",
+      "recover",
+      "reconcile",
+      "connections_list",
+      "connections_add",
+      "connections_remove",
+    ].map((action) => `orchestrator_${action}`),
+  );
+  const setRequestHandler = server.server.setRequestHandler.bind(server.server);
+  server.server.setRequestHandler = (schema, handler) => {
+    setRequestHandler(schema, (request, extra) => {
+      const call = CallToolRequestSchema.safeParse(request);
+      if (call.success && retiredTools.has(call.data.params.name)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text: "Orchestrator tools have been removed. Launch an ordinary sandbox with --armada-access instead; see docs/sandbox-armada-access.md (#1002).",
+            },
+          ],
+        };
+      }
+      return handler(request, extra);
+    });
+  };
   const { caller, data } = context;
   const orgIds = caller.orgs.map((org) => org.orgId);
 
@@ -398,6 +444,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       skills: z.array(z.string()).max(20).optional(),
     })
     .strict();
+  for (const operation of ["get", "set"] as const) {
+    server.registerTool(
+      `skill_defaults_${operation}`,
+      {
+        description:
+          "Read or replace exact personal, org or golden default skill pins. Org and shared golden writes require admin. Empty skills clears defaults.",
+        inputSchema: z
+          .object({
+            org: z.string().uuid(),
+            scope: z.enum(["personal", "org", "golden"]),
+            goldenId: z.string().uuid().optional(),
+            ...(operation === "set" ? { skills: z.array(z.string()).max(20) } : {}),
+          })
+          .strict(),
+        outputSchema: z.object({ skills: z.array(z.string()) }),
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          if (!context.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
+          const result = await context.skillDefaults.command(caller, operation, args);
+          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: error instanceof VaultError ? error.message : "Skill defaults unavailable.",
+              },
+              {
+                type: "text" as const,
+                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
+              },
+            ],
+          };
+        }
+      },
+    );
+  }
   const templateInputs = {
     create: z
       .object({
@@ -432,6 +517,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         ttlSeconds: z.number().int().positive().optional(),
         size: z.enum(MACHINE_SIZES).optional(),
         repo: z.string().optional(),
+        skills: z.array(z.string()).max(20).optional(),
+        skipSkillDefaults: z.boolean().optional(),
       })
       .strict(),
   };
@@ -530,69 +617,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         },
       );
     }
-  }
-
-  for (const action of [
-    "capabilities",
-    "create",
-    "list",
-    "detail",
-    "events",
-    "message",
-    "steer",
-    "stop",
-    "resume",
-    "recover",
-    "reconcile",
-    "connections_list",
-    "connections_add",
-    "connections_remove",
-  ]) {
-    server.registerTool(
-      `orchestrator_${action}`,
-      {
-        description: "Owner-private persistent orchestrator operation. Unverified native backends remain disabled.",
-        inputSchema: { args: z.record(z.string(), z.unknown()), idempotencyKey: z.string().optional() },
-        outputSchema: z.object({ version: z.literal(1) }).passthrough(),
-      },
-      async ({ args, idempotencyKey }) => {
-        try {
-          const result = await callOrchestrator(
-            context.orchestrators,
-            context.caller,
-            action,
-            args,
-            idempotencyKey,
-            context.orchestratorPairs,
-          );
-          return {
-            structuredContent: result as Record<string, unknown>,
-            content: [{ type: "text" as const, text: JSON.stringify(result) }],
-          };
-        } catch (error) {
-          const code = orchestratorFailureCode(error);
-          return {
-            isError: true,
-            content: [
-              { type: "text" as const, text: code },
-              { type: "text" as const, text: `error code: ${code}` },
-              ...(error instanceof OrchestratorRuntimeError && error.admission
-                ? [
-                    {
-                      type: "text" as const,
-                      text: JSON.stringify({
-                        code,
-                        admission: error.admission,
-                        ...(error.operation ? { operation: error.operation } : {}),
-                      }),
-                    },
-                  ]
-                : []),
-            ],
-          };
-        }
-      },
-    );
   }
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {
@@ -939,6 +963,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
+          skipSkillDefaults: z.boolean().optional(),
           helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
           connections: z.array(z.string().uuid()).max(100).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
@@ -1016,6 +1041,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         const result = await launchSandbox(
           provider,
           {
+            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
             goldens: data.goldens,
             sandboxes: data.sandboxes,
             credentials: context.launchCredentials,
@@ -1030,6 +1056,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.model === undefined ? {} : { model: args.model }),
             ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
             ...(args.skills === undefined ? {} : { skills: args.skills }),
             ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
             ...(args.connections === undefined ? {} : { connections: args.connections }),
@@ -1963,7 +1990,15 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   return {
     isError: true,
     ...(error instanceof LaunchError && error.reason
-      ? { structuredContent: { error: { code, message, details: { reason: error.reason, action: error.action } } } }
+      ? {
+          structuredContent: {
+            error: {
+              code,
+              message,
+              details: { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) },
+            },
+          },
+        }
       : {}),
     ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [

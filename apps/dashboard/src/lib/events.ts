@@ -105,26 +105,15 @@ function normalizeTool(tool: unknown): ToolCall[] {
   return [call];
 }
 
-const MAX_LOG_PAGES = 100;
-
-/** Every page of a sandbox's events after `initialCursor`, following the cursors, bounded at MAX_LOG_PAGES. */
+/** One upstream page after `initialCursor`; the caller follows historical continuations. */
 export async function readLogPages(
   logs: (id: string, cursor?: string | null) => Promise<unknown>,
   id: string,
   initialCursor: string | null,
 ) {
-  const events = [];
-  let cursor = initialCursor;
-  let hasMore = false;
-  for (let pageNumber = 0; pageNumber < MAX_LOG_PAGES; pageNumber += 1) {
-    const page = parseEventPage(await logs(id, cursor));
-    events.push(...page.events);
-    hasMore = page.hasMore;
-    if (!page.hasMore || !page.cursor || page.cursor === cursor) {
-      cursor = page.cursor ?? cursor;
-      break;
-    }
-    cursor = page.cursor;
+  const page = parseEventPage(await logs(id, initialCursor));
+  if (page.hasMore && (!page.cursor?.trim() || page.cursor === initialCursor)) {
+    throw new Error("The logs continuation requires an advancing cursor.");
   }
-  return { events, cursor, hasMore };
+  return { ...page, cursor: page.cursor ?? initialCursor };
 }

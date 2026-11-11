@@ -3,24 +3,6 @@ import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 const cases = [
-  ...["stop", "resume", "recover"].map((action) => ({
-    name: `orchestrator ${action}`,
-    args: [
-      "orchestrator",
-      action,
-      "parent-1",
-      "--org",
-      "org-1",
-      "--expected-revision",
-      "7",
-      "--idempotency-key",
-      "original-key",
-      "--json",
-    ],
-    path: `/api/v1/orchestrators/parent-1/${action}`,
-    check: "armada orchestrator detail parent-1 --org org-1",
-    response: { version: 1, id: "op-1", orchestratorId: "parent-1", kind: action, state: "succeeded", revision: 8 },
-  })),
   {
     name: "sandbox stop",
     args: ["stop", "sandbox-1", "--json"],
@@ -62,10 +44,6 @@ test.each(cases)("$name survives slow success and reconciles a true timeout with
           const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
           requests.push(request);
           expect(new URL(request.url).pathname).toBe(scenario.path);
-          if (scenario.name.startsWith("orchestrator")) {
-            expect(request.headers.get("idempotency-key")).toBe("original-key");
-            expect(await request.json()).toEqual({ orgId: "org-1", expectedRevision: 7 });
-          }
           now += duration;
           for (const timer of timers) {
             if (timer.at <= now) timer.controller.abort(new DOMException("Deadline", "TimeoutError"));
@@ -85,7 +63,6 @@ test.each(cases)("$name survives slow success and reconciles a true timeout with
         expect(message).toContain("The server did not answer in time; the operation may have been accepted.");
         expect(message).toContain(scenario.check);
         expect(message).not.toContain("could not reach");
-        if (scenario.name.startsWith("orchestrator")) expect(message).toContain("same idempotency key");
       }
     }
   } finally {

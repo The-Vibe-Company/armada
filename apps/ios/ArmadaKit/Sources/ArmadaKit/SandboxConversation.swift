@@ -103,7 +103,7 @@ public enum SandboxMutationFailure: Sendable, Equatable {
     case unconfirmed
 
     public static func classify(_ error: Error) -> SandboxMutationFailure {
-        switch error as? ArmadaError {
+        switch ArmadaServerFailure.underlying(error) {
         case .signedOut: .signedOut
         case .forbidden, .http(404): .noAccess
         case .invalidRequest, .conflict: .refused
@@ -163,7 +163,8 @@ extension ArmadaClient {
         let id = try sandboxID(id), org = try sandboxOrganization()
         do {
             return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil, maxBytes: nil))
-        } catch ArmadaError.http(400) {
+        } catch {
+            guard ArmadaServerFailure.underlying(error) == .http(400) else { throw error }
             return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil,
                                                     maxBytes: Self.largestEventPageBytes))
         }

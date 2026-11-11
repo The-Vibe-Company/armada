@@ -188,3 +188,49 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(await restoredAgain.pendingSandboxPrompts == pending)
     #expect(await transport.requests.isEmpty)
 }
+
+@Test func emailRequestShowsTheServersSpecificRateLimitRemedy() async throws {
+    let client = try ArmadaClient(transport: ScriptedTransport([
+        .init(status: 429, body: #"{"error":{"code":"rate_limited","message":"Wait 60 seconds before requesting another code."}}"#)
+    ]), storage: MemoryStorage())
+    do {
+        try await client.startEmailLogin(email: "person@example.test")
+        Issue.record("Expected a refusal")
+    } catch {
+        #expect(error.localizedDescription == "Wait 60 seconds before requesting another code.")
+    }
+}
+
+@Test func structuredReadErrorsKeepCategoryAndBoundedExplanation() async throws {
+    for (status, code, message, expected, cause) in [
+        (403, "forbidden", "Only the sandbox owner can open it.", "Only the sandbox owner can open it.", ArmadaError.forbidden),
+        (409, "conflict", "Wait\nfor setup.", "Wait for setup.", .conflict),
+        (503, "dependency_unavailable", "Authentication is restarting.", "Authentication is restarting.", .unavailable),
+        (400, "invalid", String(repeating: "a", count: 350), String(repeating: "a", count: 299) + "…", .http(400)),
+    ] {
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: ["error": ["code": code, "message": message]]), as: UTF8.self)
+        let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: status, body: body)])
+        let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+        try await client.verifyEmail(email: "person@example.test", code: "123456")
+        do { _ = try await client.organizations(); Issue.record("Expected failure") }
+        catch {
+            #expect(ArmadaServerFailure.underlying(error) == cause)
+            #expect(error.localizedDescription == expected)
+        }
+    }
+}
+
+@Test func unsafeOrAbsentServerDetailKeepsExistingFallbackAndAuthenticated401SignsOut() async throws {
+    for (status, body, cause) in [
+        (400, "upstream non-JSON body", ArmadaError.http(400)),
+        (400, #"{"error":{"code":"invalid","message":" \n\t "}}"#, .http(400)),
+        (400, #"{"error":{"code":"invalid","message":"invalid"}}"#, .http(400)),
+        (500, #"{"error":{"code":"unknown","message":"raw provider output"}}"#, .unavailable),
+        (401, #"{"error":{"code":"unauthorized","message":"Expired server session."}}"#, .signedOut),
+    ] {
+        let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: status, body: body)])
+        let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+        try await client.verifyEmail(email: "person@example.test", code: "123456")
+        await #expect(throws: cause) { _ = try await client.organizations() }
+    }
+}

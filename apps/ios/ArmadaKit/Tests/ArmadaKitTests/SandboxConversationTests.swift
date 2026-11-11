@@ -83,8 +83,8 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
         .init(status: 403, body: #"{"error":{"code":"forbidden","message":"private detail"}}"#),
         .init(status: 404, body: #"{"error":{"code":"not_found","message":"No such sandbox."}}"#)
     ])
-    await #expect(throws: ArmadaError.forbidden) { _ = try await client.sandboxDetail(id: sandboxID) }
-    await #expect(throws: ArmadaError.http(404)) { _ = try await client.sandboxEvents(id: sandboxID) }
+    await #expect(throws: ArmadaServerFailure(cause: .forbidden, explanation: "private detail")) { _ = try await client.sandboxDetail(id: sandboxID) }
+    await #expect(throws: ArmadaServerFailure(cause: .http(404), explanation: "No such sandbox.")) { _ = try await client.sandboxEvents(id: sandboxID) }
     // A malformed id is refused before any request leaves the device.
     await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sandboxDetail(id: "../outside") }
     #expect(await transport.requests.count == 4)
@@ -316,4 +316,26 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     try await afterSignOut.restore()
     #expect(await afterSignOut.pendingSandboxPrompts.isEmpty)
     #expect(await !afterSignOut.isSignedIn)
+}
+
+@Test func explainedSendFailuresPreserveAdmissionAndDurableUncertainty() async throws {
+    for (status, code, classification) in [
+        (400, "sandbox_not_ready", SandboxMutationFailure.refused),
+        (409, "conflict", .refused),
+        (403, "forbidden", .noAccess),
+        (503, "dependency_unavailable", .unconfirmed),
+        (400, "future_reason", .unconfirmed),
+    ] {
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "error": ["code": code, "message": "The server explains this failure."]
+        ]), as: UTF8.self)
+        let (client, transport) = try await signedIn([.init(status: status, body: body)])
+        do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Only once"); Issue.record("Expected failure") }
+        catch {
+            #expect(error.localizedDescription == "The server explains this failure.")
+            #expect(SandboxMutationFailure.classify(error) == classification)
+        }
+        #expect((try await client.unconfirmedSandboxPrompt(id: sandboxID) != nil) == (classification == .unconfirmed))
+        #expect(await transport.requests.filter { $0.url?.path == "/api/v1/sandbox/send" }.count == 1)
+    }
 }
