@@ -1291,6 +1291,77 @@ describe("tools", () => {
     },
   );
 
+  test.each(["exec", "steer"])("pending successful stop blocks %s workspace mutation", async (tool) => {
+    let preparations = 0;
+    const { token, client, people, boat, db } = await start({
+      connections: {
+        validate: async () => {},
+        bind: async () => {},
+        prepare: async () => {
+          preparations++;
+        },
+      },
+    });
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const id = launched.data.id;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    boat.provider.stop = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "unavailable",
+        retryable: true,
+        message: "Stop did not dispatch",
+      });
+    };
+    expect((await call(mcp, "stop", { id })).isError).toBe(true);
+    // Expire the retained unknown-outcome lease without a wall-clock wait.
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    const prepared = preparations;
+    const commands = boat.execs.length,
+      steers = boat.steers.length;
+    expect(
+      (
+        await call(
+          mcp,
+          tool,
+          tool === "exec" ? { id, command: "touch after-capture" } : { id, text: "change after capture" },
+        )
+      ).isError,
+    ).toBe(true);
+    expect(boat.execs).toHaveLength(commands);
+    expect(boat.steers).toHaveLength(steers);
+    expect(preparations).toBe(prepared);
+  });
+
+  test("explicit new work cancels a pending stop receipt before the next stop", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const id = launched.data.id;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const stop = boat.provider.stop;
+    boat.provider.stop = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "unavailable",
+        retryable: true,
+        message: "Stop did not dispatch",
+      });
+    };
+    expect((await call(mcp, "stop", { id })).isError).toBe(true);
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    const sent = await call(mcp, "send", { id, prompt: "new work" });
+    expect(sent.isError).not.toBe(true);
+    const promptId = sent.data.promptId;
+    if (typeof promptId !== "string") throw new Error("Missing accepted prompt id");
+    boat.finish("bx_1", promptId, "finished");
+    boat.provider.stop = stop;
+    const count = boat.execs.filter((r) => r.preservationStage === "collect_exec").length;
+    expect((await call(mcp, "stop", { id })).isError).not.toBe(true);
+    expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
+  });
+
   test.each(["preserved", "clean"] as const)("user stop then lifecycle stop reuses its %s capture", async (result) => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;

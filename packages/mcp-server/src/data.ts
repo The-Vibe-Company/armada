@@ -398,9 +398,13 @@ export function createSqlData(sql: Sql): DataSource {
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        // Only an explicit send/resume may cancel an in-flight stop. Other
+        // workspace operations must not mutate data covered by its receipt.
+        if (patch.advanceGeneration && patch.activityToken && patch.stopRequested === undefined)
+          fence += " and s.stop_requested_at is null";
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
-          fence = ` and s.lifecycle_generation = $${params.length}`;
+          fence += ` and s.lifecycle_generation = $${params.length}`;
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')

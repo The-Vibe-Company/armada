@@ -118,6 +118,7 @@ async function captureAndStore(
   let stage = "observe";
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
   let note: string | null;
+  let stopLoaded = false;
   const observed = (phase: string, state?: string) => {
     try {
       console.info(
@@ -149,6 +150,7 @@ async function captureAndStore(
     ).rows[0];
     if (expired()) return;
     if (!stop) return "pending";
+    stopLoaded = true;
     progress.stopToken = stop.stop_token;
     if (stop.complete) {
       observed("capture_reused");
@@ -221,6 +223,18 @@ async function captureAndStore(
       reason = closedFailure(stage, reason, diagnostic);
     }
   } catch (error) {
+    if (!stopLoaded) {
+      console.warn(
+        JSON.stringify({
+          event: "work_preservation_deferred",
+          sandboxId: id,
+          stage: "receipt_lookup",
+          reason: "receipt_lookup_failed",
+          ...workPreservationError(error),
+        }),
+      );
+      return "pending";
+    }
     if (
       stage === "quiesce" &&
       error instanceof ProviderError &&

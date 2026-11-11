@@ -443,3 +443,27 @@ test("a user JWT cannot forge the successful stop marker", async () => {
     }
   });
 });
+
+test("an unavailable receipt lookup defers stop without provider work", async () => {
+  await withPreservationRow(async ({ db, id, provider }) => {
+    const sql = bunLikeSql(db, (text) => {
+      if (/^\s*select/i.test(text)) throw new Error("Synthetic receipt outage");
+    });
+    let reads = 0;
+    expect(
+      await preserveBeforeStop(
+        sql,
+        {
+          ...provider,
+          get: async () => {
+            reads++;
+            return provider.get("bx_policy");
+          },
+        },
+        id,
+        "bx_policy",
+      ),
+    ).toBe("pending");
+    expect(reads).toBe(0);
+  });
+});

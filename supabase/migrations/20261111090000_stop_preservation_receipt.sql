@@ -4,15 +4,5 @@ alter table public.sandboxes add column stop_generation bigint not null default 
   add column preservation_stop_generation bigint;
 comment on column public.sandboxes.preservation_stop_generation is
   'Successful capture/check for stop_generation. Never infer completion from note text.';
--- Existing table-level INSERT covers future columns. Keep all existing insert
--- permissions, but do not let a user forge the server-written completion marker.
-revoke insert on public.sandboxes from authenticated;
-do $$
-declare columns text;
-begin
-  select string_agg(quote_ident(attname), ', ' order by attnum) into columns
-  from pg_attribute
-  where attrelid='public.sandboxes'::regclass and attnum>0 and not attisdropped
-    and attname not in ('stop_generation','preservation_stop_generation');
-  execute 'grant insert (' || columns || ') on public.sandboxes to authenticated';
-end $$;
+-- Server-owned sandbox registration already revokes user INSERT/UPDATE access
+-- to these fields. Do not re-grant earlier table privileges here.
