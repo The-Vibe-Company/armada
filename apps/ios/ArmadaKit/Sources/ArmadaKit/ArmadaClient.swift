@@ -227,6 +227,9 @@ public actor ArmadaClient {
             let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
             if route == "orchestrators" || route.hasPrefix("orchestrators/") {
                 if code == "invalid_request" { throw ArmadaError.invalidRequest }
+                // The orchestrator handler answers a 4xx only before admission (an unknown outcome is
+                // `outcome_unknown`, a 503), so a code this build does not know is still a refusal.
+                if let code, OrchestratorExplanation.isClosedCode(code) { throw ArmadaError.refused(code: code) }
             } else if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
                 throw ArmadaError.invalidRequest
             }

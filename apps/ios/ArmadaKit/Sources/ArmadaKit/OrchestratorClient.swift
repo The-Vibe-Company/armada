@@ -28,7 +28,10 @@ public struct PendingOrchestratorOperation: Codable, Sendable, Identifiable {
     private init(_ prior: Self, state: OrchestratorOperationState, receipt: OrchestratorOperation?, attempts: Int?) {
         id = prior.id; orgId = prior.orgId; orchestratorId = prior.orchestratorId
         action = prior.action; route = prior.route; body = prior.body; key = prior.key
-        self.state = state; self.receipt = receipt; self.attempts = attempts ?? prior.attempts
+        // A receipt state this build does not know proves neither outcome: keep the command as
+        // uncertain, so it still blocks a duplicate and can only be forgotten with a warning.
+        if case .unknown = state { self.state = .uncertain } else { self.state = state }
+        self.receipt = receipt; self.attempts = attempts ?? prior.attempts
     }
     func updating(state: OrchestratorOperationState, receipt: OrchestratorOperation? = nil, attempts: Int? = nil) -> Self {
         Self(self, state: state, receipt: receipt, attempts: attempts)

@@ -458,6 +458,11 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     static let detailCodes: Set<String> = [
         "invalid", "invalid_request", "invalid_config", "conflict", "not_found", "forbidden",
     ]
+    /// Codes that mean the outcome is not known. The server answers them as 5xx; they stay
+    /// unconfirmed even on a 4xx, so a refusal is never inferred from them.
+    static let uncertainCodes: Set<String> = [
+        "outcome_unknown", "provider_unavailable", "dependency_unavailable", "unavailable", "internal", "unknown",
+    ]
 
     /// Classifies a non-2xx answer of the launch route (401 is handled as sign-out before this).
     public static func classify(status: Int, body: Data) -> SandboxLaunchFailure {
@@ -473,10 +478,14 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
             guard nonAllocatingServerCodes.contains(code) else { return .unconfirmed }
             return .refused(refusal(code: code, message: envelope?.error.message))
         }
-        guard (400..<500).contains(status) else { return .unconfirmed }
+        guard (400..<500).contains(status), !uncertainCodes.contains(code) else { return .unconfirmed }
         // A 4xx without an envelope (a missing route) or with a pre-start code allocated nothing.
-        // An unrecognized code is not proof of that.
-        guard code.isEmpty || preStartCodes.contains(code) || status == 403 || status == 404 else { return .unconfirmed }
+        if code.isEmpty || preStartCodes.contains(code) || status == 403 || status == 404 {
+            return .refused(refusal(code: code, message: envelope?.error.message))
+        }
+        // A code this build does not know, with the server's own reason, is still a definite answer:
+        // the server reports an unknown outcome as a 5xx. Without a reason there is nothing to show.
+        guard envelope?.error.message.flatMap(oneLine) != nil else { return .unconfirmed }
         return .refused(refusal(code: code, message: envelope?.error.message))
     }
 
@@ -493,8 +502,9 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     }
 
     static func refusal(code: String, message: String?) -> SandboxLaunchRefusal {
-        let detail = detailCodes.contains(code) ? message.flatMap(oneLine) : nil
         let help: (String, String)
+        // A code without local text shows the server's own reason, bounded to one line.
+        var showsMessage = detailCodes.contains(code)
         switch code {
         case "payment_required":
             help = ("Provider plan limit reached", "The provider refused to start a machine for this plan or billing state. An admin can check the provider account, then launch again.")
@@ -520,7 +530,9 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
             help = ("The agent didn't start", "The sandbox is set up but the first prompt was refused. Open it from the list to send the prompt again.")
         default:
             help = ("Armada refused this launch", "Check the choices and launch again.")
+            showsMessage = true
         }
+        let detail = showsMessage ? message.flatMap(oneLine) : nil
         return SandboxLaunchRefusal(code: code, title: help.0, hint: help.1, detail: detail)
     }
 

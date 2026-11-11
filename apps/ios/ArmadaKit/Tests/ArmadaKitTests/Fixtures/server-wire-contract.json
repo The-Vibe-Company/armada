@@ -1,0 +1,1555 @@
+{
+  "values": {
+    "orchestratorState": ["creating", "ready", "stopping", "stopped", "resuming", "blocked"],
+    "orchestratorContinuity": ["not_started", "native", "unverified", "lost"],
+    "operationKind": ["create", "message", "steer", "stop", "resume", "connections_add", "connections_remove"],
+    "operationState": ["pending", "succeeded", "failed", "uncertain"],
+    "orchestratorEventKind": ["agent", "state", "operation", "wait", "connections", "child"],
+    "waitKind": ["ci", "child", "external", "task"],
+    "waitStatus": ["active", "released", "expired"],
+    "delegationScope": ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
+    "agentEventKind": ["prompt", "message", "steer", "other"],
+    "textMode": ["delta", "snapshot"],
+    "promptStatus": ["queued", "running", "finished", "failed", "interrupted"],
+    "provider": ["boat", "modal"],
+    "harness": ["claude", "codex"],
+    "machineSize": ["small", "medium", "large", "xlarge"],
+    "sandboxStatus": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+  },
+  "responses": {
+    "orchestratorList": {
+      "version": 1,
+      "items": [
+        {
+          "version": 1,
+          "id": "orc-0000",
+          "ownerId": "user-0001",
+          "configuration": {
+            "version": 1,
+            "orgId": "org-0001",
+            "name": "Orchestrator 0",
+            "goldenId": "golden-0001",
+            "provider": "boat",
+            "harness": "claude",
+            "size": "small",
+            "model": "model-a",
+            "reasoningEffort": "medium",
+            "modelAccountId": "account-0001"
+          },
+          "state": "creating",
+          "revision": 1,
+          "sandboxId": "sbx-0000",
+          "conversationId": "conv-0000",
+          "continuity": "not_started",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "updatedAt": "2026-11-11T00:00:00.000Z",
+          "lastActivityAt": "2026-11-11T00:00:00.000Z",
+          "idleDeadline": null,
+          "skillRevision": "0000000000000000000000000000000000000000",
+          "blockedReason": null
+        },
+        {
+          "version": 1,
+          "id": "orc-0001",
+          "ownerId": "user-0001",
+          "configuration": {
+            "version": 1,
+            "orgId": "org-0001",
+            "name": "Orchestrator 1",
+            "goldenId": "golden-0001",
+            "provider": "modal",
+            "harness": "codex",
+            "size": "medium",
+            "model": "model-a",
+            "reasoningEffort": "medium",
+            "modelAccountId": "account-0001"
+          },
+          "state": "ready",
+          "revision": 2,
+          "sandboxId": "sbx-0001",
+          "conversationId": "conv-0001",
+          "continuity": "native",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "updatedAt": "2026-11-11T00:00:00.000Z",
+          "lastActivityAt": "2026-11-11T00:00:00.000Z",
+          "idleDeadline": null,
+          "skillRevision": "0000000000000000000000000000000000000000",
+          "blockedReason": null
+        },
+        {
+          "version": 1,
+          "id": "orc-0002",
+          "ownerId": "user-0001",
+          "configuration": {
+            "version": 1,
+            "orgId": "org-0001",
+            "name": "Orchestrator 2",
+            "goldenId": "golden-0001",
+            "provider": "boat",
+            "harness": "claude",
+            "size": "large",
+            "model": "model-a",
+            "reasoningEffort": "medium",
+            "modelAccountId": "account-0001"
+          },
+          "state": "stopping",
+          "revision": 3,
+          "sandboxId": "sbx-0002",
+          "conversationId": "conv-0002",
+          "continuity": "unverified",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "updatedAt": "2026-11-11T00:00:00.000Z",
+          "lastActivityAt": "2026-11-11T00:00:00.000Z",
+          "idleDeadline": null,
+          "skillRevision": "0000000000000000000000000000000000000000",
+          "blockedReason": null
+        },
+        {
+          "version": 1,
+          "id": "orc-0003",
+          "ownerId": "user-0001",
+          "configuration": {
+            "version": 1,
+            "orgId": "org-0001",
+            "name": "Orchestrator 3",
+            "goldenId": "golden-0001",
+            "provider": "modal",
+            "harness": "codex",
+            "size": "xlarge",
+            "model": "model-a",
+            "reasoningEffort": "medium",
+            "modelAccountId": "account-0001"
+          },
+          "state": "stopped",
+          "revision": 4,
+          "sandboxId": "sbx-0003",
+          "conversationId": "conv-0003",
+          "continuity": "lost",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "updatedAt": "2026-11-11T00:00:00.000Z",
+          "lastActivityAt": "2026-11-11T00:00:00.000Z",
+          "idleDeadline": null,
+          "skillRevision": "0000000000000000000000000000000000000000",
+          "blockedReason": null
+        },
+        {
+          "version": 1,
+          "id": "orc-0004",
+          "ownerId": "user-0001",
+          "configuration": {
+            "version": 1,
+            "orgId": "org-0001",
+            "name": "Orchestrator 4",
+            "goldenId": "golden-0001",
+            "provider": "boat",
+            "harness": "claude",
+            "size": "small",
+            "model": "model-a",
+            "reasoningEffort": "medium",
+            "modelAccountId": "account-0001"
+          },
+          "state": "resuming",
+          "revision": 5,
+          "sandboxId": "sbx-0004",
+          "conversationId": "conv-0004",
+          "continuity": "not_started",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "updatedAt": "2026-11-11T00:00:00.000Z",
+          "lastActivityAt": "2026-11-11T00:00:00.000Z",
+          "idleDeadline": null,
+          "skillRevision": "0000000000000000000000000000000000000000",
+          "blockedReason": null
+        },
+        {
+          "version": 1,
+          "id": "orc-0005",
+          "ownerId": "user-0001",
+          "configuration": {
+            "version": 1,
+            "orgId": "org-0001",
+            "name": "Orchestrator 5",
+            "goldenId": "golden-0001",
+            "provider": "modal",
+            "harness": "codex",
+            "size": "medium",
+            "model": "model-a",
+            "reasoningEffort": "medium",
+            "modelAccountId": "account-0001"
+          },
+          "state": "blocked",
+          "revision": 6,
+          "sandboxId": "sbx-0005",
+          "conversationId": "conv-0005",
+          "continuity": "native",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "updatedAt": "2026-11-11T00:00:00.000Z",
+          "lastActivityAt": "2026-11-11T00:00:00.000Z",
+          "idleDeadline": null,
+          "skillRevision": "0000000000000000000000000000000000000000",
+          "blockedReason": "runtime_uncertain"
+        }
+      ],
+      "cursor": null
+    },
+    "orchestratorDetail": {
+      "version": 1,
+      "orchestrator": {
+        "version": 1,
+        "id": "orc-0000",
+        "ownerId": "user-0001",
+        "configuration": {
+          "version": 1,
+          "orgId": "org-0001",
+          "name": "Orchestrator 0",
+          "goldenId": "golden-0001",
+          "provider": "boat",
+          "harness": "claude",
+          "size": "small",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "modelAccountId": "account-0001"
+        },
+        "state": "creating",
+        "revision": 1,
+        "sandboxId": "sbx-0000",
+        "conversationId": "conv-0000",
+        "continuity": "not_started",
+        "createdAt": "2026-11-11T00:00:00.000Z",
+        "updatedAt": "2026-11-11T00:00:00.000Z",
+        "lastActivityAt": "2026-11-11T00:00:00.000Z",
+        "idleDeadline": null,
+        "skillRevision": "0000000000000000000000000000000000000000",
+        "blockedReason": null
+      },
+      "operations": [
+        {
+          "version": 1,
+          "id": "op-0000",
+          "orchestratorId": "orc-0000",
+          "kind": "create",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0001",
+          "orchestratorId": "orc-0000",
+          "kind": "create",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0002",
+          "orchestratorId": "orc-0000",
+          "kind": "create",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0003",
+          "orchestratorId": "orc-0000",
+          "kind": "create",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0010",
+          "orchestratorId": "orc-0000",
+          "kind": "message",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0011",
+          "orchestratorId": "orc-0000",
+          "kind": "message",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0012",
+          "orchestratorId": "orc-0000",
+          "kind": "message",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0013",
+          "orchestratorId": "orc-0000",
+          "kind": "message",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0020",
+          "orchestratorId": "orc-0000",
+          "kind": "steer",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0021",
+          "orchestratorId": "orc-0000",
+          "kind": "steer",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0022",
+          "orchestratorId": "orc-0000",
+          "kind": "steer",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0023",
+          "orchestratorId": "orc-0000",
+          "kind": "steer",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0030",
+          "orchestratorId": "orc-0000",
+          "kind": "stop",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0031",
+          "orchestratorId": "orc-0000",
+          "kind": "stop",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0032",
+          "orchestratorId": "orc-0000",
+          "kind": "stop",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0033",
+          "orchestratorId": "orc-0000",
+          "kind": "stop",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0040",
+          "orchestratorId": "orc-0000",
+          "kind": "resume",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0041",
+          "orchestratorId": "orc-0000",
+          "kind": "resume",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0042",
+          "orchestratorId": "orc-0000",
+          "kind": "resume",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0043",
+          "orchestratorId": "orc-0000",
+          "kind": "resume",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0050",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_add",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0051",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_add",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0052",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_add",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0053",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_add",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0060",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_remove",
+          "state": "pending",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0061",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_remove",
+          "state": "succeeded",
+          "revision": 1,
+          "errorCode": null
+        },
+        {
+          "version": 1,
+          "id": "op-0062",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_remove",
+          "state": "failed",
+          "revision": 1,
+          "errorCode": "create_failed"
+        },
+        {
+          "version": 1,
+          "id": "op-0063",
+          "orchestratorId": "orc-0000",
+          "kind": "connections_remove",
+          "state": "uncertain",
+          "revision": 1,
+          "errorCode": null
+        }
+      ],
+      "waits": [
+        {
+          "id": "wait-0000",
+          "orchestratorId": "orc-0000",
+          "kind": "ci",
+          "reference": "ref-0000",
+          "reason": "Waiting.",
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "deadline": "2026-11-11T00:00:00.000Z"
+        },
+        {
+          "id": "wait-0001",
+          "orchestratorId": "orc-0000",
+          "kind": "child",
+          "reference": "ref-0001",
+          "reason": "Waiting.",
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "deadline": "2026-11-11T00:00:00.000Z"
+        },
+        {
+          "id": "wait-0002",
+          "orchestratorId": "orc-0000",
+          "kind": "external",
+          "reference": "ref-0002",
+          "reason": "Waiting.",
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "deadline": "2026-11-11T00:00:00.000Z"
+        },
+        {
+          "id": "wait-0003",
+          "orchestratorId": "orc-0000",
+          "kind": "task",
+          "reference": "ref-0003",
+          "reason": "Waiting.",
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "deadline": "2026-11-11T00:00:00.000Z"
+        }
+      ],
+      "delegation": {
+        "id": "dlg-0000",
+        "orchestratorId": "orc-0000",
+        "ownerId": "user-0001",
+        "orgId": "org-0001",
+        "scopes": ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
+        "expiresAt": "2026-11-11T00:00:00.000Z",
+        "revokedAt": null,
+        "childPolicy": "owned_children"
+      },
+      "childSandboxIds": ["sbx-0000"],
+      "connections": [
+        {
+          "id": "conn-0000",
+          "name": "GitHub"
+        }
+      ]
+    },
+    "orchestratorEvents": {
+      "version": 1,
+      "events": [
+        {
+          "id": "oev-0000",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-prompt-0000",
+            "at": 1700000000000,
+            "conversationId": "conv-0000",
+            "promptId": "prompt-0000",
+            "kind": "prompt",
+            "text": "Hello",
+            "status": "queued"
+          }
+        },
+        {
+          "id": "oev-0001",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-prompt-0001",
+            "at": 1700000000001,
+            "conversationId": "conv-0000",
+            "promptId": "prompt-0000",
+            "kind": "prompt",
+            "text": "Hello",
+            "status": "running"
+          }
+        },
+        {
+          "id": "oev-0002",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-prompt-0002",
+            "at": 1700000000002,
+            "conversationId": "conv-0000",
+            "promptId": "prompt-0000",
+            "kind": "prompt",
+            "text": "Hello",
+            "status": "finished"
+          }
+        },
+        {
+          "id": "oev-0003",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-prompt-0003",
+            "at": 1700000000003,
+            "conversationId": "conv-0000",
+            "promptId": "prompt-0000",
+            "kind": "prompt",
+            "text": "Hello",
+            "status": "failed"
+          }
+        },
+        {
+          "id": "oev-0004",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-prompt-0004",
+            "at": 1700000000004,
+            "conversationId": "conv-0000",
+            "promptId": "prompt-0000",
+            "kind": "prompt",
+            "text": "Hello",
+            "status": "interrupted"
+          }
+        },
+        {
+          "id": "oev-0005",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-message-0000",
+            "at": 1700000001000,
+            "promptId": "prompt-0000",
+            "kind": "message",
+            "text": "Hi",
+            "partial": false,
+            "messageId": "msg-0000",
+            "textMode": "delta",
+            "model": "model-a",
+            "tools": [
+              {
+                "id": "tool-0000",
+                "name": "bash",
+                "input": {
+                  "command": "ls"
+                },
+                "result": {
+                  "output": "ok",
+                  "isError": false
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "oev-0006",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-message-0001",
+            "at": 1700000001001,
+            "promptId": "prompt-0000",
+            "kind": "message",
+            "text": "Hi",
+            "partial": false,
+            "messageId": "msg-0000",
+            "textMode": "snapshot",
+            "model": "model-a",
+            "tools": [
+              {
+                "id": "tool-0000",
+                "name": "bash",
+                "input": {
+                  "command": "ls"
+                },
+                "result": {
+                  "output": "ok",
+                  "isError": false
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "oev-0007",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-steer-0000",
+            "at": 1700000002000,
+            "kind": "steer",
+            "text": "Also this",
+            "mode": "queue"
+          }
+        },
+        {
+          "id": "oev-0008",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "agent",
+          "event": {
+            "id": "evt-other-0000",
+            "at": 1700000003000,
+            "kind": "other",
+            "type": "provider_note",
+            "data": {
+              "note": "x"
+            }
+          }
+        },
+        {
+          "id": "oev-0100",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "state",
+          "state": "creating",
+          "continuity": "not_started"
+        },
+        {
+          "id": "oev-0101",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "state",
+          "state": "ready",
+          "continuity": "native"
+        },
+        {
+          "id": "oev-0102",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "state",
+          "state": "stopping",
+          "continuity": "unverified"
+        },
+        {
+          "id": "oev-0103",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "state",
+          "state": "stopped",
+          "continuity": "lost"
+        },
+        {
+          "id": "oev-0104",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "state",
+          "state": "resuming",
+          "continuity": "not_started"
+        },
+        {
+          "id": "oev-0105",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "state",
+          "state": "blocked",
+          "continuity": "native"
+        },
+        {
+          "id": "oev-0200",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0000",
+            "orchestratorId": "orc-0000",
+            "kind": "create",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0201",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0001",
+            "orchestratorId": "orc-0000",
+            "kind": "create",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0202",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0002",
+            "orchestratorId": "orc-0000",
+            "kind": "create",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0203",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0003",
+            "orchestratorId": "orc-0000",
+            "kind": "create",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0204",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0010",
+            "orchestratorId": "orc-0000",
+            "kind": "message",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0205",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0011",
+            "orchestratorId": "orc-0000",
+            "kind": "message",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0206",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0012",
+            "orchestratorId": "orc-0000",
+            "kind": "message",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0207",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0013",
+            "orchestratorId": "orc-0000",
+            "kind": "message",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0208",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0020",
+            "orchestratorId": "orc-0000",
+            "kind": "steer",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0209",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0021",
+            "orchestratorId": "orc-0000",
+            "kind": "steer",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0210",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0022",
+            "orchestratorId": "orc-0000",
+            "kind": "steer",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0211",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0023",
+            "orchestratorId": "orc-0000",
+            "kind": "steer",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0212",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0030",
+            "orchestratorId": "orc-0000",
+            "kind": "stop",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0213",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0031",
+            "orchestratorId": "orc-0000",
+            "kind": "stop",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0214",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0032",
+            "orchestratorId": "orc-0000",
+            "kind": "stop",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0215",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0033",
+            "orchestratorId": "orc-0000",
+            "kind": "stop",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0216",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0040",
+            "orchestratorId": "orc-0000",
+            "kind": "resume",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0217",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0041",
+            "orchestratorId": "orc-0000",
+            "kind": "resume",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0218",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0042",
+            "orchestratorId": "orc-0000",
+            "kind": "resume",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0219",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0043",
+            "orchestratorId": "orc-0000",
+            "kind": "resume",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0220",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0050",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_add",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0221",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0051",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_add",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0222",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0052",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_add",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0223",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0053",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_add",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0224",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0060",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_remove",
+            "state": "pending",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0225",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0061",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_remove",
+            "state": "succeeded",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0226",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0062",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_remove",
+            "state": "failed",
+            "revision": 1,
+            "errorCode": "create_failed"
+          }
+        },
+        {
+          "id": "oev-0227",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "operation",
+          "operation": {
+            "version": 1,
+            "id": "op-0063",
+            "orchestratorId": "orc-0000",
+            "kind": "connections_remove",
+            "state": "uncertain",
+            "revision": 1,
+            "errorCode": null
+          }
+        },
+        {
+          "id": "oev-0300",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "wait",
+          "lease": {
+            "id": "wait-0000",
+            "orchestratorId": "orc-0000",
+            "kind": "ci",
+            "reference": "ref-0000",
+            "reason": "Waiting.",
+            "expiresAt": "2026-11-11T00:00:00.000Z",
+            "deadline": "2026-11-11T00:00:00.000Z"
+          },
+          "status": "active"
+        },
+        {
+          "id": "oev-0301",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "wait",
+          "lease": {
+            "id": "wait-0001",
+            "orchestratorId": "orc-0000",
+            "kind": "child",
+            "reference": "ref-0001",
+            "reason": "Waiting.",
+            "expiresAt": "2026-11-11T00:00:00.000Z",
+            "deadline": "2026-11-11T00:00:00.000Z"
+          },
+          "status": "released"
+        },
+        {
+          "id": "oev-0302",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "wait",
+          "lease": {
+            "id": "wait-0002",
+            "orchestratorId": "orc-0000",
+            "kind": "external",
+            "reference": "ref-0002",
+            "reason": "Waiting.",
+            "expiresAt": "2026-11-11T00:00:00.000Z",
+            "deadline": "2026-11-11T00:00:00.000Z"
+          },
+          "status": "expired"
+        },
+        {
+          "id": "oev-0400",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "connections",
+          "connections": [
+            {
+              "id": "conn-0000",
+              "name": "GitHub"
+            }
+          ]
+        },
+        {
+          "id": "oev-0500",
+          "orchestratorId": "orc-0000",
+          "at": "2026-11-11T00:00:00.000Z",
+          "revision": 1,
+          "kind": "child",
+          "sandboxId": "sbx-0000",
+          "operationId": "op-0000"
+        }
+      ],
+      "cursor": "cursor-0001",
+      "olderCursor": "cursor-0000",
+      "hasMore": false
+    },
+    "sandboxList": {
+      "sandboxes": [
+        {
+          "id": "sbx-0000",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "boat",
+          "providerSandboxId": "bx-0000",
+          "boatId": "bx-0000",
+          "harness": "claude",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "starting",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "small",
+          "displayLabel": "sandbox 0",
+          "canOpen": true,
+          "canManage": true
+        },
+        {
+          "id": "sbx-0001",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "modal",
+          "providerSandboxId": null,
+          "boatId": null,
+          "harness": "codex",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "ready",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "medium",
+          "displayLabel": "sandbox 1",
+          "canOpen": true,
+          "canManage": false
+        },
+        {
+          "id": "sbx-0002",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "boat",
+          "providerSandboxId": "bx-0002",
+          "boatId": "bx-0002",
+          "harness": "claude",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "running",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "large",
+          "displayLabel": "sandbox 2",
+          "canOpen": true,
+          "canManage": true
+        },
+        {
+          "id": "sbx-0003",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "modal",
+          "providerSandboxId": null,
+          "boatId": null,
+          "harness": "codex",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "stopping",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "xlarge",
+          "displayLabel": "sandbox 3",
+          "canOpen": true,
+          "canManage": false
+        },
+        {
+          "id": "sbx-0004",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "boat",
+          "providerSandboxId": "bx-0004",
+          "boatId": "bx-0004",
+          "harness": "claude",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "stopped",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "small",
+          "displayLabel": "sandbox 4",
+          "canOpen": true,
+          "canManage": true
+        },
+        {
+          "id": "sbx-0005",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "modal",
+          "providerSandboxId": null,
+          "boatId": null,
+          "harness": "codex",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "failed",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "medium",
+          "displayLabel": "sandbox 5",
+          "canOpen": true,
+          "canManage": false
+        },
+        {
+          "id": "sbx-0006",
+          "orgId": "org-0001",
+          "ownerId": "user-0001",
+          "provider": "boat",
+          "providerSandboxId": "bx-0006",
+          "boatId": "bx-0006",
+          "harness": "claude",
+          "model": "model-a",
+          "reasoningEffort": "medium",
+          "status": "deleted",
+          "createdAt": "2026-11-11T00:00:00.000Z",
+          "stoppedAt": null,
+          "expiresAt": "2026-11-11T00:00:00.000Z",
+          "effectiveTtlSeconds": 14400,
+          "machineSize": "large",
+          "displayLabel": "sandbox 6",
+          "canOpen": true,
+          "canManage": true
+        }
+      ],
+      "total": 7,
+      "page": 1,
+      "limit": 25,
+      "hasMore": false,
+      "nextPage": null
+    },
+    "sandboxEvents": {
+      "events": [
+        {
+          "id": "evt-prompt-0000",
+          "at": 1700000000000,
+          "conversationId": "conv-0000",
+          "promptId": "prompt-0000",
+          "kind": "prompt",
+          "text": "Hello",
+          "status": "queued"
+        },
+        {
+          "id": "evt-prompt-0001",
+          "at": 1700000000001,
+          "conversationId": "conv-0000",
+          "promptId": "prompt-0000",
+          "kind": "prompt",
+          "text": "Hello",
+          "status": "running"
+        },
+        {
+          "id": "evt-prompt-0002",
+          "at": 1700000000002,
+          "conversationId": "conv-0000",
+          "promptId": "prompt-0000",
+          "kind": "prompt",
+          "text": "Hello",
+          "status": "finished"
+        },
+        {
+          "id": "evt-prompt-0003",
+          "at": 1700000000003,
+          "conversationId": "conv-0000",
+          "promptId": "prompt-0000",
+          "kind": "prompt",
+          "text": "Hello",
+          "status": "failed"
+        },
+        {
+          "id": "evt-prompt-0004",
+          "at": 1700000000004,
+          "conversationId": "conv-0000",
+          "promptId": "prompt-0000",
+          "kind": "prompt",
+          "text": "Hello",
+          "status": "interrupted"
+        },
+        {
+          "id": "evt-message-0000",
+          "at": 1700000001000,
+          "promptId": "prompt-0000",
+          "kind": "message",
+          "text": "Hi",
+          "partial": false,
+          "messageId": "msg-0000",
+          "textMode": "delta",
+          "model": "model-a",
+          "tools": [
+            {
+              "id": "tool-0000",
+              "name": "bash",
+              "input": {
+                "command": "ls"
+              },
+              "result": {
+                "output": "ok",
+                "isError": false
+              }
+            }
+          ]
+        },
+        {
+          "id": "evt-message-0001",
+          "at": 1700000001001,
+          "promptId": "prompt-0000",
+          "kind": "message",
+          "text": "Hi",
+          "partial": false,
+          "messageId": "msg-0000",
+          "textMode": "snapshot",
+          "model": "model-a",
+          "tools": [
+            {
+              "id": "tool-0000",
+              "name": "bash",
+              "input": {
+                "command": "ls"
+              },
+              "result": {
+                "output": "ok",
+                "isError": false
+              }
+            }
+          ]
+        },
+        {
+          "id": "evt-steer-0000",
+          "at": 1700000002000,
+          "kind": "steer",
+          "text": "Also this",
+          "mode": "queue"
+        },
+        {
+          "id": "evt-other-0000",
+          "at": 1700000003000,
+          "kind": "other",
+          "type": "provider_note",
+          "data": {
+            "note": "x"
+          }
+        }
+      ],
+      "cursor": "cursor-0001",
+      "olderCursor": "cursor-0000",
+      "hasMore": false
+    }
+  }
+}

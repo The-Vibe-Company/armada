@@ -489,6 +489,8 @@ private actor Sleeps {
         (200, enabled),
         (422, #"{"error":{"code":"credential_refused","message":"credential_refused"}}"#),
         (200, enabled),
+        (400, #"{"error":{"code":"name_reserved","message":"That name is reserved."}}"#),
+        (200, enabled),
         (503, #"{"error":{"code":"outcome_unknown","message":"outcome_unknown","admission":"unknown"}}"#),
     ])
     let (catalog, _) = try await catalog()
@@ -507,6 +509,12 @@ private actor Sleeps {
     let saved = try #require(await client.pendingOperations.first { $0.id == refused.id })
     #expect(saved.rejectedBeforeAdmission && saved.canDiscard)
     try await client.discardOrchestratorOperation(refused.id)
+
+    // #962: a 400 code this build does not know is still a refusal, never an unknown outcome.
+    let later = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
+    await #expect(throws: ArmadaError.refused(code: "name_reserved")) { _ = try await client.submitOrchestratorOperation(later.id) }
+    #expect(try #require(await client.pendingOperations.first { $0.id == later.id }).canDiscard)
+    try await client.discardOrchestratorOperation(later.id)
 
     let unknown = try await client.prepareOrchestratorCreate(try catalog.request(orgId: "org-a", draft: draft).get())
     await #expect(throws: ArmadaError.unavailable) { _ = try await client.submitOrchestratorOperation(unknown.id) }

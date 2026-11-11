@@ -182,11 +182,12 @@ form keeps every field), `start_failed`/`init_failed`/`prompt_failed` to
 refusals (503 `unauthorized`, `payment_required`, `provider_not_configured`,
 `not_found`) to `refused`, a failure before the request leaves the device (offline,
 session refresh) to `notSent`, `credential_refused` (422) to `refused`,
-and `provider_unavailable` (502), `dependency_unavailable` (503),
-lost answers, `outcome_unknown`, other 5xx and unknown codes to `unconfirmed`
-(check the list before launching again). Each code selects
-local text adapted from the dashboard's failure help; only validation codes add the
-server's own message, on one line of at most 300 characters. Sandbox delete is not
+a 4xx whose code this build does not know but which carries the server's message to
+`refused` (#962), and `provider_unavailable` (502), `dependency_unavailable` (503),
+lost answers, `outcome_unknown` (on any status), other 5xx and an unknown code without a
+message to `unconfirmed` (check the list before launching again). Each code selects
+local text adapted from the dashboard's failure help; validation codes and codes without
+local text add the server's own message, on one line of at most 300 characters. Sandbox delete is not
 offered: `/api/v1` has no delete route for a sandbox.
 
 ## Orchestrators on the phone (#751)
@@ -225,3 +226,24 @@ minute). `OrchestratorExplanation` turns request codes, receipt `errorCode`s,
 `blockedReason`s and pair reasons into sentences; an unknown code still reads as
 one. `recover` is a durable mutation like the others (same key and revision on
 retry); its receipt is the `stop` (or `create`) it settles.
+
+## Values the server adds later (#962)
+
+Every enum-like field decoded from the server is open: `OrchestratorState`,
+`OrchestratorContinuity`, `OrchestratorOperationState` and `MachineSize` decode a value this
+build does not name into `unknown(raw)`; kinds, providers and harnesses are open structs;
+sandbox status, prompt status and reasons are strings; unknown event kinds keep their JSON.
+One new value never fails a row, a list or a screen. An unknown state is never treated as
+ready; a saved command whose receipt state is unknown is kept as uncertain. A structured
+orchestrator 4xx with any closed code is a refusal (the server reports an unknown outcome
+as a 5xx); `sandbox/send` keeps its closed refusal list, because older servers answered
+400 `unknown` after a prompt may have been delivered.
+
+`Tests/ArmadaKitTests/Fixtures/server-wire-contract.json` holds every value the server sends
+for these fields and the list, detail and event responses built from them with
+`@armada/core`'s own types. `packages/core/test/ios-wire-contract.test.ts` keeps it in sync:
+typecheck fails when a server union gains a value the fixture does not list, and the test
+fails when the committed file differs from what those types build
+(`UPDATE_IOS_WIRE_FIXTURE=1 bun test packages/core/test/ios-wire-contract.test.ts`, then
+`bun run format`). `ServerWireContractTests` decodes it, then again with a future value in
+each field.
