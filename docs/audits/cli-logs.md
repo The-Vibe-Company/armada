@@ -1,7 +1,8 @@
 # Logs help: baseline audit (#979)
 
-Refs #979. This slice only improves discovery of existing log-reader behavior.
-It does not change event delivery, flags, JSON fields, authentication or agents.
+Refs #979. This slice improves discovery of existing log-reader behavior and forwards the
+already-accepted organization selector. It does not add flags, change JSON
+fields, grant permissions or control agents.
 Orchestrators, routines and migrations are out of scope.
 
 ## Offline baseline
