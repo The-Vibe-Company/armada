@@ -588,7 +588,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       signal.throwIfAborted();
       const run = response.promptRun;
       const status = promptStatus(run?.status);
-      if (!run || status === undefined) throw unexpectedAnswer("prompt status");
+      if (
+        !run?.promptId ||
+        !run.sandboxId ||
+        run.promptId !== request.promptId ||
+        run.sandboxId !== request.sandboxId ||
+        status === undefined
+      )
+        throw unexpectedAnswer("prompt status");
       if (run.done) await options.afterPrompt?.(provider, request.sandboxId);
       return {
         promptId: run.promptId,

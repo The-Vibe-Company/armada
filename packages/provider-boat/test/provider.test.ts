@@ -460,6 +460,38 @@ describe("agent turns", () => {
     await expect(boat.provider.getPrompt({ sandboxId: ID, promptId: "p" })).rejects.toMatchObject({ code: "unknown" });
   });
 
+  test("getPrompt rejects unrelated or missing identities before completion hooks", async () => {
+    const run = { id: "p", promptId: "p", sandboxId: ID, status: "finished", done: true, conversationId: "c" };
+    const invalid = [
+      { ...run, promptId: "another-prompt" },
+      { ...run, sandboxId: "bx_98765432" },
+      { ...run, promptId: undefined },
+      { ...run, sandboxId: undefined },
+    ];
+    const replies = [...invalid, run];
+    const captures: string[] = [];
+    const provider = createBoatProvider({
+      apiKey: KEY,
+      afterPrompt: async (_provider, id) => {
+        captures.push(id);
+      },
+      fetch: (async (_input: Request | string | URL, _init?: RequestInit) =>
+        Response.json({ ok: true, promptRun: replies.shift() })) as typeof fetch,
+    });
+    for (const _reply of invalid) {
+      await expect(provider.getPrompt({ sandboxId: ID, promptId: "p" })).rejects.toMatchObject({ code: "unknown" });
+      expect(captures).toEqual([]);
+    }
+    expect(await provider.getPrompt({ sandboxId: ID, promptId: "p" })).toEqual({
+      promptId: "p",
+      conversationId: "c",
+      status: "finished",
+      done: true,
+    });
+    expect(captures).toEqual([ID]);
+    expect(replies).toHaveLength(0);
+  });
+
   test("steer names its conversation and returns how boat delivered it", async () => {
     const boat = fakeBoat({
       body: {
@@ -877,7 +909,10 @@ test("prompt status cancellation reaches HTTP and suppresses late native capture
     fetch: (async (_input: unknown, init?: RequestInit) => {
       controller.abort();
       propagated = init?.signal?.aborted === true;
-      return Response.json({ ok: true, promptRun: { promptId: "p", status: "finished", done: true } });
+      return Response.json({
+        ok: true,
+        promptRun: { id: "p", sandboxId: ID, promptId: "p", status: "finished", done: true },
+      });
     }) as typeof fetch,
   });
   await expect(provider.getPrompt({ sandboxId: ID, promptId: "p", signal: controller.signal })).rejects.toThrow();

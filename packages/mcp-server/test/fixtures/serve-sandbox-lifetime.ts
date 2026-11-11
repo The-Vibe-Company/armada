@@ -324,6 +324,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     assert.equal(suffix, `/prompts/${machine.promptId}`);
     return json({
       promptRun: {
+        id: machine.promptId,
+        sandboxId: machine.id,
         promptId: machine.promptId,
         conversationId: machine.conversation,
         status: machine.turnRunning ? "running" : "interrupted",
