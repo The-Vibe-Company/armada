@@ -4,10 +4,32 @@ No environments, auth/config values, history, argv, PIDs or hashes are printed.
 Usage: python3 inspect-codex-wrapper.py NATIVE_PID [--expected-native-binary PATH]
 """
 import json
+import base64
+import binascii
+import zlib
 import glob
 import os
 import sys
 import stat
+
+def static_code(arg):
+    """Decode only Armada's inert compression envelope; never execute inspected argv."""
+    prefix = b'import base64,zlib;exec(zlib.decompress(base64.b64decode("'
+    suffix = b'")))'
+    if not arg.startswith(prefix):
+        return arg
+    if len(arg) > 128 * 1024 or not arg.endswith(suffix):
+        return b""
+    try:
+        packed = base64.b64decode(arg[len(prefix):-len(suffix)], validate=True)
+        decoder = zlib.decompressobj()
+        code = decoder.decompress(packed, 256 * 1024 + 1)
+        if len(code) > 256 * 1024 or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            return b""
+        return code
+    except (binascii.Error, zlib.error, ValueError):
+        return b""
+
 
 result = dict(nativeAppServerFound=False, inspectionComplete=True,
               nativeExecutableMatchesInstalledBinary=False, nativeHasBridgeAncestor=False, nativeHasFreshReloadBridgeAncestor=False,
@@ -65,6 +87,7 @@ try:
             # Only static code signatures; never emit any actual argument.
             executable = os.path.basename(os.readlink("/proc/%d/exe" % pid))
             for arg in (args[1:] if executable.startswith("python") else []):
+                arg = static_code(arg)
                 if b"def fresh_mcp(" in arg:
                     bridges += 1
                     fresh |= b"def reload_mcp(" in arg and b"config/mcpServer/reload" in arg

@@ -68,3 +68,23 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: Any, setting path: Str
         #expect(page.events.count == count, "\(path)")
     }
 }
+
+// Usage is additive interior data which this iPhone build does not present. Both sandbox
+// affected read envelopes must decode with populated, partial, legacy or absent usage.
+@Test func sessionUsageCountersDoNotBreakIPhoneReadResponses() throws {
+    let usage = #"{"computeSeconds":12,"turnCount":1,"turns":[{"promptId":"p1","model":"gpt-6.1-sol","inputTokens":100,"outputTokens":5,"cachedTokens":20,"cacheWriteTokens":30,"reasoningTokens":null}],"tokenTotals":{"inputTokens":100,"outputTokens":5,"cachedTokens":20,"cacheWriteTokens":30,"reasoningTokens":null}}"#
+    let full = try JSONSerialization.jsonObject(with: Data(usage.utf8)) as! [String: Any]
+    var partial = full
+    partial["tokenTotals"] = ["inputTokens": NSNull(), "outputTokens": NSNull(), "cachedTokens": NSNull(), "cacheWriteTokens": NSNull()]
+    partial["turns"] = [["promptId": "p1", "model": "gpt-6.1-sol", "inputTokens": NSNull(), "outputTokens": NSNull(), "cachedTokens": NSNull()]]
+    for counters in [full as Any, partial as Any, NSNull()] {
+        var list = response("sandboxList") as! [String: Any]
+        let originalRows = list["sandboxes"] as! [[String: Any]]
+        list["sandboxes"] = originalRows.map { row in var row = row; row["usage"] = counters; return row }
+        #expect(try decode(SandboxMetadataPage.self, list).sandboxes.count == originalRows.count)
+
+        let detail: [String: Any] = ["id": "sandbox-1", "harness": "codex", "status": "running", "conversationIds": ["c1"], "settled": true, "usage": counters]
+        let decoded = try decode(SandboxDetail.self, detail)
+        #expect(decoded.id == "sandbox-1" && decoded.admission == .open)
+    }
+}

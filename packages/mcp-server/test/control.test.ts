@@ -15,6 +15,7 @@ import {
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
+  type Sql,
   VaultError,
   type VaultStore,
 } from "@armada/core";
@@ -1758,3 +1759,106 @@ for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as
     });
   });
 }
+
+test("access launch grants scoped authority before the first prompt while retaining an ordinary private sandbox", async () => {
+  await withServer(async ({ db, options, cli }) => {
+    const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
+    const org = await options.store.createOrg("Access", STAN);
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    const golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,'access','org',$2,'modal','image','workspace','main','app',$3::jsonb) returning id`,
+        [
+          org.id,
+          STAN,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      )
+    ).rows[0]!;
+    const account = (
+      await db.query<{ id: string }>(
+        `insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','access account',$2) returning id`,
+        [STAN, await encryptSecret("synthetic-api-account", KEY)],
+      )
+    ).rows[0]!;
+    const fake = fakeBoat();
+    let installedToken = "";
+    let statusAtInstall: unknown;
+    const access = createSandboxArmadaAccess({
+      sql: {
+        query: (q, v) => db.query(q, v),
+        transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+      },
+      encryptionKey: KEY,
+      publicUrl: "https://armada.test",
+    });
+    const provider = {
+      ...fake.provider,
+      id: "modal" as const,
+      get: async (id: string) => ({ ...(await fake.provider.get(id)), physicalGeneration: "1" }),
+      installOrchestratorEpoch: async (
+        request: Parameters<NonNullable<typeof fake.provider.installOrchestratorEpoch>>[0],
+      ) => {
+        statusAtInstall = (
+          await db.query<{ status: string }>("select status from sandboxes where golden_id=$1", [golden.id])
+        ).rows[0]?.status;
+        installedToken = request.token;
+        return { acknowledged: true };
+      },
+      scrubOrchestratorEpoch: async () => ({ acknowledged: true }),
+      quiesceOrchestrator: async () => ({ acknowledged: true }),
+      prompt: async (request: Parameters<typeof fake.provider.prompt>[0]) => {
+        expect(installedToken).not.toBe("");
+        return fake.provider.prompt(request);
+      },
+    };
+    options.providerFor = () => provider;
+    options.providers = { resolve: async () => access.wrap(provider) };
+    options.sandboxArmadaAccess = access;
+    options.orchestrators = {
+      enabledPairs: ["modal:codex"],
+    } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
+    const result = await cli(STAN).run([
+      "launch",
+      "access",
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--credential-id",
+      account.id,
+      "--armada-access",
+      "Remember the child task",
+      "--json",
+    ]);
+    expect(result).toMatchObject({ code: 0 });
+    const launched = JSON.parse(result.out);
+    expect(statusAtInstall).toBe("starting");
+    expect(launched.harness).toBe("codex");
+    expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
+    expect(
+      (
+        await options.data!({ userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "supabase" }).sandboxes.get(
+          launched.id,
+        )
+      )?.visibility,
+    ).toBe("private");
+    expect(fake.prompts).toHaveLength(1);
+    const { OrchestratorAuthority } = await import("@armada/core/server");
+    const sql: Sql = {
+      query: (q, v) => db.query(q, v),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    };
+    const authority = new OrchestratorAuthority(sql, async (tx, input) => {
+      await resolveCredentials(createSqlVaultStore(tx), KEY, input);
+    });
+    expect(
+      await authority.admit(
+        installedToken,
+        { method: "launch", goldenId: golden.id, harness: "codex", credentialId: account.id, credentialVersion: 1 },
+        async (_tx, principal) => principal.ownerId,
+      ),
+    ).toBe(STAN);
+  });
+});

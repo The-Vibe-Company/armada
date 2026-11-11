@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { type AgentEvent, reportedTurnUsage } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
-import { database } from "./support.ts";
+import { collectSandboxUsage, readStatus } from "../src/turns.ts";
+import { database, fakeBoat } from "./support.ts";
 
 test("native usage snapshots replace replays without summing quota or missing values", () => {
   const event = (promptId: string, type: string, data: unknown): AgentEvent => ({
@@ -114,6 +115,69 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     expect(await store(p.member).get(id)).toBeNull();
     await store(p.member).recordUsage!(id, { turnCount: 999, turns: [] });
     expect((await store(p.owner).get(id))?.usage?.turnCount).toBe(2);
+  } finally {
+    await db.close();
+  }
+});
+
+test("native collection persists retry-safe rows and preserves measurements when files disappear", async () => {
+  const { db, people: p } = await database();
+  try {
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!.id;
+    const boat = fakeBoat();
+    const provider = boat.providerFor("test");
+    const native = await provider.fork({ from: "snapshot" });
+    const receipt = await provider.prompt({ sandboxId: native.id, harness: "codex", text: "test" });
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+      values($1,$2,$3,$4,'boat',$5,'codex','ready')`,
+      [id, golden, p.org, p.owner, native.id],
+    );
+    const store = createSqlData(db)({
+      userId: p.owner,
+      via: "service",
+      orgs: [{ orgId: p.org, role: "member" }],
+    }).sandboxes;
+    const row = { promptId: receipt.promptId, model: "gpt", inputTokens: 42, outputTokens: 7, cachedTokens: 8 };
+    let available = false;
+    provider.collectTurnUsage = async () => (available ? [row] : []);
+    boat.finish(native.id, receipt.promptId, "finished");
+    const early = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
+    expect(early.status).toBe("ready");
+    expect(early.usage?.tokenTotals?.inputTokens).toBeNull();
+    available = true;
+    const delayed = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
+    expect(delayed.status).toBe("ready");
+    expect(delayed.usage?.tokenTotals?.inputTokens).toBe(42);
+    expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    for (const retry of [false, true]) {
+      await collectSandboxUsage(provider, store, (await store.get(id))!);
+      expect((await store.get(id))?.usage).toMatchObject({ turnCount: 1, turns: [row] });
+      if (retry) available = false;
+    }
+    await collectSandboxUsage(provider, store, (await store.get(id))!);
+    expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    // Stop still knows its target when provider history and native files are unavailable.
+    provider.events = async () => {
+      throw new Error("history unavailable");
+    };
+    const fallback = { ...(await store.get(id))!, taskPromptId: "unmeasured" };
+    await collectSandboxUsage(provider, store, fallback);
+    const incomplete = (await store.get(id))?.usage;
+    expect(incomplete?.turnCount).toBe(2);
+    expect(incomplete?.tokenTotals?.inputTokens).toBeNull();
+    const later = { ...row, promptId: "unmeasured", inputTokens: 100 };
+    await store.recordUsage!(id, { turnCount: 2, turns: [later] });
+    // A stale status writer cannot erase a concurrently discovered prompt or lower its counters.
+    await store.recordUsage!(id, { turnCount: 1, turns: [{ ...later, inputTokens: 50 }, row] });
+    const measured = (await store.get(id))?.usage;
+    expect(measured?.turnCount).toBe(2);
+    expect(measured?.turns).toEqual([row, later]);
+    expect(measured?.tokenTotals?.inputTokens).toBe(142);
+    const unknownModel = { ...row, model: null, inputTokens: 7 };
+    await store.recordUsage!(id, { turnCount: 2, turns: [unknownModel] });
+    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
   } finally {
     await db.close();
   }

@@ -53,6 +53,7 @@ import {
 import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper } from "./native-cwd.ts";
+import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "./native-usage.ts";
 
 export const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
@@ -519,7 +520,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         signal.throwIfAborted();
         await options.beforePrompt?.(provider, request.sandboxId);
       }
-      if (options.beforePrompt && (request.harness === "codex" || provider.configureGitHub)) {
+      const bridgeRequired = options.beforePrompt && (request.harness === "codex" || provider.configureGitHub);
+      let usageBridgeReady = false;
+      try {
         await installNativeCwdWrapper(
           async (r) => {
             const result = await provider.exec(r);
@@ -529,8 +532,16 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           request.sandboxId,
           request.harness,
         );
+        usageBridgeReady = true;
+      } catch (error) {
+        if (bridgeRequired) throw error;
+        // Optional usage must not make an otherwise usable native harness unavailable.
       }
       signal.throwIfAborted();
+      const usageTicket =
+        usageBridgeReady && request.harness === "codex"
+          ? await admitNativeUsage(provider, request.sandboxId, request.text)
+          : null;
       const response = await call(() =>
         api.prompt(
           {
@@ -549,12 +560,17 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       );
       const conversationId = response.conversationId ?? response.promptRun?.conversationId;
       if (!response.promptId || !conversationId) throw unexpectedAnswer("prompt receipt");
+      if (usageTicket) await bindNativeUsage(provider, request.sandboxId, usageTicket, response.promptId);
       return {
         promptId: response.promptId,
         conversationId,
         status: promptStatus(response.status) ?? "queued",
         ...(resumed ? { resumed: true } : {}),
       };
+    },
+
+    async collectTurnUsage(request) {
+      return collectNativeUsage(provider, request.sandboxId, request.promptId);
     },
 
     async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {
