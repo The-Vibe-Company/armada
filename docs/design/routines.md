@@ -145,3 +145,13 @@ failed, interrupted or unknown, separately from launch admission status. Provide
 messages are never stored or exposed as reasons. Unavailable access, a removed sandbox,
 or failed observation yields unknown, not invented success/failure; terminal observations
 are retained after cleanup. Agent-task failure does not affect launch-failure auto-pause.
+
+## Deployment order
+
+Apply `20261111150000_routine_scheduler.sql` after slice 1's
+`20261111140000_routines.sql`, through the coordinator's approved migration process,
+**before** starting this scheduler-enabled server version. The new columns and
+history tables are required at startup; no new environment variables are needed.
+Existing routines remain paused after migration and require explicit enabling.
+For rollback, stop the scheduler-enabled server before removing any of its schema;
+retain occurrence history and template claim keys so recovery cannot refire a run.
