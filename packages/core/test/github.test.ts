@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +31,17 @@ const ACCESS_1 = "ghu_access_one_aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ACCESS_2 = "ghu_access_two_bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const NOW = new Date("2026-11-08T12:00:00.000Z");
 
+const auditEvents: Record<string, unknown>[] = [];
+let restoreInfo: (() => void) | undefined;
+beforeEach(() => {
+  auditEvents.length = 0;
+  const log = spyOn(console, "info").mockImplementation((line) => {
+    auditEvents.push(JSON.parse(String(line)) as Record<string, unknown>);
+  });
+  restoreInfo = () => log.mockRestore();
+});
+afterEach(() => restoreInfo?.());
+
 describe("GitHub access at launch", () => {
   test("refreshes the user token, stores the rotated refresh token and returns the person's git identity", async () => {
     const world = await setup({ refresh: REFRESH_1 });
@@ -41,33 +52,27 @@ describe("GitHub access at launch", () => {
       refresh_token_expires_in: 15_811_200,
     });
 
-    const log = spyOn(console, "info").mockImplementation(() => {});
-    let access: Awaited<ReturnType<typeof resolveGitHubAccess>>;
-    try {
-      access = await resolveGitHubAccess({ ...world.deps, caller: "launch" }, USER);
-      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
-        {
-          event: "github_token_refresh_started",
-          caller: "launch",
-          ownerId: USER,
-          reason: "cache_missing",
-          minimumLifetimeMs: 3_600_000,
-          previousRemainingLifetimeMs: null,
-        },
-        {
-          event: "github_token_rotated",
-          caller: "launch",
-          ownerId: USER,
-          reason: "cache_missing",
-          minimumLifetimeMs: 3_600_000,
-          previousRemainingLifetimeMs: null,
-          accessExpiresAt: "2026-11-08T20:00:00.000Z",
-          observedRemainingLifetimeMs: 28_800_000,
-        },
-      ]);
-    } finally {
-      log.mockRestore();
-    }
+    const access = await resolveGitHubAccess({ ...world.deps, caller: "launch" }, USER);
+    expect(auditEvents).toEqual([
+      {
+        event: "github_token_refresh_started",
+        caller: "launch",
+        ownerId: USER,
+        reason: "cache_missing",
+        minimumLifetimeMs: 3_600_000,
+        previousRemainingLifetimeMs: null,
+      },
+      {
+        event: "github_token_rotated",
+        caller: "launch",
+        ownerId: USER,
+        reason: "cache_missing",
+        minimumLifetimeMs: 3_600_000,
+        previousRemainingLifetimeMs: null,
+        accessExpiresAt: "2026-11-08T20:00:00.000Z",
+        observedRemainingLifetimeMs: 28_800_000,
+      },
+    ]);
 
     expect(access).toEqual({
       status: "connected",
@@ -161,6 +166,12 @@ describe("GitHub access at launch", () => {
 
     expect(access).toMatchObject({ status: "revoked" });
     expect(world.rows.get(USER)?.revokedAt).toEqual(NOW);
+    expect(auditEvents.at(-1)).toEqual({
+      event: "github_connection_revoked",
+      caller: "unspecified",
+      ownerId: USER,
+      reason: "bad_refresh_token",
+    });
     expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "revoked" });
     expect(world.github.tokenRequests).toHaveLength(1);
   });
@@ -235,7 +246,28 @@ describe("GitHub access at launch", () => {
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
     world.deps.now = () => new Date(NOW.getTime() + 66 * 60 * 1000);
     world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
-    await resolveGitHubAccess(world.deps, USER);
+    auditEvents.length = 0;
+    await resolveGitHubAccess({ ...world.deps, caller: "launch" }, USER);
+    expect(auditEvents).toEqual([
+      {
+        event: "github_token_refresh_started",
+        caller: "launch",
+        ownerId: USER,
+        reason: "insufficient_lifetime",
+        minimumLifetimeMs: 3_600_000,
+        previousRemainingLifetimeMs: 54 * 60_000,
+      },
+      {
+        event: "github_token_rotated",
+        caller: "launch",
+        ownerId: USER,
+        reason: "insufficient_lifetime",
+        minimumLifetimeMs: 3_600_000,
+        previousRemainingLifetimeMs: 54 * 60_000,
+        accessExpiresAt: "2026-11-08T21:06:00.000Z",
+        observedRemainingLifetimeMs: 28_800_000,
+      },
+    ]);
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
   });
 
@@ -246,7 +278,29 @@ describe("GitHub access at launch", () => {
     world.github.invalidAccess.add(ACCESS_1);
     world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
 
-    const results = await Promise.all([resolveGitHubAccess(world.deps, USER), resolveGitHubAccess(world.deps, USER)]);
+    auditEvents.length = 0;
+    const deps = { ...world.deps, caller: "launch" as const };
+    const results = await Promise.all([resolveGitHubAccess(deps, USER), resolveGitHubAccess(deps, USER)]);
+    expect(auditEvents).toEqual([
+      {
+        event: "github_token_refresh_started",
+        caller: "launch",
+        ownerId: USER,
+        reason: "access_rejected",
+        minimumLifetimeMs: 3_600_000,
+        previousRemainingLifetimeMs: 28_800_000,
+      },
+      {
+        event: "github_token_rotated",
+        caller: "launch",
+        ownerId: USER,
+        reason: "access_rejected",
+        minimumLifetimeMs: 3_600_000,
+        previousRemainingLifetimeMs: 28_800_000,
+        accessExpiresAt: "2026-11-08T20:00:00.000Z",
+        observedRemainingLifetimeMs: 28_800_000,
+      },
+    ]);
 
     for (const result of results)
       expect(result).toEqual({

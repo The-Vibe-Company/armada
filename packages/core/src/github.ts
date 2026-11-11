@@ -425,7 +425,15 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       if (!(error instanceof GitHubAuthError)) throw error;
       if (error.code !== "revoked")
         return { status: "unavailable", message: `${error.message} GitHub was not set up in this sandbox.` };
-      await store.markGitHubRevoked(userId, connection.refreshTokenEnc);
+      if (await store.markGitHubRevoked(userId, connection.refreshTokenEnc))
+        console.info(
+          JSON.stringify({
+            event: "github_connection_revoked",
+            caller: deps.caller ?? "unspecified",
+            ownerId: userId,
+            reason: "bad_refresh_token",
+          }),
+        );
       return { status: "revoked", message: GITHUB_REVOKED };
     }
     // Record the remote rotation even if local publication loses to a reconnect.

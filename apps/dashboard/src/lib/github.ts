@@ -288,6 +288,7 @@ export function isGitHubResult(value: string | undefined): value is GitHubConnec
 }
 
 export interface ConnectDeps {
+  ownerId: string;
   app: GitHubApp;
   encrypt(plaintext: string): Promise<Uint8Array>;
   /** Stores the connection as the signed-in person. Returns false when the database refused it. */
@@ -338,6 +339,7 @@ export async function completeGitHubConnection(
         JSON.stringify({
           event: "github_connection_replaced",
           caller: "dashboard_callback",
+          ownerId: deps.ownerId,
           reason: "oauth_connect",
           githubId: user.id,
           accessExpiresAt: tokens.accessExpiresAt.toISOString(),

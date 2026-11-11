@@ -18,7 +18,7 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 
 ## Limits to know
 
-- Static sandbox tokens share the owner connection: GitHub advertises eight hours from issuance, but rotation or revocation can invalidate them earlier. Launch does not reset that clock. See [Early rotation investigation](#early-rotation-investigation-952) for repair and automatic-refresh guidance.
+- Static sandbox tokens share the owner connection: GitHub advertises eight hours from issuance, but rotation or revocation can invalidate them earlier. Launch does not reset that clock. See [Early rotation investigation](#shared-token-lifetime-and-diagnostics) for repair and automatic-refresh guidance.
 - `gh` must exist in the golden. Add an init command that installs the GitHub CLI. Without it git works as the user and `gh` does not (the launch says so).
 - The App acts only on repositories where it is installed and the person has access. Install it on each org or account whose repositories sandboxes push to.
 - Disconnect in Settings deletes Armada's row. To invalidate tokens already issued, also revoke the authorization in GitHub (Settings, Applications, Authorized GitHub Apps).
@@ -96,82 +96,27 @@ permanently unchanged, and reconnect is then the recovery path. No automatic
 retry reuses consumed refresh material. See the connection-residence and
 overlap budget in [Production readiness](production-readiness.md#connection-residence-during-github-operations).
 
-## Early rotation investigation (#952)
+## Shared token lifetime and diagnostics
 
-GitHub [documents eight-hour expiry and invalidation of the old access token on refresh](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens).
-The resolver does **not** assume eight hours: it stores GitHub's returned
-`expires_in` as an absolute access expiry. Eight hours (28,800 seconds) is the
-normal configured lifetime, not a guarantee that an injected token will remain
-usable for eight hours after launch. Launch admission and Modal restore require **more than one
-hour remaining**, not a newly minted token. Golden creation, account-status
-reads and managed-runtime brokering use the five-minute refresh margin;
-legacy explicit repair/next-prompt hydration uses zero.
+GitHub advertises eight-hour access tokens, but refreshing the shared owner
+connection invalidates older copies. Armada uses the returned expiry, not a
+hardcoded eight-hour lifetime. Launch and Modal restore require more than one
+hour remaining; golden creation, account status and managed-runtime brokering
+use five minutes; legacy repair/prompt hydration uses zero. Repair may reuse an
+older token and does not reset its issuance time. See [#952](https://github.com/The-Vibe-Company/armada/issues/952)
+for the historical investigation and expiry/fence code trace.
 
-All resolver callers share one owner connection: launch, golden creation,
-account-status reads (dashboard/mobile/CLI through the account API), managed
-runtime brokering, Modal restore, and legacy repair/prompt preparation. Any can
-refresh a missing cache, an explicitly rejected access token, or a cache below
-its caller's lifetime threshold. Dashboard OAuth reconnect drops the cached
-access token; the next resolver then rotates. The account API callback instead
-persists its returned access token. Refresh fencing prevents replay, not
-rotation by a later authorized caller.
+After deployment read `github_token_rotated` by `ownerId` for `caller`, `reason`,
+`previousRemainingLifetimeMs`, `minimumLifetimeMs`, `accessExpiresAt` and
+`observedRemainingLifetimeMs`. This records remote success before local CAS.
+`github_token_refresh_started` records fenced attempts;
+`github_connection_replaced` records OAuth saves with the same owner id.
+`github_connection_revoked` records a committed bad-refresh-token revocation;
+`github_connection_disconnected` records successful explicit disconnects.
+No credential material is logged. Historical events before this instrumentation
+cannot be reconstructed.
 
-For the Nov 11 09:02–09:24Z incident, the coordinator confirmed historical
-GitHub evidence is unavailable: deployment `f1077743` served 08:57–09:27Z
-and its 52 log lines contain only preservation/lifecycle events, no GitHub
-events; `88d7445a` followed at 09:27Z. The reported token copies obtained at
-08:01, 08:51, 09:01 and 09:02 failed by 09:25; the 09:24:27 launch and
-09:26 repairs worked. This bounds a possible rotation to 09:02:19–09:24:27,
-potentially the last launch itself, but does not identify its caller or reason.
-The actual production-issued lifetime is unknown, not twenty minutes inferred
-from sandbox age. This PR is diagnostics only and does not close #952.
-
-Code trace of the repair/launch expiry hypothesis:
-- `refreshLegacyGitHub` uses a zero minimum lifetime. A healthy cached token is
-  hydrated with its existing `accessExpiresAt`; repair does not mint a separate
-  short-lived token or reset its age.
-- If refresh is necessary, `requestTokens` computes expiry as response-time
-  `now + expires_in * 1000`; `rotateGitHubToken` stores that exact ISO timestamp
-  in `github_connections.access_expires_at` alongside the encrypted token.
-- SSH hydration sends the same timestamp as epoch milliseconds to the guest's
-  private token file. It does not rewrite the database expiry. A later launch
-  reads the database timestamp and requires more than one hour remaining.
-- The durable consume fence is reached only after cache reuse fails admission
-  or explicit access validation rejects the token. It does not change expiry
-  or force rotation; a lost fence returns retryable unavailability without
-  replaying a refresh.
-
-Thus no expiry-conversion or fence-induced early-rotation defect was found in
-this code trace. A genuinely fresh eight-hour token from 08:40 would pass
-09:24 launch admission. However, a repair at 08:40 can also merely hydrate an
-older cached token: repair time alone does not prove issuance time or remaining
-lifetime. Missing/replaced cache, rejection, and threshold-driven refresh remain
-possible explanations, not established incident causes.
-
-New structured events (no credentials, codes, state or upstream error bodies):
-- `github_token_refresh_started`: owner, server-owned caller, reason
-  (`cache_missing`, `insufficient_lifetime`, `access_rejected`), old remaining
-  lifetime and required minimum. Emitted only after the durable fence is won.
-- `github_token_rotated`: same context plus returned expiry and observed
-  remaining lifetime, after GitHub succeeds, **before** local publication;
-  a reconnect can still win publication. This captures even a too-short token.
-- `github_connection_replaced`: successful dashboard/account OAuth save,
-  caller, account/owner identity, observed remaining lifetime and whether the
-  access token was cached.
-
-On the next incident, read `github_token_rotated` by `ownerId`: its
-`caller`, `reason`, `previousRemainingLifetimeMs`, `minimumLifetimeMs`,
-`accessExpiresAt` and `observedRemainingLifetimeMs` identify the remote
-rotation decision and returned lifetime. Also inspect
-`github_token_refresh_started` for uncertain attempts and
-`github_connection_replaced` for reconnects (dashboard uses GitHub account id).
-These events only become available after this diagnostics change is deployed;
-they cannot reconstruct the historical window.
-
-Interim rule: static token injection has no guaranteed usable lifetime in a
-shared connection. Save and push work frequently; on a legacy Boat sandbox use
-`armada github refresh <sandbox>` to hydrate the current owner token (it does
-not force rotation of a healthy cache). Reconnect only for a revoked/uncertain
-grant, not as routine repair. Automatic credential-helper refresh (#908)
-is the durable path for workers that must survive expiry or another client's
-rotation; do not weaken the refresh fence or promise static tokens survive it.
+Static copies have no guaranteed usable lifetime after another client's rotation.
+Push work frequently. Use `armada github refresh <sandbox>` for legacy Boat repair;
+reconnect only for revoked or uncertain grants. Automatic credential-helper
+refresh (#908) is the durable remedy, not weakening the refresh fence.
