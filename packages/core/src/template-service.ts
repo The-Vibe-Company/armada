@@ -311,6 +311,7 @@ export function createTemplateService(sql: Sql) {
       const b = object(binding);
       fields(b, ["key", "secretId", "version"]);
       const key = text(b.key, 128);
+      if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_)/i.test(key)) invalid();
       try {
         validateReadableVariables({ [key]: "" });
       } catch {

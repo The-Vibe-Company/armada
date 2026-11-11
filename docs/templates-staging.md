@@ -1,7 +1,7 @@
 # Template slice 4 staging acceptance
 
 For #936. API/MCP staging checks; CLI management is documented in
-[templates-cli.md](templates-cli.md). No template UI, secret bindings, grants,
+[templates-cli.md](templates-cli.md). No template UI, secret delivery, grants,
 routines or application-secret security guarantees. **Do not run against production.**
 The operator must apply `20261111100000_launch_templates.sql` to disposable staging;
 this PR does not apply or deploy it. Its timestamp is above main and the open-PR
@@ -16,7 +16,8 @@ Authenticated POST routes under `/api/v1/templates/`: `create`, `list`, `get`,
 proxy admits all six. The matching MCP tools are `template_create`,
 `template_list`, `template_get`, `template_publish`, `template_delete`,
 `template_launch`; they share the service and strict validation. Query parameters at the control service,
-unknown fields and secret bindings are refused. The public proxy strips query
+unknown fields are refused. Secret ID/version bindings are supported as described below;
+secret-bound launches are refused until the delivery slice lands. The public proxy strips query
 parameters before forwarding; they have no effect there. No raw environment override exists.
 
 All inputs require `org` (UUID). Create additionally accepts `name`, `scope`

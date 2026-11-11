@@ -16,11 +16,14 @@ import {
   type Sql,
   type TemplateRuntime,
 } from "@armada/core/server";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { createArmadaServer } from "../src/tools.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
@@ -983,6 +986,51 @@ test("secret bindings are immutable value-free references and cannot silently la
     ).rows[0]!.id;
     const binding = { key: "APP_TOKEN", secretId, version: 1 };
     const def = { ...f.definition, variables: [], secrets: [binding] };
+    // Exercise the actual remote MCP schema, not only the shared tool dispatcher.
+    const server = createArmadaServer(
+      {
+        templates: f.service,
+        caller: f.actor(),
+        data: createSqlData(f.sql)(f.actor()),
+        launchCredentials: f.runtime.stores.credentials,
+        exposedSecrets: async () => [],
+        provider: async () => f.provider,
+        now: () => new Date(),
+        sleep: async () => {},
+      },
+      "test",
+    );
+    const client = new Client({ name: "template-secret-test", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    await client.connect(b);
+    try {
+      const created = await client.callTool({
+        name: "template_create",
+        arguments: {
+          org: f.people.org,
+          name: "mcp-secret-template",
+          scope: "personal",
+          definition: def,
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const saved = JSON.parse((created.content as { text: string }[])[0]!.text);
+      expect(saved.revision.definition.secrets).toEqual([binding]);
+      const published = await client.callTool({
+        name: "template_publish",
+        arguments: {
+          org: f.people.org,
+          id: saved.item.id,
+          expectedRevision: 1,
+          definition: def,
+        },
+      });
+      expect(published.isError).not.toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+    }
     const created = await f.create(f.people.owner, "personal", def);
     const templateId = (created.item as LaunchTemplate).id;
     const read = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId });
@@ -998,6 +1046,7 @@ test("secret bindings are immutable value-free references and cannot silently la
     for (const secrets of [
       [binding, binding],
       [{ ...binding, key: "OPENAI_API_KEY" }],
+      ...["NEXT_PUBLIC_", "VITE_", "PUBLIC_"].map((prefix) => [{ ...binding, key: prefix + "TOKEN" }]),
       [{ ...binding, value: "not-accepted" }],
       [{ ...binding, version: 0 }],
     ]) {

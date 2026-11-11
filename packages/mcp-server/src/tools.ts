@@ -404,6 +404,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         )
         .max(64)
         .optional(),
+      secrets: z
+        .array(
+          z.object({ key: z.string(), secretId: z.string().uuid(), version: z.number().int().positive() }).strict(),
+        )
+        .max(64)
+        .optional(),
       skills: z.array(z.string()).max(20).optional(),
     })
     .strict();
