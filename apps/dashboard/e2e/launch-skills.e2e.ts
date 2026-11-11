@@ -18,6 +18,12 @@ test("search metadata, select exact workspace and public versions, then launch",
   await expect(picker.getByText("Private", { exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/skills-picker-desktop.png", animations: "disabled" });
   await picker.getByRole("option", { name: /Code review/ }).click();
+  await expect(picker.getByLabel("Version", { exact: true })).toBeFocused();
+  await picker.getByRole("button", { name: "All skills" }).click();
+  await expect(picker.getByPlaceholder("Search skills")).toBeFocused();
+  await picker.getByPlaceholder("Search skills").press("ArrowDown");
+  await picker.getByPlaceholder("Search skills").press("Enter");
+  await expect(picker.getByLabel("Version", { exact: true })).toBeFocused();
   await picker.getByLabel("Version", { exact: true }).selectOption("2.0.0");
   await picker.getByRole("button", { name: "Add skill", exact: true }).click();
   await expect(launch.getByRole("button", { name: "Remove review-code@2.0.0" })).toBeVisible();
@@ -43,6 +49,7 @@ test("unavailable discovery retains exact-pin fallback and rejects floating vers
   const picker = page.getByRole("dialog", { name: "Choose additional skills" });
   await expect(picker.getByRole("alert")).toContainText("unavailable");
   await picker.getByRole("button", { name: "Enter exact pin" }).click();
+  await expect(picker.getByLabel("Exact skill pin")).toBeFocused();
   await picker.getByLabel("Exact skill pin").fill("notes@latest");
   await picker.getByRole("button", { name: "Add pin", exact: true }).click();
   await expect(picker.getByRole("alert")).toBeVisible();
@@ -93,3 +100,19 @@ for (const [name, viewport] of [
     await page.screenshot({ path: `test-results/skills-receipts-${name}.png`, animations: "disabled" });
   });
 }
+
+test("malformed version responses stay inside the picker and preserve exact-pin fallback", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/environments");
+  const launch = await openLaunch(page, "shared-golden", { advanced: false });
+  await launch.getByRole("button", { name: "Add skills", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Choose additional skills" });
+  await expect(picker.getByRole("option", { name: /Code review/ })).toBeVisible();
+  await post("/__test/skill-catalog-malformed", { malformed: true });
+  await picker.getByRole("option", { name: /Code review/ }).click();
+  await expect(picker.getByRole("alert")).toBeVisible();
+  await picker.getByRole("button", { name: "Enter exact pin" }).click();
+  await expect(picker.getByLabel("Exact skill pin")).toBeFocused();
+  await picker.getByLabel("Exact skill pin").fill("notes@1.0.0");
+  await picker.getByRole("button", { name: "Add pin", exact: true }).click();
+  await expect(launch.getByRole("button", { name: "Remove notes@1.0.0" })).toBeVisible();
+});

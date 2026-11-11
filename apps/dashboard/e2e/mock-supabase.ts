@@ -52,6 +52,7 @@ type State = {
   /** The route of each of `launches`, in order. */
   launchRoutes: string[];
   skillCatalogUnavailable?: boolean;
+  skillCatalogMalformed?: boolean;
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -1068,6 +1069,8 @@ function skillCatalogRoute(route: string, body: Row, request: Request): Response
   if (!user) return controlFail(401, "unauthorized", "Sign in again.");
   if (!isMember(body.org, user)) return controlFail(404, "not_found", "No such organization.");
   if (state.skillCatalogUnavailable) return controlFail(503, "unavailable", "The Skillpack catalog is unavailable.");
+  if (state.skillCatalogMalformed)
+    return json(route === "skillpack/versions" ? { versions: "invalid" } : { items: [{}], nextOffset: null });
   if (route === "skillpack/versions")
     return json({
       versions:
@@ -2779,6 +2782,10 @@ function control(url: URL, body: Row): Response {
       code: String(body.code),
       status: body.canceled ? "canceled" : "pending",
     });
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/skill-catalog-malformed") {
+    state.skillCatalogMalformed = body.malformed === true;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/skill-catalog-unavailable") {

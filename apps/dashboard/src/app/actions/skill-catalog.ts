@@ -5,7 +5,7 @@ import { ControlError, createControlClient } from "@/lib/control";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
-import { skillPinProblem } from "@/lib/skills";
+import { parseSkillCatalogPage, parseSkillVersions, skillPinProblem } from "@/lib/skills";
 
 type Failure = { ok: false; error: string; code?: string };
 
@@ -37,7 +37,14 @@ export async function listSkillCatalog(input: {
     return { ok: false, error: "That skill catalog request is not valid." };
   try {
     const control = await catalogClient(input.org);
-    return { ok: true, page: await control.post<SkillCatalogPage>("skillpack/catalog", input) };
+    const page = parseSkillCatalogPage(
+      await control.post<unknown>("skillpack/catalog", input),
+      input.source,
+      input.offset ?? 0,
+    );
+    return page
+      ? { ok: true, page }
+      : { ok: false, error: "The skill catalog sent an unreadable response. Enter an exact pin or try again." };
   } catch (error) {
     return failure(error);
   }
@@ -59,8 +66,14 @@ export async function listSkillVersions(input: {
     return { ok: false, error: "That skill reference is not valid." };
   try {
     const control = await catalogClient(input.org);
-    const result = await control.post<{ versions: string[] }>("skillpack/versions", input);
-    return { ok: true, versions: result.versions };
+    const versions = parseSkillVersions(
+      await control.post<unknown>("skillpack/versions", input),
+      input.source,
+      input.reference,
+    );
+    return versions
+      ? { ok: true, versions }
+      : { ok: false, error: "Skill versions could not be read. You can enter an exact pin instead." };
   } catch (error) {
     return failure(error);
   }

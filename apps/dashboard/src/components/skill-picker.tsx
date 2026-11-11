@@ -54,6 +54,21 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
   const [names, setNames] = useState<Record<string, SkillCatalogItem>>({});
   const listRequest = useRef(0);
   const versionRequest = useRef(0);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const exactPinInput = useRef<HTMLInputElement>(null);
+  const versionSelect = useRef<HTMLSelectElement>(null);
+  const versionsBack = useRef<HTMLButtonElement>(null);
+
+  const focusView = useCallback(() => {
+    if (manual) exactPinInput.current?.focus();
+    else if (!chosen) searchInput.current?.focus();
+    else if (!versionLoading && versions.length && !versionSelect.current?.disabled) versionSelect.current?.focus();
+    else versionsBack.current?.focus();
+  }, [manual, chosen, versionLoading, versions.length]);
+
+  useEffect(() => {
+    if (open) focusView();
+  }, [open, focusView]);
 
   const loadPage = useCallback(
     async (offset: number, request: number, activeSource: SkillCatalogSource) => {
@@ -161,6 +176,10 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
             align="end"
             className="w-[min(26rem,calc(100vw-3rem))] overflow-hidden p-0"
             aria-label="Choose additional skills"
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              focusView();
+            }}
           >
             <fieldset className="flex items-center gap-1 border-b p-2" aria-label="Skill source">
               {(
@@ -177,9 +196,12 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
                   aria-pressed={source === kind}
                   disabled={locked}
                   onClick={() => {
+                    ++versionRequest.current;
+                    setChosen(null);
                     setSource(kind);
                     setQuery("");
                     setManual(false);
+                    searchInput.current?.focus();
                   }}
                 >
                   {label}
@@ -189,7 +211,13 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
             {!manual && !chosen && (
               <>
                 <Command>
-                  <CommandInput placeholder="Search skills" value={query} onValueChange={setQuery} disabled={locked} />
+                  <CommandInput
+                    ref={searchInput}
+                    placeholder="Search skills"
+                    value={query}
+                    onValueChange={setQuery}
+                    disabled={locked}
+                  />
                   <CommandList className="max-h-60 overscroll-contain">
                     {!loading && !error && <CommandEmpty>No matching skills in the loaded results.</CommandEmpty>}
                     {items.map((item) => (
@@ -266,6 +294,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
             {chosen && !manual && (
               <div className="space-y-3 p-3">
                 <Button
+                  ref={versionsBack}
                   type="button"
                   size="sm"
                   variant="ghost"
@@ -289,6 +318,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-version`}>Version</Label>
                   <NativeSelect
+                    ref={versionSelect}
                     id={`${id}-version`}
                     value={version}
                     onChange={(event) => setVersion(event.target.value)}
@@ -333,6 +363,8 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
                   variant="ghost"
                   className="-ml-2"
                   onClick={() => {
+                    ++versionRequest.current;
+                    setChosen(null);
                     setManual(false);
                     setPinError(null);
                   }}
@@ -342,6 +374,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-pin`}>Exact skill pin</Label>
                   <Input
+                    ref={exactPinInput}
                     id={`${id}-pin`}
                     value={pin}
                     onChange={(event) => {
