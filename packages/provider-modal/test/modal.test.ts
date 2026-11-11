@@ -295,6 +295,22 @@ function fixture(
     },
   };
 }
+test("detail verifies the App once per read and still rejects a changed binding", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+  const lookup = f.client.apps.fromName;
+  let appReads = 0;
+  f.client.apps.fromName = async (...args) => {
+    appReads++;
+    return lookup(...args);
+  };
+  expect(await f.provider.get(row.id)).toMatchObject({ id: row.id, state: "ready" });
+  expect(appReads).toBe(1);
+  f.wrongApp();
+  await expect(f.provider.get(row.id)).rejects.toMatchObject({ code: "forbidden" });
+  expect(appReads).toBe(2);
+});
+
 test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
   const f = fixture();
   const key = Buffer.alloc(32, 61).toString("base64");
