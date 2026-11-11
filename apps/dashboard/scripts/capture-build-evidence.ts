@@ -24,9 +24,9 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
-          const notice = page
-            .getByRole(phase === "before" ? "alert" : "status")
-            .filter({ hasText: "The Armada server is not configured" });
+          const notice = (
+            phase === "after" ? page.getByRole("status") : page.locator('[role="alert"], [role="status"]')
+          ).filter({ hasText: "The Armada server is not configured" });
           await expect(notice).toBeVisible();
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.screenshot({

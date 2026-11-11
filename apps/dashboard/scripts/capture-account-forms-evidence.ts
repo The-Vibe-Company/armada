@@ -23,8 +23,11 @@ try {
         await context.addInitScript((v) => localStorage.setItem("theme", v), theme);
         const page = await context.newPage();
         await signIn(page, "alice@example.com", "/orgs");
-        if (phase === "after") {
-          await page.getByRole("button", { name: "New org", exact: true }).click();
+        await expect(page.getByRole("heading", { name: "Organizations", level: 1, exact: true })).toBeVisible();
+        const create = page.getByRole("button", { name: "New org", exact: true });
+        // Later baselines may already contain the dialog rather than the original card.
+        if (phase === "after" || (await create.isVisible())) {
+          await create.click();
           await expect(page.getByRole("dialog", { name: "Create an org" })).toBeVisible();
         }
         const name = page.getByLabel("Name", { exact: true });
