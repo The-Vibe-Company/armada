@@ -2016,7 +2016,15 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   return {
     isError: true,
     ...(error instanceof LaunchError && error.reason
-      ? { structuredContent: { error: { code, message, details: { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) } } } }
+      ? {
+          structuredContent: {
+            error: {
+              code,
+              message,
+              details: { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) },
+            },
+          },
+        }
       : {}),
     ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [
