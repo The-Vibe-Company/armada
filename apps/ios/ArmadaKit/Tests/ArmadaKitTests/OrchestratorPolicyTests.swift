@@ -241,7 +241,9 @@ private func catalog() async throws -> (OrchestratorCreateCatalog, PolicyTranspo
 }
 
 @Test func everyCodeGetsAPlainSentence() {
-    for code in ["conflict", "unavailable", "runtime_uncertain", "not_found", "invalid_request", "create_recovered_terminated", "stop_recovered_terminated", "native_state_lost"] {
+    for code in ["conflict", "unavailable", "runtime_uncertain", "not_found", "invalid_request", "create_recovered_terminated", "stop_recovered_terminated", "native_state_lost",
+                 "provider_payment_required", "credential_refused", "provider_unavailable", "dependency_unavailable", "outcome_unknown",
+                 "boat_conversation_unavailable", "previous_conversation_not_continued", "skillpack_scope_refused"] {
         let text = OrchestratorExplanation.text(for: code)
         #expect(!text.contains("_") && text.hasSuffix(".") && text != code)
     }
@@ -432,4 +434,44 @@ private actor Sleeps {
     #expect(await sleeps.delays == [.seconds(2)])
     // The accepted create stays saved for the list to settle later.
     #expect(await client.pendingOperations.first { $0.id == command.id }?.state == .pending)
+}
+
+// #941: since #806 the server records `connections_add` and `connections_remove` receipts. The 2.19
+// detail and events of an orchestrator whose connections changed must still decode (the shapes are
+// those the 2.19 server answers), keeping the kind as reported.
+@Test func receiptsOfConnectionChangesDecodeInDetailAndEvents() async throws {
+    func receipt(_ id: String, _ kind: String, _ revision: Int) -> String {
+        #"{"version":1,"id":"\#(id)","orchestratorId":"orch-new","kind":"\#(kind)","state":"succeeded","revision":\#(revision),"errorCode":null}"#
+    }
+    let operations = [receipt("op-create", "create", 1), receipt("op-add", "connections_add", 2), receipt("op-remove", "connections_remove", 3)]
+    let detail = createDetail(state: "ready", operation: operations.joined(separator: ","))
+        .replacingOccurrences(of: #""childSandboxIds":[]}"#, with: #""childSandboxIds":[],"connections":[{"id":"c-1","name":"Linear"}]}"#)
+    let events = #"{"version":1,"events":[{"kind":"connections","connections":[],"id":"3","orchestratorId":"orch-new","at":"2026-11-11T00:00:00Z","revision":1},"#
+        + #"{"kind":"operation","operation":\#(receipt("op-add", "connections_add", 2)),"id":"4","orchestratorId":"orch-new","at":"2026-11-11T00:00:01Z","revision":2}],"#
+        + #""cursor":"c4","hasMore":false}"#
+    let (client, _, _) = try await signedIn([(200, detail), (200, events)])
+    let read = try await client.orchestratorDetail(id: "orch-new")
+    #expect(read.operations.map(\.kind.rawValue) == ["create", "connections_add", "connections_remove"])
+    #expect(OrchestratorCreateProgress(detail: read) == .ready)
+    #expect(OrchestratorControls(detail: read, agentWorking: false).canMessage)
+    let page = try await client.orchestratorEvents(id: "orch-new", backward: true)
+    #expect(page.events.count == 2)
+    guard case .operation(let operation) = page.events[1].body else { Issue.record("operation event"); return }
+    #expect(operation.kind.rawValue == "connections_add")
+}
+
+// #941: a create the provider refused for billing (#919) says why, in words, and can be recovered
+// (the server records it as having started no machine).
+@Test func aCreateRefusedByTheProviderSaysWhyAndCanBeRecovered() {
+    let refused = OrchestratorControls(state: "blocked", continuity: "not_started", blockedReason: "provider_payment_required",
+                                       revision: 1, operations: [("create", "failed", 1, "provider_payment_required")], agentWorking: false)
+    let reason = OrchestratorExplanation.text(for: "provider_payment_required")
+    #expect(!reason.contains("_") && !reason.contains("did not explain"))
+    #expect(refused.canRecover && refused.composerNote == "Creation failed. " + reason)
+    #expect(OrchestratorCreateProgress(state: "blocked", operations: [("create", "failed", "provider_payment_required")],
+                                       blockedReason: "provider_payment_required") == .failed(reason))
+    // A create whose machine was stopped after it failed says why it failed, not only that it stopped.
+    let stopped = OrchestratorControls(state: "stopped", continuity: "not_started", blockedReason: nil, revision: 1,
+                                       operations: [("create", "failed", 1, "skillpack_install_nonzero")], agentWorking: false)
+    #expect(stopped.composerNote == "Creation failed. " + OrchestratorExplanation.text(for: "skillpack_install_nonzero"))
 }

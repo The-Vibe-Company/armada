@@ -5,7 +5,21 @@ public enum OrchestratorContinuity: String, Codable, Sendable { case notStarted 
 /// `recover` is a request only: its receipt is the `stop` (or `create`) operation it settles.
 public enum OrchestratorAction: String, Codable, Sendable { case create, message, steer, stop, resume, recover
     /// Receipt kinds the server answers for this request.
-    var receiptKinds: Set<OrchestratorAction> { self == .recover ? [.stop, .create] : [self] }
+    var receiptKinds: Set<OrchestratorOperationKind> {
+        self == .recover ? [.stop, .create] : [OrchestratorOperationKind(rawValue: rawValue)!]
+    }
+}
+/// What an operation receipt records. Open: the server records more than the app requests
+/// (`connections_add`, `connections_remove` since #806), and a detail or event page listing one
+/// must still decode. The constants only name today's kinds.
+public struct OrchestratorOperationKind: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+    public init?(rawValue: String) { guard !rawValue.isEmpty else { return nil }; self.rawValue = rawValue }
+    public static let create = OrchestratorOperationKind(rawValue: "create")!
+    public static let message = OrchestratorOperationKind(rawValue: "message")!
+    public static let steer = OrchestratorOperationKind(rawValue: "steer")!
+    public static let stop = OrchestratorOperationKind(rawValue: "stop")!
+    public static let resume = OrchestratorOperationKind(rawValue: "resume")!
 }
 public enum OrchestratorOperationState: String, Codable, Sendable { case pending, succeeded, failed, uncertain }
 /// Provider and harness ids are open: the server's capabilities say which exist and which pairs are
@@ -73,7 +87,7 @@ public struct OrchestratorOperation: Codable, Sendable, Identifiable {
     public let version: Int
     public let id: String
     public let orchestratorId: String
-    public let kind: OrchestratorAction
+    public let kind: OrchestratorOperationKind
     public let state: OrchestratorOperationState
     public let revision: Int
     public let errorCode: String?

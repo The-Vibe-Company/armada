@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ArmadaKit
 
 /// A local message the person sent that the conversation does not show yet.
 struct PendingBubble: Identifiable, Hashable {
@@ -277,7 +278,7 @@ private struct NoticeRow: View {
         case .blocked: "Needs attention"
         case .continuityLost: "The saved conversation was lost"
         case .operationFailed(let kind, let code):
-            code.map { "\(kind.label) failed (\($0))" } ?? "\(kind.label) failed"
+            code.map { "\(kind.label) failed. " + ArmadaKit.OrchestratorExplanation.text(for: $0) } ?? "\(kind.label) failed"
         case .operationUncertain(let kind): "\(kind.label) not confirmed yet"
         case .childLaunched(let sandboxID): "Launched worker \(sandboxID.prefix(8))"
         case .waiting(let kind, let reason, _): "Waiting on \(kind): \(reason)"
