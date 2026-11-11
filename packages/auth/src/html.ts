@@ -29,15 +29,22 @@ export function loginPage(csrf: string): Response {
   );
 }
 
-export function orgPage(orgs: readonly { orgId: string; name: string; role: string }[], csrf: string): Response {
-  const buttons = orgs
+export function orgPage(
+  orgs: readonly { orgId: string; name: string; role: string }[],
+  csrf: string,
+  clientName: string,
+  redirectUri: string,
+): Response {
+  const redirect = new URL(redirectUri);
+  const destination = redirect.host ? `${redirect.protocol}//${redirect.host}` : redirect.protocol;
+  const choices = orgs
     .map(
-      (org) =>
-        `<p><button type="submit" name="org" value="${escapeHtml(org.orgId)}">${escapeHtml(org.name)} (${escapeHtml(org.role)})</button></p>`,
+      (org, index) =>
+        `<p><label><input type="radio" name="org" value="${escapeHtml(org.orgId)}"${index === 0 ? " checked" : ""}>${escapeHtml(org.name)} (${escapeHtml(org.role)})</label></p>`,
     )
     .join("");
   return page(
-    "Choose an organization",
-    `<form method="post" action="/oauth/org"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${buttons}</form>`,
+    "Authorize MCP client",
+    `<p><strong>${escapeHtml(clientName)}</strong> requests access to Armada.</p><p>This name is supplied by the client and does not verify its identity. Callback destination: ${escapeHtml(destination)}</p><p>Allow this client to act as you in the selected organization through Armada MCP, including viewing organization resources available to you, launching and controlling agents, and running sandbox commands. Your current organization role and private-resource access rules still apply.</p><form method="post" action="/oauth/org"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${choices}<button type="submit" name="decision" value="allow">Allow</button><button type="submit" name="decision" value="cancel">Cancel</button></form>`,
   );
 }
