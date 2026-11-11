@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { decryptSecret, encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
@@ -152,3 +153,6 @@ async function setup() {
   }
   return world;
 }
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

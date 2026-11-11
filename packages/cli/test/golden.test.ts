@@ -12,6 +12,7 @@ import {
 import { type ControlOptions, createSqlData, handleControlRequest } from "@armada/mcp-server";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
@@ -404,3 +405,6 @@ function fakeCreateProvider(): Provider {
     delete: async () => ({ status: "pending" }),
   };
 }
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore, encryptSecret, mutateCredentialAccount } from "@armada/core/server";
 import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { database, ENCRYPTION_KEY, SECRETS } from "./support.ts";
@@ -288,3 +289,6 @@ test("Modal native Codex bootstrap still requires actual rotating-account owners
     await db.close();
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

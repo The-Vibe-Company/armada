@@ -20,6 +20,7 @@ import {
   type Scope,
 } from "@armada/provider-modal";
 import type { Image, ModalClient, Sandbox } from "modal";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
@@ -376,3 +377,6 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
     await rm(files, { recursive: true, force: true });
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

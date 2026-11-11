@@ -1,20 +1,12 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
 import { createSqlVaultStore } from "@armada/core";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubAccountApi } from "../src/github-account.ts";
 
-const auditEvents: Record<string, unknown>[] = [];
-let restoreInfo: (() => void) | undefined;
-beforeEach(() => {
-  auditEvents.length = 0;
-  const log = spyOn(console, "info").mockImplementation((line) => {
-    auditEvents.push(JSON.parse(String(line)) as Record<string, unknown>);
-  });
-  restoreInfo = () => log.mockRestore();
-});
-afterEach(() => restoreInfo?.());
+const auditEvents = captureGitHubAuditLogs();
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const other = "22222222-2222-4222-8222-222222222222";

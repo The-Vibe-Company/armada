@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import {
   decryptSecret,
   EncryptionKeyError,
@@ -31,16 +32,7 @@ const ACCESS_1 = "ghu_access_one_aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ACCESS_2 = "ghu_access_two_bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const NOW = new Date("2026-11-08T12:00:00.000Z");
 
-const auditEvents: Record<string, unknown>[] = [];
-let restoreInfo: (() => void) | undefined;
-beforeEach(() => {
-  auditEvents.length = 0;
-  const log = spyOn(console, "info").mockImplementation((line) => {
-    auditEvents.push(JSON.parse(String(line)) as Record<string, unknown>);
-  });
-  restoreInfo = () => log.mockRestore();
-});
-afterEach(() => restoreInfo?.());
+const auditEvents = captureGitHubAuditLogs();
 
 describe("GitHub access at launch", () => {
   test("refreshes the user token, stores the rotated refresh token and returns the person's git identity", async () => {

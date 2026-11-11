@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { EncryptionKeyError, type GitHubInstallation } from "@armada/core";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import {
   type ConnectDeps,
   completeGitHubConnection,
@@ -17,16 +18,7 @@ import {
   storedGitHubInstallations,
 } from "../src/lib/github.ts";
 
-const auditEvents: Record<string, unknown>[] = [];
-let restoreInfo: (() => void) | undefined;
-beforeEach(() => {
-  auditEvents.length = 0;
-  const log = spyOn(console, "info").mockImplementation((line) => {
-    auditEvents.push(JSON.parse(String(line)) as Record<string, unknown>);
-  });
-  restoreInfo = () => log.mockRestore();
-});
-afterEach(() => restoreInfo?.());
+const auditEvents = captureGitHubAuditLogs();
 
 const APP = { clientId: "Iv1.test", clientSecret: "client-secret-value" };
 const ACCESS = "ghu_0123456789abcdefghijABCDEFGHIJ0123";

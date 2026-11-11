@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
@@ -119,3 +120,6 @@ describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (Postgr
     }
   }, 60000);
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();
