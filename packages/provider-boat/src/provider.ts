@@ -145,6 +145,7 @@ export interface BoatProviderOptions {
 const RESTORING = "sandbox_restoring";
 const RESTORE_RETRIES = 5;
 const RESTORE_WAIT_MS = 2000;
+const NOT_READY_WAIT_MS = 1000;
 
 function ttl(requested: number | undefined, fallback: number): number {
   const seconds = requested ?? fallback;
@@ -553,8 +554,38 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         ...(request.detached ? { detached: true } : {}),
       };
       for (let attempt = 1; ; attempt++) {
+        request.signal?.throwIfAborted();
+        if (request.onlyIfRunning) {
+          // Capture precedes stop and must never resume retained compute. A transient
+          // startup may settle, but stopping/terminal compute cannot accept capture.
+          // The extra GET for every chunk is deliberate: refuse compute that
+          // stopped mid-download rather than implicitly resuming it.
+          const current = await provider.get(
+            request.sandboxId,
+            request.signal ? { signal: request.signal } : undefined,
+          );
+          request.signal?.throwIfAborted();
+          if (current.physicalExitConfirmed || !["ready", "running"].includes(current.state)) {
+            if (current.state === "starting" && attempt < RESTORE_RETRIES) {
+              await sleep(NOT_READY_WAIT_MS);
+              continue;
+            }
+            throw new ProviderError({
+              provider: PROVIDER_ID,
+              code: "sandbox_not_ready",
+              // Local admission refusal, not an HTTP response from Boat.
+              message: "Capture requires running compute.",
+              retryable: false,
+            });
+          }
+        }
         try {
-          const response = await call(() => api.command({ sandboxId: request.sandboxId, commandRequest }));
+          const response = await call(() =>
+            api.command(
+              { sandboxId: request.sandboxId, commandRequest },
+              request.signal ? { signal: request.signal } : undefined,
+            ),
+          );
           if ("processId" in response) return { detached: true, processId: response.processId };
           if (!("exitCode" in response)) throw unexpectedAnswer("command result");
           return {
@@ -567,8 +598,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           };
         } catch (error) {
           const restoring = error instanceof Error && "details" in error && isRestoring(error.details);
-          if (!restoring || attempt >= RESTORE_RETRIES) throw error;
-          await sleep(RESTORE_WAIT_MS);
+          const notReady =
+            request.onlyIfRunning &&
+            error instanceof ProviderError &&
+            error.code === "sandbox_not_ready" &&
+            error.status === 409;
+          if ((!restoring && !notReady) || attempt >= RESTORE_RETRIES) throw error;
+          // A 409 refusal did not execute the command. Never replay ambiguous errors.
+          await sleep(notReady ? NOT_READY_WAIT_MS : RESTORE_WAIT_MS);
         }
       }
     },

@@ -121,6 +121,17 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
           : undefined;
+      // Older control servers used not_found for both resource misses and route misses.
+      // Compare only the fixed legacy sentinel; never echo untrusted response text.
+      const legacyUnknownRoute =
+        failureCode === "not_found" &&
+        (payload as { error?: { message?: unknown } }).error?.message === "Unknown route.";
+      if (response.status === 404 && (!failureCode || failureCode === "unknown_route" || legacyUnknownRoute))
+        throw new ArmadaApiError(
+          "unavailable",
+          response.status,
+          `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
+        );
       if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode))
         throw new ArmadaApiError(failureCode, response.status, API_FAILURE_HELP[failureCode as ApiFailureCode]);
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
@@ -130,7 +141,9 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         const denied = response.status === 403;
         throw new AuthError(
           denied
-            ? "Sandbox interior access requires current organization membership and the owner or an org admin."
+            ? path === "/api/v1/github/refresh"
+              ? "GitHub refresh requires current organization membership and the sandbox owner."
+              : "Sandbox interior access requires current organization membership and the owner or an org admin."
             : response.status === 404
               ? "Sandbox not found or not accessible."
               : `Sandbox operation failed (${response.status}). Check access and sandbox status before retrying.`,
@@ -315,6 +328,7 @@ function isSandboxInteriorPath(path: string): boolean {
   return (
     /^\/api\/v1\/sandbox\/(?:detail|status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
     /^\/api\/v1\/sandboxes\/[0-9a-f-]+(?:\?.*)?$/i.test(path) ||
+    path === "/api/v1/github/refresh" ||
     path === "/api/v1/logs/read" ||
     path === "/api/v1/mcp/sandbox-connections"
   );

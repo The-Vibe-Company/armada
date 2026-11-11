@@ -15,7 +15,11 @@ import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
 import { OrchestratorCreateJobs } from "./orchestrator-create-jobs.ts";
-import { type OrchestratorDiagnosticLog, OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
+import {
+  type OrchestratorCleanupStep,
+  type OrchestratorDiagnosticLog,
+  OrchestratorDiagnostics,
+} from "./orchestrator-diagnostics.ts";
 import { createManagedOrchestratorRuntime } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeFoundation, OrchestratorRuntimeTransport } from "./orchestrator-runtime-foundation.ts";
 import {
@@ -660,21 +664,43 @@ export class OrchestratorRuntime {
       const refused = error instanceof PromptRefused;
       const privateFailure = error instanceof PrivateSkillError;
       let privateCreateStopped = false;
+      let discardedCreate = false;
+      let cleanupFailureStep: OrchestratorCleanupStep | undefined;
+      let cleanupFailureError: unknown;
       if (privateFailure && reservation.operation.kind === "create") {
         // Skills precede authority installation and the first conversation. Stop the
         // failed allocation; never claim a terminal parent while it may still run.
+        let cleanupStep: OrchestratorCleanupStep = "fence";
         try {
           const identity = reservation.identity;
           await this.options.store.assertCreateCurrent(reservation);
+          cleanupStep = "resolve";
           const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
+          cleanupStep = "revalidate";
           await backend.revalidate(identity);
+          cleanupStep = "unconfirmed";
           if (identity.providerSandboxId && !identity.conversationId) {
-            await backend.provider.stop({ sandboxId: identity.providerSandboxId });
-            privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+            if (backend.provider.id === "modal") {
+              // A pre-turn failed create has no native session/checkpoint to save.
+              // Stop attempts to checkpoint on Modal and can fail for that reason.
+              // Dispose only this fresh, fenced allocation; never discard a resume.
+              cleanupStep = "delete";
+              discardedCreate =
+                (await backend.provider.delete({ sandboxId: identity.providerSandboxId })).status === "deleted";
+              cleanupStep = "unconfirmed";
+              privateCreateStopped = discardedCreate;
+            } else {
+              cleanupStep = "stop";
+              await backend.provider.stop({ sandboxId: identity.providerSandboxId });
+              cleanupStep = "unconfirmed";
+              privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+            }
           }
-        } catch {
+        } catch (cleanupError) {
+          cleanupFailureError = cleanupError;
           // Preserve the installation reason. Unconfirmed cleanup stays blocked.
         }
+        if (!privateCreateStopped) cleanupFailureStep = cleanupStep;
       }
       const state = lost || refused || privateFailure ? ("failed" as const) : ("uncertain" as const);
       const errorCode = refused
@@ -687,6 +713,7 @@ export class OrchestratorRuntime {
               ? error.reason
               : "runtime_uncertain";
       diagnostics.report(state, refused ? error.refusal : error);
+      if (cleanupFailureStep) diagnostics.cleanupFailure(cleanupFailureStep, cleanupFailureError);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.
@@ -695,6 +722,7 @@ export class OrchestratorRuntime {
         published = await this.options.store.complete(reservation, {
           state,
           parentState: refused ? "ready" : privateCreateStopped ? "stopped" : "blocked",
+          ...(discardedCreate ? { discardedCreate: true } : {}),
           errorCode,
           ...(lost
             ? { continuity: "lost" as const }

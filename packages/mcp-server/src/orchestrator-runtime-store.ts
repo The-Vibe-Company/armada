@@ -1125,6 +1125,7 @@ export class OrchestratorRuntimeStore {
     result: {
       state: OrchestratorOperation["state"];
       parentState?: OrchestratorState;
+      discardedCreate?: boolean;
       conversationId?: string;
       promptReceipt?: { promptId: string; conversationId: string; status: string };
       errorCode?: string;
@@ -1160,9 +1161,9 @@ export class OrchestratorRuntimeStore {
         await tx.query(`update public.orchestrators set state=$2 where id=$1`, [identity.id, result.parentState]);
       if (operation.kind === "create" && result.state === "failed" && result.parentState === "stopped")
         await tx.query(
-          `update public.sandboxes set status='stopped',stopped_at=coalesce(stopped_at,now()),last_observed_at=now()
+          `update public.sandboxes set status=case when $4 then 'deleted'::public.sandbox_status else 'stopped'::public.sandbox_status end,stopped_at=coalesce(stopped_at,now()),deleted_at=case when $4 then coalesce(deleted_at,now()) else deleted_at end,last_observed_at=now()
            where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3`,
-          [identity.sandboxId, identity.generation, identity.providerSandboxId],
+          [identity.sandboxId, identity.generation, identity.providerSandboxId, result.discardedCreate ?? false],
         );
       await tx.query(
         `update public.orchestrator_runtime set updated_at=now(),blocked_reason=$2,

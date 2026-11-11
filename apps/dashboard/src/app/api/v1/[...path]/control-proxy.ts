@@ -8,6 +8,7 @@ const PRIVATE_POST_PATHS = new Set([
   "account/status",
   "account/logout",
   "github/status",
+  "github/refresh",
   "github/connect",
   "github/reconnect",
   "github/disconnect",
@@ -57,6 +58,8 @@ const PRIVATE_POST_PATHS = new Set([
   "sandbox/list",
   "sandbox/detail",
   "sandbox/status",
+  "sandbox/recovery",
+  "sandbox/report",
   "sandbox/advice",
   "sandbox/send",
   "sandbox/stop",
@@ -104,7 +107,10 @@ function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean
 }
 
 function fail(status: number, error: string): Response {
-  return NextResponse.json({ error }, { status, headers: { "cache-control": "no-store" } });
+  return NextResponse.json(
+    status === 404 ? { error: { code: "unknown_route", message: "Unknown route." } } : { error },
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /** Bound raw streamed bytes before decoding/forwarding, including absent/chunked length. */

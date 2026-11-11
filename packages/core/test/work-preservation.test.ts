@@ -133,13 +133,23 @@ test("an unresponsive provider is bounded and late output cannot become success"
     return original(() => {}, 100_000);
   }) as typeof setTimeout;
   try {
-    const result = preserveWork({ exec: () => new Promise(() => {}) }, "sandbox");
+    let signal: AbortSignal | undefined;
+    const result = preserveWork(
+      {
+        exec: (request) => {
+          signal = request.signal;
+          return new Promise(() => {});
+        },
+      },
+      "sandbox",
+    );
     expire?.();
     expect(await result).toEqual({
       status: "failed",
       reason: "timeout",
       diagnostic: { stage: "collect_exec", errorClass: "timeout", providerStatus: null },
     });
+    expect(signal?.aborted).toBe(true);
   } finally {
     globalThis.setTimeout = original;
   }

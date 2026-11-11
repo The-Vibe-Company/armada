@@ -175,7 +175,7 @@ test("invitation API errors remain useful without echoing server text or tokens"
   ] as const) {
     const result = await invoke(["accept", "--json"], {
       status,
-      response: { error: { message: "fixture-invitation-token" } },
+      response: { error: { code: status === 404 ? "not_found" : "unavailable", message: "fixture-invitation-token" } },
     });
     expect(result.code).not.toBe(0);
     expect(result.out).toBe("");

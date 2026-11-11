@@ -149,7 +149,10 @@ for (const path of [
       const client = await createArmadaApiClient({
         ...io({ ARMADA_TOKEN: token }),
         fetch: (async () =>
-          Response.json({ error: { message: `upstream ${token}` } }, { status })) as unknown as typeof fetch,
+          Response.json(
+            { error: { code: status === 404 ? "not_found" : "unavailable", message: `upstream ${token}` } },
+            { status },
+          )) as unknown as typeof fetch,
       });
       try {
         await client.request(`/api/v1/${path}`);
