@@ -242,6 +242,64 @@ test("template launch freezes selection before allocation, delivers readable val
   }
 });
 
+for (const mode of ["before_commit", "after_commit", "both_before_commit", "both_after_commit"] as const) {
+  test(`template launch result publication recovers without redispatch (${mode})`, async () => {
+    const f = await fixture();
+    const query = f.sql.query.bind(f.sql);
+    let publications = 0;
+    const injected = spyOn(f.sql, "query").mockImplementation(async <T>(text: string, params?: unknown[]) => {
+      if (!text.startsWith("update public.template_launch_requests set state='succeeded'"))
+        return query<T>(text, params);
+      publications++;
+      const lose = publications === 1 || mode.startsWith("both_");
+      if (lose && mode.endsWith("before_commit")) throw Error("publication transport unavailable");
+      const result = await query<T>(text, params);
+      if (lose) throw Error("publication acknowledgement lost");
+      return result;
+    });
+    try {
+      const t = (await f.create()).item as LaunchTemplate;
+      const result = await f.launch(t.id);
+      const row = (
+        await f.db.query<{ state: string; result: unknown }>(
+          "select state,result from template_launch_requests where id=$1",
+          [result.requestId],
+        )
+      ).rows[0]!;
+      const expected = mode === "both_before_commit" ? "reconciling" : "succeeded";
+      expect(row.state).toBe(expected);
+      expect(publications).toBe(2);
+      if (mode.startsWith("both_")) expect(result.state).toBe("reconciling");
+      else expect(result.state).toBe("succeeded");
+      const restarted = createTemplateService(f.sql);
+      const replay = await restarted.command(
+        f.actor(),
+        "launch",
+        {
+          org: f.people.org,
+          id: t.id,
+          requestKey: "request-1",
+          prompt: "Inspect configuration",
+        },
+        f.runtime,
+      );
+      expect(replay.state).toBe(expected);
+      if (expected === "succeeded") {
+        expect(row.result).toEqual(replay);
+        const sandbox = (
+          await f.db.query<{ task_prompt_id: string }>("select task_prompt_id from sandboxes where id=$1", [replay.id])
+        ).rows[0]!;
+        expect(replay.promptId).toBe(sandbox.task_prompt_id);
+      } else expect(row.result).toBeNull();
+      expect(f.boat.forks).toHaveLength(1);
+      expect(f.boat.prompts).toHaveLength(1);
+    } finally {
+      injected.mockRestore();
+      await f.db.close();
+    }
+  });
+}
+
 test("unknown provider outcomes remain durable reconciling across service restart and never allocate again", async () => {
   const f = await fixture();
   try {

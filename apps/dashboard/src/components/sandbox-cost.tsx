@@ -13,6 +13,7 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
   const facts: [string, string][] = [
     ["Input", formatTokens(cost.tokens.input)],
     ["Cached input", formatTokens(cost.tokens.cached)],
+    ["Cache writes", formatTokens(cost.tokens.cacheWrite)],
     ["Output", formatTokens(cost.tokens.output)],
     ["Turns", String(cost.turnCount)],
     ["Compute time", cost.computeSeconds === null ? "Not recorded" : formatDuration(cost.computeSeconds)],
@@ -42,7 +43,9 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
               </p>
               {figure.kind === "priced" && figure.partial && (
                 <p className="text-xs text-warning">
-                  Leaves out {cost.unpricedTurns} turn{cost.unpricedTurns === 1 ? "" : "s"} without a known price.
+                  {cost.unpricedTurns > 0
+                    ? `Leaves out ${cost.unpricedTurns} turn${cost.unpricedTurns === 1 ? "" : "s"} without complete token reporting or a known price.`
+                    : "Usage coverage is incomplete; this is only the reported subtotal."}
                 </p>
               )}
             </div>
@@ -62,8 +65,8 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
               <TurnTable cost={cost} />
             </details>
             <p className="text-xs text-muted-foreground">
-              List prices of {MODEL_PRICES_AS_OF}, short-prompt rates. Armada does not record cache writes, so they are
-              not counted.
+              List prices of {MODEL_PRICES_AS_OF}, short-prompt rates. Cache writes use the listed 5-minute Claude or
+              30-minute OpenAI rate; actual billing may differ.
             </p>
           </>
         )}
@@ -92,6 +95,9 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
               Cached
             </th>
             <th scope="col" className="py-1 pr-2 text-right font-normal">
+              Writes
+            </th>
+            <th scope="col" className="py-1 pr-2 text-right font-normal">
               Out
             </th>
             <th scope="col" className="py-1 text-right font-normal">
@@ -113,6 +119,7 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
               </td>
               <td className="py-1 pr-2 text-right">{tokens(turn.inputTokens)}</td>
               <td className="py-1 pr-2 text-right">{tokens(turn.cachedTokens)}</td>
+              <td className="py-1 pr-2 text-right">{tokens(turn.cacheWriteTokens)}</td>
               <td className="py-1 pr-2 text-right">{tokens(turn.outputTokens)}</td>
               <td className="py-1 text-right">
                 {turn.usd !== null ? (
@@ -132,7 +139,7 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
 }
 
 function tokens(value: number | null): string {
-  return value === null ? "–" : formatTokens(value);
+  return formatTokens(value);
 }
 
 /**

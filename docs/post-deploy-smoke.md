@@ -217,3 +217,42 @@ pairs, gate/revision assertions and disposable push authority. See the
 First run the default smoke above with the staging gate off for the stock baseline;
 then retire those workers and turn staging on before running the new mode. A zero
 exit from this partial slice does not authorize production enablement.
+
+### Work-preservation slice (#969)
+
+Both staging workflow entrypoints now pass `--work-preservation`. This mode
+refuses any origin other than `https://armada-mcp-staging.up.railway.app` before
+making requests. The existing case format is unchanged: every selected pair runs
+twice, using separate disposable sandboxes. The first must start clean with no
+local-only refs and stop without a preservation note or recovery archive. The
+second creates a single empty, unpushed commit (no remote push), stops, retrieves
+the same recovery endpoint used by `armada recovery`, and checks the in-memory
+tar manifest for that exact commit. The selected bundle pack is indexed with Git
+in a private temporary object store, then Git must read the expected commit
+object. Incremental bundle prerequisite parents/trees need not be present; this
+is an object-payload check, not a full checkout/restore. The archive is capped at
+3 MiB base64, Git subprocesses at 10 seconds each, and the temporary store is
+removed in a finally block. No tar paths are extracted. Archive contents, commit
+IDs and Git/provider output are never logged. The smoke runner now requires Git.
+
+Named steps are `preservation_clean_checkout`, `preservation_commit`,
+`preservation_clean_stop` and `preservation_archive`. Missing or mismatched
+archives fail with `preservation_failed`; the existing stop and cleanup receipts
+still confirm provider termination. Recovery is checked after stop/status so a
+lifecycle capture overwriting the stop result cannot silently pass.
+
+Budget: two allocations and two trivial model turns per selected pair, instead
+of one. Expect roughly 4–10 minutes per pair (provider/model dependent); the
+whole run remains capped at 35 minutes plus five minutes reserved for cleanup,
+inside the 45-minute workflow limit. Four slow pairs can exhaust this budget and
+fail closed. Cost is twice the baseline sandbox/model usage, plus small recovery
+storage; stopped disks/archives retain the normal retention cost. No dollar
+estimate is reliable without the configured provider/model rates. Do not run
+this mode with production credentials. Live staging execution is performed by
+the existing post-deploy workflows, not by a PR or offline test run.
+
+Remaining #969 families (not claimed by this slice): full sandbox resume/expiry/
+list consistency and timings/leftover summaries; GitHub refresh; vault; templates;
+public/private skills and golden pinned digest verification. These are
+verification follow-ups, not new product capabilities. Per the owner decision
+on #969, orchestrators are excluded; their removal belongs to a separate ticket.

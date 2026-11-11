@@ -419,12 +419,12 @@ public struct SandboxLaunchReceipt: Decodable, Sendable, Equatable {
 // MARK: Refusals
 
 /// Why a launch did not give a sandbox, for the person. Nothing here renders a raw body: a code
-/// selects local text, and a server message is shown only for validation codes, on one bounded line.
+/// selects local text, and a server message is shown only for Armada-authored validation and missing-credential codes, on one bounded line.
 public struct SandboxLaunchRefusal: Sendable, Equatable {
     public let code: String
     public let title: String
     public let hint: String
-    /// The server's own short reason, for validation refusals only.
+    /// The server's own short reason, for validation and missing-credential refusals only.
     public let detail: String?
 }
 
@@ -454,9 +454,10 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     ]
     /// Launch steps that fail after the fork (`LaunchError` in `@armada/core`).
     static let postStartCodes: Set<String> = ["start_failed", "init_failed", "prompt_failed"]
-    /// Validation messages the server writes itself; safe to show on one line.
+    /// Validation and missing-credential messages Armada writes itself; safe to show on one line.
     static let detailCodes: Set<String> = [
         "invalid", "invalid_request", "invalid_config", "conflict", "not_found", "forbidden",
+        "missing_credential", "no_credentials",
     ]
     /// Codes that mean the outcome is not known. The server answers them as 5xx; they stay
     /// unconfirmed even on a 4xx, so a refusal is never inferred from them.
@@ -532,7 +533,8 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
             help = ("Armada refused this launch", "Check the choices and launch again.")
             showsMessage = true
         }
-        let detail = showsMessage ? message.flatMap(oneLine) : nil
+        let cleaned = showsMessage ? message.flatMap(oneLine) : nil
+        let detail = cleaned == code ? nil : cleaned
         return SandboxLaunchRefusal(code: code, title: help.0, hint: help.1, detail: detail)
     }
 

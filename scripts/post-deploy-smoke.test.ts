@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 
 const selected = {
@@ -758,4 +760,131 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
       );
     expect(fake.lines.join("")).not.toContain("secret");
   }
+});
+
+// Exercises the smoke's verdict, not the product collector (covered in core).
+test("preservation checks both providers and rejects missing, wrong or overwritten recovery without leaking material", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "armada-smoke-fixture-"));
+  function git(...args: string[]) {
+    const result = Bun.spawnSync(["git", "-C", directory, ...args], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Smoke",
+        GIT_AUTHOR_EMAIL: "smoke@example.invalid",
+        GIT_COMMITTER_NAME: "Smoke",
+        GIT_COMMITTER_EMAIL: "smoke@example.invalid",
+      },
+    });
+    if (result.exitCode !== 0) throw new Error("Fixture Git failed");
+    return result.stdout;
+  }
+  let commit: string;
+  let bundle: Buffer;
+  try {
+    git("init", "--quiet");
+    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base");
+    const base = git("rev-parse", "HEAD").toString().trim();
+    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unpushed");
+    commit = git("rev-parse", "HEAD").toString().trim();
+    bundle = git("bundle", "create", "-", "HEAD", `^${base}`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  function archive(head: string, corruptPack = false) {
+    const files = {
+      "manifest.json": Buffer.from(
+        JSON.stringify({
+          version: 2,
+          repositories: [{ path: selected.repo, directory: "repo-0", head, bundle: true }],
+        }),
+      ),
+      "repo-0/commits.bundle": corruptPack ? bundle.subarray(0, bundle.length - 12) : bundle,
+    };
+    return Buffer.concat(
+      Object.entries(files)
+        .flatMap(([name, value]) => {
+          const header = Buffer.alloc(512);
+          header.write(name);
+          header.write(Buffer.byteLength(value).toString(8).padStart(11, "0"), 124);
+          return [header, Buffer.from(value), Buffer.alloc((512 - (Buffer.byteLength(value) % 512)) % 512)];
+        })
+        .concat([Buffer.alloc(1024)]),
+    ).toString("base64");
+  }
+  for (const provider of ["boat", "modal"]) {
+    for (const fault of [
+      "none",
+      "missing",
+      "wrong",
+      "corrupt",
+      "corrupt_pack",
+      "clean_note",
+      "clean_archive",
+      "overwritten",
+    ] as const) {
+      let launches = 0;
+      let stopping = false;
+      const fake = fixture((call) => {
+        if (call.path === "sandbox/launch") {
+          launches++;
+          stopping = false;
+        }
+        if (call.path === "sandbox/stop") stopping = true;
+        if (call.path === "sandbox/status")
+          return json({
+            status: stopping ? "stopped" : "ready",
+            providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+            ...(stopping && launches === 2
+              ? {
+                  preservationNote:
+                    fault === "overwritten"
+                      ? "secret-failure"
+                      : "unpushed work preserved at work_recovery:sandbox/recovery",
+                }
+              : {}),
+            ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
+          });
+        if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty"))
+          return json({ exitCode: 0, timedOut: false, stdout: `${commit}\n` });
+        if (call.path === "sandbox/recovery")
+          return json({
+            archive:
+              launches === 1
+                ? fault === "clean_archive"
+                  ? archive(commit)
+                  : null
+                : fault === "missing"
+                  ? null
+                  : fault === "corrupt"
+                    ? Buffer.from("secret-invalid").toString("base64")
+                    : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
+          });
+      });
+      const staging = "https://armada-mcp-staging.up.railway.app";
+      const result = await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_URL: staging,
+          ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
+        },
+        ["--work-preservation"],
+        {
+          ...fake.io,
+          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+        },
+      );
+      expect(result).toBe(fault === "none");
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(fake.lines.join("")).not.toContain(commit);
+      expect(fake.lines.join("")).not.toContain("secret");
+      if (fault !== "none")
+        expect(fake.receipts()).toContainEqual(expect.objectContaining({ pass: false, code: "preservation_failed" }));
+    }
+  }
+});
+
+test("preservation refuses non-staging origins before requests", async () => {
+  const fake = fixture();
+  expect(await postDeploySmoke(env, ["--work-preservation"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(0);
 });

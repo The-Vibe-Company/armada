@@ -1,5 +1,6 @@
 import { mock, spyOn } from "bun:test";
 import assert from "node:assert/strict";
+import { VERSION } from "@armada/core";
 
 const sqlModule = await import("../../src/sql.ts");
 const originalSQL = Bun.SQL;
@@ -34,6 +35,21 @@ Bun.SQL = class {
 } as unknown as typeof Bun.SQL;
 // Use the real adapter over fake physical pools, so close assertions cover both clients.
 mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => sqlModule);
+const mcpModule = await import("../../src/mcp-http-integration.ts");
+const createIntegration = mcpModule.createMcpHttpIntegration;
+let mcpClosed = false;
+mock.module(new URL("../../src/mcp-http-integration.ts", import.meta.url).pathname, () => ({
+  ...mcpModule,
+  createMcpHttpIntegration: (...args: Parameters<typeof mcpModule.createMcpHttpIntegration>) => {
+    const integration = createIntegration(...args);
+    const close = integration.close.bind(integration);
+    integration.close = async () => {
+      mcpClosed = true;
+      await close();
+    };
+    return integration;
+  },
+}));
 const { startServer } = await import("../../src/serve.ts");
 const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
 const port = reservation.port;
@@ -49,13 +65,75 @@ const env = {
   PORT: String(port),
 };
 try {
-  const server = await startServer(env, { log: () => {}, logError: (line) => logs.push(line) });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const streamed = Promise.withResolvers<void>();
+  const server = await startServer(env, {
+    log: () => {},
+    logError: (line) => logs.push(line),
+    routes: [
+      async (request) => {
+        if (new URL(request.url).pathname === "/stream-fixture") {
+          return new Response(
+            new ReadableStream({
+              async start(controller) {
+                controller.enqueue(new TextEncoder().encode("started"));
+                await streamed.promise;
+                assert.equal(
+                  pools.every((pool) => pool.closed === 0),
+                  true,
+                  "POST response retains SQL",
+                );
+                assert.equal(mcpClosed, false, "POST tool stream retains MCP until EOF");
+                controller.enqueue(new TextEncoder().encode("finished"));
+                controller.close();
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        if (new URL(request.url).pathname !== "/drain-fixture") return null;
+        entered.resolve();
+        await release.promise;
+        assert.equal(
+          pools.every((pool) => pool.closed === 0),
+          true,
+          "HTTP work retains SQL during drain",
+        );
+        return new Response("finished");
+      },
+    ],
+  });
   try {
     assert.equal(attempts >= 3, true);
     assert.equal(intervals.mock.calls.length > 0, true);
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
     assert.equal(((await response.json()) as { ok: boolean }).ok, true);
+    // Runtime failure after successful boot must not keep reporting healthy.
+    now += 1_001;
+    failUntil = Infinity;
+    const unavailable = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailable.headers.get("cache-control"), "no-store");
+    assert.equal(unavailable.headers.get("retry-after"), "5");
+    assert.deepEqual(await unavailable.json(), { ok: false, version: VERSION, reason: "database_unavailable" });
+    now += 1_001;
+    failUntil = 0;
+    const recovered = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+    assert.equal(recovered.status, 200);
+    assert.equal(((await recovered.json()) as { ok: boolean }).ok, true);
+    const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, { method: "POST" });
+    const streamText = stream.text();
+    const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`);
+    await entered.promise;
+    const stopped = server.stop(false);
+    assert.equal(server.stop(false), stopped, "Repeated stop shares one cleanup");
+    release.resolve();
+    assert.equal(await (await request).text(), "finished");
+    streamed.resolve();
+    assert.equal(await streamText, "startedfinished");
+    await stopped;
   } finally {
     await server.stop(true);
     await server.workerDone;
