@@ -147,46 +147,56 @@ def locate(harness,session):
     if len(found)!=1: raise ValueError('mapping')
     return found[0]
 
-def snapshot(harness,session):
+def snapshot(harness,session,turn,fresh):
+    # File append order, not read time, establishes attribution. Never freeze a
+    # plausible cumulative total at admission: it may be a delayed prior flush.
+    if harness!='codex' or not ID.fullmatch(turn): raise ValueError('boundary')
     raw=read(locate(harness,session))
     if raw and not raw.endswith(b'\n'): raise ValueError('truncated')
-    models={}; identity=False; model=None; totals=None; observed=set()
+    identity=False;active=None;last=None;closed=False;seen=False
+    baseline=None;counts=None;models=set();finished=False;starts=0
+    keys=['input_tokens','output_tokens','cached_input_tokens','cache_write_input_tokens','reasoning_output_tokens']
     for line in raw.splitlines():
         if len(line)>2*1024*1024: raise ValueError('line bound')
         item=json.loads(line)
         if not isinstance(item,dict): continue
         payload=item.get('payload',{})
-        if harness=='claude':
-            if item.get('sessionId')==session: identity=True
-            if item.get('type')=='cost-state' and isinstance(item.get('modelUsage'),dict): models=item['modelUsage']
-        else:
-            if item.get('type')=='session_meta' and isinstance(payload,dict) and payload.get('id')==session: identity=True
-            if item.get('type')=='turn_context' and isinstance(payload,dict):
-                candidate=payload.get('model')
-                if isinstance(candidate,str): observed.add(candidate)
-            if item.get('type')=='event_msg' and isinstance(payload,dict) and payload.get('type')=='token_count':
-                info=payload.get('info')
-                if isinstance(info,dict) and isinstance(info.get('total_token_usage'),dict): totals=info['total_token_usage']
-    if not identity: raise ValueError('identity')
-    if harness=='codex':
-        if totals is None: raise ValueError('missing')
-        model=next(iter(observed)) if len(observed)==1 else ''
-        models={model:dict(zip(FIELDS,[totals.get(k) for k in ['input_tokens','output_tokens','cached_input_tokens','cache_write_input_tokens','reasoning_output_tokens']]))}
-    result={}
-    for model,usage in models.items():
-        if model != '' and (not isinstance(model,str) or not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,160}',model)): raise ValueError('model')
-        if not isinstance(usage,dict): raise ValueError('usage')
-        keys=FIELDS if harness=='codex' else ['inputTokens','outputTokens','cacheReadInputTokens','cacheCreationInputTokens','thinkingTokens']
-        result[model]=dict(zip(FIELDS,[counter(usage.get(key)) for key in keys]))
-    if not result or len(result)>32: raise ValueError('missing')
-    return result
-
-def freeze(ticket):
-    entry=load(ticket+'.json')
-    if 'final' not in entry and entry.get('session'):
-        try: entry['final']=snapshot(entry['harness'],entry['session'])
-        except Exception: entry['invalid']=True
-        save(ticket+'.json',entry)
+        if not isinstance(payload,dict): continue
+        if item.get('type')=='session_meta':
+            if payload.get('id')!=session: raise ValueError('identity')
+            identity=True
+        if item.get('type')=='turn_context' and active==turn:
+            candidate=payload.get('model')
+            if isinstance(candidate,str): models.add(candidate)
+        if item.get('type')!='event_msg': continue
+        kind=payload.get('type')
+        if kind=='task_started':
+            if active is not None: raise ValueError('overlap')
+            active=payload.get('turn_id');starts+=1
+            if not isinstance(active,str): raise ValueError('boundary')
+            if active==turn:
+                if seen: raise ValueError('duplicate boundary')
+                seen=True
+                baseline=last if closed else ({k:0 for k in FIELDS} if fresh and starts==1 else None)
+            closed=False;last=None
+        elif kind=='token_count':
+            info=payload.get('info')
+            if active is not None and isinstance(info,dict) and isinstance(info.get('total_token_usage'),dict):
+                total=info['total_token_usage']
+                last=dict(zip(FIELDS,[counter(total.get(k)) for k in keys]))
+                if active==turn: counts=last
+        elif kind=='task_complete':
+            if active is None or payload.get('turn_id')!=active: raise ValueError('boundary')
+            if active==turn: finished=True
+            active=None;closed=True
+    if not identity or not seen or not finished or baseline is None or counts is None: raise ValueError('missing boundary')
+    model=next(iter(models)) if len(models)==1 else ''
+    if model and not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,160}',model): raise ValueError('model')
+    row={'model':model or None}
+    for key in FIELDS:
+        a=counts.get(key);b=baseline.get(key)
+        row[key]=a-b if a is not None and b is not None and a>=b else None
+    return [row] if any(row[k] is not None for k in FIELDS) else []
 
 @locked
 def capture(harness,session,fresh):
@@ -197,44 +207,41 @@ def capture(harness,session,fresh):
     ticket=pending['ticket']
     if time.time()-pending['at']>90 or load(ticket+'.json').get('session'): return None
     previous='session-'+session+'.json'
-    overlap=False
     try:
         prior_ticket=load(previous)['ticket'];prior=load(prior_ticket+'.json')
         if not prior.get('terminal'):
-            prior['invalid']=True;save(prior_ticket+'.json',prior);overlap=True
-        else: freeze(prior_ticket)
+            prior['invalid']=True;save(prior_ticket+'.json',prior)
+            entry=load(ticket+'.json');entry['invalid']=True;save(ticket+'.json',entry)
     except FileNotFoundError: pass
-    baseline={} if fresh and not overlap else None
-    if not fresh and not overlap:
-        try: baseline=snapshot(harness,session)
-        except Exception: pass
-    entry=load(ticket+'.json');entry.update(harness=harness,session=session,baseline=baseline)
+    entry=load(ticket+'.json');entry.update(harness=harness,session=session,fresh=fresh)
     save(ticket+'.json',entry);save(previous,{'ticket':ticket});os.unlink(ROOT+'/pending.json')
     return ticket
 
+@locked
+def start(ticket,turn):
+    if not ID.fullmatch(turn): raise ValueError('turn')
+    entry=load(ticket+'.json')
+    if entry.get('turn') not in (None,turn): entry['invalid']=True
+    entry['turn']=turn;save(ticket+'.json',entry)
+
 def collect(prompt):
     ticket=load('prompt-'+prompt+'.json')['ticket'];entry=load(ticket+'.json')
-    if entry.get('invalid') or not entry.get('session') or entry.get('baseline') is None or not entry.get('terminal'): return []
-    current=entry.get('final')
-    if current is None:
-        try: current=snapshot(entry['harness'],entry['session'])
+    if entry.get('invalid') or not entry.get('session') or not entry.get('terminal') or not entry.get('turn'): return []
+    if 'final' not in entry:
+        try: entry['final']=snapshot(entry['harness'],entry['session'],entry['turn'],entry['fresh'])
         except Exception: return []
-    baseline=entry['baseline'];rows=[]
-    for model,counts in current.items():
-        before=(next(iter(baseline.values())) if entry['harness']=='codex' and baseline else baseline.get(model,{k:0 for k in FIELDS}));row={'model':model or None}
-        for key in FIELDS:
-            a=counts.get(key);b=before.get(key);row[key]=a-b if a is not None and b is not None and a>=b else None
-        if any(row[k] is not None for k in FIELDS): rows.append(row)
-    return rows
+        save(ticket+'.json',entry)
+    return entry['final']
 
 @locked
-def terminal(ticket):
-    entry=load(ticket+'.json');entry['terminal']=True;save(ticket+'.json',entry)
-    # A read retries delayed flush until the next admitted turn freezes this snapshot.
+def terminal(ticket,turn=None):
+    entry=load(ticket+'.json')
+    if turn is None or entry.get('turn')!=turn: entry['invalid']=True
+    entry['terminal']=True;save(ticket+'.json',entry)
 
 def main():
     operation=sys.argv[1];args=sys.argv[2:]
-    if operation!='claude': init()
+    init()
     if operation=='admit':
         ticket,generation=args
         if not ID.fullmatch(generation): raise ValueError('generation')
@@ -264,71 +271,9 @@ def main():
         prompt=args[0]
         if not ID.fullmatch(prompt): raise ValueError('id')
         print(json.dumps(collect(prompt)))
-    elif operation=='claude':
-        import subprocess,uuid
-        native=args[0];argv=args[1:];session=None;fresh=True;identities=0
-        for i,arg in enumerate(argv):
-            if arg in ('--resume','-r','--session-id'):
-                identities+=1
-                if i+1<len(argv) and UUID.fullmatch(argv[i+1]): session=argv[i+1];fresh=arg=='--session-id'
-                else: fresh=False
-            elif arg.startswith('--resume=') or arg.startswith('--session-id='): identities+=1;session=arg.split('=',1)[1];fresh=arg.startswith('--session-id=')
-            elif arg in ('--continue','-c'): fresh=False
-        injected=session is None and fresh
-        if injected: session=str(uuid.uuid4())
-        ticket=None
-        if identities<=1 and session and UUID.fullmatch(session):
-            try: ticket=capture('claude',session,fresh)
-            except Exception: pass
-        if ticket and injected: argv=['--session-id',session]+argv
-        import signal,threading
-        streaming=any(arg=='--input-format=stream-json' or (arg=='--input-format' and i+1<len(argv) and argv[i+1]=='stream-json') for i,arg in enumerate(argv))
-        child=subprocess.Popen([native]+argv,stdin=subprocess.PIPE if streaming else None,stdout=subprocess.PIPE if streaming else None)
-        def forward(sig,frame):
-            try: child.send_signal(sig)
-            except ProcessLookupError: pass
-        for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP): signal.signal(sig,forward)
-        first=True
-        def incoming():
-            nonlocal ticket,first
-            try:
-                for line in os.fdopen(os.dup(0),"rb",buffering=0):
-                    try:
-                        frame=json.loads(line)
-                        if isinstance(frame,dict) and frame.get('type')=='user':
-                            if first: first=False
-                            elif session: ticket=capture('claude',session,False)
-                    except Exception: pass
-                    child.stdin.write(line);child.stdin.flush()
-            except (OSError,BrokenPipeError): pass
-            finally:
-                try: child.stdin.close()
-                except OSError: pass
-        def outgoing():
-            for line in child.stdout:
-                try:
-                    frame=json.loads(line)
-                    if ticket and isinstance(frame,dict) and frame.get('type')=='result':
-                        if frame.get('session_id')==session: terminal(ticket)
-                        else:
-                            entry=load(ticket+'.json');entry['invalid']=True;save(ticket+'.json',entry)
-                except Exception: pass
-                sys.stdout.buffer.write(line);sys.stdout.buffer.flush()
-        if streaming:
-            threading.Thread(target=incoming,daemon=True).start()
-            receiver=threading.Thread(target=outgoing,daemon=True);receiver.start()
-        code=child.wait()
-        if streaming: receiver.join()
-        if ticket:
-            try: terminal(ticket)
-            except Exception: pass
-        sys.exit(code if code>=0 else 128-code)
-
 if __name__=='__main__':
     try:
-        if len(sys.argv)>1 and sys.argv[1]=='claude': main()
-        else:
-            with lock(): main()
+        with lock(): main()
     except Exception:
         if len(sys.argv)>1 and sys.argv[1]=='collect': print('[]')
         else: sys.exit(1)

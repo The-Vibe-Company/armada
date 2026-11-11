@@ -538,7 +538,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
         // Optional usage must not make an otherwise usable native harness unavailable.
       }
       signal.throwIfAborted();
-      const usageTicket = usageBridgeReady ? await admitNativeUsage(provider, request.sandboxId) : null;
+      const usageTicket =
+        usageBridgeReady && request.harness === "codex" ? await admitNativeUsage(provider, request.sandboxId) : null;
       const response = await call(() =>
         api.prompt(
           {

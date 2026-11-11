@@ -21,8 +21,8 @@ init()
 session='12345678-1234-1234-1234-123456789012'
 os.makedirs(HOME+'/.codex/sessions/2026/01/01')
 path=HOME+'/.codex/sessions/2026/01/01/rollout-'+session+'.jsonl'
-def write(total,mode='w',model='gpt-5'):
-    rows=[{'type':'session_meta','payload':{'id':session}}, {'type':'turn_context','payload':{'model':model}}, {'type':'event_msg','payload':{'type':'token_count','info':{'total_token_usage':dict(zip(['input_tokens','output_tokens','cached_input_tokens','cache_write_input_tokens','reasoning_output_tokens'],total))}}}]
+def write(total,mode='w',model='gpt-5',turn='t1'):
+    rows=[{'type':'session_meta','payload':{'id':session}}, {'type':'event_msg','payload':{'type':'task_started','turn_id':turn}}, {'type':'turn_context','payload':{'model':model}}, {'type':'event_msg','payload':{'type':'token_count','info':{'total_token_usage':dict(zip(['input_tokens','output_tokens','cached_input_tokens','cache_write_input_tokens','reasoning_output_tokens'],total))}}}, {'type':'event_msg','payload':{'type':'task_complete','turn_id':turn}}]
     with open(path,mode) as f:
         for row in rows: f.write(json.dumps(row)+'\\n')
 def admit(ticket,prompt):
@@ -34,11 +34,11 @@ describe("Boat guest native usage", () => {
       guest(
         setup +
           `
-admit('one','p1');capture('codex',session,True)
-write([100,20,40,10,5]);terminal('one')
+admit('one','p1');capture('codex',session,True);start('one','t1')
+write([100,20,40,10,5]);terminal('one','t1')
 a=collect('p1');retry=collect('p1')
-admit('two','p2');capture('codex',session,False)
-write([150,35,60,17,8]);terminal('two')
+admit('two','p2');capture('codex',session,False);start('two','t2')
+write([150,35,60,17,8],mode='a',turn='t2');terminal('two','t2')
 print(json.dumps([a,retry,collect('p1'),collect('p2')]))
 `,
       ),
@@ -85,117 +85,58 @@ print(json.dumps([a,retry,collect('p1'),collect('p2')]))
       ],
     ]);
   });
-  test("delayed flush retries, failed boundary freeze never reads next-turn counters", () => {
+  test("a valid stale flush is never frozen at admission or attributed to the next turn", () => {
     expect(
       guest(
         setup +
           `
-admit('one','p1');capture('codex',session,True);terminal('one')
-missing=collect('p1')
-write([100,20,40,10,5]);late=collect('p1')
-with open(path,'a') as f: f.write('{')
-truncated=collect('p1')
-admit('two','p2');capture('codex',session,False)
-write([999,999,999,999,999]);terminal('two')
-print(json.dumps([missing,len(late),truncated,collect('p1'),collect('p2')]))
+admit('one','p1');capture('codex',session,True);start('one','t1')
+write([50,10,0,0,0])
+# Remove the native completion marker, leaving valid but stale cumulative usage.
+lines=open(path).readlines()
+with open(path,'w') as f: f.writelines(lines[:-1])
+terminal('one','t1');early=collect('p1')
+admit('two','p2');capture('codex',session,False);start('two','t2')
+stale=collect('p1')
+# The delayed t1 flush and its native completion arrive AFTER t2 admission.
+with open(path,'a') as f:
+    f.write(json.dumps({'type':'event_msg','payload':{'type':'token_count','info':{'total_token_usage':{'input_tokens':100,'output_tokens':20,'cached_input_tokens':0}}}})+'\\n')
+    f.write(json.dumps({'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1'}})+'\\n')
+write([150,30,0,0,0],mode='a',turn='t2');terminal('two','t2')
+a=collect('p1');b=collect('p2')
+print(json.dumps([early,stale,a[0]['inputTokens'],b[0]['inputTokens'],collect('p1')==a,collect('p2')==b]))
 `,
       ),
-    ).toEqual([[], 1, [], [], []]);
+    ).toEqual([[], [], 100, 50, true, true]);
   });
   test("missing resume baseline, symlink, mismatched session identity fail closed", () => {
     expect(
       guest(
         setup +
           `
-admit('one','p1');capture('codex',session,False)
-write([100,20,40,10,5]);terminal('one');resume=collect('p1')
-admit('two','p2');capture('codex',session,True);terminal('two')
+admit('one','p1');capture('codex',session,False);start('one','t1')
+write([100,20,40,10,5]);terminal('one','t1');resume=collect('p1')
+admit('two','p2');capture('codex',session,False);start('two','t2')
+write([150,30,40,10,5],mode='a',turn='t2');terminal('two','t2')
 os.rename(path,path+'.other');os.symlink(path+'.other',path)
 linked=collect('p2');os.unlink(path)
+os.rename(path+'.other',path);valid=len(collect('p2'))
+entry=load('two.json');entry.pop('final');save('two.json',entry)
 with open(path,'w') as f: f.write(json.dumps({'type':'session_meta','payload':{'id':'wrong'}})+'\\n')
-print(json.dumps([resume,linked,collect('p2')]))
+print(json.dumps([resume,linked,valid,collect('p2')]))
 `,
       ),
-    ).toEqual([[], [], []]);
+    ).toEqual([[], [], 1, []]);
   });
-  test("Claude takes final per-model cost-state, not duplicate frames or transcript", () => {
+  test("Claude cumulative files without a proven native boundary remain unknown", () => {
     expect(
       guest(`
 init();session='12345678-1234-1234-1234-123456789012'
-os.makedirs(HOME+'/.claude/projects/project');path=HOME+'/.claude/projects/project/'+session+'.jsonl'
-save('one.json',{});save('pending.json',{'ticket':'one','at':time.time()});save('prompt-p1.json',{'ticket':'one'})
-capture('claude',session,True)
-with open(path,'w') as f:
-    f.write(json.dumps({'type':'assistant','sessionId':session,'message':{'content':'PRIVATE MUST NOT ESCAPE'}})+'\\n')
-    for i in (1,1,2): f.write(json.dumps({'type':'cost-state','modelUsage':{'claude-sonnet-5':{'inputTokens':i,'outputTokens':11,'cacheReadInputTokens':18996,'cacheCreationInputTokens':17578,'thinkingTokens':0}}})+'\\n')
-terminal('one');print(json.dumps(collect('p1')))
+save('one.json',{'session':session,'harness':'claude','fresh':True,'turn':'t1','terminal':True})
+save('prompt-p1.json',{'ticket':'one'})
+print(json.dumps(collect('p1')))
 `),
-    ).toEqual([
-      {
-        model: "claude-sonnet-5",
-        inputTokens: 2,
-        outputTokens: 11,
-        cachedTokens: 18996,
-        cacheWriteTokens: 17578,
-        reasoningTokens: 0,
-      },
-    ]);
-  });
-  test("persistent Claude stream bridge binds each native result to its admitted turn", () => {
-    expect(
-      guest(`
-import subprocess
-init();native=HOME+'/fake-claude'
-source=r"""#!/usr/bin/python3
-import sys,json,os
-session=sys.argv[sys.argv.index('--session-id')+1]
-root=os.path.expanduser('~')+'/.claude/projects/project';os.makedirs(root)
-path=root+'/'+session+'.jsonl'
-count=0
-for line in sys.stdin:
-    frame=json.loads(line);count+=1
-    with open(path,'a') as f:
-        f.write(json.dumps({'type':'assistant','sessionId':session})+'\\n')
-        f.write(json.dumps({'type':'cost-state','modelUsage':{'claude-sonnet-5':{'inputTokens':count*5,'outputTokens':count*2,'cacheReadInputTokens':0,'cacheCreationInputTokens':0,'thinkingTokens':0}}})+'\\n')
-    print(json.dumps({'type':'result','session_id':session,'fixture':count}),flush=True)
-"""
-with open(native,'w') as f: f.write(source)
-os.chmod(native,0o700)
-save('one.json',{});save('pending.json',{'ticket':'one','at':time.time()});save('prompt-p1.json',{'ticket':'one'})
-bridge=subprocess.Popen(['python3','-c',${JSON.stringify(NATIVE_USAGE_PYTHON)},'claude',native,'--input-format','stream-json'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
-bridge.stdin.write(json.dumps({'type':'user','message':{'content':'private'}})+'\\n');bridge.stdin.flush()
-first=json.loads(bridge.stdout.readline());a=collect('p1')
-save('two.json',{});save('pending.json',{'ticket':'two','at':time.time()});save('prompt-p2.json',{'ticket':'two'})
-bridge.stdin.write(json.dumps({'type':'user','message':{'content':'private'}})+'\\n');bridge.stdin.flush()
-second=json.loads(bridge.stdout.readline());b=collect('p2')
-bridge.stdin.close();code=bridge.wait(timeout=5)
-print(json.dumps([first['fixture'],second['fixture'],code,a,b]))
-`),
-    ).toEqual([
-      1,
-      2,
-      0,
-      [
-        {
-          model: "claude-sonnet-5",
-          inputTokens: 5,
-          outputTokens: 2,
-          cachedTokens: 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-        },
-      ],
-      [
-        {
-          model: "claude-sonnet-5",
-          inputTokens: 5,
-          outputTokens: 2,
-          cachedTokens: 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-        },
-      ],
-    ]);
+    ).toEqual([]);
   });
   test("ambiguous concurrent admissions invalidate mapping, fresh fork resets inherited tickets", () => {
     expect(
@@ -208,7 +149,7 @@ def launch(ticket,generation):
     with contextlib.redirect_stdout(io.StringIO()): main()
 launch('one','sandbox1');save('prompt-p1.json',{'ticket':'one'})
 launch('two','sandbox1')
-capture('codex',session,True);write([100,20,40,10,5]);terminal('one')
+capture('codex',session,True);write([100,20,40,10,5]);terminal('one','t1')
 ambiguous=collect('p1');disabled=os.path.exists(ROOT+'/disabled.json')
 launch('three','sandbox2')
 new_ticket=load('pending.json')['ticket'];reset=not os.path.exists(ROOT+'/one.json')

@@ -63,3 +63,35 @@ delivery, controlled stop, and resume/fresh-fork behavior have not been validate
 against the live provider here. Local parser/bridge tests are not substitutes for
 that acceptance proof. Restore authorized nonproduction Boat access and run the
 coordinator check above before treating #883 as complete.
+
+## Authorized #977 takeover: candidate boundary repair
+
+The candidate no longer freezes an arbitrary cumulative file snapshot at the
+next admission. For Codex it binds the admitted Armada prompt to the native
+`turn/started` ID and checks the same ID on `turn/completed`. Extraction requires
+matching `task_started` / `task_complete` records in append order in the native
+session log. A resumed turn needs a closed preceding turn's final total; a
+verified fresh thread's first turn uses the known empty baseline. Missing,
+truncated, overlapping, mismatched or unclosed records remain unknown. Successful
+closed-turn results are immutable on retry. No marker means no number, even if
+a plausible cumulative snapshot is already present.
+
+Local installed CLI 0.167.1 generated protocol types confirm native turn IDs in
+both notifications. Local session inspection (event type names only) confirms
+ordered task-start, context, token-count, task-complete records. A regression
+covers a valid stale cumulative snapshot whose final counters and completion
+marker flush only after the next prompt is admitted. This is local schema and
+parser evidence, not proof of the live Boat bridge or staging acceptance.
+
+The previous Claude cost-state subtraction has the same unproven flush boundary.
+It has been disabled rather than retaining unsafe attribution: Claude's normal
+native invocation and managed MCP bridge remain unchanged from main. Boat Claude
+usage remains unknown until a verifiable native per-turn boundary is supported.
+No new zero counters are invented. This is a remaining coverage limitation, not
+an assertion that Claude never reports usage.
+
+Required live validation is on staging, not production: first confirm a Modal
+session's current dashboard tokens, then run Boat × Codex and Modal × Codex
+turns and capture non-zero API and dashboard values. This sandbox currently has
+Boat HTTP 401, no staging Armada session, and no browser login. Secure staging
+access is required; no live acceptance or readiness is claimed.

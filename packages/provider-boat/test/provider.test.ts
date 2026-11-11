@@ -351,18 +351,6 @@ describe("agent turns", () => {
           timedOut: false,
         },
       },
-      { body: { sandbox: sandbox({ state: "ready" }) } },
-      {
-        body: {
-          ok: true,
-          type: "command.finished",
-          success: true,
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-        },
-      },
       queued("conv_new"),
     );
     const receipt = await boat.provider.prompt({
@@ -374,8 +362,8 @@ describe("agent turns", () => {
       fast: true,
     });
     expect(receipt).toEqual({ promptId: "prompt_1", conversationId: "conv_new", status: "queued" });
-    expect(boat.requests[3]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
-    expect(boat.requests[3]?.body).toEqual({
+    expect(boat.requests[1]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
+    expect(boat.requests[1]?.body).toEqual({
       provider: "claude-code",
       prompt: "Fix the tests",
       new: true,
