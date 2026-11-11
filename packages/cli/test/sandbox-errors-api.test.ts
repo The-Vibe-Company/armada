@@ -32,22 +32,24 @@ async function capture(args: string[], status: number, serverCode: unknown) {
 }
 
 // One owner at run.ts: the routes have different parsing and legacy code mappings.
-test.each([
-  ["status", id],
-  ["detail", id],
-  ["recovery", id],
-  ["advice", id],
-  ["wait", id],
-  ["logs", id],
-  ["stop", id],
-  ["interrupt", id],
-  ["send", id, "hello"],
-  ["steer", id, "hello"],
-  ["exec", id, "printf audit"],
-  ["rm", id, "--yes"],
-  ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
-  ["bind-credential", id, "--credential-id", id],
-])("missing sandbox gets actionable not_found and a legacy code: %s", async (...args) => {
+test.each(
+  [
+    ["status", id],
+    ["detail", id],
+    ["recovery", id],
+    ["advice", id],
+    ["wait", id],
+    ["logs", id],
+    ["stop", id],
+    ["interrupt", id],
+    ["send", id, "hello"],
+    ["steer", id, "hello"],
+    ["exec", id, "printf audit"],
+    ["rm", id, "--yes"],
+    ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
+    ["bind-credential", id, "--credential-id", id],
+  ].map((args) => ({ args })),
+)("missing sandbox gets actionable not_found and a legacy code: $args", async ({ args }) => {
   const { exit, err } = await capture([...args, "--json"], 404, "not_found");
   expect(exit).toBe(1);
   const failure = JSON.parse(err).error;
