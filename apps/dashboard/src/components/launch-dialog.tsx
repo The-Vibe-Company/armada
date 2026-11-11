@@ -304,7 +304,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
             accounts={accounts}
             onChange={(next) => {
               setCredential(next);
-              if (!usableCodexAccount(next)) setArmadaAccess(false);
+              setArmadaAccess(false);
             }}
           />
           {access.alerts(() => {

@@ -565,13 +565,18 @@ test("Armada access is opt-in, keeps its chosen account and settings after refus
   });
 });
 
-test("changing the agent clears Armada access and an off launch remains ordinary", async ({ page }) => {
+test("changing the account or agent clears Armada access and an off launch remains ordinary", async ({ page }) => {
   const codex = account(62, "Codex work", { kind: "openai", is_default: true });
-  await mock("/__test/accounts", { seed: [codex] });
+  const other = account(63, "Other Codex", { kind: "openai", is_default: false });
+  await mock("/__test/accounts", { seed: [codex, other] });
   await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunchDialog(page, "shared-golden");
   const access = dialog.getByLabel("Armada access", { exact: true });
   await dialog.getByRole("radio", { name: "Codex", exact: true }).check();
+  await access.check();
+  await dialog.getByLabel("Account").selectOption(String(other.id));
+  await expect(access).not.toBeChecked();
+  await expect(dialog.locator("[data-launch-summary]")).not.toContainText("Armada access");
   await access.check();
   await dialog.getByRole("radio", { name: "Claude Code", exact: true }).check();
   await expect(access).toBeDisabled();
