@@ -112,7 +112,8 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         physicalExit = info.physicalExitConfirmed === true;
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
-        if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null)) error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
+        if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
+          error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.

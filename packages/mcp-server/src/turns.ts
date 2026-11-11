@@ -275,7 +275,12 @@ function report(
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,
     status,
-    statusReason: status === "failed" || status === "stopped" || status === "stopping" ? sandbox.statusReason : null,
+    statusReason:
+      status === "stopping"
+        ? (sandbox.lifecycleError ?? sandbox.statusReason)
+        : status === "failed" || status === "stopped"
+          ? sandbox.statusReason
+          : null,
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
