@@ -1496,7 +1496,8 @@ describe("tools", () => {
       // Stop admission/reconciliation owns the machine; reads and retries must
       // remain available without replaying capture or stop on archiving compute.
       await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [id]);
-      expect((await call(mcp, "status", { id })).data.status).toBe("stopping");
+      expect((await call(mcp, "status", { id })).data).toMatchObject({ status: "stopping", settled: false });
+      expect((await call(mcp, "wait", { id, timeout_seconds: 0 })).data.timedOut).toBe(true);
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
       await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);

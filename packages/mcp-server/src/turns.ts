@@ -286,7 +286,9 @@ function report(
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
     expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
     prompt,
-    settled: machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting"),
+    settled:
+      machineDown ||
+      (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping"),
   };
 }
 
