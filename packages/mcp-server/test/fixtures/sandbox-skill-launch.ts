@@ -31,16 +31,7 @@ export async function checkSandboxSkillLaunch(input: {
     "Install must finish before first turn",
   );
   assert(order.includes("exclude"), "Checkout must locally exclude installed skill files");
-  // The production lifecycle observer can briefly own the status-settlement
-  // write too. Follow its public retry contract without clearing the lease.
-  let detail = await request("status", { id });
-  for (
-    let attempt = 0;
-    attempt < 10 && detail.status === 409 && detail.body.error?.code === "sandbox_not_ready";
-    attempt++
-  ) {
-    detail = await request("status", { id });
-  }
+  const detail = await request("status", { id });
   assert.equal(detail.status, 200, JSON.stringify(detail.body));
   assert.deepEqual(detail.body.skills, [catalogReceipt], "Status must read the persisted verified receipt");
   let stopped = await request("stop", { id });

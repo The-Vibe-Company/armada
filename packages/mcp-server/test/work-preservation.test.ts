@@ -501,6 +501,13 @@ test("application-secret taint permanently disables collection and recovery, pur
     await expect(
       db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [id, new Uint8Array([1])]),
     ).rejects.toThrow("Work recovery unavailable");
+    const taintNote = (
+      await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
+    ).rows[0]!.preservation_note;
+    expect(taintNote).toContain("resume and recovery are unavailable");
+    // Permit the collector's note write, rather than only exercising a completed
+    // receipt whose fence suppresses it. Both writers must give identical guidance.
+    await db.query("update sandboxes set stop_requested_at=null,preservation_stop_generation=null where id=$1", [id]);
     const boat = fakeBoat();
     let providerReads = 0;
     const provider = {
@@ -518,7 +525,7 @@ test("application-secret taint permanently disables collection and recovery, pur
         orgs: [{ orgId: people.org, role: "member" }],
       });
       expect(await data.sandboxes.readWorkRecovery?.(id)).toBeNull();
-      expect((await data.sandboxes.get(id))?.preservationNote).toContain("resume and recovery are unavailable");
+      expect((await data.sandboxes.get(id))?.preservationNote).toBe(taintNote);
     }
     expect(providerReads).toBe(0);
     expect(boat.execs).toHaveLength(0);

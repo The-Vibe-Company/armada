@@ -6,17 +6,27 @@ work must not be deployed as an opt-in secret-delivery feature.
 
 ## Small-PR delivery order
 
-1. Durable irreversible sandbox taint and preservation/reuse refusals. No hydration.
-2. Golden provenance and irreversible connect invalidation; fresh-builder attestation.
-3. Owner-only interiors, including service selectors, RPCs, direct JWT grants,
-   mutation responses and administrative projections.
-4. Server-held encrypted redaction context, fixed expiry, sink inventory and
-   known-value filtering on events **and non-event state writes**; child text
-   refusal. No raw delivery until all consumers fail closed without context.
-5. Admission epochs/leases, revoke/rotate denial and retryable confirmed cleanup.
-6. Confidential provider transport and final-start hydration, gated on accepted
-   provider-specific staging evidence. Explicit launch opt-in comes last; template
-   secret bindings/grants remain a separate slice.
+1. Durable irreversible sandbox taint, SQL preservation/recovery refusal, prompt
+   resume gates and blanket ordinary exec refusal for tainted machines. No hydration.
+2. Taint-aware provider retention/reuse fences: deny Modal stop recovery images
+   and managed Boat parent recovery/fork; propagate taint to provider boundaries.
+3. Golden provenance and connect invalidation: only attested fresh-builder
+   snapshots eligible; legacy snapshots require rebuild.
+4. Owner-only interiors: cover service selectors, endpoints, projections, RPCs
+   and direct JWT grants; admin stop/delete remains value-free.
+5. Retained encrypted redaction context: audited server-only copies, fixed
+   30-day expiry, purge/tombstones and fail-closed replay; no delivery authority.
+6. Event/transcript enforcement: trusted Modal pre-ingest and centralized Boat
+   read filtering for every consumer, including escaped/chunked values.
+7. Non-event sink and child-text enforcement: outcomes, notes, usage and journals;
+   reject registered parent values before child persistence/dispatch.
+8. Admission/revocation lifecycle leases: taint before hydration, fence concurrent
+   collection/resume/admission, immediate revoke denial and confirmed cleanup.
+9. Modal confidential final-start transport: no argv/journals/checkouts, only
+   the selected harness after init; capability stays disabled pending canaries.
+10. Explicit raw-delivery opt-in and provider release gates: only proven providers
+    after all prior gates and owner-accepted canaries. Boat additionally requires
+    accepted retention/deletion evidence; template bindings/grants remain separate.
 
 Each PR must state which named design tests it actually implements, not claim the
 entire design proof matrix passes. #956 remains incomplete until the complete
@@ -32,6 +42,13 @@ canaries and no production credentials. Test names refer to
   restart control, then stop/expire/delete. No collector, archive export, recovery,
   resume or physical fork may run. Stop/delete must still terminate compute and
   return a value-free warning that unpushed work was not preserved.
+- First-gate Boat exec canary: on a disposable staging sandbox, have the operator
+  set the durable taint flag, keep SQL status `ready` with `stop_requested_at=null`,
+  and let Boat stop/archive it through TTL (not Armada stop). Run
+  `armada exec <sandbox-id> -- pwd`, and repeat via MCP `exec` and control
+  `sandbox/exec`. Expect unavailable, no Boat command-journal entry, no resume,
+  and unchanged stopped/archived provider state. No secret value is needed.
+  Tainted running sandboxes also refuse exec: this is intentional blanket denial.
 - Golden eligibility: connect, write an arbitrary canary, reconnect/restart and
   attempt snapshot; reject. Fresh isolated recipe rebuilds alone become eligible.
 - **B1-owner-interior**: owner succeeds, peer/admin denied on every interior route,
@@ -81,9 +98,11 @@ The first gate adds `20261111130000_application_secret_taint.sql`. The service-o
 `application_secret_tainted` flag is irreversible. Setting it removes existing
 online recovery rows; a database trigger refuses subsequent recovery writes.
 Preservation checks the durable marker before contacting compute. Recovery reads
-join the sandbox marker, and ordinary sandbox physical-resume hooks refuse retained
-secret-tainted disks. Provider-internal recovery is not yet covered: Modal stop
-can still create a filesystem recovery image, and managed Boat parent recovery
+join the sandbox marker. Ordinary prompt resume hooks refuse tainted disks; all
+ordinary exec is denied for tainted sandboxes before native preparation/commands,
+including MCP, control API and CLI exec. This blanket denial avoids relying on a
+racy stopped/archived state check. Provider-internal recovery is not yet covered:
+Modal stop can still create a filesystem recovery image, and managed Boat parent recovery
 can bypass ordinary resume hooks. These paths require explicit taint-aware
 provider fencing before hydration is permitted. There is no hydration endpoint and no client can set taint.
 

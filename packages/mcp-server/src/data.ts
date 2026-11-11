@@ -337,13 +337,19 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async assertExecAllowed(id) {
         const row = (
-          await sql.query<{ stop_requested_at: unknown }>(
-            `select s.stop_requested_at from public.sandboxes s join public.goldens g on g.id=s.golden_id
+          await sql.query<{ stop_requested_at: unknown; application_secret_tainted: boolean }>(
+            `select s.stop_requested_at,s.application_secret_tainted from public.sandboxes s join public.goldens g on g.id=s.golden_id
            where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
             [...scope, id],
           )
         ).rows[0];
         if (!row) throw new DataError("No such sandbox.");
+        // Refuse all exec, not a racy provider-state sample: Boat commands can
+        // restore retained disks without invoking the prompt resume hooks.
+        if (row.application_secret_tainted)
+          throw new DataError(
+            "Application-secret exposed sandboxes cannot execute commands or restore retained disks.",
+          );
         if (row.stop_requested_at !== null)
           throw new DataError(
             "Sandbox is stopping; wait for stop or send explicit new work before exec.",

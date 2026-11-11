@@ -1503,6 +1503,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
+      // Applies to managed and ordinary exec before any native preparation or
+      // provider command can implicitly resume a retained disk.
+      await data.sandboxes.assertExecAllowed?.(found.id);
       const managedNative = await context.launchCredentials.assertExec?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
@@ -1572,7 +1575,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!managedNative) {
         // Admission-only check: already-running ordinary commands remain concurrent
         // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
-        await data.sandboxes.assertExecAllowed?.(found.id);
         return execute();
       }
       // Stop and native-file mutation must not interleave: a stop receipt sampled

@@ -159,7 +159,7 @@ async function captureAndStore(
       await writeNote(
         sql,
         id,
-        "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse. Push work before stopping; resume and recovery are unavailable.",
+        "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
         stop.stop_token,
       );
       return;
