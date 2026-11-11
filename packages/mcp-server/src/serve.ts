@@ -332,13 +332,22 @@ export async function startServer(
       : undefined;
   const allWorkersDone = Promise.all([workers.done, invitationWorker?.done]).then(() => {});
   const stop = server.stop.bind(server);
+  let shutdown: Promise<void> | undefined;
   server.stop = (closeActiveConnections?: boolean) => {
+    if (shutdown) {
+      if (closeActiveConnections) void stop(true);
+      return shutdown;
+    }
     workers.stop();
     invitationWorker?.stop();
-    const closed = mcp.close();
+    // Requests may still use the gateway and SQL while finishing a launch.
+    // Stop admission first, then retire shared dependencies only after HTTP drains.
     const stopped = stop(closeActiveConnections);
-    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => sql.close());
-    return stopped;
+    shutdown = Promise.all([allWorkersDone, stopped])
+      .then(() => mcp.close())
+      .then(() => sql.close());
+    server.workerDone = shutdown;
+    return shutdown;
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });

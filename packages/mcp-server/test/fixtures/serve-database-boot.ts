@@ -49,13 +49,38 @@ const env = {
   PORT: String(port),
 };
 try {
-  const server = await startServer(env, { log: () => {}, logError: (line) => logs.push(line) });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = await startServer(env, {
+    log: () => {},
+    logError: (line) => logs.push(line),
+    routes: [
+      async (request) => {
+        if (new URL(request.url).pathname !== "/drain-fixture") return null;
+        entered.resolve();
+        await release.promise;
+        assert.equal(
+          pools.every((pool) => pool.closed === 0),
+          true,
+          "HTTP work retains SQL during drain",
+        );
+        return new Response("finished");
+      },
+    ],
+  });
   try {
     assert.equal(attempts >= 3, true);
     assert.equal(intervals.mock.calls.length > 0, true);
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
     assert.equal(((await response.json()) as { ok: boolean }).ok, true);
+    const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`);
+    await entered.promise;
+    const stopped = server.stop(false);
+    assert.equal(server.stop(false), stopped, "Repeated stop shares one cleanup");
+    release.resolve();
+    assert.equal(await (await request).text(), "finished");
+    await stopped;
   } finally {
     await server.stop(true);
     await server.workerDone;
