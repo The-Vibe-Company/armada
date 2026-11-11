@@ -92,7 +92,7 @@ export function SandboxToolbar({
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-64 p-0" align="start">
-              <Command>
+              <Command label={`Filter by ${LABELS[key]}`}>
                 <CommandInput placeholder={`Find ${LABELS[key].toLowerCase()}…`} />
                 <CommandList>
                   <CommandEmpty>No options found.</CommandEmpty>
@@ -102,7 +102,6 @@ export function SandboxToolbar({
                         key={option.value}
                         value={`${option.label} ${option.value}`}
                         onSelect={() => toggle(key, option.value)}
-                        aria-selected={current[key].includes(option.value)}
                       >
                         <span
                           className="flex size-4 shrink-0 items-center justify-center rounded-sm border"
@@ -111,6 +110,9 @@ export function SandboxToolbar({
                           {current[key].includes(option.value) && <CheckIcon className="size-3" />}
                         </span>
                         <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                        <span className="sr-only">
+                          {current[key].includes(option.value) ? "Filter applied" : "Filter not applied"}
+                        </span>
                         <span className="text-xs text-muted-foreground tabular-nums">{option.count}</span>
                       </CommandItem>
                     ))}

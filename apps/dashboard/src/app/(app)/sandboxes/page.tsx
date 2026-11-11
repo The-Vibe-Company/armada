@@ -3,6 +3,7 @@ import { BoxesIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import { CreatedAt } from "@/components/created-at";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
@@ -10,6 +11,7 @@ import { ProviderName } from "@/components/provider-mark";
 import { RowCost } from "@/components/sandbox-cost";
 import { SandboxRowMenu } from "@/components/sandbox-row-menu";
 import { SandboxToolbar } from "@/components/sandbox-toolbar";
+import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { StatusBadge } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
@@ -41,7 +43,15 @@ export const dynamic = "force-dynamic";
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
-export default async function SandboxesPage({ searchParams }: Props) {
+export default function SandboxesPage(props: Props) {
+  return (
+    <Suspense fallback={<LoadingSandboxes />}>
+      <SandboxesContent {...props} />
+    </Suspense>
+  );
+}
+
+async function SandboxesContent({ searchParams }: Props) {
   const viewer = await requireViewer();
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
@@ -221,7 +231,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                   <TableCell className="relative z-10 max-sm:col-start-2 max-sm:row-start-2 max-sm:p-0">
                     <SandboxRowMenu id={sandbox.id} name={sandboxName(sandbox)} canOpen={sandbox.canOpen} />
                   </TableCell>
-                  <TableCell className="col-span-2 block p-0 text-xs text-muted-foreground sm:hidden">
+                  <TableCell className="relative z-10 col-span-2 block p-0 text-xs text-muted-foreground sm:hidden">
                     {displayUser(directory, sandbox.ownerId, viewer.id)} · Created{" "}
                     <CreatedAt iso={sandbox.createdAt} now={now.getTime()} />
                   </TableCell>

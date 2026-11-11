@@ -50,12 +50,16 @@ test("the list shows every sandbox of the organization and filters them", async 
   await page.keyboard.press("Escape");
   await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
   await page.getByLabel("Sort sandboxes").selectOption("oldest");
+  await expect(page).toHaveURL(/sort=oldest/);
   await page.reload();
   await expect(page.getByLabel("Sort sandboxes")).toHaveValue("oldest");
   await expect(page.getByRole("button", { name: "Remove Status: Running" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove Status: Failed" })).toBeVisible();
   await page.getByLabel("Search sandboxes").fill("not-a-sandbox");
-  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Filters", exact: true })
+    .getByRole("button", { name: "Search", exact: true })
+    .click();
   await expect(page.getByText("No sandbox matches these filters")).toBeVisible();
   await page.goBack();
   await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
@@ -623,6 +627,10 @@ for (const [timezoneId, zone] of [
       await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
       await expect(created).toBeHidden();
       await expect(row.locator("time").last()).toBeVisible();
+      await row.getByRole("button", { name: "7 min ago" }).hover();
+      await page.clock.runFor(1_000);
+      await expect(tooltip).toHaveText(zone);
+      await expect(page).toHaveURL(/\/sandboxes$/);
       await page.screenshot({ path: `${shot}-mobile.png`, fullPage: true, animations: "disabled" });
 
       expect(errors.filter((text) => /hydrat|#418|#423|#425/i.test(text))).toEqual([]);
