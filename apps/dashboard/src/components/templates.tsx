@@ -430,9 +430,12 @@ function TemplateForm({
             .filter((row) => row.status === "active" && (scope === "personal" || row.scope === "org"))
             .map((row) => {
               // A binding under another key than the variable's name keeps that key: say which.
-              const key = editing?.definition.variables.find((binding) => binding.variableId === row.id)?.key;
+              const keys = (editing?.definition.variables ?? [])
+                .filter((binding) => binding.variableId === row.id)
+                .map((binding) => binding.key);
               const scopeLabel = row.scope === "org" ? "Org" : "Personal";
-              return { id: row.id, label: row.name, note: key && key !== row.name ? `as ${key}` : scopeLabel };
+              const aliased = keys.length > 1 || (keys.length === 1 && keys[0] !== row.name);
+              return { id: row.id, label: row.name, note: aliased ? `as ${keys.join(", ")}` : scopeLabel };
             })}
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
           hint="Each value is copied into the sandbox at launch, under its own name unless the revision named it otherwise. Publishing uses its current version."

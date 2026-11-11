@@ -202,6 +202,21 @@ describe("template revision from the form", () => {
     ]);
   });
 
+  test("every key bound to one variable is kept, not collapsed to the first", () => {
+    const twice = {
+      connections: [],
+      variables: [
+        { key: "DEPLOY_REGION", variableId: REGION, version: 2 },
+        { key: "FALLBACK_REGION", variableId: REGION, version: 2 },
+      ],
+    };
+    const parsed = templateRequest(form({ variables: [REGION] }), lookups, twice);
+    expect(parsed.ok && parsed.value.definition.variables).toEqual([
+      { key: "DEPLOY_REGION", variableId: REGION, version: 3 },
+      { key: "FALLBACK_REGION", variableId: REGION, version: 3 },
+    ]);
+  });
+
   test("a list that cannot be read blocks the revision instead of dropping its selections", () => {
     const tools = templateRequest(form({ variables: [REGION] }), { ...lookups, connections: null }, previous);
     expect(tools).toEqual({

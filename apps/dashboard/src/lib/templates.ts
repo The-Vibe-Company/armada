@@ -275,12 +275,16 @@ export function templateRequest(
         ok: false,
         error: `${variable.name} is personal: an organization template uses organization variables only.`,
       };
-    // A variable the revision already binds keeps its key, even when it differs from the variable's name.
-    const key = previous?.variables.find((binding) => binding.variableId === id)?.key ?? variable.name;
-    if (variables.some((binding) => binding.key === key))
-      return { ok: false, error: `Two chosen variables would both be ${key}: keep one.` };
-    variables.push({ key, variableId: variable.id, version: variable.version });
+    // A variable the revision already binds keeps every key it is bound under, even ones that differ from the
+    // variable's name; a newly chosen one is bound under its name.
+    const retained = previous?.variables.filter((binding) => binding.variableId === id).map((binding) => binding.key);
+    for (const key of retained?.length ? retained : [variable.name]) {
+      if (variables.some((binding) => binding.key === key))
+        return { ok: false, error: `Two chosen variables would both be ${key}: keep one.` };
+      variables.push({ key, variableId: variable.id, version: variable.version });
+    }
   }
+  if (variables.length > 64) return { ok: false, error: "A template takes at most 64 variables." };
 
   return {
     ok: true,
