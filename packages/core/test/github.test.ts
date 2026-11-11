@@ -250,7 +250,8 @@ describe("GitHub access at launch", () => {
     world.github.refreshes.push("down", { access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
     expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "unavailable" });
     const retry = await resolveGitHubAccess(world.deps, USER);
-    expect(retry).toMatchObject({ status: "unavailable", message: expect.stringContaining("Retry shortly") });
+    expect(retry.status).toBe("unavailable");
+    expect((retry as { message: string }).message).toContain("Retry shortly");
     expect((retry as { message: string }).message).not.toContain("Reconnect");
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
   });
@@ -272,7 +273,8 @@ describe("GitHub access at launch", () => {
       return false;
     };
     const access = await resolveGitHubAccess(world.deps, USER);
-    expect(access).toMatchObject({ status: "unavailable", message: expect.stringContaining("Retry shortly") });
+    expect(access.status).toBe("unavailable");
+    expect((access as { message: string }).message).toContain("Retry shortly");
     expect((access as { message: string }).message).not.toContain("Reconnect");
     expect(reads).toBe(1);
     expect(world.github.refreshTokensSent).toEqual([]);
