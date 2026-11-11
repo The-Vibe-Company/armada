@@ -976,6 +976,7 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
   if (tail !== undefined && (flag(args, "--all") || single(args, "--since")))
     throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
+  const org = single(args, "--org");
   let firstTail = tail !== undefined;
   const id = oneName(args.positionals);
   const all = flag(args, "--all");
@@ -998,6 +999,7 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
         id,
         all,
         follow,
+        ...(org === undefined ? {} : { org }),
         ...(firstTail ? { direction: "backward", limit } : {}),
         ...(cursor === null ? {} : { cursor }),
       }),

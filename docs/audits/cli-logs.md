@@ -10,9 +10,12 @@ At main `9bee25cd`, `armada logs --help` prints the full 135-line,
 11,993-byte CLI reference. Its logs usage omits `--since` and `--org`.
 It does not explain tail's default/range, incompatible combinations, cursor
 reuse, the JSON page stream, or an example of consuming pages in a pipe.
-The implementation already supports these; no new capability is needed.
+The reader already supports those options; no new capability is needed.
+Additional source audit: --org is parsed (including saved selection) but omitted
+from the logs/read request. The candidate forwards that existing field to the
+server's existing authorization/organization policy; it adds no permission.
 
-Run the live baseline before implementation. Record CLI revision, provider,
+The coordinator baseline is pending while the candidate is prepared. Record CLI revision, provider,
 human/session or token authentication, exit codes, page shapes and readability.
 The worker holds no staging credentials. Existing #979 evidence is context,
 not a claim that this new baseline has been run.
