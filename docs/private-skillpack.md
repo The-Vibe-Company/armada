@@ -214,7 +214,7 @@ for cmd in $(boat history "$BOAT_ID" --mode commands --limit 100 --json | jq -r 
 done | python3 -c "$SCAN" "$PATTERN"
 ```
 
-**Broad-key success:** replace the personal key using
+**Historical broad-key success recipe (not a current instruction):** the original validation replaced the personal key using
 `armada creds set skillpack --file "$SKILLPACK_BROAD_FILE"`, repeat create with a
 new name/idempotency key on smoke-modal and smoke-boat using
 `--skill ship-pr-dev@1.6.1`, and poll until ready. Expect a non-null skill receipt
@@ -339,10 +339,13 @@ do not use `golden snapshot` on the old master. Files or setup performed by hand
 on an old golden are not part of its persisted config: reapply any required
 non-secret custom setup with `--setup <local-script>` during update.
 
-Then rerun the original `orchestrator create` with a fresh name/idempotency key,
+**Historical orchestrator retry recipe, not current rollout guidance:** the original
+procedure reran `orchestrator create` with a fresh name/idempotency key,
 the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key must
 have access to read the skill; broader keys are also accepted. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
+Do not allocate a new orchestrator to repeat this historical recipe; new sandbox
+work uses [scoped Armada access](sandbox-armada-access.md).
 
 The public sandbox-launch path now reports the same closed missing-CLI reason
 and `golden update` action, with distinct request/package/registry/receipt/transport
@@ -448,8 +451,10 @@ key expiry. A second authorization is read by the existing daemon at each auth
 attempt, rather than depending on daemon startup having seen that key.
 
 No golden rebuild or migration is required: the server generates this config for
-new worker SSH daemons. Recreate the failed private parent after the server
-upgrade; its failed allocation was already disposed. The staging-specific field
+new worker SSH daemons. **Historical validation:** the original procedure recreated
+the failed private parent after the server upgrade; its failed allocation had
+already been disposed. This is not authorization to recreate an orchestrator
+after step 3 of #984. The staging-specific field
 requested to confirm this exact cause is only
 `stat -c '%n %a %U %G' /run /etc/ssh` on a disposable worker fork. The local
 reproducer establishes this failure mode, not the still-unreported staging mode.

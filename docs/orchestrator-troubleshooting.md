@@ -126,7 +126,8 @@ ownership/credential state is not reset. Keep the same key/revision on manual
 recovery after uncertainty.
 
 A **fresh create name/key is another allocation**, not an idempotent retry. It is
-safe from duplicating this original resource only after exact recovery succeeds.
+safe from duplicating this original resource only after exact recovery succeeds;
+that safety condition does not authorize a new orchestrator after retirement.
 An empty ordinary list or a missing default Modal CLI profile proves nothing about
 the server's pinned workspace/environment/App. Never perform a hand-written cloud
 delete or drop logical history as an uncertainty workaround.
@@ -203,7 +204,7 @@ ARMADA_URL=https://CONTROL_ORIGIN armada_legacy orchestrator recover ID --org OR
 ```
 
 Use the existing owner login/token without printing it. Keep the same recovery
-key/revision after errors. No fresh create until recovery is positively confirmed.
+key/revision after errors. No fresh create is authorized by this recovery runbook.
 Deploy the dashboard proxy update as well as any backend update if using the
 public origin; deploying only the Railway server cannot update a separate
 Next.js proxy. A direct server unauthenticated POST with empty JSON should reach
@@ -280,7 +281,8 @@ HTTP statuses, closed Boat codes (`invalid_request`, `validation_error`,
 `details.parameter` or `details.field`. Unknown labels, messages and values are
 omitted, not sanitized into logs.
 
-After deployment, an operator must smoke both Boat harnesses: send, observe a
+**Historical post-deployment validation, not a current smoke instruction:** the
+original procedure exercised both Boat harnesses: send, observe a
 finished turn, stop, resume with the same conversation, and stop again. Retire
 the four blocked parents (`d31da303…`, `96f80008…`, `d1230efd…`, `e57e5266…`)
 using the detail/recover commands above with each parent's current revision.
@@ -315,7 +317,7 @@ Armada UUIDs plus these labels, never prompt text, tokens or raw provider errors
 - `kind=events_poll`: `empty`, `published`, `fenced` (another cursor/incarnation
   won), `failed`. Failure records retain the existing closed reason classifier.
 
-Compare these labels during the next production smoke; an accepted/queued turn
+For existing-compute incident inspection, compare these labels; an accepted/queued turn
 with empty polls is distinct from failed polls or missing dispatch.
 
 Terminal retirement first attempts normal native credential preservation. If

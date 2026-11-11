@@ -49,8 +49,9 @@ remain mandatory. Best-effort is not a claim of verified harness restoration.
 
 Local live probe: `boat --json info self` returned HTTP401 (CLI session not
 signed in). No stop was attempted on this delivery sandbox and no native live
-continuation is claimed; the operator smoke is required to observe actual Boat
-behavior with an authorized fixture.
+continuation was claimed. The historical operator smoke requirement was never
+evidence of actual Boat behavior; the retired CLI smoke is not a current
+instruction to allocate a fixture.
 
 ## Enable Modal × Codex (operator only, default off)
 

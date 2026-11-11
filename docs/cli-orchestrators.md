@@ -51,7 +51,8 @@ armada_legacy orchestrator detail "$ID" --org "$ORG" --json
 armada_legacy orchestrator events "$ID" --org "$ORG" --all --json
 # Read the current revision and inspect pending operations before a NEW attempt.
 # For a previously uncertain attempt, reuse its ORIGINAL revision and key.
-armada_legacy orchestrator recover "$ID" --org "$ORG"   --expected-revision "$ORIGINAL_REVISION" --idempotency-key "$ORIGINAL_RECOVERY_KEY" --json
+armada_legacy orchestrator recover "$ID" --org "$ORG" \
+  --expected-revision "$ORIGINAL_REVISION" --idempotency-key "$ORIGINAL_RECOVERY_KEY" --json
 armada_legacy orchestrator detail "$ID" --org "$ORG" --json
 ```
 
