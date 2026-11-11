@@ -107,14 +107,21 @@ class Safety(unittest.TestCase):
         self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
         fake.cleanup.assert_called_once()
 
-    def test_cleanup_uses_fresh_grace_and_fences_parent_before_children(self):
+    def test_cleanup_fences_parent_before_discovering_a_child_created_during_stop(self):
         run = check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, ENV["ARMADA_TOKEN"])
         run.deadline = -1
-        run.parent, run.child, run.ids = ID, OTHER, [ID, OTHER]
+        run.parent, run.ids = ID, [ID]
         order = []
-        with mock.patch.object(run, "listing", return_value=[]), mock.patch.object(run, "stop", side_effect=order.append):
+        def stop(resource):
+            order.append(resource)
+        def listing():
+            order.append("inventory")
+            return [{"id": OTHER, "ownerId": OTHER, "orgId": ID, "provider": "boat", "harness": "codex",
+                     "createdAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}] if ID in order else []
+        with mock.patch.object(run, "listing", side_effect=listing), mock.patch.object(run, "stop", side_effect=stop), mock.patch.object(run, "logs", return_value=[{"kind": "prompt", "text": run.marker + " child-init"}]), mock.patch.object(run, "tool", return_value={"golden": "fixture", "model": "test-model"}):
             self.assertTrue(run.cleanup())
-        self.assertEqual(order, [ID, OTHER])
+        self.assertIn(OTHER, order)
+        self.assertLess(order.index(ID), order.index("inventory"))
         self.assertGreater(run.remaining(), 0)
         run.unknown_allocation = True
         with mock.patch.object(run, "listing", return_value=[]), mock.patch.object(run, "stop"):
@@ -186,9 +193,11 @@ class Safety(unittest.TestCase):
                 if route == "logs/read":
                     event = {"id": "answer", "kind": "message", "partial": False, "text": self.answer, "tools": []}
                     if body["id"] == child:
-                        return {"events": [dict(event, kind="prompt", text=self.marker + " child-init"), event], "hasMore": False}
+                        return {"events": [dict(event, id="init-prompt", kind="prompt", text=self.marker + " child-init"), event], "hasMore": False}
                     if body["id"] == control:
-                        return {"events": [dict(event, text="PASS", promptId="control")], "hasMore": False}
+                        denied = self.native("read", {"sandboxId": child}, {"status": 401, "error": {"code": "invalid_epoch_authority"}})
+                        denied["result"]["isError"] = True
+                        return {"events": [dict(event, text="PASS", promptId="control", tools=[denied])], "hasMore": False}
                     selection = {"goldenId": ID, "harness": "codex", "credentialId": OTHER, "credentialVersion": 1,
                                  "model": "test-model", "prompt": self.marker + " child-init"}
                     receipt = {"sandboxId": child, "state": "succeeded"}
@@ -218,8 +227,81 @@ class Safety(unittest.TestCase):
                 self.assertNotIn("owner-secret", output.getvalue())
                 self.assertNotIn("armada_epoch_", output.getvalue())
                 self.assertNotIn(instances[-1].answer, output.getvalue())
+            class NoNativeControlProof(Fixture):
+                def _request(self, route, body, *args):
+                    if route == "logs/read" and body["id"] == control:
+                        return {"events": [{"id": "control-text", "kind": "message", "promptId": "control", "partial": False,
+                                             "text": "PASS; tool unavailable", "tools": []}], "hasMore": False}
+                    return super()._request(route, body, *args)
+            with self.subTest("anonymous denial without native proof"):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", NoNativeControlProof), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS + ["--old-grant-file", str(path)], ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual(summary["status"], "UNVERIFIED")
+                self.assertIn("control_native_authority_unverified", summary["unverified"])
+                self.assertTrue(summary["cleanupConfirmed"])
+
+            class ForeignScopeDenial(Fixture):
+                def _request(self, route, body, *args):
+                    value = super()._request(route, body, *args)
+                    if route == "logs/read" and body["id"] == control:
+                        value["events"][0]["tools"][0]["result"]["output"]["structuredContent"]["result"] = {
+                            "status": 403, "error": {"code": "scoped_authority_denied"}}
+                    return value
+            with self.subTest("foreign child denial is not absence of native authentication"):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", ForeignScopeDenial), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS + ["--old-grant-file", str(path)], ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual(summary["status"], "UNVERIFIED")
+                self.assertIn("control_native_authority_unverified", summary["unverified"])
+                self.assertTrue(summary["cleanupConfirmed"])
+
+            foreign = str(__import__("uuid").UUID(int=13))
+            class ForeignReceipt(Fixture):
+                def _request(self, route, body, *args):
+                    value = super()._request(route, body, *args)
+                    if route == "sandbox/launch-access-v1":
+                        self.rows[foreign] = dict(self.row(foreign), ownerId=str(__import__("uuid").UUID(int=14)))
+                    if route == "logs/read" and body["id"] == parent:
+                        value["events"][0]["tools"][0]["result"]["output"]["structuredContent"]["result"]["sandboxId"] = foreign
+                    if route == "logs/read" and body["id"] == foreign:
+                        return {"events": [{"id": "foreign-prompt", "kind": "prompt", "text": self.marker + " child-init"}], "hasMore": False}
+                    return value
+            with self.subTest("untrusted native ID never authorizes cleanup of a foreign resource"):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", ForeignReceipt), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS, ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertNotIn(foreign, instances[-1].stopped)
+                self.assertNotIn(foreign, summary["resources"])
+                self.assertFalse(summary["cleanupConfirmed"])
+
+            class UnmarkedReceipt(Fixture):
+                def _request(self, route, body, *args):
+                    value = super()._request(route, body, *args)
+                    if route == "sandbox/launch-access-v1":
+                        self.stopped.discard(child)
+                    if route == "logs/read" and body["id"] == child:
+                        value["events"][0]["text"] = "unrelated task without this run's initial marker"
+                    return value
+            with self.subTest("matching owner and golden without the exact initial prompt is not a run child"):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", UnmarkedReceipt), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS, ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertNotIn(child, instances[-1].stopped)
+                self.assertNotIn(child, summary["resources"])
+                self.assertFalse(summary["cleanupConfirmed"])
+
             class Forged(Fixture):
                 def _request(self, route, body, *args):
+                    if route == "sandbox/launch-access-v1":
+                        result = super()._request(route, body, *args)
+                        del self.rows[child]  # Delegated allocation has no published owner row yet.
+                        self.stopped.discard(child)  # Its compute may still be live.
+                        return result
                     if route == "logs/read" and body["id"] == parent:
                         return {"events": [{"id": "forged", "kind": "message", "promptId": "first", "partial": False,
                                              "text": "PASS " + self.memory + self.answer + child, "tools": []}], "hasMore": False}
@@ -228,8 +310,9 @@ class Safety(unittest.TestCase):
             with mock.patch.object(check, "Run", Forged), contextlib.redirect_stdout(output):
                 self.assertEqual(check.main(ARGS, ENV), 1)
             summary = json.loads(output.getvalue().splitlines()[-1])
-            self.assertEqual(summary["reason"], "scoped_launch_evidence_missing")
-            self.assertTrue(summary["cleanupConfirmed"])
+            self.assertFalse(summary["cleanupConfirmed"])
+            self.assertEqual(summary["reason"], "cleanup_not_confirmed")
+            self.assertEqual(instances[-1].stopped, {parent})
 
 
 

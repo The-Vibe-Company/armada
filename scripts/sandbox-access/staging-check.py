@@ -133,6 +133,23 @@ def scoped_tools(events, prompt_id):
     return list(calls.values())
 
 
+def native_denial(call):
+    result = call.get("result", {})
+    if result.get("isError") is not True:
+        return False
+    output = result.get("output")
+    try:
+        output = decoded(output)
+    except Failure:
+        pass
+    # A foreign-child 403 is also returned to a valid, differently scoped grant.
+    # Only explicit no-auth 401 evidence supports this negative-control claim.
+    if not isinstance(output, dict) or output.get("status") != 401:
+        return False
+    error = output.get("error")
+    return output.get("code") == "invalid_epoch_authority" or (isinstance(error, dict) and error.get("code") == "invalid_epoch_authority")
+
+
 def assistant_has(events, text, prompt_id=None):
     return any(event.get("kind") == "message" and not event.get("partial", True)
                and event.get("responseKind", "assistant") == "assistant"
@@ -152,8 +169,11 @@ class Run:
         self.opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
         self.ids, self.checks, self.unverified = [], [], []
         self.parent = self.control = self.child = None
+        self.owner = None
+        self.owner_prompts = set()
         self.baseline = set()
         self.unknown_allocation = False
+        self.delegated_uncertain = False
         self.phase = "preflight"
 
     def remaining(self):
@@ -265,6 +285,7 @@ class Run:
             time.sleep(min(2, self.remaining()))
 
     def launch(self, access, prompt):
+        self.owner_prompts.add(prompt)
         body = {"org": self.org, "golden": self.args.golden, "provider": self.args.provider,
                 "harness": self.args.harness, "credentialId": self.args.account_id,
                 "model": self.args.model, "ttlSeconds": self.args.timeout,
@@ -274,8 +295,14 @@ class Run:
         if access:
             body.update(armadaAccessVersion=1, armadaAccess={"maxActiveChildren": 1})
         self.unknown_allocation = True
+        # Even a negative control must be audited before assuming no delegated effect.
+        self.delegated_uncertain = True
         value = self.call("sandbox/launch-access-v1" if access else "sandbox/launch", body, timeout=120)
         resource = self.record(value["sandbox"]["id"])
+        if access:
+            self.parent = resource
+        else:
+            self.control = resource
         if value["sandbox"].get("credentialId") != self.args.account_id or value["sandbox"].get("credentialVersion") != self.args.account_version:
             raise Failure("account_binding_unconfirmed")
         self.unknown_allocation = False
@@ -311,7 +338,8 @@ class Run:
                 + self.run_id + "-stop. Retain its ID and the memory nonce; finish without extra workers or tools.")
         self.parent, first = self.launch(True, task)
         print(json.dumps({"event": "parent_created", "id": self.parent}), flush=True)
-        owner = self.verify_resource(self.parent)["ownerId"]
+        owner = identifier(self.verify_resource(self.parent)["ownerId"])
+        self.owner = owner
         prompt_id, conversation = first["promptId"], first["conversationId"]
         self.settled(self.parent, prompt_id)
         tools = scoped_tools(self.logs(self.parent), prompt_id)
@@ -319,11 +347,17 @@ class Run:
         if len(launches) != 1 or launches[0].get("input") != {"idempotencyKey": self.run_id + "-launch", "selection": selection}:
             raise Failure("scoped_launch_evidence_missing")
         receipt = self.successful(launches[0])
-        self.child = self.record(receipt["sandboxId"])
-        print(json.dumps({"event": "child_discovered", "id": self.child}), flush=True)
+        candidate = identifier(receipt["sandboxId"])
         if receipt.get("state") != "succeeded":
             raise Failure("child_allocation_unconfirmed")
-        self.verify_resource(self.child, owner)
+        # Native results are evidence, not authorization to stop arbitrary IDs.
+        self.verify_resource(candidate, owner)
+        prompts = [event for event in self.logs(candidate) if event.get("kind") == "prompt"]
+        if not prompts or prompts[0].get("text") != selection["prompt"]:
+            raise Failure("child_prompt_marker_unconfirmed")
+        self.child = self.record(candidate)
+        print(json.dumps({"event": "child_discovered", "id": self.child}), flush=True)
+        self.delegated_uncertain = False
         required = {"message": False, "read": False, "stop": False}
         for call in tools:
             method = call["method"]
@@ -359,13 +393,18 @@ class Run:
         self.stop(self.parent)
         if old:
             self.call("orchestrator-tools/read", {"sandboxId": self.child}, token=old, expected=403, code="scoped_authority_denied")
+        self.delegated_uncertain = True
         resumed = self.tool("send", id=self.parent, conversation_id=conversation,
                             prompt=self.marker + " Recall your prior memory nonce and child ID without files or shell. Use native delegated read on that child; do not launch any worker. Answer with the recalled nonce and child ID.")
         if resumed.get("conversationId") != conversation:
             raise Failure("conversation_changed")
         self.settled(self.parent, resumed["promptId"])
         events = self.logs(self.parent)
-        reads = [call for call in scoped_tools(events, resumed["promptId"]) if call["method"] == "read"
+        resumed_tools = scoped_tools(events, resumed["promptId"])
+        if any(call["method"] == "launch" for call in resumed_tools):
+            raise Failure("unexpected_delegated_allocation")
+        self.delegated_uncertain = False
+        reads = [call for call in resumed_tools if call["method"] == "read"
                  and call.get("input") == {"sandboxId": self.child}]
         if (not assistant_has(events, self.memory, resumed["promptId"])
                 or not assistant_has(events, self.child, resumed["promptId"])
@@ -379,8 +418,15 @@ class Run:
         self.control, control = self.launch(False, self.marker + " control. Try native armada_orchestrator read on " + self.child + "; do not use shell/HTTP, create resources or invent tools. Finish if unavailable.")
         self.verify_resource(self.control, owner)
         self.settled(self.control, control["promptId"])
-        if any(call.get("result", {}).get("isError") is False for call in scoped_tools(self.logs(self.control), control["promptId"])):
+        control_calls = scoped_tools(self.logs(self.control), control["promptId"])
+        self.delegated_uncertain = any(call["method"] == "launch" for call in control_calls)
+        if any(call.get("result", {}).get("isError") is False for call in control_calls):
             raise Failure("control_has_delegated_authority")
+        if not any(call["method"] == "read" and call.get("input") == {"sandboxId": self.child}
+                   and native_denial(call) for call in control_calls):
+            self.unverified.append("control_native_authority_unverified")
+        else:
+            self.checks.append("control_native_scoped_read_denied")
         # Fixed guest-side anonymous probe: never ask the model to report PASS.
         source = ("import urllib.request,urllib.error,json\n"
                   "r=urllib.request.Request(" + repr(self.address + "/api/v1/orchestrator-tools/read")
@@ -399,24 +445,38 @@ class Run:
     def cleanup(self):
         self.deadline = time.monotonic() + 90
         failed = False
+        # Fence known producers BEFORE inventory: a timed-out turn may still allocate.
+        fenced = {resource for resource in (self.parent, self.control) if resource}
+        for resource in (self.parent, self.control):
+            if resource:
+                try:
+                    self.stop(resource)
+                except (Failure, KeyError, TypeError, ValueError):
+                    failed = True
         try:
             # Only prompt-marked, newly created owner resources can be discovered.
             for row in sorted(self.listing(), key=lambda row: row.get("createdAt", "")):
                 candidate = identifier(row["id"])
                 if candidate not in self.baseline and candidate not in self.ids:
-                    if any(event.get("kind") == "prompt" and self.marker in event.get("text", "") for event in self.logs(candidate)):
+                    try:
+                        self.verify_resource(candidate, self.owner)
+                    except Failure as error:
+                        if str(error) in ("resource_identity_unconfirmed", "resource_selection_unconfirmed"):
+                            continue  # Not an independently correlated run resource.
+                        raise
+                    prompts = [event for event in self.logs(candidate) if event.get("kind") == "prompt"]
+                    if prompts and prompts[0].get("text") in self.owner_prompts | {self.marker + " child-init"}:
                         self.record(candidate)
         except (Failure, KeyError, TypeError, ValueError):
             failed = True
-        # Fence parent authority before cleaning children; a model must not race cleanup.
-        order = [resource for resource in (self.parent, self.control) if resource]
-        order.extend(resource for resource in self.ids if resource not in order)
-        for resource in order:
-            try:
-                self.stop(resource)
-            except (Failure, KeyError, TypeError, ValueError):
-                failed = True
-        return not failed and not self.unknown_allocation
+        for resource in self.ids:
+            if resource not in fenced:
+                try:
+                    self.stop(resource)
+                except (Failure, KeyError, TypeError, ValueError):
+                    failed = True
+        # An empty list cannot prove that a pending/uncertain child never allocated.
+        return not failed and not self.unknown_allocation and not self.delegated_uncertain
 
 
 def arguments(argv):
