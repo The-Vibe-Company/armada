@@ -37,7 +37,9 @@ for (const mobile of [false, true]) {
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 720 });
     await signIn(page, "alice@example.com", "/variables");
     const nav = page.getByRole("navigation", { name: "Main" });
+    if (mobile) await nav.getByRole("button", { name: /Navigation/ }).click();
     await expect(nav.getByRole("link", { name: /Variables/ })).toHaveAttribute("aria-current", "page");
+    if (mobile) await nav.getByRole("button", { name: /Navigation/ }).click();
     // Active first, by name; the revoked secret last. Bob's personal variable is not Alice's to see.
     await expect(page.getByRole("list", { name: "Variables and secrets" }).locator(":scope > li")).toHaveText([
       /ALICE_DEPLOY_TOKEN/,
