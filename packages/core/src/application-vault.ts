@@ -104,8 +104,17 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
       return await sql.transaction(work);
     } catch (error) {
       if (error instanceof VaultError) throw error;
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "23505")
-        throw new VaultError("conflict", "An application vault name is already in use.");
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error.code === "23505" ||
+          (error.code === "ERR_POSTGRES_SERVER_ERROR" && "errno" in error && error.errno === "23505"))
+      )
+        throw new VaultError(
+          "conflict",
+          "An application vault name is already in use. Update or delete the existing entry; delete revoked secrets before reusing their names.",
+        );
       // Database/encryption errors can contain submitted data. Never forward their text or cause.
       throw new VaultError("unavailable", "Application vault unavailable.");
     }
