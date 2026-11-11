@@ -223,13 +223,9 @@ export interface HarnessCapabilities {
   approvals: boolean;
 }
 
-export type SandboxState =
-  | "starting" // machine being created or prepared; commands wait for it
-  | "ready" // accepts commands and prompts
-  | "running" // an agent turn is in progress
-  | "stopping" // the disk is being saved
-  | "stopped" // machine removed, disk kept
-  | "failed";
+/** Canonical provider-neutral compute states; shared by types and safe diagnostics. */
+export const SANDBOX_STATES = ["starting", "ready", "running", "stopping", "stopped", "failed"] as const;
+export type SandboxState = (typeof SANDBOX_STATES)[number];
 
 export interface SandboxInfo {
   id: string;
@@ -393,6 +389,8 @@ export interface ExecRequest {
   signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
   onlyIfRunning?: boolean;
+  /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
+  preservationStage?: "collect_exec" | "chunk_exec";
   sandboxId: string;
   command: string;
   cwd?: string;

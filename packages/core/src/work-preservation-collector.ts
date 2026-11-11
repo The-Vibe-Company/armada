@@ -10,6 +10,7 @@ fi`;
 export const RECOVERY_COLLECTOR = String.raw`
 const fs=require('node:fs'), cp=require('node:child_process'), path=require('node:path'), crypto=require('node:crypto');
 const LIMIT=2*1024*1024, tmp='/tmp/armada-recovery-ARMADA_TOKEN';
+let workAtRisk=false;
 function fail(reason) { throw Object.assign(new Error(),{reason}); }
 function git(root,...args) {
   const p=cp.spawnSync('git',['--no-optional-locks','-c','core.fsmonitor=false','-C',root,...args],
@@ -59,8 +60,10 @@ try {
   function walk(root) {
     const entries=fs.readdirSync(root,{withFileTypes:true});
     if(entries.some(e=>e.name==='.git')) {
-      const dirty=git(root,'status','--porcelain=v1','-z','--untracked-files=all'),h=head(root);
-      if(dirty.length||(h&&git(root,'rev-list','--max-count=1','HEAD','--not','--remotes').length)) repos.push([root,h]);
+      const dirty=git(root,'status','--porcelain=v1','-z','--untracked-files=all');
+      if(dirty.length) workAtRisk=true;
+      const h=head(root);
+      if(dirty.length||(h&&git(root,'rev-list','--max-count=1','HEAD','--not','--remotes').length)) { workAtRisk=true; repos.push([root,h]); }
     }
     for(const e of entries) if(e.isDirectory()&&!e.name.startsWith('.')&&e.name!=='node_modules') walk(path.join(root,e.name));
   }
@@ -107,5 +110,5 @@ try {
     fs.writeFileSync(tmp+'/recovery.tar',sealed,{mode:0o600});
     console.log(JSON.stringify({status:'preserved',bytes:sealed.length,sha256:crypto.createHash('sha256').update(sealed).digest('hex'),key:key.toString('base64')}));
   }
-} catch(error) { console.log(JSON.stringify({status:'failed',reason:error.reason||'collector_failed'})); }
+} catch(error) { console.log(JSON.stringify({status:'failed',reason:error.reason||'collector_failed',workAtRisk})); }
 `;
