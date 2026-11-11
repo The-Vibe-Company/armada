@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { createSqlGoldenStore, createSqlVaultStore, type GoldenBuildStatus, ProviderError } from "@armada/core/server";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -534,3 +535,6 @@ test("an accepted renamed save with missing provenance retains capacity for reco
     await s.close();
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

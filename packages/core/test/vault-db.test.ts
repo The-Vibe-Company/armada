@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { resolveSkillpackCredential } from "../src/credentials.ts";
 import { decryptSecret, encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
@@ -758,3 +759,6 @@ async function withVault(
     await db.close();
   }
 }
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

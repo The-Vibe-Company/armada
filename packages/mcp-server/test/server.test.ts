@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, mutateCredentialAccount, ProviderError } from "@armada/core/server";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
@@ -1413,3 +1414,6 @@ test("authenticated MCP forwards the configured shared orchestrator runtime rath
   expect(result.structuredContent).toEqual({ version: 1, items: [], cursor: null });
   expect(seen).toEqual([s.people.owner, s.people.org]);
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

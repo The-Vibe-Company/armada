@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
@@ -352,3 +353,6 @@ test("an older retained recovery queue head does not starve an interrupted build
     await f.db.close();
   }
 });
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();

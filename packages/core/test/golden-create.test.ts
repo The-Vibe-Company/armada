@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
@@ -1176,3 +1177,6 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
 );
 
 const helperOutput = `x86_64\n${helperManifest.x86_64.digest}  /home/user/.local/share/armada/helper/0.1.0/armada-helper\n{"version":"0.1.0","protocol":1,"capabilities":["diagnose"]}\n`;
+
+// Token resolution in these fixtures must not leak audit records to stdout.
+captureGitHubAuditLogs();
