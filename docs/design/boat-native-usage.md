@@ -105,3 +105,21 @@ Boundary source reference: official Codex `rust-v0.167.1`, resolved commit
 turns emit `turn_aborted`, not `task_complete`: the parser closes that sequence
 without claiming complete counters, leaves the immediate next baseline unknown,
 and permits later closed turns to establish a new verified baseline.
+
+## Abandoned-admission recovery
+
+An expired or superseded unclaimed admission is invalidated and retired, not
+turned into a sandbox-wide permanent disable switch. A SHA-256 digest of the
+exact requested prompt text is matched against the native single-text input
+before claiming a ticket; raw text is never passed to guest exec or persisted by
+this helper. Late callbacks for a retired input cannot consume a newer ticket.
+Unsupported/transformed input remains unknown rather than guessed at.
+
+Identical ambiguous inputs are quarantined for that physical sandbox generation:
+without an external request identifier their delayed callbacks cannot be safely
+distinguished. Other inputs continue collecting normally, and a fresh physical
+sandbox resets inherited tickets/quarantines. A legacy pre-fingerprint disabled
+state also stays unknown until that reset; the new path never creates it.
+Regression scenarios use injected expired timestamps (no waits), rejected
+unclaimed dispatches, late callbacks, exact/native input matching, same-input
+ambiguity, successful later counters, and fresh-fork recovery.

@@ -1,16 +1,16 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import type { Provider, TurnTokenUsage } from "@armada/core";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const command = (operation: string, ...args: string[]) =>
   `python3 -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} ${[operation, ...args].map(quote).join(" ")}`;
-export async function admitNativeUsage(provider: Provider, sandboxId: string): Promise<string | null> {
+export async function admitNativeUsage(provider: Provider, sandboxId: string, text: string): Promise<string | null> {
   const ticket = randomUUID();
   try {
     const r = await provider.exec({
       sandboxId,
-      command: command("admit", ticket, sandboxId),
+      command: command("admit", ticket, sandboxId, createHash("sha256").update(text).digest("hex")),
       timeoutSeconds: 10,
       onlyIfRunning: true,
     });
@@ -72,9 +72,10 @@ export async function collectNativeUsage(
 }
 /** Inert guest-local helper. Never exports transcript data or native filenames. */
 export const NATIVE_USAGE_PYTHON = String.raw`
-import os,sys,json,stat,re,time,fcntl,contextlib
+import os,sys,json,stat,re,time,fcntl,contextlib,hashlib
 HOME=os.path.expanduser('~'); ROOT=HOME+'/.armada/native-usage'
 ID=re.compile(r'^[a-zA-Z0-9_-]{1,128}$'); UUID=re.compile(r'^[a-fA-F0-9-]{36}$')
+DIGEST=re.compile(r'^[a-f0-9]{64}$')
 FIELDS=['inputTokens','outputTokens','cachedTokens','cacheWriteTokens','reasoningTokens']
 MAX=32*1024*1024
 
@@ -203,14 +204,36 @@ def snapshot(harness,session,turn,fresh):
         row[key]=a-b if a is not None and b is not None and a>=b else None
     return [row] if any(row[k] is not None for k in FIELDS) else []
 
+def prompt_digest(items):
+    # Boat's native text input must match exactly. Unsupported/transformed
+    # requests stay unknown; no raw prompt is stored or passed through exec.
+    if not isinstance(items,list) or len(items)!=1: return None
+    item=items[0]
+    if not isinstance(item,dict) or item.get('type')!='text' or not isinstance(item.get('text'),str): return None
+    return hashlib.sha256(item['text'].encode('utf-8')).hexdigest()
+
+def retire_pending(pending):
+    ticket=pending['ticket'];digest=pending.get('digest')
+    if not ID.fullmatch(ticket) or not isinstance(digest,str) or not DIGEST.fullmatch(digest): raise ValueError('legacy admission')
+    entry=load(ticket+'.json');entry['invalid']=True;save(ticket+'.json',entry)
+    # A delayed callback can still arrive. Quarantine only its exact input,
+    # never the whole sandbox, and never guess which identical request it is.
+    save('blocked-'+digest+'.json',{})
+    os.unlink(ROOT+'/pending.json')
+
 @locked
-def capture(harness,session,fresh):
+def capture(harness,session,fresh,digest):
     init()
+    # Old pre-fingerprint draft state cannot be disambiguated safely; a fresh
+    # physical generation clears it. New admissions never write this global flag.
     if os.path.exists(ROOT+'/disabled.json'): return None
     try: pending=load('pending.json')
     except FileNotFoundError: return None
     ticket=pending['ticket']
-    if time.time()-pending['at']>90 or load(ticket+'.json').get('session'): return None
+    if time.time()-pending['at']>90:
+        retire_pending(pending);return None
+    if not isinstance(digest,str) or pending.get('digest')!=digest: return None
+    if os.path.exists(ROOT+'/blocked-'+digest+'.json') or load(ticket+'.json').get('session'): return None
     previous='session-'+session+'.json'
     try:
         prior_ticket=load(previous)['ticket'];prior=load(prior_ticket+'.json')
@@ -248,7 +271,7 @@ def main():
     operation=sys.argv[1];args=sys.argv[2:]
     init()
     if operation=='admit':
-        ticket,generation=args
+        ticket,generation,digest=args
         if not ID.fullmatch(generation): raise ValueError('generation')
         try: old=load('generation.json')['id']
         except FileNotFoundError: old=None
@@ -259,15 +282,14 @@ def main():
                 if name=='lock': continue
                 safe(ROOT+'/'+name);os.unlink(ROOT+'/'+name)
             save('generation.json',{'id':generation})
-        if not ID.fullmatch(ticket): raise ValueError('id')
+        if not ID.fullmatch(ticket) or not DIGEST.fullmatch(digest): raise ValueError('id')
         if os.path.exists(ROOT+'/disabled.json'): return
         if os.path.lexists(ROOT+'/pending.json'):
-            pending=load('pending.json');entry=load(pending['ticket']+'.json');entry['invalid']=True;save(pending['ticket']+'.json',entry)
-            save('disabled.json',{'reason':'ambiguous_admission'});return
-        fd=os.open(ROOT+'/pending.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-        try: os.write(fd,json.dumps({'ticket':ticket,'at':time.time()}).encode())
-        finally: os.close(fd)
-        save(ticket+'.json',{});print('admitted')
+            retire_pending(load('pending.json'))
+        if os.path.exists(ROOT+'/blocked-'+digest+'.json'): return
+        save(ticket+'.json',{})
+        save('pending.json',{'ticket':ticket,'at':time.time(),'digest':digest})
+        print('admitted')
     elif operation=='bind':
         ticket,prompt=args
         if not ID.fullmatch(ticket) or not ID.fullmatch(prompt): raise ValueError('id')

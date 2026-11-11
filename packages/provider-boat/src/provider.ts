@@ -539,7 +539,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       }
       signal.throwIfAborted();
       const usageTicket =
-        usageBridgeReady && request.harness === "codex" ? await admitNativeUsage(provider, request.sandboxId) : null;
+        usageBridgeReady && request.harness === "codex"
+          ? await admitNativeUsage(provider, request.sandboxId, request.text)
+          : null;
       const response = await call(() =>
         api.prompt(
           {
