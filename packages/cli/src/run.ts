@@ -931,7 +931,8 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     cursor = nextCursor;
     const drain = all || follow;
     settled = !drain || (!result.hasMore && (!follow || result.settled));
-    if (!settled)
+    // Pace only live polling, not pages the server already has available.
+    if (!settled && !result.hasMore)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
   return 0;

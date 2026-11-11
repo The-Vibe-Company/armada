@@ -182,3 +182,21 @@ This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queu
 ## License
 
 [MIT](LICENSE)
+
+### Reading event pages
+
+`armada logs ID` reads one page; `--since CURSOR` continues from a saved cursor.
+`--all` drains available pages immediately. `--follow` also drains the backlog
+without a polling delay, then polls once per second while the agent is active.
+Ctrl-C stops the local reader, not the agent.
+
+With `--json`, stdout is a stream of page objects (not one JSON array): each
+contains `events`, `cursor`, `hasMore` and `settled`. Existing fields and pretty
+formatting are unchanged. For scripts:
+
+```sh
+armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+```
+
+Save the last page's `cursor` and pass it with `--since` to resume. Errors go to
+stderr and return a nonzero exit code.
