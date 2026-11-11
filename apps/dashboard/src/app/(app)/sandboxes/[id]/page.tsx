@@ -8,6 +8,7 @@ import { CopyButton } from "@/components/copy-button";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
+import { SandboxAttention } from "@/components/sandbox-attention";
 import { SandboxChat } from "@/components/sandbox-chat";
 import { SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
@@ -175,6 +176,7 @@ export default async function SandboxPage({ params }: Props) {
           />
         </div>
         <SandboxDetailsPanel>
+          <SandboxAttention sandbox={sandbox} viewer={viewer} />
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">
               <CardTitle className="text-sm">Details</CardTitle>

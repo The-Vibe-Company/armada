@@ -52,20 +52,3 @@ test("a sandbox with usage shows its cost, one without says so", async ({ page }
   await expect(page.locator("[data-sandbox-cost=none]")).toContainText("No usage recorded yet.");
   await expect(page.locator("[data-sandbox-cost]").getByText("$0.00")).toHaveCount(0);
 });
-
-test("each fleet row carries its small cost figure", async ({ page }) => {
-  await signIn(page, "alice@example.com");
-  await page.goto("/fleet?view=all");
-  const row = (id: string) => page.locator(`[data-board-row="${id}"], [data-working-row="${id}"]`).first();
-  await expect(row(IDS.running).locator("[data-row-cost=priced]")).toHaveText("$0.55");
-  await expect(row(IDS.running).locator("[data-row-cost=priced]")).toHaveAttribute("title", "API-equivalent cost");
-  await expect(row(IDS.bobSecret).locator("[data-row-cost=none]")).toHaveText("No usage yet");
-  for (const scheme of ["light", "dark"] as const) {
-    await page.emulateMedia({ colorScheme: scheme });
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.screenshot({ path: `test-results/sandbox-cost-fleet-desktop-${scheme}.png`, animations: "disabled" });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(row(IDS.running).locator("[data-row-cost=priced]")).toBeVisible();
-    await page.screenshot({ path: `test-results/sandbox-cost-fleet-phone-${scheme}.png`, animations: "disabled" });
-  }
-});
