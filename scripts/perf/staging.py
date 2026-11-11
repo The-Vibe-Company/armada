@@ -51,7 +51,7 @@ report = {
         "Client wall time, not server-only time; payload bytes are decoded HTTP body bytes.",
         "Server-Timing reports instrumented server wall phases only; nested phases overlap and must not be summed.",
         "Missing server phases are unavailable, not zero. SQL trip counts remain unmeasured.",
-        "One Modal x Codex lifecycle sample is not a p50/p95 distribution.",
+        "One selected provider/harness lifecycle sample is not a p50/p95 distribution.",
         "No dashboard paint/navigation, phone or long-session open measurement in this script.",
         "No user-facing before/after claim until run consistently against both revisions.",
     ],
