@@ -118,3 +118,25 @@ is not a safe rollback. Disable affected workloads and retain taint tombstones
 before any rollback/restore. The migration deletes online recovery ciphertext
 for tainted machines, not backups or provider disks/events; no erasure claim is
 made for those stores. This PR applies no migration and deploys nothing.
+
+## Provider-retention gate canaries (next small PR)
+
+Before declaring step 2 complete, exercise the provider-native mutation boundaries
+with durable taint already committed (not raw secrets):
+
+- Modal ordinary and managed stop must terminate compute without invoking runner
+  checkpoint/export, snapshot scrubbing or `snapshotFilesystem`. Repeat after a
+  failed termination and after recreating the control service/provider instance.
+- An existing recovery image must not authorize a tainted restore, native
+  checkpoint replay or fork; verify no allocation and no new snapshot. Old image
+  identifiers are cleanup metadata, not permission to reuse a disk.
+- Boat managed-parent best-effort activation must reject taint before the resume
+  API, including when SQL says stopped and provider state is archived. No prompt,
+  command, resume or new managed authority may be dispatched.
+- Unavailable authoritative taint lookup must not authorize reuse or a recovery
+  snapshot. Non-tainted preservation/recovery retains its existing contract.
+
+These checks do not prove concurrent hydration safety: step 8 must serialize
+admission/taint with provider lifecycle mutation before any delivery is enabled.
+Boat's provider-owned archives, events and deletion/backup policy remain outside
+Armada's erasure guarantee and continue to block raw application-secret delivery.
