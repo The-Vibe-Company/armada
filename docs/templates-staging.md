@@ -202,3 +202,32 @@ No staging credentials are available to the worker. No migration is required.
 Next slices: personal/org/environment defaults with documented precedence and
 one-launch opt-out; CLI; dashboard Skills, template and environment forms. This
 slice does not introduce defaults, opt-out or orchestrator dependencies.
+
+## Secret bindings (API slice, #1037)
+
+Create/publish definitions now accept optional `secrets` bindings:
+`{ key: "APP_TOKEN", secretId: "<vault secret UUID>", version: 1 }`.
+Only references are stored or returned. The service checks active status, expiry,
+current version, org membership and personal ownership. Org templates may only
+reference org secrets. Keys use the same rules as readable variables, and may
+not collide with variable keys or other secret keys. No secret payload is read.
+
+This first slice deliberately refuses launch of a secret-bound revision with
+`secret_delivery_unavailable`, before credentials, a request claim or allocation.
+Existing revisions and readable-only launches are unchanged. No provider gate is
+added or relaxed; secret delivery is the next slice, not claimed here.
+
+Coordinator staging checks (no staging credentials available to workers):
+- Create a random secret through the existing write-only vault; create and publish
+  a personal template referencing its ID/version. Read historical revisions and
+  confirm only the reference appears.
+- Verify another member/admin cannot bind that personal secret; org templates
+  reject personal secrets; org secrets can be bound by authorized template authors.
+- Rotate, revoke and expire secrets and verify publication with an old/unavailable
+  reference refuses with a value-free reason.
+- Verify secret-bound launch refuses before provider allocation on Boat and Modal;
+  readable-only launches still work.
+
+Next PRs: resolve and deliver secrets at launch/later turns via the existing native
+harness environment mechanism without storing values in manifests or receipts;
+then CLI binding flags; then dashboard metadata-only secret picker.

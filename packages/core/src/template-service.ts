@@ -212,6 +212,17 @@ export function createTemplateService(sql: Sql) {
       if (v.version !== binding.version) unavailable("variable_version_changed");
       values[binding.key] = v.value;
     }
+    // Metadata only: publication and admission must never fetch ciphertext or plaintext.
+    for (const binding of def.secrets ?? []) {
+      const secret = (
+        await tx.query<{ version: number; scope: string }>(
+          "select version,scope from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
+          [binding.secretId, actor.orgId, actor.userId],
+        )
+      ).rows[0];
+      if (!secret || (scope === "org" && secret.scope !== "org")) unavailable("secret_unavailable");
+      if (secret.version !== binding.version) unavailable("secret_version_changed");
+    }
     try {
       validateReadableVariables(values);
     } catch {
@@ -258,6 +269,7 @@ export function createTemplateService(sql: Sql) {
       "modelAccount",
       "connections",
       "variables",
+      "secrets",
       "skills",
     ]);
     if (d.provider !== "boat" && d.provider !== "modal") invalid();
@@ -293,6 +305,20 @@ export function createTemplateService(sql: Sql) {
       if (variables.some((v) => v.key === key)) invalid();
       variables.push({ key, variableId: id(b.variableId), version: integer(b.version) });
     }
+    const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
+    if (d.secrets !== undefined && (!Array.isArray(d.secrets) || d.secrets.length > 64)) invalid();
+    for (const binding of (d.secrets ?? []) as unknown[]) {
+      const b = object(binding);
+      fields(b, ["key", "secretId", "version"]);
+      const key = text(b.key, 128);
+      try {
+        validateReadableVariables({ [key]: "" });
+      } catch {
+        invalid();
+      }
+      if (variables.some((v) => v.key === key) || secrets.some((v) => v.key === key)) invalid();
+      secrets.push({ key, secretId: id(b.secretId), version: integer(b.version) });
+    }
     const skills = (d.skills ?? []) as string[];
     if (!Array.isArray(skills)) invalid();
     try {
@@ -314,6 +340,7 @@ export function createTemplateService(sql: Sql) {
       ...choice,
       connections,
       variables,
+      ...(secrets.length ? { secrets } : {}),
       skills,
       ...(modelAccount ? { modelAccount } : {}),
     };
@@ -463,6 +490,8 @@ export function createTemplateService(sql: Sql) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    // This API slice saves bindings only. Never allocate a silently unconfigured sandbox.
+    if (def.secrets?.length) unavailable("secret_delivery_unavailable");
     const credentials = await runtime.stores.credentials
       .resolve(selection.a, def.harness, def.modelAccount?.id, def.modelAccount?.version)
       .catch((error: unknown) => {
