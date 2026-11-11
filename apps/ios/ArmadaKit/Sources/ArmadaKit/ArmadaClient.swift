@@ -17,7 +17,7 @@ public struct Organization: Codable, Sendable, Identifiable {
 }
 private struct Organizations: Decodable, Sendable { let orgs: [Organization] }
 private struct ArmadaFailureEnvelope: Decodable {
-    struct Detail: Decodable { let code: String }
+    struct Detail: Decodable { let code: String; let message: String? }
     let error: Detail
 }
 private struct StoredSession: Codable {
