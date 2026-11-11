@@ -1071,12 +1071,17 @@ test("secret references authorize delivery without persisting values and revoke 
     ).rows[0]!;
     expect(JSON.stringify(request.manifest).includes(canary)).toBe(false);
     f.configured.length = 0;
-    await f.service.prepare(
-      f.provider,
-      launched.providerSandboxId as string,
-      { userId: f.people.owner, orgId: f.people.org },
-      request.id,
-    );
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      prepareReadableVariables: f.service.prepare,
+    });
+    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+      userId: f.people.owner,
+      orgId: f.people.org,
+    });
     expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
     await f.db.query("update application_secrets set version=2 where id=$1", [secretId]);
     await expect(f.create(f.people.owner, "personal", def)).rejects.toThrow("secret_version_changed");

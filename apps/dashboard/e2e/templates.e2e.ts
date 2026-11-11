@@ -71,7 +71,11 @@ for (const mobile of [false, true]) {
     await dialog.getByLabel("Name").fill("Laptop fit");
     await dialog.getByLabel("Environment").selectOption({ label: "shared-golden on Boat" });
     await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
-    await expect(dialog.getByText("Secret values are never shown here.")).toBeVisible();
+    await expect(
+      dialog.getByText(
+        "Only names and scope are shown. Values are delivered as environment variables to the selected agent.",
+      ),
+    ).toBeVisible();
     if (!mobile) await expect(dialog.getByRole("button", { name: "Publish template" })).toBeInViewport();
     await page.screenshot({
       animations: "disabled",

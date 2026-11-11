@@ -482,7 +482,6 @@ function TemplateForm({
           initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
           hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
         />
-        <NoSecretsNote />
         {lost && (
           <p role="alert" className="text-sm text-destructive" data-template-lost>
             {lost}
