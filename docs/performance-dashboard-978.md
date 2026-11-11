@@ -98,6 +98,7 @@ fixed table names/timestamps, no headers/queries/bodies. Epoch reset excludes la
 requests from earlier samples. Use the existing mock and production app, then set
 DASHBOARD_PERF_MOCK=1 only for loopback fixture runs. No new deployed service.
 
+Mock mode refuses external session-state files and uses only the fixture login.
 The helper reports fixed numeric/boolean metrics and version strings only; no URL,
 DOM text, cookies or response bodies. It filters supplied session state to the
 chosen origin, strips driver debug/credential environment, blocks cross-origin

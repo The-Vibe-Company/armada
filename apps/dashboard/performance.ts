@@ -44,9 +44,19 @@ if (
 )
   throw new Error("Unsupported measurement path");
 const state = process.env.DASHBOARD_STORAGE_STATE;
+if (mock && state) throw new Error("Mock mode must not load external session-state files");
 const mockOrigin = parseOrigin(process.env.DASHBOARD_PERF_MOCK_URL ?? "http://127.0.0.1:54418");
-if (mock && !["127.0.0.1", "localhost", "[::1]"].includes(mockOrigin.hostname))
-  throw new Error("Mock must be loopback");
+if (
+  mock &&
+  (!["127.0.0.1", "localhost", "[::1]"].includes(mockOrigin.hostname) ||
+    !["http:", "https:"].includes(mockOrigin.protocol) ||
+    mockOrigin.username ||
+    mockOrigin.password ||
+    mockOrigin.search ||
+    mockOrigin.hash ||
+    mockOrigin.pathname !== "/")
+)
+  throw new Error("Mock must be a loopback origin without credentials");
 const routes = ["login", "(app)/sandboxes", "(app)/sandboxes/[id]"];
 
 function summary(values: number[]) {
