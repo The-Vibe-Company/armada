@@ -294,7 +294,9 @@ try:
         if phase:
             sys.stdin.readline()
             if phase!=2:
-                result=rpc(10,"thread/resume",{"threadId":thread})
+                # This proves credential rejoin, not deprecated full-history hydration.
+                # Keep the real same-thread/process resume but request no unused turns.
+                result=rpc(10,"thread/resume",{"threadId":thread,"excludeTurns":True})
                 assert result["thread"]["id"]==thread
             else:
                 resumed_turn=rpc(17,"turn/start",{"threadId":thread,"input":[{"type":"text","text":"offline future turn only"}]})
