@@ -53,3 +53,13 @@ Two existing local `session_meta` records had a JSONL filename suffix matching
 their `payload.id`. Only field names and boolean/count results were exported.
 This validates installed protocol/schema shape, not a Boat-dispatched model turn
 or the completed identity bridge end to end.
+
+## Live validation limitation
+
+The implementation sandbox's Boat CLI rejected a no-tools Claude validation
+prompt with HTTP 401 (not signed in / expired session). No Boat API credential
+was available. Consequently, normal Boat-dispatched turns, headless callback
+delivery, controlled stop, and resume/fresh-fork behavior have not been validated
+against the live provider here. Local parser/bridge tests are not substitutes for
+that acceptance proof. Restore authorized nonproduction Boat access and run the
+coordinator check above before treating #883 as complete.
