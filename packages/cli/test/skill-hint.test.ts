@@ -84,6 +84,11 @@ sys.exit(p.wait())
       await rm(skill, { recursive: true });
     }
   }
+  // An old named pipe is not a cooldown file; advice must not open it in blocking mode.
+  expect(Bun.spawnSync(["mkfifo", receipt]).exitCode).toBe(0);
+  await utimes(receipt, new Date(0), new Date(0));
+  expect(cli(["--version"])).not.toContain("silence:");
+  await rm(receipt);
   // Read-only/unusable state cannot repeatedly print advice or fail the command.
   await rm(join(state, "armada"), { recursive: true });
   await writeFile(join(state, "armada"), "not a directory");

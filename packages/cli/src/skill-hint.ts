@@ -1,4 +1,4 @@
-import { closeSync, constants, mkdirSync, openSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, ftruncateSync, mkdirSync, openSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SKILL_PACKAGE } from "./skill-package.ts";
@@ -49,15 +49,25 @@ export function printSkillHint(
     const now = Date.now();
     try {
       // Future timestamps also suppress advice after clock rollback.
-      if (now - statSync(receipt).mtimeMs < WEEK) return;
+      const prior = statSync(receipt);
+      if (!prior.isFile() || now - prior.mtimeMs < WEEK) return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return;
     }
     mkdirSync(state, { recursive: true, mode: 0o700 });
     // Persist before printing. Unwritable state must not cause a hint on every invocation.
-    closeSync(
-      openSync(receipt, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600),
+    const fd = openSync(
+      receipt,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      0o600,
     );
+    try {
+      // Recheck the opened object: replacement after stat must not block or touch a special file.
+      if (!fstatSync(fd).isFile()) return;
+      ftruncateSync(fd, 0);
+    } finally {
+      closeSync(fd);
+    }
     process.stderr.write("Armada skills: armada skill install --global --yes (silence: ARMADA_NO_SKILL_HINT=1).\n");
   } catch {
     // Advice must never fail the user's command.
