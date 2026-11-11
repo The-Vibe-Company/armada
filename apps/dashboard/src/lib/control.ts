@@ -18,6 +18,7 @@ import {
   parsePreview,
   type RecipientPreview,
 } from "./invitations.ts";
+import { parseRoutine, parseRoutineRun, type RoutineInput, routineFailure } from "./routines.ts";
 import {
   type LaunchOutcome,
   parseLaunchOutcome,
@@ -231,6 +232,7 @@ export async function controlPost(
   path: string,
   body: object,
   feature = "MCP connections",
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   let response: Response;
   try {
@@ -240,6 +242,7 @@ export async function controlPost(
       body: JSON.stringify(body),
       cache: "no-store",
       redirect: "error",
+      ...(signal ? { signal } : {}),
     });
   } catch {
     throw new ControlError("The Armada server is unreachable.");
@@ -522,6 +525,43 @@ export function createTemplateControl(options: ArmadaApiOptions) {
       const outcome = parseLaunchOutcome(await post("launch", request));
       if (!outcome) throw new ControlError("The Armada server sent an unexpected launch answer.");
       return outcome;
+    },
+  };
+}
+
+/** Owner-scoped routines; no raw provider text or launch manifests enter the dashboard. */
+export function createRoutineControl(options: ArmadaApiOptions) {
+  async function post(operation: string, body: object) {
+    try {
+      return await controlPost(options, `/api/v1/routines/${operation}`, body, "routines", AbortSignal.timeout(10_000));
+    } catch (error) {
+      if (!(error instanceof ControlError)) throw error;
+      throw new ControlError(routineFailure(error.status), error.status, error.code);
+    }
+  }
+  async function saved(operation: string, body: object) {
+    const payload = await post(operation, body),
+      item = parseRoutine(payload.item);
+    if (!item) throw new ControlError("The Armada server sent an unexpected routine.");
+    return item;
+  }
+  return {
+    async list(org: string) {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no routine list.");
+      const items = payload.items.map(parseRoutine);
+      if (items.some((x) => !x)) throw new ControlError("The Armada server sent an unexpected routine.");
+      return items.filter((x): x is NonNullable<typeof x> => !!x && x.orgId === org && x.status !== "deleted");
+    },
+    create: (request: RoutineInput & { org: string }) => saved("create", request),
+    enable: (request: { org: string; id: string; expectedVersion: number }) => saved("enable", request),
+    pause: (request: { org: string; id: string; expectedVersion: number }) => saved("pause", request),
+    async history(org: string, id: string) {
+      const payload = await post("history", { org, id });
+      if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no run history.");
+      const items = payload.items.map(parseRoutineRun);
+      if (items.some((x) => !x)) throw new ControlError("The Armada server sent unexpected run history.");
+      return items.filter((x): x is NonNullable<typeof x> => !!x);
     },
   };
 }

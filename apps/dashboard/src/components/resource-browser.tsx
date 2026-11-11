@@ -63,6 +63,11 @@ function useBrowser(): BrowserContext {
   return value;
 }
 
+/** Lazy resource details can load only while their panel is selected. */
+export function useResourceSelected(key: string): boolean {
+  return useBrowser().selected === key;
+}
+
 export function ResourceBrowser({
   title,
   description,

@@ -3,6 +3,7 @@
 import {
   BoxesIcon,
   CameraIcon,
+  Clock3Icon,
   KeyRoundIcon,
   LayoutTemplateIcon,
   PackageIcon,
@@ -28,6 +29,7 @@ const GROUPS = [
     label: "Run",
     links: [
       { href: "/sandboxes", label: "Sandboxes", short: "Boxes", hint: "Running agents and logs", icon: BoxesIcon },
+      { href: "/routines", label: "Routines", hint: "Scheduled template launches", icon: Clock3Icon },
     ],
   },
   {
