@@ -27,6 +27,7 @@ describe("run", () => {
     "launch",
     "list",
     "detail",
+    "recovery",
     "status",
     "advice",
     "bind-credential",
