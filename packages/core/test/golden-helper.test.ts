@@ -69,6 +69,19 @@ test("browser core entry excludes native payloads while sharing release digests"
   const build = await Bun.build({
     entrypoints: [join(import.meta.dir, "../src/index.ts")],
     target: "browser",
+    plugins: [
+      {
+        name: "browser-node-boundary",
+        setup(builder) {
+          builder.onResolve({ filter: /.*/ }, ({ path }) => {
+            // Private installation must be injected, not pull native SSH I/O into browser core.
+            if (["child_process", "fs", "fs/promises", "os"].includes(path.replace(/^node:/, "")))
+              throw new Error(`Browser core cannot import ${path}`);
+            return undefined;
+          });
+        },
+      },
+    ],
   });
   expect(build.success).toBe(true);
   const bundle = await build.outputs[0]!.text();

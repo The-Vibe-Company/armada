@@ -1,5 +1,5 @@
 import type { HelperRefusal } from "./helper.ts";
-import type { PrivateSkillError, PrivateSkillFailure } from "./private-skill.ts";
+import type { PrivateSkillError, PrivateSkillFailure } from "./private-skill-error.ts";
 export const LAUNCH_INITIALIZATION_STAGES = [
   "initialization_bind",
   "initialization_ready",

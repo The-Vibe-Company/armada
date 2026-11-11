@@ -11,6 +11,7 @@ test.each([
   "launch ok",
   "launch refused",
   "launch missing key",
+  "launch missing transport",
   "refused",
   "broad key",
   "missing",
@@ -71,7 +72,8 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
  let stored=[],prompted=false;const now=new Date().toISOString();
  Object.assign(provider,{id:'boat',harnesses:['codex'],capabilities:{codex:{reasoningEffort:true}},fork:async()=>({id:'fake',state:'ready',expiresAt:new Date(Date.now()+86400000)}),get:async()=>({id:'fake',state:'ready',expiresAt:new Date(Date.now()+86400000)}),exec:async()=>({detached:false,exitCode:0,stdout:'',stderr:'',timedOut:false,truncated:false}),prompt:async()=>{prompted=true;if(stored.length!==1)throw Error('receipt_not_persisted');return {promptId:'p',conversationId:'c',status:'queued'};},stop:async()=>{},delete:async()=>({status:'deleted'})});
  const golden={id:'golden',orgId:'org',ownerId:'owner',name:'web',visibility:'org',provider:'boat',providerSnapshotId:'snapshot',config:{repos:[{url:'https://github.com/example/repo.git',branch:'main',dir:'repo'}],init:[]}};
- const stores={goldens:{findByName:async()=>[golden]},sandboxes:{insert:async input=>({...input,createdAt:now,conversationIds:[]}),update:async()=>{},recordSkills:async(_id,receipts)=>{stored=receipts;}},credentials:{resolve:async()=>({env:{OPENAI_API_KEY:'synthetic-model-key'},github:{status:'not_connected'}}),skillpackKey:async()=>process.env.MODE==='missing key'?null:key}};
+ const stores={goldens:{findByName:async()=>[golden]},sandboxes:{insert:async input=>({...input,createdAt:now,conversationIds:[]}),update:async()=>{},recordSkills:async(_id,receipts)=>{stored=receipts;}},credentials:{installPrivateSkill,resolve:async()=>({env:{OPENAI_API_KEY:'synthetic-model-key'},github:{status:'not_connected'}}),skillpackKey:async()=>process.env.MODE==='missing key'?null:key}};
+ if(process.env.MODE==='missing transport'){delete stores.credentials.installPrivateSkill;stores.credentials.skillpackKey=async()=>{throw Error('unexpected_key_resolution');};}
  try{const result=await launchSandbox(provider,stores,{userId:'owner',orgId:'org',role:'member'},{golden:'web',harness:'codex',skills:['notes@1.0.0'],prompt:'start'});console.log(JSON.stringify({receipt:result.sandbox.skills[0],prompted}));}catch(e){console.log(JSON.stringify({reason:e.reason,stage:e.stage,prompted}));}
 }else try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:process.env.MODE==='bad reference'?'not-a-pin':'notes@1.0.0',harness:'codex',key:process.env.MODE==='unreadable key'?'invalid':key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
@@ -103,6 +105,7 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
           refused: "skillpack_credential_refused",
           "launch refused": "skillpack_credential_refused",
           "launch missing key": "skillpack_credential_missing",
+          "launch missing transport": "skillpack_transport_failed",
           expired: "skillpack_credential_refused",
           revoked: "skillpack_credential_refused",
           missing: "skillpack_skill_unavailable",
@@ -122,9 +125,11 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
         }[mode],
       );
     if (mode === "launch ok") expect(value.prompted).toBe(true);
-    if (mode === "launch refused" || mode === "launch missing key") {
+    if (mode === "launch refused" || mode === "launch missing key" || mode === "launch missing transport") {
       expect(value.prompted).toBe(false);
-      expect(value.stage).toBe(mode === "launch refused" ? "auth" : "credential");
+      expect(value.stage).toBe(
+        mode === "launch refused" ? "auth" : mode === "launch missing transport" ? "transport" : "credential",
+      );
     }
     for (const home of homes) {
       const contents = readFileSync(join(home, ".ssh/authorized_keys"), "utf8");

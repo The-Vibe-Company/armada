@@ -24,7 +24,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
-import { installPrivateSkill, PrivateSkillError } from "./private-skill.ts";
+import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
@@ -70,6 +70,11 @@ export interface LaunchRequest {
 export interface LaunchCredentialResolver {
   /** Resolve only for private launch pins, under the already-authorized actor. Never harness env. */
   skillpackKey?(actor: GoldenActor): Promise<string | null>;
+  /** Server transport port; the browser-safe launcher must not import SSH implementation. */
+  installPrivateSkill?(
+    provider: Provider,
+    input: Parameters<typeof import("./private-skill.ts").installPrivateSkill>[1],
+  ): ReturnType<typeof import("./private-skill.ts").installPrivateSkill>;
   /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
   refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
 
@@ -395,9 +400,11 @@ export async function launchSandbox(
         for (const skill of request.skills) {
           const projectDir = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
           if (!skill.includes("/")) {
+            if (!stores.credentials.installPrivateSkill)
+              throw new PrivateSkillError("skillpack_transport_failed", "transport");
             if (privateKey === undefined) privateKey = (await stores.credentials.skillpackKey?.(actor)) ?? null;
             receipts.push(
-              await installPrivateSkill(provider, {
+              await stores.credentials.installPrivateSkill(provider, {
                 sandboxId: ready.id,
                 projectDir,
                 reference: skill,
