@@ -53,6 +53,49 @@ Optional:
 
 Boat and Modal keys are not server environment: org admins connect them (`armada org connect boat|modal`), and they are stored encrypted per org or per person.
 
+### Start a local development server
+
+From the repository root, run `bun install`, then load the required environment above
+for a **disposable local Supabase project**. Never reuse staging/production
+credentials or point local schema setup at a shared database. If schema setup is
+needed, use `supabase db reset` only against that disposable local project;
+staging/production migrations remain an authorized operator task under the
+[database migration runbook](database-migrations.md).
+
+In that development shell, set explicit local origins and start the API process:
+
+```sh
+export NODE_ENV=development
+export PORT=8080
+export ARMADA_PUBLIC_URL=http://localhost:8080
+export ARMADA_DASHBOARD_URL=http://localhost:3000
+bun scripts/prepare-runtime.ts
+bun packages/mcp-server/src/main.ts
+# Alternatively, after bun run build: ./dist/armada-server
+```
+
+Keep the server running. In another terminal, verify HTTP health and point the
+API-only CLI at the same development origin:
+
+```sh
+curl --fail --silent --show-error http://localhost:8080/healthz
+export ARMADA_URL=http://localhost:8080
+bun run armada --help
+```
+
+For the dashboard, load its environment from the [dashboard section](#the-dashboard)
+using the same local Supabase project and encryption key, then start it with the
+same API origin:
+
+```sh
+ARMADA_MCP_URL=http://localhost:8080 bun run dashboard
+```
+
+Health confirms only that the HTTP process is running, not that a sandbox launch
+works. Follow the existing [provider setup](../README.md) and
+[GitHub App setup](github-app.md) before attempting launches or golden builds;
+provider credentials still belong in Armada's encrypted store, not the CLI.
+
 ## The dashboard
 
 `apps/dashboard` talks to Supabase as the signed-in user (their JWT from the session cookie) and never holds a Supabase service key; launches, golden builds, provider setup and the CLI's `/api/v1` and `/.well-known/armada.json` go through `armada-server`. Writes row level security cannot express go through the functions in `supabase/migrations/*_dashboard_functions.sql`, which check `auth.uid()` themselves.
