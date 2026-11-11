@@ -222,13 +222,16 @@ not an invented underlying cause.
 Existing `code` and `message` fields remain; when a sandbox code is corrected,
 the additive `legacyCode` field aliases the old CLI code. New integrations should
 use `error.code`; integrations migrating old code comparisons can use
-`error.legacyCode // error.code` in jq. Existing versioned failure codes (such as
-`extension_not_found`) remain unchanged. Exit 2 means a usage/invalid-request
+`error.legacyCode // error.code` in jq. Versioned API reasons (such as `extension_not_found`) are retained. Stop
+previously collapsed service/outcome reasons into `unavailable`; these now retain
+the versioned reason with `legacyCode: "unavailable"`. Exit 2 means a usage/invalid-request
 failure; exit 1 means access, state, unsupported operation or service failure.
 Check `armada list --json` for visible IDs and state; verify your org selection
 with `armada org current` or pass `--org UUID`.
 
-No sandbox mutation is retried automatically. On a transport/server failure,
+Sandbox mutations are not replayed after transport/server failures or state
+conflicts. Existing authentication recovery may refresh a personal session and
+retry once after HTTP401. On a transport/server failure,
 check its outcome before retrying: a prompt or stop may already have been
 accepted. If status/detail cannot be read during a transition, inspect
 `armada list --json` instead; this guidance does not repair a stuck provider

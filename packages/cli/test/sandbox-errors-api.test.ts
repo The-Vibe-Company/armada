@@ -87,3 +87,12 @@ test("human error guidance is stderr-only and does not retry a stop rejection", 
   expect(result.err).toContain("armada list --json");
   expect(result.err).not.toContain("Outcome unknown");
 });
+
+test.each(["provider_unavailable", "dependency_unavailable", "outcome_unknown"])(
+  "stop preserves its previous unavailable code as an alias for %s",
+  async (code) => {
+    const result = await capture(["stop", id, "--json"], 503, code);
+    expect(result.exit).toBe(1);
+    expect(JSON.parse(result.err).error).toMatchObject({ code, legacyCode: "unavailable" });
+  },
+);

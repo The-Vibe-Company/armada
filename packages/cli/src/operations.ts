@@ -265,6 +265,15 @@ export async function operation(
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000),
   ).catch((error: unknown) => {
+    // Stop previously collapsed these versioned reasons into an AuthError.
+    if (
+      command === "stop" &&
+      error instanceof ArmadaApiError &&
+      error.code === "unavailable" &&
+      error.serverCode !== "unavailable" &&
+      error.legacyCode === undefined
+    )
+      throw new ArmadaApiError(error.serverCode, error.status, error.message, error.details, "unavailable", 1);
     if (
       command === "stop" &&
       error instanceof AuthError &&
