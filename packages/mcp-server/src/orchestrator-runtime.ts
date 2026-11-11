@@ -721,7 +721,7 @@ export class OrchestratorRuntime {
           ...reservation.operation,
           state: "failed",
           errorCode,
-          errorMessage: errorCode === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+          ...(errorCode === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
         };
       }
       const unavailable = error instanceof BestEffortConversationUnavailable;

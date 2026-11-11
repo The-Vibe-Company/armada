@@ -307,7 +307,7 @@ export class OrchestratorRuntimeStore {
           state: receipt.state as OrchestratorOperation["state"],
           revision: receipt.revision,
           errorCode: persisted.rows[0]?.error_code ?? null,
-          errorMessage: persisted.rows[0]?.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+          ...(persisted.rows[0]?.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
         },
       };
     });
@@ -458,7 +458,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
-      errorMessage: row.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
     }));
   }
 
@@ -649,7 +649,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
-      errorMessage: row.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
     };
   }
 
@@ -791,7 +791,7 @@ export class OrchestratorRuntimeStore {
             state: existing.state,
             revision: Number(existing.revision),
             errorCode: existing.error_code,
-            errorMessage: existing.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+            ...(existing.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
           },
         };
       }
@@ -1006,7 +1006,7 @@ export class OrchestratorRuntimeStore {
               ...reservation.operation,
               state: "failed",
               errorCode,
-              errorMessage: errorCode === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+              ...(errorCode === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
             },
           }),
         ],

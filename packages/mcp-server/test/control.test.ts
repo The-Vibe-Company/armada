@@ -1641,7 +1641,7 @@ test.each(["claude", "codex"] as const)(
         expect(restored.nativeAuthRevision).toBe(0);
         await expect(
           modelAuth.claim({ userId: ADA, orgId: org.id, role: "member" }, winner.credentialId, 1, crypto.randomUUID()),
-        ).rejects.toMatchObject({ code: "conflict" });
+        ).rejects.toMatchObject({ code: "credential_busy" });
       }
       expect((await post(ADA, winner.credentialId === chosen ? alternate : chosen)).status).toBe(409);
     });
