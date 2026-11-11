@@ -175,6 +175,12 @@ export interface Provider {
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
   list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
+  /** Trusted final-harness-only bootstrap. Never applied to exec, golden build or init. */
+  configureReadableVariables?(request: {
+    sandboxId: string;
+    harness: Harness;
+    variables: Record<string, string>;
+  }): Promise<void>;
   /** Queues work for a harness. Without `conversationId` it opens a new conversation. */
   prompt(request: PromptRequest): Promise<PromptReceipt>;
   getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState>;

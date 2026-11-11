@@ -239,6 +239,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,
@@ -312,6 +313,7 @@ export {
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
+export type { LaunchTemplate, TemplateDefinition } from "./templates.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,

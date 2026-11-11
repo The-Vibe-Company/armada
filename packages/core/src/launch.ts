@@ -147,6 +147,8 @@ export interface LaunchOptions extends GoldenLimits {
   beforeFork?: (sandboxId: string) => Promise<void>;
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
+  /** Trusted final-start admission/bootstrap, after all repository and init work. */
+  beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
   /** Trusted server-only narrowing for managed orchestrator parents. Not a public launch field. */
   privateParent?: true;
   /** For tests. */
@@ -423,6 +425,7 @@ export async function launchSandbox(
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       await stores.connections?.prepare?.(provider, record, actor);
+      await options.beforeStart?.(provider, record);
       progress("initialization_publish");
       if (prompt === undefined) {
         signal.throwIfAborted();

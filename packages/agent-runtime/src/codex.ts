@@ -27,6 +27,9 @@ export class CodexDriver implements Driver {
       exclusiveAuth?: boolean;
     },
   ) {}
+  configureReadableVariables(variables: Record<string, string>): void {
+    Object.assign(this.options.env, variables);
+  }
   start(c: DriverContext): Turn {
     return this.open(c, false);
   }
