@@ -75,7 +75,9 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           state,
           reason ?? null,
           claim?.id ?? null,
-          claim?.sandbox_id ?? null,
+          // A failed template claim is terminal before provider allocation. Its UUID is
+          // only a reservation; keep the request identity without inventing a sandbox.
+          claim?.state === "failed" ? null : (claim?.sandbox_id ?? null),
           claim?.prompt_id ?? null,
           claim?.conversation_id ?? null,
         ],
@@ -194,10 +196,13 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
         await tx.query<{ state: string; sandbox_id: string | null; status: string | null; deleted_at: string | null }>(
           `select rr.state,rr.sandbox_id,s.status,s.deleted_at from public.routine_runs rr
          left join public.sandboxes s on s.id=rr.sandbox_id
+         left join public.template_launch_requests claim on claim.id=rr.template_request_id
+          and claim.org_id=rr.org_id and claim.actor_id=rr.owner_id and claim.client_key=rr.request_key
          where rr.routine_id=$1 and (
           rr.state in ('admitted','reconciling') or
           ((rr.sandbox_id is not null or rr.state='succeeded') and
-           (s.id is null or (s.status not in ('stopped','deleted') and not (s.status='failed' and s.stopped_at is not null) and s.deleted_at is null))))
+           ((s.id is null and (rr.state<>'failed' or claim.state is distinct from 'failed')) or
+            (s.status not in ('stopped','deleted') and not (s.status='failed' and s.stopped_at is not null) and s.deleted_at is null))))
          order by case when rr.state in ('admitted','reconciling') or s.id is null then 0 else 1 end limit 1`,
           [routine.id],
         )

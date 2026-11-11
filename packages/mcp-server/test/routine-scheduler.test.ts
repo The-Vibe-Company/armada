@@ -211,9 +211,12 @@ test("restart after template success but lost history publication reconciles the
 test("daily cap includes failures, skipped ticks do not reset failures, and three refused launches pause safely", async () => {
   const f = await fixture();
   try {
-    const launch = async () => {
+    // Fail after real template admission has committed its reserved sandbox identity.
+    // A pre-claim exception cannot exercise the no-allocation overlap boundary.
+    f.runtime.provider = async () => {
       throw Error("secret raw provider output must not persist");
     };
+    const launch = f.launch;
     await f.db.query("update routines set max_runs_per_day=1 where id=$1", [f.routine.id]);
     await f.due();
     await createRoutineScheduler(f.sql, { launch, observe: f.observe }).tick();
@@ -245,11 +248,60 @@ test("daily cap includes failures, skipped ticks do not reset failures, and thre
       pause_reason: "repeated_launch_failures",
       next_due_at: null,
     });
+    expect((await f.db.query("select state from template_launch_requests")).rows).toEqual([
+      { state: "failed" },
+      { state: "failed" },
+      { state: "failed" },
+    ]);
+    expect(f.boat.forks).toHaveLength(0);
     expect(JSON.stringify(await f.runs())).not.toContain("secret raw");
   } finally {
     await f.db.close();
   }
 });
+
+// Real template admission owns the known-no-allocation decision; a reserved UUID is not a sandbox.
+test.each([false, true])(
+  "pre-allocation template failure permits recovery (legacy reserved ID: %s)",
+  async (legacy) => {
+    const f = await fixture();
+    try {
+      const provider = f.runtime.provider;
+      f.runtime.provider = async () => {
+        throw Error("provider resolution unavailable");
+      };
+      await f.due();
+      await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+      const failed = (await f.runs())[0]!;
+      const claim = (
+        await f.db.query<{ id: string; sandbox_id: string; state: string }>(
+          "select id,sandbox_id,state from template_launch_requests where client_key=$1",
+          [failed.request_key],
+        )
+      ).rows[0]!;
+      expect(claim.state).toBe("failed");
+      expect((await f.db.query("select id from sandboxes where id=$1", [claim.sandbox_id])).rows).toHaveLength(0);
+      expect(failed).toMatchObject({ state: "failed", reason: "launch_failed", sandbox_id: null });
+      expect((await f.service.command(f.actor, "history", { org: f.people.org, id: f.routine.id })).items).toEqual([
+        expect.objectContaining({ templateRequestId: claim.id, sandboxId: null }),
+      ]);
+      // Rows persisted before this fix retain the reservation; only the terminal template
+      // claim, not absence of a sandbox by itself, proves that allocation never started.
+      if (legacy) await f.db.query("update routine_runs set sandbox_id=$2 where id=$1", [failed.id, claim.sandbox_id]);
+      f.runtime.provider = provider;
+      await f.due();
+      await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+      expect(f.boat.forks).toHaveLength(1);
+      expect(f.boat.prompts).toHaveLength(1);
+      expect((await f.runs()).at(-1)).toMatchObject({ state: "succeeded" });
+      expect(
+        (await f.db.query("select consecutive_failures from routines where id=$1", [f.routine.id])).rows[0],
+      ).toEqual({ consecutive_failures: 0 });
+    } finally {
+      await f.db.close();
+    }
+  },
+);
 
 test("uncertain template claims never refork and remain visible across restart", async () => {
   const f = await fixture();
@@ -263,6 +315,7 @@ test("uncertain template claims never refork and remain visible across restart",
     });
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
     expect((await f.runs())[0]).toMatchObject({ state: "reconciling", reason: "launch_uncertain" });
+    expect((await f.runs())[0]!.sandbox_id).not.toBeNull();
     await f.db.query("update routine_runs set lease_until=now()-interval '1 second' where routine_id=$1", [
       f.routine.id,
     ]);
