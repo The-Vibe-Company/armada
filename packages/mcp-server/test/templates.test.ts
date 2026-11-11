@@ -247,12 +247,13 @@ for (const mode of ["before_commit", "after_commit", "both_before_commit", "both
     const f = await fixture();
     const query = f.sql.query.bind(f.sql);
     let publications = 0;
-    const injected = spyOn(f.sql, "query").mockImplementation(async (text, params) => {
-      if (!text.startsWith("update public.template_launch_requests set state='succeeded'")) return query(text, params);
+    const injected = spyOn(f.sql, "query").mockImplementation(async <T>(text: string, params?: unknown[]) => {
+      if (!text.startsWith("update public.template_launch_requests set state='succeeded'"))
+        return query<T>(text, params);
       publications++;
       const lose = publications === 1 || mode.startsWith("both_");
       if (lose && mode.endsWith("before_commit")) throw Error("publication transport unavailable");
-      const result = await query(text, params);
+      const result = await query<T>(text, params);
       if (lose) throw Error("publication acknowledgement lost");
       return result;
     });
@@ -284,7 +285,7 @@ for (const mode of ["before_commit", "after_commit", "both_before_commit", "both
       );
       expect(replay.state).toBe(expected);
       if (expected === "succeeded") {
-        expect(replay).toEqual(row.result);
+        expect(row.result).toEqual(replay);
         const sandbox = (
           await f.db.query<{ task_prompt_id: string }>("select task_prompt_id from sandboxes where id=$1", [replay.id])
         ).rows[0]!;
