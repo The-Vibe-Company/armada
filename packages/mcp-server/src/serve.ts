@@ -16,6 +16,7 @@ import { type ConfiguredControlOptions, handleControlRequest } from "./control.t
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
+import { createDatabaseReadiness } from "./database-readiness.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -262,6 +263,7 @@ export async function startServer(
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
+    ready: createDatabaseReadiness(sql),
     launch,
     orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
