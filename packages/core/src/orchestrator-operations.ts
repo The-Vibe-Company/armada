@@ -7,7 +7,7 @@ export async function reserveOrchestratorOperation(
   input: {
     orchestratorId: string;
     actorId: string;
-    action: "create" | "message" | "steer" | "stop" | "resume";
+    action: "create" | "message" | "steer" | "stop" | "resume" | "connections_add" | "connections_remove";
     key: string;
     digest: string;
     expectedRevision: number;

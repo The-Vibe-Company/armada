@@ -43,6 +43,36 @@ const receipt = {
   errorCode: null,
 };
 
+test("connection CLI preserves list/add/remove paths, CAS and selection", async () => {
+  for (const action of ["list", "add", "remove"]) {
+    const response =
+      action === "list"
+        ? { version: 1, connections: [{ id: "connection", name: "Tools" }] }
+        : { ...receipt, kind: `connections_${action}`, state: "succeeded" };
+    const h = harness(() => Response.json(response));
+    const result = await h.invoke([
+      "connections",
+      action,
+      "parent-1",
+      ...(action === "list" ? [] : ["connection"]),
+      "--org",
+      "org-1",
+      ...(action === "list" ? [] : ["--expected-revision", "7", "--idempotency-key", "same-key"]),
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    expect(h.requests).toHaveLength(1);
+    const request = h.requests[0]!;
+    expect(new URL(request.url).pathname).toBe(
+      `/api/v1/orchestrators/parent-1/connections${action === "list" ? "" : `/${action}`}`,
+    );
+    if (action !== "list") {
+      expect(request.headers.get("idempotency-key")).toBe("same-key");
+      expect(await request.json()).toEqual({ orgId: "org-1", expectedRevision: 7, connections: ["connection"] });
+    }
+  }
+});
+
 test.each(["resume", "recover"])(
   "registered %s sends exact candidate route, org selector, key and revision without prompt",
   async (action) => {

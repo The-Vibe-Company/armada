@@ -7,6 +7,7 @@ import {
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  goldenBuildFailureText,
   HARNESSES,
   type Harness,
   isSandboxProvider,
@@ -570,7 +571,7 @@ async function admitGoldenBuild(
       if (current.state === "failed" || current.state === "recovery_required")
         throw new GoldenError(
           "build_failed",
-          `Build ${job.jobId}: ${current.state} (${current.failureReason ?? "build_failed"}).`,
+          `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`,
         );
       deadline.throwIfAborted();
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
@@ -593,10 +594,7 @@ async function admitGoldenBuild(
     return current.result ?? undefined;
   }
   if (current.state === "failed" || current.state === "recovery_required")
-    throw new GoldenError(
-      "build_failed",
-      `Build ${job.jobId}: ${current.state} (${current.failureReason ?? "build_failed"}).`,
-    );
+    throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`);
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
   else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
   return undefined;

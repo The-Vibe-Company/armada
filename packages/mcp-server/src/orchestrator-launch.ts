@@ -3,11 +3,13 @@ import {
   type GoldenActor,
   type Harness,
   type HarnessCredentials,
+  isNonMutatingProviderRefusal,
   type LaunchRequest,
   type LaunchStores,
   launchSandbox,
   PROVIDER_LIMITS,
   type Provider,
+  ProviderError,
   type Sql,
 } from "@armada/core/server";
 import { diagnosticStep, type OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
@@ -142,11 +144,21 @@ export async function launchOrchestratorParent(input: {
       if (key === "fork")
         return (fork: Parameters<Provider["fork"]>[0]) =>
           diagnosticStep(input.diagnostics, "fork", () =>
-            target.fork({
-              ...fork,
-              idempotencyKey: reservation.operation.id,
-              labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
-            }),
+            target
+              .fork({
+                ...fork,
+                idempotencyKey: reservation.operation.id,
+                labels: { ...fork.labels, orchestrator: identity.id, operation: reservation.operation.id },
+              })
+              .catch((error: unknown) => {
+                if (
+                  isNonMutatingProviderRefusal(error) &&
+                  error instanceof ProviderError &&
+                  error.code === "payment_required"
+                )
+                  reservation.createForkRefusal = "provider_payment_required";
+                throw error;
+              }),
           );
       // Logical-ID cleanup cannot atomically compare our native incarnation.
       // Never let an old catch stop a replacement: exact recovery owns all
@@ -208,7 +220,16 @@ export async function launchOrchestratorParent(input: {
   });
   await launchSandbox(
     routed,
-    { ...input.stores, sandboxes, credentials },
+    {
+      ...input.stores,
+      sandboxes,
+      credentials,
+      // Binding validation and persistence remain ordinary launch policy. Native
+      // preparation runs once through the operation-bound backend after launch
+      // publication, before installing authority. Do not pass the launch proxy's
+      // SQL callbacks into the lifecycle's serialized native I/O transaction.
+      ...(input.stores.connections ? { connections: { ...input.stores.connections, prepare: async () => {} } } : {}),
+    },
     actor,
     {
       ...orchestratorParentLaunchRequest(identity.configuration, request),

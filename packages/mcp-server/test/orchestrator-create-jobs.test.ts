@@ -251,3 +251,46 @@ test("revoked membership fails only tagged queued intent, emits a correlated fai
     await f.db.close();
   }
 }, 20_000);
+
+test.each([false, true])(
+  "a parent billing refusal is terminal only without retained resource evidence (keepSource=%s)",
+  async (keepSource) => {
+    const f = await fixture();
+    try {
+      f.provider.provider.fork = async () => {
+        throw new core.ProviderError({
+          provider: "boat",
+          code: "payment_required",
+          retryable: false,
+          message: "opaque upstream",
+          ...(keepSource ? { details: { keepSource: true } } : {}),
+        });
+      };
+      const admitted = await f.runtime.create(f.caller, f.configuration, "billing-refusal");
+      f.gate.resolve();
+      await f.runtime.createWorker.drain();
+      expect(
+        (
+          await f.db.query(
+            "select state,error_code,runtime_result->>'noFork' as no_fork from orchestrator_operations where id=$1",
+            [admitted.id],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          state: keepSource ? "uncertain" : "failed",
+          error_code: keepSource ? "runtime_uncertain" : "provider_payment_required",
+          no_fork: keepSource ? null : "true",
+        },
+      ]);
+      expect(
+        (await f.db.query("select sandbox_id from orchestrators where id=$1", [admitted.orchestratorId])).rows,
+      ).toEqual([{ sandbox_id: null }]);
+      expect(f.provider.forks).toHaveLength(0);
+    } finally {
+      f.gate.resolve();
+      await f.runtime.createWorker.drain();
+      await f.db.close();
+    }
+  },
+);

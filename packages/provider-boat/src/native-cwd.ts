@@ -1,4 +1,5 @@
 import type { ExecRequest } from "@armada/core";
+import { claudeMcpBridge } from "./native-claude-mcp.ts";
 
 export const NATIVE_HARNESS_PATHS = {
   codex: "/usr/local/bin/codex",
@@ -16,28 +17,32 @@ export async function installNativeCwdWrapper(
   sandboxId: string,
   harness: NativeHarness,
   cwd?: string,
+  managedClaudeMcp = false,
 ): Promise<void> {
   const path = NATIVE_HARNESS_PATHS[harness];
-  const command = nativeCwdCommand(path, harness, cwd);
+  const command = nativeCwdCommand(path, harness, cwd, managedClaudeMcp);
   await exec({
     sandboxId,
     timeoutSeconds: 60,
     command:
-      (harness === "codex" ? "python3 -c 'import tomllib' >/dev/null || exit 1; " : "") +
-      nativeCwdInstallScript(path, command, cwd),
+      (harness === "codex"
+        ? "python3 -c 'import tomllib' >/dev/null || exit 1; "
+        : managedClaudeMcp
+          ? "python3 -c 'import json,os,signal,stat,subprocess,threading,uuid' >/dev/null || exit 1; "
+          : "") + nativeCwdInstallScript(path, command, cwd, managedClaudeMcp),
   });
 }
 
 /** Builds the VM wrapper command and always invokes the preserved image executable directly. */
-export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: string): string {
+export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: string, managedClaudeMcp = false): string {
   const original = quote(`${path}.armada-original`);
   if (harness === "claude")
     return [
       `selected=${quote(cwd ?? "")}`,
       `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
       'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
-      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${original} "$@"; fi`,
-      `exec ${original} "$@"`,
+      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
+      `exec ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
     ].join("; ");
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
   const script = [
@@ -65,14 +70,20 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
 }
 
 /** The command runs only inside a Boat sandbox, through its existing VM exec primitive. */
-export function nativeCwdInstallScript(path: string, command: string, cwd?: string): string {
-  const payload = nativeCwdInstallPayload(path, command, cwd);
+export function nativeCwdInstallScript(path: string, command: string, cwd?: string, managedClaudeMcp = false): string {
+  const payload = nativeCwdInstallPayload(path, command, cwd, managedClaudeMcp);
   return `if [ "$(id -u)" -eq 0 ]; then bash -c ${quote(payload)}; else exec sudo -n bash -c ${quote(payload)}; fi`;
 }
 
-function nativeCwdInstallPayload(path: string, command: string, cwd?: string): string {
+function nativeCwdInstallPayload(
+  path: string,
+  command: string,
+  cwd: string | undefined,
+  managedClaudeMcp: boolean,
+): string {
   const original = `${path}.armada-original`;
   const wrapper = `${path}.armada-wrapper`;
+  const managedMarker = `${path}.armada-managed-mcp`;
   return [
     "set -eu",
     "umask 077",
@@ -90,6 +101,15 @@ function nativeCwdInstallPayload(path: string, command: string, cwd?: string): s
         ]),
     `test -L ${quote(path)} || { echo 'native harness is unavailable' >&2; exit 1; }`,
     `test -x ${quote(path)} || { echo 'native harness is unavailable' >&2; exit 1; }`,
+    `test ! -L ${quote(managedMarker)}`,
+    `test ! -e ${quote(managedMarker)} || { test -f ${quote(managedMarker)} && test "$(stat -c %u ${quote(managedMarker)})" = "$(id -u)" && test "$(stat -c %a ${quote(managedMarker)})" = 644; }`,
+    // A generic GitHub/pre-prompt install may update cwd, never downgrade a
+    // validated managed wrapper. Only a managed installation creates this marker.
+    ...(managedClaudeMcp
+      ? []
+      : [
+          `if [ -f ${quote(managedMarker)} ]; then test "$(readlink -f -- ${quote(path)})" = ${quote(wrapper)} && test ! -L ${quote(wrapper)} && test -f ${quote(wrapper)} && test "$(stat -c %u ${quote(wrapper)})" = "$(id -u)" && test "$(stat -c %a ${quote(wrapper)})" = 755 && test "$(sha256sum ${quote(wrapper)} | cut -d ' ' -f 1)" = "$(cat ${quote(managedMarker)})" && exit 0; exit 1; fi`,
+        ]),
     `if [ ! -e ${quote(original)} ] && [ ! -L ${quote(original)} ]; then mv -n -- ${quote(path)} ${quote(original)}; fi`,
     `test -x ${quote(original)} || { echo 'native harness original is unavailable' >&2; exit 1; }`,
     `original_resolved=$(readlink -f -- ${quote(original)})`,
@@ -100,6 +120,9 @@ function nativeCwdInstallPayload(path: string, command: string, cwd?: string): s
     `mv -f -- "$tmp" ${quote(wrapper)}`,
     `ln -s -- ${quote(wrapper)} "$tmp.link"`,
     `mv -Tf -- "$tmp.link" ${quote(path)}`,
+    ...(managedClaudeMcp
+      ? [`sha256sum ${quote(wrapper)} | cut -d ' ' -f 1 > ${quote(managedMarker)}`, `chmod 644 ${quote(managedMarker)}`]
+      : []),
   ].join("; ");
 }
 

@@ -366,6 +366,7 @@ export type Database = {
           revision_known: boolean;
           build_warnings: string[];
           failure_reason: string | null;
+          legacy_payment_recovery_eligible: boolean;
         };
         Insert: {
           id: string;
@@ -393,6 +394,7 @@ export type Database = {
           revision_known?: boolean;
           build_warnings?: string[];
           failure_reason?: string | null;
+          legacy_payment_recovery_eligible?: boolean;
         };
         Update: {
           id?: string;
@@ -420,6 +422,7 @@ export type Database = {
           revision_known?: boolean;
           build_warnings?: string[];
           failure_reason?: string | null;
+          legacy_payment_recovery_eligible?: boolean;
         };
         Relationships: [
           {
@@ -2024,6 +2027,7 @@ export type Database = {
           blocked_reason: string | null;
           created_at: string;
           skill_receipt: Json | null;
+          mcp_wrapper_revision: string | null;
         };
         Insert: {
           orchestrator_id: string;
@@ -2039,6 +2043,7 @@ export type Database = {
           blocked_reason?: string | null;
           created_at?: string;
           skill_receipt?: Json | null;
+          mcp_wrapper_revision?: string | null;
         };
         Update: {
           orchestrator_id?: string;
@@ -2054,6 +2059,7 @@ export type Database = {
           blocked_reason?: string | null;
           created_at?: string;
           skill_receipt?: Json | null;
+          mcp_wrapper_revision?: string | null;
         };
         Relationships: [
           {

@@ -1,6 +1,45 @@
 import { expect, test } from "bun:test";
 import { orchestratorSummary, parseOrchestratorCommand } from "../src/orchestrator-commands.ts";
 
+test("create selection distinguishes defaults, explicit none and exclusive connections", () => {
+  const args = [
+    "create",
+    "coordinator",
+    "--org",
+    "org",
+    "--golden",
+    "golden",
+    "--provider",
+    "boat",
+    "--agent",
+    "claude",
+    "--model",
+    "model",
+    "--model-account",
+    "account",
+    "--idempotency-key",
+    "create",
+  ];
+  for (const [options, selection] of [
+    [[], undefined],
+    [["--no-connections"], []],
+    [
+      ["--connections", "first,second"],
+      ["first", "second"],
+    ],
+  ] as const) {
+    const command = parseOrchestratorCommand([...args, ...options]);
+    expect("body" in command && "connections" in command.body ? command.body.connections : undefined).toEqual(
+      selection === undefined ? undefined : [...selection],
+    );
+  }
+  for (const options of [
+    ["--connections", "first", "--no-connections"],
+    ["--connections", "first,"],
+  ])
+    expect(() => parseOrchestratorCommand([...args, ...options])).toThrow();
+});
+
 // Parser owns CLI-to-contract translation; these are not server/runtime integration tests.
 test("create preserves explicit account/repository/model choices and leaves defaults to the server", () => {
   const command = parseOrchestratorCommand([

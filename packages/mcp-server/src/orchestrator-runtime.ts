@@ -15,7 +15,11 @@ import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
 import { OrchestratorCreateJobs } from "./orchestrator-create-jobs.ts";
-import { type OrchestratorDiagnosticLog, OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
+import {
+  type OrchestratorCleanupStep,
+  type OrchestratorDiagnosticLog,
+  OrchestratorDiagnostics,
+} from "./orchestrator-diagnostics.ts";
 import { createManagedOrchestratorRuntime } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeFoundation, OrchestratorRuntimeTransport } from "./orchestrator-runtime-foundation.ts";
 import {
@@ -73,12 +77,15 @@ export interface OrchestratorRuntimeBackend {
     conversationContinued: boolean;
     reason?: "conversation_metadata_missing" | "conversation_harness_mismatch";
   }>;
+  assertIdle?(identity: RuntimeIdentity): Promise<void>;
   prepareMcp?(identity: RuntimeIdentity): Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
   revalidate(identity: RuntimeIdentity): Promise<void>;
 }
 
 export interface OrchestratorRuntimeOptions {
+  /** Owner authorization before async create admission; launch revalidates it. */
+  validateConnections?(configuration: OrchestratorCreate, ownerId: string): Promise<void>;
   diagnosticLog?: OrchestratorDiagnosticLog;
   enabledPairs?: readonly OrchestratorPair[];
   recoverCreate?: (
@@ -145,6 +152,7 @@ export class OrchestratorRuntime {
       version: 1,
       orchestrator: wireOrchestrator(identity),
       operations: await this.options.store.operations(ownerId, orgId, id),
+      connections: await this.options.store.connections(identity),
       ...lifecycle,
     };
   }
@@ -167,6 +175,41 @@ export class OrchestratorRuntime {
     }
     const retained = await this.options.store.events(identity.ownerId, orgId, id, cursor, limit, options);
     return { ...retained, hasMore: retained.hasMore || (options.direction !== "backward" && upstreamHasMore) };
+  }
+
+  async connections(caller: Caller, orgId: string, id: string) {
+    const identity = await this.options.store.read(this.owner(caller, orgId), orgId, id);
+    return { version: 1 as const, connections: await this.options.store.connections(identity) };
+  }
+  async changeConnections(
+    caller: Caller,
+    input: {
+      orgId: string;
+      id: string;
+      action: "connections_add" | "connections_remove";
+      key: string;
+      expectedRevision: number;
+      connections: string[];
+    },
+  ): Promise<OrchestratorOperation> {
+    const ownerId = this.owner(caller, input.orgId);
+    const prior = await this.options.store.lookupRequest({
+      ownerId,
+      orgId: input.orgId,
+      id: input.id,
+      action: input.action,
+      key: input.key,
+      payload: { expectedRevision: input.expectedRevision, connections: input.connections },
+    });
+    if (prior) return prior;
+    const identity = await this.options.store.read(ownerId, input.orgId, input.id);
+    if (identity.state !== "ready" || identity.revision !== input.expectedRevision)
+      throw new OrchestratorRuntimeError("conflict", "not_admitted");
+    const backend = await this.options.resolveBackend(identity.configuration, ownerId, identity);
+    if (!backend.assertIdle) throw new OrchestratorRuntimeError("unavailable");
+    await backend.revalidate(identity);
+    await backend.assertIdle(identity);
+    return this.options.store.changeConnections({ ...input, ownerId });
   }
 
   async reconcile(
@@ -280,6 +323,7 @@ export class OrchestratorRuntime {
       });
       if (prior) return this.recorded(prior, diagnostics);
       diagnostics.stage("reservation");
+      await this.options.validateConnections?.(configuration, ownerId);
       const reservation = await this.options.store.create({
         ownerId,
         configuration,
@@ -479,6 +523,7 @@ export class OrchestratorRuntime {
         const machine = await backend.provider.get(current.providerSandboxId);
         if (machine.state !== "ready" && machine.state !== "running") throw new OrchestratorRuntimeError("conflict");
         const configuration = { ...current.configuration, ...backend.selection };
+        if (input.action === "message") await backend.prepareMcp?.(current);
         diagnostics.stage(input.action === "steer" ? "steer" : "message");
         let dispatched = false;
         try {
@@ -571,6 +616,8 @@ export class OrchestratorRuntime {
   ): Promise<void> {
     await validate?.();
     if (!identity.providerSandboxId) throw new OrchestratorRuntimeError("unavailable");
+    diagnostics.stage("initialization_mcp");
+    await backend.prepareMcp?.(identity);
     diagnostics.stage("skills");
     await bootstrapOrchestrator(backend.provider, {
       diagnostics,
@@ -644,15 +691,16 @@ export class OrchestratorRuntime {
       if (
         reservation.operation.kind === "create" &&
         reservation.createDispatchId &&
-        !reservation.createForkDispatched
+        (!reservation.createForkDispatched || reservation.createForkRefusal !== undefined)
       ) {
         diagnostics.report("failed", error);
         diagnostics.stage("failure_publication");
-        if (!(await this.options.store.failCreateBeforeFork(reservation))) {
+        const errorCode = reservation.createForkRefusal ?? "create_preallocation_failed";
+        if (!(await this.options.store.failCreateBeforeFork(reservation, errorCode))) {
           diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
           throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
         }
-        return { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" };
+        return { ...reservation.operation, state: "failed", errorCode };
       }
       const unavailable = error instanceof BestEffortConversationUnavailable;
       if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");
@@ -660,21 +708,43 @@ export class OrchestratorRuntime {
       const refused = error instanceof PromptRefused;
       const privateFailure = error instanceof PrivateSkillError;
       let privateCreateStopped = false;
+      let discardedCreate = false;
+      let cleanupFailureStep: OrchestratorCleanupStep | undefined;
+      let cleanupFailureError: unknown;
       if (privateFailure && reservation.operation.kind === "create") {
         // Skills precede authority installation and the first conversation. Stop the
         // failed allocation; never claim a terminal parent while it may still run.
+        let cleanupStep: OrchestratorCleanupStep = "fence";
         try {
           const identity = reservation.identity;
           await this.options.store.assertCreateCurrent(reservation);
+          cleanupStep = "resolve";
           const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
+          cleanupStep = "revalidate";
           await backend.revalidate(identity);
+          cleanupStep = "unconfirmed";
           if (identity.providerSandboxId && !identity.conversationId) {
-            await backend.provider.stop({ sandboxId: identity.providerSandboxId });
-            privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+            if (backend.provider.id === "modal") {
+              // A pre-turn failed create has no native session/checkpoint to save.
+              // Stop attempts to checkpoint on Modal and can fail for that reason.
+              // Dispose only this fresh, fenced allocation; never discard a resume.
+              cleanupStep = "delete";
+              discardedCreate =
+                (await backend.provider.delete({ sandboxId: identity.providerSandboxId })).status === "deleted";
+              cleanupStep = "unconfirmed";
+              privateCreateStopped = discardedCreate;
+            } else {
+              cleanupStep = "stop";
+              await backend.provider.stop({ sandboxId: identity.providerSandboxId });
+              cleanupStep = "unconfirmed";
+              privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
+            }
           }
-        } catch {
+        } catch (cleanupError) {
+          cleanupFailureError = cleanupError;
           // Preserve the installation reason. Unconfirmed cleanup stays blocked.
         }
+        if (!privateCreateStopped) cleanupFailureStep = cleanupStep;
       }
       const state = lost || refused || privateFailure ? ("failed" as const) : ("uncertain" as const);
       const errorCode = refused
@@ -687,6 +757,7 @@ export class OrchestratorRuntime {
               ? error.reason
               : "runtime_uncertain";
       diagnostics.report(state, refused ? error.refusal : error);
+      if (cleanupFailureStep) diagnostics.cleanupFailure(cleanupFailureStep, cleanupFailureError);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.
@@ -695,6 +766,7 @@ export class OrchestratorRuntime {
         published = await this.options.store.complete(reservation, {
           state,
           parentState: refused ? "ready" : privateCreateStopped ? "stopped" : "blocked",
+          ...(discardedCreate ? { discardedCreate: true } : {}),
           errorCode,
           ...(lost
             ? { continuity: "lost" as const }

@@ -11,6 +11,8 @@ import {
 
 import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 
+export type OrchestratorCleanupStep = "fence" | "resolve" | "revalidate" | "delete" | "stop" | "unconfirmed";
+
 type DiagnosticLevel = "info" | "warn" | "error";
 export type OrchestratorDiagnosticLog = (line: string, level: DiagnosticLevel) => void;
 
@@ -467,6 +469,29 @@ export class OrchestratorDiagnostics {
       ).catch(() => {});
     } catch {
       /* Diagnostics cannot change effects. */
+    }
+  }
+  /** Cleanup cannot replace the installation failure or serialize its exception. */
+  cleanupFailure(step: OrchestratorCleanupStep, error?: unknown): void {
+    if (!["fence", "resolve", "revalidate", "delete", "stop", "unconfirmed"].includes(step)) return;
+    try {
+      void Promise.resolve(
+        this.log?.(
+          JSON.stringify({
+            event: "orchestrator_create_cleanup_failure",
+            action: "create",
+            outcome: "unconfirmed",
+            step,
+            reason: error === undefined ? "cleanup_unconfirmed" : baseReason(error),
+            ...(this.operationId ? { operationId: this.operationId } : {}),
+            ...(this.orchestratorId ? { orchestratorId: this.orchestratorId } : {}),
+            ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
+          }),
+          "error",
+        ),
+      ).catch(() => {});
+    } catch {
+      /* A diagnostic cannot affect settlement. */
     }
   }
   stage(stage: OrchestratorDiagnosticStage): void {
