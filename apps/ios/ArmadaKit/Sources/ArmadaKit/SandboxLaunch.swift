@@ -492,6 +492,7 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     /// Classifies a thrown error of the launch call.
     public static func classify(_ error: any Error) -> SandboxLaunchFailure {
         if let failure = error as? SandboxLaunchFailure { return failure }
+        if let server = error as? ArmadaServerFailure { return .unconfirmedWithReason(server.explanation) }
         if case .signedOut? = error as? ArmadaError { return .signedOut }
         return .unconfirmed
     }

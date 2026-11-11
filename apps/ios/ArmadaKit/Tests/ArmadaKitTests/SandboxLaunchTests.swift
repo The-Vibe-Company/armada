@@ -360,3 +360,10 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     await #expect(throws: SandboxLaunchFailure.notSentWithReason("Authentication is restarting.")) { _ = try await client.launchSandbox(request) }
     #expect(await transport.requests.map { $0.url!.path }.last == "/api/v1/auth/refresh")
 }
+
+@Test func explainedFailureAfterLaunchPreflightRemainsUnconfirmed() {
+    // A second session refresh can fail inside post after the preflight authority check.
+    // Keep its explanation without guessing whether the launch was sent.
+    let failure = ArmadaServerFailure(cause: .unavailable, explanation: "Authentication is restarting.")
+    #expect(SandboxLaunchFailure.classify(failure) == .unconfirmedWithReason("Authentication is restarting."))
+}
