@@ -67,7 +67,7 @@ test.each(["claude", "codex"] as const)(
       },
     };
     const store = new OrchestratorRuntimeStore(sql, core.reserveOrchestratorOperation);
-    const adapter = createBoatBestEffortAdapter({
+    let adapter = createBoatBestEffortAdapter({
       sql,
       mcpUrl: "https://armada.invalid/api/v1/orchestrator-tools/mcp",
     });
@@ -215,6 +215,20 @@ test.each(["claude", "codex"] as const)(
       });
       expect(await store.operations(p.owner, p.org, created.orchestratorId)).toHaveLength(operations.length);
       expect(placement.prompts).toHaveLength(3);
+      // The real managed runtime must not re-activate a retained tainted disk,
+      // even through a freshly constructed adapter after control-service restart.
+      expect((await mutate("stop", "stop-before-taint")).state).toBe("succeeded");
+      const stopped = await store.read(p.owner, p.org, created.orchestratorId);
+      await sql.query("update public.sandboxes set application_secret_tainted=true where id=$1", [stopped.sandboxId]);
+      adapter = createBoatBestEffortAdapter({ sql, mcpUrl: "https://armada.invalid/api/v1/orchestrator-tools/mcp" });
+      expect(await mutate("resume", "tainted-resume")).toMatchObject({
+        state: "uncertain",
+        errorCode: "runtime_uncertain",
+      });
+      expect(activations).toBe(2);
+      expect(grant).toBeUndefined();
+      expect(placement.prompts).toHaveLength(3);
+      expect(placement.sandbox(stopped.providerSandboxId!).info.state).toBe("stopped");
     } finally {
       await runtime?.createWorker.drain();
       await db.close();

@@ -110,6 +110,33 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
       const ordinary = boat(provider);
       if (!input.sql.transaction || !identity.sandboxId || !identity.providerSandboxId || identity.generation === null)
         throw new OrchestratorRuntimeError("conflict");
+      // This cloud-only port bypasses ordinary prompt beforeResume hooks. Read
+      // durable taint under the exact current owner/operation identity before any
+      // provider read or activation; never treat missing authority as clean.
+      const admitted = (
+        await input.sql.query<{ application_secret_tainted: boolean }>(
+          `select s.application_secret_tainted from public.sandboxes s
+           join public.orchestrators o on o.sandbox_id=s.id
+           join public.orchestrator_operations p on p.orchestrator_id=o.id
+           join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
+           where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3
+           and s.provider='boat' and s.status='stopped' and s.deleted_at is null and s.stop_requested_at is null
+           and o.id=$4 and o.owner_id=$5 and o.org_id=$6 and o.revision=$7
+           and p.id=$8 and p.action='resume' and p.revision=o.revision and p.state='pending' and p.actor_id=o.owner_id`,
+          [
+            identity.sandboxId,
+            identity.generation,
+            identity.providerSandboxId,
+            identity.id,
+            identity.ownerId,
+            identity.orgId,
+            identity.revision,
+            operationId,
+          ],
+        )
+      ).rows[0];
+      if (!admitted) throw new OrchestratorRuntimeError("conflict");
+      if (admitted.application_secret_tainted) throw new OrchestratorRuntimeError("unavailable");
       let conversationContinued = true;
       let reason: "conversation_metadata_missing" | "conversation_harness_mismatch" | undefined;
       if (identity.conversationId) {
@@ -141,7 +168,7 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
           `update public.sandboxes s set status='ready',stopped_at=null,expires_at=$9,last_observed_at=now(),lifecycle_generation=lifecycle_generation+1,orchestrator_native_generation=$10
            from public.orchestrators o,public.orchestrator_operations p,public.members m
            where m.org_id=o.org_id and m.user_id=o.owner_id and s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3
-           and s.status='stopped' and s.stop_requested_at is null and s.provider='boat'
+           and s.status='stopped' and s.stop_requested_at is null and s.provider='boat' and not s.application_secret_tainted
            and o.id=$4 and o.sandbox_id=s.id and o.owner_id=$5 and o.org_id=$6 and o.revision=$7
            and p.id=$8 and p.orchestrator_id=o.id and p.action='resume' and p.revision=o.revision and p.state='pending' and p.actor_id=o.owner_id returning s.id`,
           [
