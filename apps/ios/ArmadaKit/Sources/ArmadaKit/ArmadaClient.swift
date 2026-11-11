@@ -251,9 +251,11 @@ public actor ArmadaClient {
     }
 }
 
-/// Preserve a future refusal's human-readable reason, never raw multiline/unbounded server text.
+/// Preserve the server's specific remedy for known and future refusal codes, never raw bodies.
 private func orchestratorRefusal(code: String, data: Data) -> ArmadaError {
     let message = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.message
-    let detail = OrchestratorExplanation.known[code] == nil ? message.flatMap(SandboxLaunchFailure.oneLine) : nil
+    let cleaned = message.flatMap(SandboxLaunchFailure.oneLine)
+    // Some handlers repeat the machine code as their message; keep the readable local fallback.
+    let detail = cleaned == code ? nil : cleaned
     return .refused(code: code, message: detail)
 }
