@@ -122,9 +122,11 @@ test("the logs of a running sandbox refresh without reloading the page", async (
 
 test("a usage limit is explained in plain words", async ({ page }) => {
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.failed}`);
-  await expect(page.getByText("Usage limit reached")).toBeVisible();
-  await expect(page.getByText("hit its plan or billing limit")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Manage subscriptions" })).toBeVisible();
+  // History owns this explanation; the current-attention sidebar may independently describe the same failure.
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Usage limit reached")).toBeVisible();
+  await expect(messages.getByText("hit its plan or billing limit")).toBeVisible();
+  await expect(messages.getByRole("link", { name: "Manage subscriptions" })).toBeVisible();
 });
 
 test("stopping a sandbox asks first, then stops it", async ({ page }) => {
