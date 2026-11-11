@@ -55,7 +55,14 @@ import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import {
+  collectSandboxUsage,
+  isInterruptedLaunch,
+  latestPrompt,
+  readStatus,
+  type StatusReport,
+  waitSettled,
+} from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -1525,6 +1532,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;
           try {
+            await collectSandboxUsage(provider, data.sandboxes, found);
+            signal.throwIfAborted();
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);

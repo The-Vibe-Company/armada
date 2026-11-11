@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { type AgentEvent, reportedTurnUsage } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
-import { database } from "./support.ts";
+import { collectSandboxUsage } from "../src/turns.ts";
+import { database, fakeBoat } from "./support.ts";
 
 test("native usage snapshots replace replays without summing quota or missing values", () => {
   const event = (promptId: string, type: string, data: unknown): AgentEvent => ({
@@ -114,6 +115,40 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     expect(await store(p.member).get(id)).toBeNull();
     await store(p.member).recordUsage!(id, { turnCount: 999, turns: [] });
     expect((await store(p.owner).get(id))?.usage?.turnCount).toBe(2);
+  } finally {
+    await db.close();
+  }
+});
+
+test("native collection persists retry-safe rows and preserves measurements when files disappear", async () => {
+  const { db, people: p } = await database();
+  try {
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!.id;
+    const boat = fakeBoat();
+    const provider = boat.providerFor("test");
+    const native = await provider.fork({ from: "snapshot" });
+    const receipt = await provider.prompt({ sandboxId: native.id, harness: "codex", text: "test" });
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+      values($1,$2,$3,$4,'boat',$5,'codex','ready')`,
+      [id, golden, p.org, p.owner, native.id],
+    );
+    const store = createSqlData(db)({
+      userId: p.owner,
+      via: "service",
+      orgs: [{ orgId: p.org, role: "member" }],
+    }).sandboxes;
+    const row = { promptId: receipt.promptId, model: "gpt", inputTokens: 42, outputTokens: 7, cachedTokens: 8 };
+    let available = true;
+    provider.collectTurnUsage = async () => (available ? [row] : []);
+    for (const retry of [false, true]) {
+      await collectSandboxUsage(provider, store, (await store.get(id))!);
+      expect((await store.get(id))?.usage).toMatchObject({ turnCount: 1, turns: [row] });
+      if (retry) available = false;
+    }
+    await collectSandboxUsage(provider, store, (await store.get(id))!);
+    expect((await store.get(id))?.usage?.turns).toEqual([row]);
   } finally {
     await db.close();
   }
