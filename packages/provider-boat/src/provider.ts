@@ -819,6 +819,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
 
     async extendLifetime(request) {
       const before = await provider.get(request.sandboxId);
+      if (before.id !== request.sandboxId) throw unexpectedAnswer("sandbox");
       if (!["ready", "running"].includes(before.state)) throw invalidRequest("Only running compute can be extended.");
       const response = await call(() =>
         api.update(
@@ -826,8 +827,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           { signal: AbortSignal.timeout(10_000) },
         ),
       );
-      if (!response.sandbox) throw unexpectedAnswer("sandbox");
-      const info = sandboxInfo(response.sandbox);
+      const acknowledged = response.sandbox?.id === request.sandboxId ? sandboxInfo(response.sandbox) : undefined;
+      // Observe once after an incomplete/misidentified successful reply; never
+      // replay the PATCH or publish another resource's lifetime as this one's.
+      const info = acknowledged?.expiresAt ? acknowledged : await provider.get(request.sandboxId);
+      if (info.id !== request.sandboxId) throw unexpectedAnswer("sandbox");
       if (!info.expiresAt) throw unexpectedAnswer("expiry");
       return info.expiresAt;
     },

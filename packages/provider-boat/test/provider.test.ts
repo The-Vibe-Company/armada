@@ -268,6 +268,46 @@ describe("sandboxes", () => {
     expect(await boat.provider.get(ID)).toMatchObject({ state: "ready", sshEndpoint: "ssh.example:2222" });
   });
 
+  for (const acknowledgement of ["wrong_identity", "missing_expiry", "missing_sandbox"] as const) {
+    test(`lifetime extension verifies the requested sandbox after ${acknowledgement}`, async () => {
+      const actual = "2026-11-12T12:00:00Z";
+      const reply =
+        acknowledgement === "missing_sandbox"
+          ? { ok: true }
+          : {
+              ok: true,
+              sandbox: sandbox({
+                id: acknowledgement === "wrong_identity" ? "bx_98765432" : ID,
+                archiveAfter: acknowledgement === "missing_expiry" ? undefined : "2026-12-01T12:00:00Z",
+              }),
+            };
+      const boat = fakeBoat(
+        { body: { ok: true, sandbox: sandbox({ state: "running" }) } },
+        { body: reply },
+        { body: { ok: true, sandbox: sandbox({ state: "running", archiveAfter: actual }) } },
+      );
+      expect(await boat.provider.extendLifetime!({ sandboxId: ID, ttlSeconds: 3600 })).toEqual(new Date(actual));
+      expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "PATCH", "GET"]);
+    });
+  }
+
+  test("lifetime extension refuses unrelated observations without replaying the update", async () => {
+    const boat = fakeBoat(
+      { body: { ok: true, sandbox: sandbox({ id: "bx_98765432", state: "running" }) } },
+      { body: { ok: true, sandbox: sandbox({ state: "running" }) } },
+      { body: { ok: true } },
+      { body: { ok: true, sandbox: sandbox({ id: "bx_98765432", state: "running" }) } },
+    );
+    await expect(boat.provider.extendLifetime!({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
+      code: "unknown",
+    });
+    expect(boat.requests.map(({ method }) => method)).toEqual(["GET"]);
+    await expect(boat.provider.extendLifetime!({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
+      code: "unknown",
+    });
+    expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PATCH", "GET"]);
+  });
+
   test("list filters by labels and states and pages with boat's cursor", async () => {
     const boat = fakeBoat(
       {
