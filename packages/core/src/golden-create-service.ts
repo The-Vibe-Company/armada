@@ -13,7 +13,7 @@ import {
 } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
-import { type Provider, ProviderError } from "./provider.ts";
+import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
 
 const MAX_REPOS = 16;
@@ -138,6 +138,7 @@ export class GoldenCreateService {
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
     const warnings: GoldenBuildWarning[] = [];
+    let refusedBuilder = false;
     let persisted = false;
     let uncertainSnapshot = false;
     let persistAttempted = false;
@@ -274,6 +275,7 @@ export class GoldenCreateService {
       }
       return { snapshot, warnings };
     } catch (error) {
+      refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
       console.error(
         JSON.stringify({
           event: "golden_build_failed",
@@ -368,7 +370,9 @@ export class GoldenCreateService {
           cleanupSafe = false;
         }
       }
-      this.deps.execution?.cleaned(cleanupSafe && (stopped || (!builder && phase === "authorization")));
+      this.deps.execution?.cleaned(
+        cleanupSafe && (stopped || (!builder && (phase === "authorization" || refusedBuilder))),
+      );
     }
   }
 }

@@ -110,6 +110,7 @@ const buildOutput = {
   state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
   phase: z.string(),
   errorCode: z.literal("build_failed").nullable(),
+  failureReason: z.enum(["skillpack_integrity_failed", "provider_payment_required"]).nullable().optional(),
   result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
 };
 

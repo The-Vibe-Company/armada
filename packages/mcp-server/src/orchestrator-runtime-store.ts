@@ -48,6 +48,8 @@ export interface RuntimeReservation {
   fresh: boolean;
   createDispatchId?: string;
   createForkDispatched?: boolean;
+  /** Set only by a positively refused provider fork, never inferred from missing resources. */
+  createForkRefusal?: "provider_payment_required";
 }
 
 /** Canonical JSON deliberately rejects exotic values rather than digesting lossy JSON. */
@@ -963,15 +965,18 @@ export class OrchestratorRuntimeStore {
     );
   }
 
-  /** Local positive control-flow proof: the worker never passed the fork fence.
+  /** Local positive proof: the worker never forked, or the provider explicitly refused it.
    * This may fail a request, not publish native success or adopt a machine. */
-  async failCreateBeforeFork(reservation: RuntimeReservation): Promise<boolean> {
+  async failCreateBeforeFork(
+    reservation: RuntimeReservation,
+    errorCode: "create_preallocation_failed" | "provider_payment_required" = "create_preallocation_failed",
+  ): Promise<boolean> {
     return this.transaction(async (tx) => {
       const row = await tx.query(
-        `update public.orchestrator_operations p set state='failed',error_code='create_preallocation_failed',runtime_result=p.runtime_result || '{"stage":"settled","noFork":true}'::jsonb
-        from public.orchestrators o where p.id=$1 and p.runtime_result->>'dispatchId'=$2 and p.state='pending' and o.id=p.orchestrator_id
+        `update public.orchestrator_operations p set state='failed',error_code=$3,runtime_result=p.runtime_result || '{"stage":"settled","noFork":true}'::jsonb
+        from public.orchestrators o where p.id=$1 and p.runtime_result->>'dispatchId'=$2 and p.state='pending' and p.action='create' and p.runtime_result->>'kind'='create_job' and not (p.runtime_result ? 'binding') and o.id=p.orchestrator_id
         and o.revision=p.revision and o.sandbox_id is null and p.runtime_result->>'stage' in ('running','fork_dispatched') returning p.orchestrator_id,p.revision`,
-        [reservation.operation.id, reservation.createDispatchId ?? null],
+        [reservation.operation.id, reservation.createDispatchId ?? null, errorCode],
       );
       if (!row.rows.length) return false;
       await tx.query(`update public.orchestrators set state='blocked' where id=$1 and revision=$2`, [
@@ -979,8 +984,8 @@ export class OrchestratorRuntimeStore {
         reservation.operation.revision,
       ]);
       await tx.query(
-        `update public.orchestrator_runtime set blocked_reason='create_preallocation_failed',updated_at=now() where orchestrator_id=$1`,
-        [reservation.identity.id],
+        `update public.orchestrator_runtime set blocked_reason=$2,updated_at=now() where orchestrator_id=$1`,
+        [reservation.identity.id, errorCode],
       );
       await tx.query(
         `insert into public.orchestrator_runtime_events(orchestrator_id,revision,event) values($1,$2,$3::jsonb)`,
@@ -989,7 +994,7 @@ export class OrchestratorRuntimeStore {
           reservation.operation.revision,
           JSON.stringify({
             kind: "operation",
-            operation: { ...reservation.operation, state: "failed", errorCode: "create_preallocation_failed" },
+            operation: { ...reservation.operation, state: "failed", errorCode },
           }),
         ],
       );
