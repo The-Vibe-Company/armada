@@ -1,5 +1,6 @@
 import { CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, CircleXIcon, LoaderCircleIcon } from "lucide-react";
 import type { ComponentProps } from "react";
+import { Badge } from "@/components/ui/badge";
 import type { Tone } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
@@ -48,7 +49,8 @@ export function StateCell({
 /** A small tag beside a row's name: who it belongs to (Private, Org, Personal). */
 export function RowTag({ className, ...props }: ComponentProps<"span">) {
   return (
-    <span
+    <Badge
+      variant="outline"
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-px text-[11px] leading-4 font-medium text-muted-foreground [&_svg]:size-3",
         className,

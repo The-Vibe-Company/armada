@@ -10,6 +10,7 @@ import json
 import math
 import os
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -41,11 +42,12 @@ if not org or not token:
     parser.error("STAGING_ORG and ARMADA_TOKEN are required")
 origin = urllib.parse.urlunsplit((url.scheme, url.netloc, "", "", ""))
 report = {
-    "schema": 1, "python": platform.python_version(), "host": platform.platform(),
+    "schema": 2, "python": platform.python_version(), "host": platform.platform(),
     "samples": args.samples, "api": [], "cli": [], "phases": [],
     "limits": [
         "Client wall time, not server-only time; payload bytes are decoded HTTP body bytes.",
-        "No internal launch subphase timing or SQL trip counts exposed by these APIs.",
+        "Server-Timing reports instrumented server wall phases only; nested phases overlap and must not be summed.",
+        "Missing server phases are unavailable, not zero. SQL trip counts and internal launch phases are still unmeasured.",
         "One Modal x Codex lifecycle sample is not a p50/p95 distribution.",
         "No dashboard paint/navigation, phone or long-session open measurement in this script.",
         "No user-facing before/after claim until run consistently against both revisions.",
@@ -66,6 +68,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 opener = urllib.request.build_opener(NoRedirect())
 
 
+# Fixed allowlist: do not print arbitrary server headers (or reflected secret strings).
+SERVER_PHASES = {
+    "auth", "dispatch", "provider", "stored_provider", "sandbox_read",
+    "logs_target", "events", "state", "prompt",
+    "send_credentials", "send_state", "send_turn_auth", "send_submit",
+}
+
+
+def server_phases(header):
+    durations = {}
+    for entry in header.split(","):
+        match = re.fullmatch(r"\s*([a-z_]+);dur=([0-9]+(?:\.[0-9]+)?)\s*", entry)
+        if match and match.group(1) in SERVER_PHASES:
+            value = float(match.group(2))
+            if math.isfinite(value):
+                durations[match.group(1)] = value
+    return durations
+
+
 def api(route, body=None, method="POST", timeout=60):
     path = "/api/v1/" + route
     data = None if body is None else json.dumps({"org": org, **body}).encode()
@@ -78,6 +99,7 @@ def api(route, body=None, method="POST", timeout=60):
         with opener.open(req, timeout=timeout) as response:
             raw = response.read()
             status = response.status
+            server = server_phases(response.headers.get("Server-Timing", ""))
     except urllib.error.HTTPError as error:
         # Do not print errors/bodies: they may contain prompts or credentials.
         raise Failure("HTTP " + str(error.code) + " on " + route) from None
@@ -88,7 +110,7 @@ def api(route, body=None, method="POST", timeout=60):
         value = json.loads(raw)
     except Exception:
         raise Failure("Invalid JSON on " + route) from None
-    return value, elapsed, len(raw), status
+    return value, elapsed, len(raw), status, server
 
 
 def stats(values):
@@ -98,18 +120,22 @@ def stats(values):
 
 
 def sample(route, body):
-    times, sizes = [], []
+    times, sizes, phases = [], [], {}
     for _ in range(args.samples):
-        _, elapsed, size, _ = api(route, body)
+        _, elapsed, size, _, server = api(route, body)
         times.append(elapsed)
         sizes.append(size)
+        for name, duration in server.items():
+            phases.setdefault(name, []).append(duration)
     report["api"].append({"route": route, "method": "POST", "samples": len(times),
-                          "ms": stats(times), "bytes": stats(sizes), "sqlTrips": None})
+                          "ms": stats(times), "bytes": stats(sizes), "sqlTrips": None,
+                          "serverMs": {name: {"samples": len(values), **stats(values)}
+                                       for name, values in phases.items()}})
 
 
 def phase(name, route, body, timeout=600):
-    value, elapsed, size, _ = api(route, body, timeout=timeout)
-    report["phases"].append({"phase": name, "ms": elapsed, "bytes": size})
+    value, elapsed, size, _, server = api(route, body, timeout=timeout)
+    report["phases"].append({"phase": name, "ms": elapsed, "bytes": size, "serverMs": server})
     return value
 
 
@@ -143,7 +169,7 @@ try:
     for command in [["--version"], ["--help"], ["list", "--org", org, "--json"],
                     ["golden", "list", "--org", org, "--json"]]:
         cli(command)
-    goldens, _, _, _ = api("golden/list", {})
+    goldens, _, _, _, _ = api("golden/list", {})
     candidates = sorted(
         (g for g in goldens["goldens"] if g.get("provider") == "modal"
          and g.get("providerSnapshotId") and (not args.golden or g["name"] == args.golden)),
@@ -177,7 +203,7 @@ try:
         body = {"id": sandbox_id, "limit": 100}
         if cursor:
             body["cursor"] = cursor
-        page, _, _, _ = api("logs/read", body)
+        page, _, _, _, _ = api("logs/read", body)
         if any(e.get("kind") == "message" and e.get("text") for e in page.get("events", [])):
             report["phases"].append({"phase": "prompt_to_first_text_observed",
                                      "ms": (time.monotonic() - prompt_start) * 1000,
@@ -201,10 +227,10 @@ finally:
         for attempt in range(3):
             try:
                 phase("cleanup_stop", "sandbox/stop", {"id": sandbox_id})
-                _, elapsed, size, _ = api(
+                _, elapsed, size, _, server = api(
                     "sandboxes/" + urllib.parse.quote(sandbox_id, safe="") +
                     "?org=" + urllib.parse.quote(org, safe=""), method="DELETE", timeout=600)
-                report["phases"].append({"phase": "cleanup_delete", "ms": elapsed, "bytes": size})
+                report["phases"].append({"phase": "cleanup_delete", "ms": elapsed, "bytes": size, "serverMs": server})
                 cleaned = True
                 break
             except BaseException:

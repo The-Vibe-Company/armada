@@ -2856,6 +2856,217 @@ export type Database = {
           },
         ];
       };
+      routine_run_inputs: {
+        Row: {
+          run_id: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          ttl_seconds: number;
+        };
+        Insert: {
+          run_id: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          ttl_seconds: number;
+        };
+        Update: {
+          run_id?: string;
+          template_id?: string;
+          template_revision?: number;
+          prompt?: string;
+          ttl_seconds?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "routine_run_inputs_run_id_fkey";
+            columns: ["run_id"];
+            isOneToOne: true;
+            referencedRelation: "routine_runs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      routine_runs: {
+        Row: {
+          id: string;
+          routine_id: string;
+          org_id: string;
+          owner_id: string;
+          scheduled_due_at: string;
+          configuration_version: number;
+          state: string;
+          reason: string | null;
+          request_key: string;
+          template_request_id: string | null;
+          prompt_id: string | null;
+          conversation_id: string | null;
+          task_state: string | null;
+          task_checked_at: string | null;
+          task_check_id: string | null;
+          sandbox_id: string | null;
+          missed_intervals: number;
+          lease_id: string | null;
+          lease_until: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          routine_id: string;
+          org_id: string;
+          owner_id: string;
+          scheduled_due_at: string;
+          configuration_version: number;
+          state: string;
+          reason?: string | null;
+          request_key: string;
+          template_request_id?: string | null;
+          prompt_id?: string | null;
+          conversation_id?: string | null;
+          task_state?: string | null;
+          task_checked_at?: string | null;
+          task_check_id?: string | null;
+          sandbox_id?: string | null;
+          missed_intervals?: number;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          routine_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scheduled_due_at?: string;
+          configuration_version?: number;
+          state?: string;
+          reason?: string | null;
+          request_key?: string;
+          template_request_id?: string | null;
+          prompt_id?: string | null;
+          conversation_id?: string | null;
+          task_state?: string | null;
+          task_checked_at?: string | null;
+          task_check_id?: string | null;
+          sandbox_id?: string | null;
+          missed_intervals?: number;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "routine_runs_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routine_runs_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routine_runs_routine_id_fkey";
+            columns: ["routine_id"];
+            isOneToOne: false;
+            referencedRelation: "routines";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      routines: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          interval_hours: number;
+          max_runs_per_day: number;
+          ttl_seconds: number;
+          status: string;
+          version: number;
+          created_at: string;
+          updated_at: string;
+          next_due_at: string | null;
+          consecutive_failures: number;
+          pause_reason: string | null;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          template_id: string;
+          template_revision: number;
+          prompt: string;
+          interval_hours: number;
+          max_runs_per_day: number;
+          ttl_seconds: number;
+          status?: string;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+          next_due_at?: string | null;
+          consecutive_failures?: number;
+          pause_reason?: string | null;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          template_id?: string;
+          template_revision?: number;
+          prompt?: string;
+          interval_hours?: number;
+          max_runs_per_day?: number;
+          ttl_seconds?: number;
+          status?: string;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+          next_due_at?: string | null;
+          consecutive_failures?: number;
+          pause_reason?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "routines_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routines_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "routines_template_id_template_revision_fkey";
+            columns: ["template_id", "template_revision"];
+            isOneToOne: false;
+            referencedRelation: "launch_template_revisions";
+            referencedColumns: ["template_id", "revision"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -3317,6 +3528,9 @@ export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
+export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];
+export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
+export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];

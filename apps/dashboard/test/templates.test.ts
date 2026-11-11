@@ -133,7 +133,17 @@ describe("template state", () => {
   });
 
   test("says what needs the viewer first: environment, then tool, then variable", () => {
-    const stale = templateState(item({ variables: [{ key: "APP_REGION", variableId: REGION, version: 2 }] }), lookups);
+    const stale = templateState(
+      item({
+        variables: [
+          { key: "APP_REGION", variableId: REGION, version: 2 },
+          { key: "FALLBACK_REGION", variableId: REGION, version: 2 },
+        ],
+      }),
+      lookups,
+    );
+    // Two aliases of the same stale source require the same single revision fix, not duplicate warnings.
+    expect(stale.problems).toHaveLength(1);
     expect(stale).toMatchObject({ bucket: "action", tone: "warning", label: "Variable changed" });
     expect(stale.problems[0]?.text).toContain("publish a new revision");
     expect(templateState(item({ connections: [MINE] }), lookups).label).toBe("Tool not ready");

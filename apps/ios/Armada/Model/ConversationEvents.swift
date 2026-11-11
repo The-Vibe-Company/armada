@@ -26,7 +26,7 @@ struct ToolResult: Hashable, Sendable {
 
 /// The common `AgentEvent` stream of `packages/core/src/provider.ts`, the same for every harness
 /// and provider.
-struct AgentEvent: Hashable, Sendable {
+struct AgentEvent: Identifiable, Hashable, Sendable {
     enum TextMode: String, Hashable, Sendable {
         case delta
         case snapshot
@@ -54,26 +54,8 @@ struct AgentEvent: Hashable, Sendable {
     let body: Body
 }
 
-/// `OrchestratorEvent` v1: the owner-scoped durable mirror served with an opaque cursor.
-struct OrchestratorEvent: Identifiable, Hashable, Sendable {
-    enum Body: Hashable, Sendable {
-        case agent(AgentEvent)
-        case state(OrchestratorState, OrchestratorContinuity)
-        case operation(OperationSummary)
-        case wait(WaitLease, status: String)
-        case child(sandboxID: String, operationID: String)
-        /// A newer event kind: preserved, never dropped silently.
-        case unknown(kind: String)
-    }
-
-    let id: String
-    let at: Date
-    let revision: Int
-    let body: Body
-}
-
-struct OrchestratorEventPage: Sendable {
-    let events: [OrchestratorEvent]
+struct ConversationEventPage: Sendable {
+    let events: [AgentEvent]
     /// Opaque, poll-safe forward cursor: the live frontier. Nil only on an empty first read.
     let cursor: String?
     /// Relative to the read's direction: newer events (forward) or older ones (backward).

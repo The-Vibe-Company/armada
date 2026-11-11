@@ -29,7 +29,10 @@ test("the launch shows the repository then golden default, keeps an override and
   // The size starts on its default, summarized on the collapsed Advanced area where it is overridden.
   const summary = dialog.locator("[data-launch-summary]");
   await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Medium machine · 1 MCP");
-  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog
+    .locator("[data-launch-advanced]")
+    .getByRole("button", { name: /^Advanced/ })
+    .click();
   const size = dialog.getByLabel("Machine size");
   const hint = dialog.locator("[data-size-source]");
   await expect(size.locator("option")).toHaveText([
@@ -155,7 +158,10 @@ test("a refused size says what can be changed, and an older server allocates not
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Task").fill("Profile the slow build");
-  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog
+    .locator("[data-launch-advanced]")
+    .getByRole("button", { name: /^Advanced/ })
+    .click();
   await dialog.getByLabel("Machine size").selectOption("xlarge");
   await expect(dialog.locator("[data-size-source]")).toContainText("Extra large needs a Boat plan that includes it.");
   await dialog.getByRole("button", { name: "Launch" }).click();
@@ -189,7 +195,10 @@ test("a refused size says what can be changed, and an older server allocates not
   for (const choice of ["large", ""]) {
     await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
     const launch = page.getByRole("dialog");
-    await launch.locator("[data-launch-advanced] > summary").click();
+    await launch
+      .locator("[data-launch-advanced]")
+      .getByRole("button", { name: /^Advanced/ })
+      .click();
     await launch.getByLabel("Machine size").selectOption(choice);
     await launch.getByRole("button", { name: "Launch" }).click();
     await expect(launch.getByRole("alert")).toHaveText(

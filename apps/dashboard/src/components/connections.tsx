@@ -42,6 +42,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogClose,
@@ -54,7 +56,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import {
   authLabel,
@@ -135,6 +140,7 @@ type HeaderRow = { key: number; name: string };
  * submission, and nothing echoes them back. A success remounts the fields, so the form starts clean.
  */
 export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
+  const formRef = usePreservedActionForm();
   const [state, formAction] = useActionState(addConnection, null);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
@@ -142,7 +148,7 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
   }, [state]);
 
   return (
-    <form action={formAction} className="space-y-4" data-add-connection>
+    <form ref={formRef} action={formAction} className="space-y-4" data-add-connection>
       <input type="hidden" name="org" value={orgId} />
       <AddFields key={generation} orgName={orgName} isAdmin={isAdmin} result={state} />
     </form>
@@ -194,14 +200,19 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
     <>
       <fieldset className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <legend className="float-left text-sm font-medium">Server</legend>
-        <div className="grid grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-1">
-          <KindOption name={`${id}-kind`} checked={kind === "remote"} onChange={() => setKind("remote")}>
+        <RadioGroup
+          value={kind}
+          onValueChange={(value) => setKind(value as "remote" | "stdio")}
+          aria-label="Server"
+          className="grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-1"
+        >
+          <KindOption value="remote">
             <GlobeIcon /> Remote URL
           </KindOption>
-          <KindOption name={`${id}-kind`} checked={kind === "stdio"} onChange={() => setKind("stdio")}>
+          <KindOption value="stdio">
             <TerminalIcon /> stdio command
           </KindOption>
-        </div>
+        </RadioGroup>
       </fieldset>
 
       {kind === "remote" ? (
@@ -223,36 +234,15 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
   );
 }
 
-/** One side of the Server switch: a native radio drawn as a segment, so arrow keys move between the two. */
-function KindOption({
-  name,
-  checked,
-  onChange,
-  children,
-}: {
-  name: string;
-  checked: boolean;
-  onChange: () => void;
-  children: ReactNode;
-}) {
+/** A segmented radio: Radix owns focus and keyboard selection, the label remains the full hit target. */
+function KindOption({ value, children }: { value: string; children: ReactNode }) {
   return (
-    <label
-      className={cn(
-        "relative flex cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0",
-        checked
-          ? "bg-background text-foreground shadow-xs dark:bg-input/60"
-          : "text-muted-foreground hover:text-foreground",
-      )}
+    <RadioGroupItem
+      value={value}
+      className="flex h-full w-full min-w-0 items-center justify-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-sm font-medium whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-background data-[state=checked]:text-foreground data-[state=checked]:shadow-xs [&_svg]:size-4"
     >
-      <input
-        type="radio"
-        name={name}
-        checked={checked}
-        onChange={onChange}
-        className="absolute inset-0 size-full cursor-pointer appearance-none rounded-md opacity-0"
-      />
       {children}
-    </label>
+    </RadioGroupItem>
   );
 }
 
@@ -355,73 +345,82 @@ function RemoteFields({
         <HeaderFields idPrefix={id} rows={headers} onChange={setHeaders} nextKey={() => nextKey.current++} />
       )}
       {authType === "oauth" && (
-        <details className="rounded-md border p-3 text-sm [&[open]>summary]:mb-3">
-          <summary className="cursor-pointer font-medium">Preregistered OAuth client (optional)</summary>
-          <p className="mb-3 text-xs text-muted-foreground">
-            Only for a server that offers neither client metadata nor dynamic registration. Otherwise leave empty.
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-client-id`}>Client ID</Label>
-              <Input id={`${id}-client-id`} name="oauth_client_id" autoComplete="off" spellCheck={false} />
+        <Collapsible className="rounded-md border p-3 text-sm">
+          <CollapsibleTrigger asChild>
+            <Button type="button" variant="ghost" size="sm" className="h-auto px-0">
+              Preregistered OAuth client (optional)
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent forceMount className="space-y-3 pt-3 data-[state=closed]:hidden">
+            <p className="mb-3 text-xs text-muted-foreground">
+              Only for a server that offers neither client metadata nor dynamic registration. Otherwise leave empty.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-client-id`}>Client ID</Label>
+                <Input id={`${id}-client-id`} name="oauth_client_id" autoComplete="off" spellCheck={false} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-client-secret`}>Client secret</Label>
+                <Input
+                  id={`${id}-client-secret`}
+                  name="oauth_client_secret"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-client-secret`}>Client secret</Label>
-              <Input
-                id={`${id}-client-secret`}
-                name="oauth_client_secret"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </div>
-          </div>
-        </details>
+          </CollapsibleContent>
+        </Collapsible>
       )}
     </>
   );
 }
 
-/** A radio drawn as a card: the native input covers the card, so a click, a tap or the arrow keys pick it. */
+/** A labelled shadcn radio item; the containing RadioGroup owns selection and arrow-key navigation. */
 export function ChoiceCard({
-  name,
-  checked,
-  onChange,
+  value,
   disabled,
   icon,
   title,
   hint,
 }: {
-  name: string;
-  checked: boolean;
-  onChange: () => void;
+  value: string;
   disabled?: boolean;
   icon: ReactNode;
   title: string;
   hint: string;
 }) {
+  const id = useId();
   return (
-    <label
+    <Label
+      htmlFor={id}
       className={cn(
-        "relative flex cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0",
-        checked ? "border-primary bg-accent" : "hover:bg-accent/50",
-        disabled && "cursor-not-allowed opacity-60",
+        "flex items-start gap-3 rounded-md border p-3 text-sm font-normal has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-accent has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-accent/50",
       )}
     >
-      <input
-        type="radio"
-        name={name}
-        checked={checked}
-        onChange={onChange}
+      <RadioGroupItem
+        id={id}
+        value={value}
         disabled={disabled}
-        className="absolute inset-0 size-full cursor-pointer appearance-none rounded-md opacity-0 disabled:cursor-not-allowed"
+        className="mt-0.5"
+        aria-labelledby={`${id}-title`}
+        aria-describedby={`${id}-hint`}
       />
-      <span className="mt-0.5 text-muted-foreground">{icon}</span>
-      <span className="min-w-0">
-        <span className="block font-medium">{title}</span>
-        <span className="block text-xs text-muted-foreground">{hint}</span>
+      <span aria-hidden className="mt-0.5 text-muted-foreground [&_svg]:size-4">
+        {icon}
       </span>
-    </label>
+      <span className="min-w-0">
+        <span id={`${id}-title`} className="block font-medium">
+          {title}
+        </span>
+        <span id={`${id}-hint`} className="block text-xs text-muted-foreground">
+          {hint}
+        </span>
+      </span>
+    </Label>
   );
 }
 
@@ -840,25 +839,27 @@ function ScopeChoice({
           <LockIcon aria-hidden /> Cannot be changed later
         </span>
       </legend>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <RadioGroup
+        name={`${idPrefix}-scope`}
+        value={scope}
+        onValueChange={(value) => onScope(value as ConnectionScope)}
+        aria-label="Who uses it"
+        className="sm:grid-cols-2"
+      >
         <ChoiceCard
-          name={`${idPrefix}-scope`}
-          checked={scope === "personal"}
-          onChange={() => onScope("personal")}
+          value="personal"
           icon={<UserIcon />}
           title="Personal"
           hint="Your account, in the sandboxes you launch."
         />
         <ChoiceCard
-          name={`${idPrefix}-scope`}
-          checked={scope === "org"}
-          onChange={() => onScope("org")}
+          value="org"
           disabled={!isAdmin}
           icon={<UsersIcon />}
           title={`Org (${orgName})`}
           hint={isAdmin ? "One shared account for every member's sandboxes." : "Only an org admin adds these."}
         />
-      </div>
+      </RadioGroup>
     </fieldset>
   );
 }
@@ -879,12 +880,11 @@ function SharedIdentityWarning() {
 function DefaultCheckbox({ idPrefix }: { idPrefix: string }) {
   return (
     <div className="flex items-start gap-3">
-      <input
+      <Checkbox
         id={`${idPrefix}-default`}
-        type="checkbox"
         name="default_for_launch"
         aria-describedby={`${idPrefix}-default-hint`}
-        className="mt-0.5 size-4 shrink-0 accent-primary"
+        className="mt-0.5"
       />
       <div className="space-y-0.5">
         <Label htmlFor={`${idPrefix}-default`}>Include in new launches by default</Label>
@@ -948,34 +948,31 @@ function DefaultSwitch({
     if (state) onResult(state);
   }, [state, onResult]);
   const on = pending ? !connection.defaultForLaunch : connection.defaultForLaunch;
+  const switchForm = useRef<HTMLFormElement>(null);
+  const keepSwitch = usePreservedActionForm();
+  const switchId = useId();
+  const switchRef = useCallback(
+    (node: HTMLFormElement | null) => {
+      switchForm.current = node;
+      keepSwitch(node);
+    },
+    [keepSwitch],
+  );
   return (
-    <form action={formAction} className="flex items-center">
+    <form ref={switchRef} action={formAction} className="flex items-center gap-2">
       <input type="hidden" name="org" value={connection.orgId} />
       <input type="hidden" name="id" value={connection.id} />
       <input type="hidden" name="default_for_launch" value={String(!connection.defaultForLaunch)} />
-      <button
-        type="submit"
-        role="switch"
-        aria-checked={on}
-        aria-label={`Include ${connection.name} by default`}
+      <Switch
+        id={switchId}
+        checked={on}
+        onCheckedChange={() => switchForm.current?.requestSubmit()}
         disabled={pending}
-        className="group flex items-center gap-2 rounded-md px-1 py-1 text-xs text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60"
-      >
-        <span
-          className={cn(
-            "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors",
-            on ? "border-primary bg-primary" : "border-transparent bg-input dark:bg-input/80",
-          )}
-        >
-          <span
-            className={cn(
-              "absolute size-3 rounded-full bg-background shadow-sm transition-transform motion-reduce:transition-none",
-              on ? "translate-x-3.5" : "translate-x-0.5",
-            )}
-          />
-        </span>
+        aria-label={`Include ${connection.name} by default`}
+      />
+      <Label htmlFor={switchId} className="text-xs font-normal text-muted-foreground">
         Default
-      </button>
+      </Label>
     </form>
   );
 }

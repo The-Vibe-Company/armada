@@ -1,6 +1,6 @@
 import Foundation
 
-/// The status group a listed orchestrator or sandbox belongs to, in display order.
+/// The status group a listed sandbox belongs to, in display order.
 public enum ListStatusGroup: Int, CaseIterable, Comparable, Sendable {
     /// Blocked: someone has to act.
     case attention
@@ -21,17 +21,6 @@ public enum ListStatusGroup: Int, CaseIterable, Comparable, Sendable {
         case .transition: "In Transition"
         case .stopped: "Stopped"
         case .other: "Other"
-        }
-    }
-
-    /// Group of an orchestrator wire state (`packages/core/src/orchestrator.ts`).
-    public static func orchestrator(_ state: String) -> Self {
-        switch state {
-        case "blocked": .attention
-        case "ready", "working": .active
-        case "creating", "resuming", "stopping": .transition
-        case "stopped": .stopped
-        default: .other
         }
     }
 

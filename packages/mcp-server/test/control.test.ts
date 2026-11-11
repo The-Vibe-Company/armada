@@ -110,6 +110,41 @@ for (const failure of [
   });
 }
 
+test("Skillpack connection reports only visible metadata and never advertises unsupported authorization", async () => {
+  await withServer(async ({ options }) => {
+    const org = await options.store.createOrg("Skills", STAN);
+    await options.store.upsertCredential("user", STAN, "skillpack", await encryptSecret("personal-skill-key", KEY));
+    await options.store.upsertCredential("user", STAN, "anthropic", await encryptSecret("other-key", KEY));
+    await options.store.upsertCredential("org", org.id, "skillpack", await encryptSecret("org-skill-key", KEY));
+    const read = (userId?: string, body = {}) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/skillpack/connection", {
+          method: "POST",
+          headers: userId
+            ? {
+                authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
+              }
+            : {},
+          body: JSON.stringify(body),
+        }),
+        options,
+      );
+    expect((await read())?.status).toBe(401);
+    const result = (await (await read(STAN))?.json()) as {
+      user: { kind: string }[];
+      orgs: { id: string; credentials: { kind: string }[] }[];
+    };
+    expect(result).toMatchObject({ authorization: { available: false, reason: "delegated_key_flow_unavailable" } });
+    expect(result.user.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
+    expect(result.orgs.map((row: { id: string }) => row.id)).toEqual([org.id]);
+    expect(result.orgs[0]!.credentials.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
+    expect(JSON.stringify(result)).not.toContain("skill-key");
+    expect(JSON.stringify(result)).not.toContain("value_enc");
+    expect(await (await read(ADA))?.json()).toMatchObject({ orgs: [] });
+    expect((await read(ADA, { org: org.id }))?.status).toBe(404);
+  });
+});
+
 describe("armada org and armada creds against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
     await withServer(async ({ db, options, cli }) => {
@@ -452,6 +487,77 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("Modal detail selects stored observations after authorization, not the live provider", async () => {
+    await withServer(async ({ options, db }) => {
+      const org = await options.store.createOrg("Stored reads", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const golden = crypto.randomUUID(),
+        id = crypto.randomUUID();
+      await db.query(
+        "insert into goldens(id,org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,$2,'stored','org',$3,$4,$5::jsonb)",
+        [golden, org.id, STAN, "a".repeat(63), JSON.stringify({ repos: [], init: [] })],
+      );
+      const boat = fakeBoat();
+      const machine = await boat.provider.fork({ from: "snapshot" });
+      await db.query(
+        "insert into sandboxes(id,golden_id,org_id,owner_id,provider_sandbox_id,harness,status) values($1,$2,$3,$4,$5,'codex','ready')",
+        [id, golden, org.id, STAN, machine.id],
+      );
+      let storedReads = 0;
+      const source = options.data;
+      if (!source) throw new Error("Expected database-backed control data");
+      const configured: ControlOptions = {
+        ...options,
+        data: (caller) => {
+          const data = source(caller);
+          return {
+            ...data,
+            sandboxes: {
+              ...data.sandboxes,
+              get: async (key) => {
+                const row = await data.sandboxes.get(key);
+                return row
+                  ? {
+                      ...row,
+                      provider: "modal",
+                      modal: { workspace: "fixture", environment: "main", appId: "ap_fixture" },
+                    }
+                  : null;
+              },
+            },
+          };
+        },
+        providers: {
+          resolve: async () => {
+            throw new Error("Detail must not resolve live compute");
+          },
+        },
+        storedProviderFor: async () => {
+          storedReads++;
+          return { ...boat.provider, id: "modal" };
+        },
+      };
+      const read = (user: string) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/sandbox/detail", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
+            },
+            body: JSON.stringify({ id }),
+          }),
+          configured,
+        );
+      const response = await read(STAN);
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({ id, status: "ready" });
+      expect(response?.headers.get("server-timing")).toContain("stored_provider;dur=");
+      expect(storedReads).toBe(1);
+      expect((await read(ADA))?.status).toBe(404);
+      expect(storedReads).toBe(1);
+    });
+  });
+
   test.each([true, false])("logs tail settles without draining history (follow=%s)", async (follow) => {
     // All variants are read-only; migrate one database rather than repeating the
     // same setup four times inside one bounded behavioral test.
@@ -476,6 +582,7 @@ describe("armada org and armada creds against the control API", () => {
                 return { events: prompt, cursor: status ? "cursor" : undefined, hasMore: false };
               },
               async get() {
+                if (!follow) throw new Error("History reads must not depend on live compute availability");
                 return { id: "bx_follow", name: "x", state: "ready", providerState: "ready", labels: {} };
               },
               async getPrompt() {
@@ -496,6 +603,12 @@ describe("armada org and armada creds against the control API", () => {
         );
         expect(response?.status).toBe(200);
         if (!response) throw new Error("expected response");
+        const timing = response.headers.get("server-timing") ?? "";
+        expect(timing).toMatch(/auth;dur=\d+\.\d{2}/);
+        expect(timing).toMatch(/logs_target;dur=\d+\.\d{2}/);
+        expect(timing).toMatch(/events;dur=\d+\.\d{2}/);
+        expect(timing).toMatch(/dispatch;dur=\d+\.\d{2}/);
+        expect(timing.includes("state;dur=")).toBe(follow);
         expect(((await response.json()) as { settled: boolean }).settled).toBe(true);
         expect(reads).toBe(1);
       }

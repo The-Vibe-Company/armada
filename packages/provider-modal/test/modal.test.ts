@@ -295,6 +295,131 @@ function fixture(
     },
   };
 }
+test("stored composition reads ingested turns without any live SDK, runner or lifecycle lease", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+  const event = {
+    id: "terminal",
+    at: 1,
+    kind: "prompt" as const,
+    promptId: "stored-turn",
+    text: "work",
+    status: "finished" as const,
+  };
+  const history: AgentEvent[] = [
+    { ...event, status: "running" },
+    ...Array.from(
+      { length: 1001 },
+      (_, i): AgentEvent => ({ id: `other-${i}`, at: i + 2, kind: "other", type: "historical", data: {} }),
+    ),
+    { ...event, id: "terminal-final", at: 2000 },
+  ];
+  await appendModalEvents(
+    db,
+    scope,
+    row.id,
+    "1",
+    history.map((event, i) => ({ sequence: i + 1, event })),
+  );
+  let queries = 0;
+  const tracedSql: Sql = {
+    query: (text, params) => {
+      queries++;
+      return db.query(text, params);
+    },
+    transaction: (work) => db.transaction!(work),
+  };
+  f.client.apps.fromName = async () => {
+    throw new Error("No live App lookup on stored reads");
+  };
+  f.client.sandboxes.fromId = async () => {
+    throw new Error("No physical poll on stored reads");
+  };
+  const stored = await createComposedModalProvider({
+    ...compositionOptions(f),
+    sql: tracedSql,
+    storedReads: true,
+    fetcher: Object.assign(
+      async () => {
+        throw new Error("No runner RPC on stored reads");
+      },
+      {
+        preconnect: () => {
+          throw new Error("No network preconnect on stored reads");
+        },
+      },
+    ),
+  });
+  try {
+    expect(await stored.provider.get(row.id)).toMatchObject({ id: row.id, state: "ready" });
+    expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
+    const beforePrompt = queries;
+    expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "stored-turn" })).toMatchObject({
+      status: "finished",
+      done: true,
+    });
+    expect(queries - beforePrompt).toBeLessThanOrEqual(5);
+    const beforeMissing = queries;
+    expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "not-ingested-yet" })).toMatchObject({
+      status: "queued",
+      done: false,
+    });
+    expect(queries - beforeMissing).toBeLessThanOrEqual(5);
+    // An exclusive writer does not block history; membership and source guards remain live.
+    await f.store.lease(row.id, async () => {
+      expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
+    });
+    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [
+      scope.orgId,
+      "00000000-0000-0000-0000-000000000004",
+    ]);
+    await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+    await expect(stored.provider.events({ sandboxId: row.id })).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
+      scope.orgId,
+      scope.userId,
+    ]);
+    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [
+      scope.orgId,
+      "00000000-0000-0000-0000-000000000004",
+    ]);
+    await stored.close();
+  }
+});
+
+test.each(["foreign-source", "deleted"] as const)("history refuses an invalid machine (%s)", async (invalid) => {
+  const f = fixture();
+  const row = await runningFork(f);
+  await f.store.lease(row.id, async (record, save) => {
+    if (invalid === "deleted") record.phase = "deleted";
+    else {
+      if (!record.sourceImage) throw new Error("Fixture must record its source image");
+      record.sourceImage.scopeKey = "foreign";
+    }
+    await save(record);
+  });
+  await expect(f.provider.events({ sandboxId: row.id })).rejects.toMatchObject({
+    code: invalid === "deleted" ? "not_found" : "forbidden",
+  });
+});
+
+test("detail verifies the App once per read and still rejects a changed binding", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+  const lookup = f.client.apps.fromName;
+  let appReads = 0;
+  f.client.apps.fromName = async (...args) => {
+    appReads++;
+    return lookup(...args);
+  };
+  expect(await f.provider.get(row.id)).toMatchObject({ id: row.id, state: "ready" });
+  expect(appReads).toBe(1);
+  f.wrongApp();
+  await expect(f.provider.get(row.id)).rejects.toMatchObject({ code: "forbidden" });
+  expect(appReads).toBe(2);
+});
+
 test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
   const f = fixture();
   const key = Buffer.alloc(32, 61).toString("base64");
