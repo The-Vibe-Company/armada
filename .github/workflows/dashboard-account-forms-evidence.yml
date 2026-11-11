@@ -57,7 +57,7 @@ jobs:
       - name: Validate bundled Chromium launches
         run: bun -e 'import { chromium } from "@playwright/test"; const browser = await chromium.launch(); await browser.close();'
       - name: Capture the baseline and candidate layout against the same current mock
-        account-forms: bash
+        shell: bash
         run: |
           set -euo pipefail
           original=$(mktemp -d)
