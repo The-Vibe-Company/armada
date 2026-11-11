@@ -337,7 +337,8 @@ cannot accidentally share the same commit identity.
 After Git validates the archive/expected commit, `preservation_recovery_handle`
 parses the saved note's sandbox/recovery UUID pair, requires this sandbox, and
 fetches that exact `recovery_id`. It must return the same archive as the latest
-lookup. `preservation_recovery_read_only` repeats the latest read and confirms
+lookup. `preservation_unknown_handle_refused` probes a fresh absent UUID and
+requires null, so an endpoint that ignores the selector cannot falsely pass. `preservation_recovery_read_only` repeats the latest read and confirms
 the worker remains physically reported stopped and its preservation note is
 unchanged. Clean stops also retain their no-note invariant after recovery reads.
 A changing/missing explicit archive or changed note fails closed; no full
@@ -350,7 +351,7 @@ launch with org/golden/start time, plus a validated recovery ID when available.
 Archive bytes, commit IDs and note/provider text are never logged.
 
 No new allocation, model turn, case field, secret or migration. The dirty worker
-adds two bounded archive reads and one status observation (up to roughly5.4MiB
+adds two bounded archive readbacks, an absent-handle probe and one status observation (up to roughly5.4MiB
 extra base64 response data at the existing2MiB raw archive ceiling); the clean
 worker adds one status read. Expect seconds of API/storage traffic under the
 existing35+5-minute shared deadline. Git's bounded private temporary object store

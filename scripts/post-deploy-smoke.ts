@@ -666,6 +666,14 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             if (!verifiedArchive || explicit.archive !== verifiedArchive) fail("preservation_failed");
           });
         }
+        if (dirty)
+          await step("preservation_unknown_handle_refused", async () => {
+            const absent = await sandbox<{ archive: string | null }>("recovery", {
+              id: sandboxId,
+              recovery_id: crypto.randomUUID(),
+            });
+            if (absent.archive !== null) fail("preservation_failed");
+          });
         await step("preservation_recovery_read_only", async () => {
           if (dirty) {
             const repeated = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });

@@ -824,6 +824,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
       "clean_archive",
       "overwritten",
       "explicit_missing",
+      "selector_ignored",
       "recovery_changes",
       "recovery_wakes",
       "recovery_note_changes",
@@ -835,6 +836,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
         [
           "wrong_handle_owner",
           "explicit_missing",
+          "selector_ignored",
           "recovery_changes",
           "recovery_wakes",
           "recovery_note_changes",
@@ -879,7 +881,8 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
         if (call.path === "sandbox/recovery") {
           expect(call.body.id).toBe(sandboxId);
           recoveryReads++;
-          if (call.body.recovery_id !== undefined) expect(call.body.recovery_id).toBe(recoveryId);
+          if (call.body.recovery_id !== undefined && call.body.recovery_id !== recoveryId)
+            return json({ archive: fault === "selector_ignored" ? archive(commit) : null });
           if (fault === "recovery_wakes" && launches === 2 && recoveryReads === 2) stopping = false;
           return json({
             archive:
@@ -889,7 +892,7 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
                   : null
                 : fault === "missing" || (fault === "explicit_missing" && call.body.recovery_id !== undefined)
                   ? null
-                  : fault === "corrupt" || (fault === "recovery_changes" && recoveryReads === 3)
+                  : fault === "corrupt" || (fault === "recovery_changes" && recoveryReads >= 3)
                     ? Buffer.from("secret-invalid").toString("base64")
                     : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
           });
@@ -915,6 +918,8 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
       if (fault === "none") {
         expect(stops).toBe(2);
         expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
+        expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
+        expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_unknown_handle_refused", pass: true });
         expect(fake.receipts()).toContainEqual(
           expect.objectContaining({
             case: 0,
