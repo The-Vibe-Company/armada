@@ -144,7 +144,7 @@ final class ConversationFeed {
             }.value
             Self.signposter.endInterval("Projection", projection)
             // Preserve the cold-open first paint: plain text is visible before Markdown finishes.
-            if current == self.generation {
+            if !Task.isCancelled, current == self.generation {
                 self.conversation = projected
                 self.hasLoaded = true
             }
@@ -163,7 +163,7 @@ final class ConversationFeed {
         } else {
             presentation = await build(events)
         }
-        guard current == generation else { return }
+        guard !Task.isCancelled, current == generation else { return }
         if !rebuilt {
             conversation = presentation.conversation
             hasLoaded = true

@@ -48,8 +48,11 @@ projection and Markdown parsing. Actual cold/warm timing remains a device check.
    Check request overlap instead of adding the two durations.
    ConversationPresentation intervals Presentation, Projection, Markdown measure
    the app pipeline. Warm unchanged opens should have Presentation but no new
-   Projection/Markdown intervals. No contents, IDs or credentials are logged.
-5. Append a new assistant reply; reopen and verify it appears, Markdown/links and
+   Projection/Markdown intervals. No contents, resource IDs or credentials are logged.
+5. Cold-open a long history and immediately navigate back before Markdown is
+   ready; reopen and verify formatted Markdown finishes rather than staying
+   permanently plain/partial. Then append a new assistant reply; reopen and
+   verify it appears, Markdown/links and
    tool rows remain correct, and forward catch-up still occurs. Scroll to older
    pages: check ordering, no duplicates, and the scroll anchor.
 6. Repeat after switching organizations/signing out and after server access
