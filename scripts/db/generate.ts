@@ -52,6 +52,7 @@ const ROW_ALIASES: Record<string, string> = {
   modal_server_apps: "ModalServerAppRow",
   modal_server_scopes: "ModalServerScopeRow",
   modal_server_harnesses: "ModalServerHarnessRow",
+  armada_access_parents: "ArmadaAccessParentRow",
   orchestrators: "OrchestratorIdentityRow",
   orchestrator_children: "OrchestratorChildRow",
   orchestrator_operations: "OrchestratorOperationRow",

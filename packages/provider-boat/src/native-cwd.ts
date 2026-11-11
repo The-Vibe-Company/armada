@@ -1,5 +1,7 @@
+import { deflateSync } from "node:zlib";
 import type { ExecRequest } from "@armada/core";
 import { claudeMcpBridge } from "./native-claude-mcp.ts";
+import { NATIVE_USAGE_BOOTSTRAP } from "./native-usage.ts";
 
 export const NATIVE_HARNESS_PATHS = {
   codex: "/usr/local/bin/codex",
@@ -26,9 +28,9 @@ export async function installNativeCwdWrapper(
     timeoutSeconds: 60,
     command:
       (harness === "codex"
-        ? "python3 -c 'import tomllib' >/dev/null || exit 1; "
+        ? "python3 -I -c 'import tomllib' >/dev/null || exit 1; "
         : managedClaudeMcp
-          ? "python3 -c 'import json,os,signal,stat,subprocess,threading,uuid' >/dev/null || exit 1; "
+          ? "python3 -I -c 'import json,os,signal,stat,subprocess,threading,uuid' >/dev/null || exit 1; "
           : "") + nativeCwdInstallScript(path, command, cwd, managedClaudeMcp),
   });
 }
@@ -43,8 +45,8 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
         `selected=${quote(cwd ?? "")}`,
         `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
         'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
-        `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
-        `exec ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
+        `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `python3 -I -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
+        `exec ${managedClaudeMcp ? `python3 -I -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
       ].join("; "),
     );
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
@@ -65,7 +67,7 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
     // Boat sends WORK_DIR as cwd in thread/start and thread/resume, overriding process cwd.
     // Only stdio app-server needs a protocol bridge; CLI invocations keep their normal transport.
     `if [ "\${args[0]-}" = app-server ]; then`,
-    `  exec python3 -c ${quote(codexCwdBridge)} "$selected" ${original} "\${args[@]}"`,
+    `  exec python3 -I -c ${quote(compressedCodexBridge())} "$selected" ${original} "\${args[@]}"`,
     "fi",
     `exec ${original} "\${args[@]}"`,
   ].join("\n");
@@ -136,6 +138,11 @@ function quote(value: string): string {
 /** Transparent stdio bridge: only private reload replies are consumed; peer traffic and stderr are preserved. */
 const codexCwdBridge = `
 import fcntl, json, os, signal, stat, subprocess, sys, threading, time, uuid, socket, http.client
+usage = {"__name__":"armada_native_usage"}
+exec(${JSON.stringify(NATIVE_USAGE_BOOTSTRAP)},usage)
+usage_pending = {}
+usage_fresh = set()
+usage_tickets = {}
 
 class ManagedMcpOverridesError(Exception):
     pass
@@ -349,6 +356,25 @@ def receive():
                 pending[1].append("result" in message and "error" not in message)
                 pending[0].set()
                 continue
+        if isinstance(message,dict):
+            request = usage_pending.pop(str(message.get("id")),None)
+            result = message.get("result",{})
+            if request and request[0] in ("thread/start","thread/resume") and isinstance(result,dict):
+                thread = result.get("thread",{})
+                if isinstance(thread,dict) and isinstance(thread.get("id"),str) and request[0]=="thread/start": usage_fresh.add(thread["id"])
+            if message.get("method") in ("turn/started","turn/completed"):
+                params = message.get("params",{})
+                thread = params.get("threadId") if isinstance(params,dict) else None
+                turn = params.get("turn",{}) if isinstance(params,dict) else {}
+                native_turn = turn.get("id") if isinstance(turn,dict) else None
+                ticket = usage_tickets.get(thread)
+                if ticket and isinstance(native_turn,str):
+                    try:
+                        if message["method"]=="turn/started": usage["start"](ticket,native_turn)
+                        else:
+                            usage["terminal"](ticket,native_turn)
+                            usage_tickets.pop(thread,None)
+                    except Exception: pass
         if isinstance(message, dict) and "method" not in message and "id" in message:
             with starting_lock:
                 starting_turns.pop(message["id"], None)
@@ -448,6 +474,19 @@ def relay():
                         output((json.dumps({"id":message["id"],"error":{"code":-32603,"message":"Native MCP configuration refresh failed; retry the turn."}})+"\\n").encode())
                     continue
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
+            if isinstance(message,dict):
+                method=message.get("method")
+                if method in ("thread/start","thread/resume"):
+                    usage_pending[str(message.get("id"))]=(method,None)
+                if method=="turn/start":
+                    params=message.get("params",{})
+                    thread=params.get("threadId") if isinstance(params,dict) else None
+                    if isinstance(thread,str):
+                        try:
+                            ticket=usage["capture"]("codex",thread,thread in usage_fresh,usage["prompt_digest"](params.get("input")))
+                            usage_fresh.discard(thread)
+                            if ticket: usage_tickets[thread]=ticket
+                        except Exception: pass
             native_registry()
             if isinstance(message, dict) and "method" in message and "id" in message:
                 with starting_lock:
@@ -529,4 +568,9 @@ except FileNotFoundError: pass
 os.execve("/bin/bash",["bash","-c",sys.argv[2],"--"]+sys.argv[3:],e)`;
   // Ordinary native Claude retains its no-Python path when no values were delivered.
   return `if [ -f ${quote(`/run/armada-readable-variables/${harness}.json`)} ]; then exec /usr/bin/python3 -I -c ${quote(loader)} ${quote(harness)} ${quote(command)} "$@"; fi; ${command}`;
+}
+
+/** Keep the nested installer below Linux's per-argument limit. */
+function compressedCodexBridge(): string {
+  return `import base64,zlib;exec(zlib.decompress(base64.b64decode("${deflateSync(codexCwdBridge).toString("base64")}")))`;
 }

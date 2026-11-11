@@ -72,6 +72,9 @@ for (const harness of ["codex", "claude"] as const) {
         const output = join(base, "output");
         mkdirSync(bin, { recursive: true });
         mkdirSync(cwd);
+        // Checked-out repositories and inherited Python paths must not supply bridge imports.
+        for (const module of ["base64", "json", "contextlib", "tomllib"])
+          writeFileSync(join(cwd, `${module}.py`), "raise RuntimeError('repository Python module executed')\n");
         const path = join(bin, harness);
         const native = `${path}-native`;
         writeFileSync(
@@ -107,7 +110,12 @@ exit 23
             encoding: "utf8",
             timeout: 5_000,
             cwd: base,
-            env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH}`,
+              PYTHONPATH: cwd,
+              PYTHONHOME: join(cwd, "hostile-python-home"),
+            },
           });
         expect(run(runtimeArgs).status).toBe(23);
         // A later invocation must not replay the earlier runtime arguments.
@@ -138,12 +146,14 @@ test("Codex wrapper enforces Boat's thread/turn protocol cwd, not only process c
   try {
     const cwd = join(base, "repo B ' $ `");
     mkdirSync(cwd);
+    for (const module of ["base64", "json", "contextlib", "tomllib"])
+      writeFileSync(join(cwd, `${module}.py`), "raise RuntimeError('repository Python module executed')\n");
     const path = join(base, "codex");
     const native = join(base, "native");
     // Faithful Boat app-server boundary: an explicit RPC cwd overrides the executable's cwd.
     writeFileSync(
       native,
-      `#!/usr/bin/python3
+      `#!/usr/bin/python3 -I
 import json, os, subprocess, sys
 print(json.dumps({"argv": sys.argv[1:]}), flush=True)
 for line in sys.stdin.buffer:

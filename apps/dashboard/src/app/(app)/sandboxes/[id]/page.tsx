@@ -36,6 +36,7 @@ import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
+import { usageRevision } from "@/lib/usage-revision";
 
 export const metadata: Metadata = { title: "Sandbox" };
 export const dynamic = "force-dynamic";
@@ -167,6 +168,7 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            initialUsageRevision={usageRevision(sandbox.usage_turns)}
             live={isActiveStatus(sandbox.status)}
             harness={sandbox.harness}
             catalog={MODEL_CATALOG}

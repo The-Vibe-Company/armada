@@ -132,6 +132,16 @@ public enum EventStream {
     }
 }
 
+/// A send saved before dispatch. After interruption its outcome is unknown, never a retry queue.
+/// Stored with the origin-bound Keychain session; sign-out/new login clears it.
+public struct PendingSandboxPrompt: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let sandboxID: String
+    public let orgID: String
+    public let text: String
+    public let sentAt: Date
+}
+
 extension ArmadaClient {
     /// Interior detail for the owner or a current admin. Never called for a list row to enrich it.
     public func sandboxDetail(id: String) async throws -> SandboxDetail {
@@ -167,9 +177,45 @@ extension ArmadaClient {
     public func sendSandboxPrompt(id: String, text: String) async throws -> SandboxPromptReceipt {
         struct Send: Encodable, Sendable { let id: String; let org: String; let prompt: String }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ArmadaError.invalidRequest }
-        let result: SandboxPromptReceipt = try await post("sandbox/send", Send(id: try sandboxID(id), org: try sandboxOrganization(), prompt: text))
-        guard result.id.lowercased() == id.lowercased() else { throw ArmadaError.invalidResponse }
-        return result
+        let target = try sandboxID(id), org = try sandboxOrganization()
+        guard !pendingSandboxPrompts.contains(where: { $0.orgID == org && $0.sandboxID.lowercased() == target.lowercased() }) else {
+            throw ArmadaError.conflict
+        }
+        let saved = PendingSandboxPrompt(id: UUID(), sandboxID: target, orgID: org, text: text, sentAt: .now)
+        // No await between this durable write and owning the send slot. A second caller cannot
+        // dispatch another prompt while this one's outcome is open.
+        try saveSandboxPrompts(pendingSandboxPrompts + [saved])
+        do {
+            let result: SandboxPromptReceipt = try await post("sandbox/send", Send(id: target, org: org, prompt: text))
+            guard result.id.lowercased() == id.lowercased() else { throw ArmadaError.invalidResponse }
+            try retireSandboxPrompt(saved.id)
+            return result
+        } catch {
+            switch SandboxMutationFailure.classify(error) {
+            case .refused, .noAccess:
+                try retireSandboxPrompt(saved.id)
+            case .signedOut, .unconfirmed: break
+            }
+            throw error
+        }
+    }
+
+    /// Reads only this session's selected organization. Recovery never sends a request.
+    public func unconfirmedSandboxPrompt(id: String) throws -> PendingSandboxPrompt? {
+        let target = try sandboxID(id), org = try sandboxOrganization()
+        return pendingSandboxPrompts.first { $0.orgID == org && $0.sandboxID.lowercased() == target.lowercased() }
+    }
+
+    /// Explicit local dismissal, not cancellation or evidence of non-delivery.
+    public func dismissSandboxPrompt(id: UUID) throws {
+        let org = try sandboxOrganization()
+        guard let saved = pendingSandboxPrompts.first(where: { $0.id == id && $0.orgID == org }) else { return }
+        try retireSandboxPrompt(saved.id)
+    }
+
+    private func retireSandboxPrompt(_ id: UUID) throws {
+        guard pendingSandboxPrompts.contains(where: { $0.id == id }) else { return }
+        try saveSandboxPrompts(pendingSandboxPrompts.filter { $0.id != id })
     }
 
     /// Stops the machine; its disk and conversations are kept and a later prompt resumes it.
