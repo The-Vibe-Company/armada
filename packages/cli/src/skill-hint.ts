@@ -1,4 +1,4 @@
-import { constants, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, mkdirSync, openSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SKILL_PACKAGE } from "./skill-package.ts";
@@ -53,10 +53,9 @@ export function printSkillHint(
     }
     mkdirSync(state, { recursive: true, mode: 0o700 });
     // Persist before printing. Unwritable state must not cause a hint on every invocation.
-    writeFileSync(receipt, "", {
-      mode: 0o600,
-      flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
-    });
+    closeSync(
+      openSync(receipt, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600),
+    );
     process.stderr.write("Armada skills: armada skill install --global --yes (silence: ARMADA_NO_SKILL_HINT=1).\n");
   } catch {
     // Advice must never fail the user's command.
