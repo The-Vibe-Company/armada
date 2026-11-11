@@ -161,8 +161,22 @@ function seed(): State {
         usage_turns: {
           turnCount: 2,
           turns: [
-            { promptId: "p-1", model: "claude-opus-5-5", inputTokens: 12000, outputTokens: 9500, cachedTokens: 480000 },
-            { promptId: "p-2", model: "claude-opus-5-5", inputTokens: 3000, outputTokens: 4200, cachedTokens: 610000 },
+            {
+              promptId: "p-1",
+              model: "claude-opus-5-5",
+              inputTokens: 12000,
+              outputTokens: 9500,
+              cachedTokens: 480000,
+              cacheWriteTokens: 100000,
+            },
+            {
+              promptId: "p-2",
+              model: "claude-opus-5-5",
+              inputTokens: 3000,
+              outputTokens: 4200,
+              cachedTokens: 610000,
+              cacheWriteTokens: 0,
+            },
           ],
         },
       },
@@ -930,8 +944,21 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   switch (message.params?.name) {
     case "status":
       if (target.test_status_read_unavailable) return text("Status unavailable", true);
-      return text({ status: target.status, prompt: null });
+      if (target.test_delayed_usage) {
+        target.usage_turns = target.test_delayed_usage;
+        delete target.test_delayed_usage;
+      }
+      return text({
+        status: target.status,
+        prompt: null,
+        usage: {
+          computeSeconds: target.usage_runtime_seconds ?? null,
+          turnCount: (target.usage_turns as Row | undefined)?.turnCount ?? null,
+          turns: (target.usage_turns as Row | undefined)?.turns ?? [],
+        },
+      });
     case "logs": {
+      if (target.test_logs_unavailable) return text("Logs unavailable", true);
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
@@ -2387,6 +2414,31 @@ function control(url: URL, body: Row): Response {
     failConnectionList = false;
     failCatalog = false;
     failConnect = false;
+    if (body.missingUsage) {
+      const running = state.sandboxes.find((row) => row.id === id(30));
+      if (running)
+        running.usage_turns = {
+          turnCount: 2,
+          turns: [
+            {
+              promptId: "p-1",
+              model: "claude-opus-5-5",
+              inputTokens: 12000,
+              outputTokens: 9500,
+              cachedTokens: 480000,
+              cacheWriteTokens: 100000,
+            },
+            {
+              promptId: "p-2",
+              model: "claude-opus-5-5",
+              inputTokens: 3000,
+              outputTokens: null,
+              cachedTokens: 610000,
+              cacheWriteTokens: 0,
+            },
+          ],
+        };
+    }
     if (body.multiOrg) {
       const now = "2026-11-08T10:00:00.000Z";
       state.orgs.push({ id: id(11), name: "Zenith", created_at: now, boat_api_key_enc: "\\x0102" });
@@ -2541,6 +2593,41 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/clear-legacy-boat") {
     // An operator cleared the org's legacy Boat column (the key was revoked): the org is no longer ready.
     for (const org of state.orgs) if (org.id === body.org) org.boat_api_key_enc = null;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/delayed-usage") {
+    const target = state.sandboxes.find((row) => row.id === id(30));
+    if (!target) return json({ error: "Not found" }, 404);
+    if (body.collect) {
+      // Like readStatus: commit newly available counters during the next status
+      // read, after the dashboard route has already read the old row.
+      target.test_delayed_usage = {
+        turnCount: 1,
+        turns: [
+          {
+            promptId: "late",
+            model: "gpt-6.1-sol",
+            inputTokens: Number(body.inputTokens ?? 13136),
+            outputTokens: 5,
+            cachedTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        ],
+      };
+      if (body.persisted) {
+        target.usage_turns = target.test_delayed_usage;
+        delete target.test_delayed_usage;
+      }
+      if (body.stopped) target.status = "stopped";
+      target.test_status_read_unavailable = body.failStatus === true;
+      target.test_logs_unavailable = body.failLogs === true;
+    } else {
+      target.status = body.running ? "running" : "ready";
+      target.harness = "codex";
+      target.usage_turns = { turnCount: 1, turns: [] };
+      for (const event of state.events.get(String(target.id)) ?? [])
+        if (event.kind === "prompt") event.status = "finished";
+    }
     return json({ ok: true });
   }
   if (url.pathname === "/__test/provider-status-fail") {
