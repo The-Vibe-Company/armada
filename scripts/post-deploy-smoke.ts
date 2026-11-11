@@ -18,6 +18,7 @@ import type {
   OrchestratorOperation,
 } from "../packages/core/src/orchestrator.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
+import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
 type Code =
   | ApiFailureCode
@@ -42,7 +43,8 @@ type Code =
   | "orchestrator_disabled"
   | "operation_failed"
   | "continuity_failed"
-  | "preservation_failed";
+  | "preservation_failed"
+  | "invalid";
 const API_CODES = new Set<Code>([
   ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
@@ -50,11 +52,15 @@ const API_CODES = new Set<Code>([
   "forbidden",
   "not_found",
   "invalid_request",
+  "invalid",
   "conflict",
   "unavailable",
 ]);
 class SmokeFailure extends Error {
-  constructor(readonly code: Code) {
+  constructor(
+    readonly code: Code,
+    readonly status?: number,
+  ) {
     super(code);
   }
 }
@@ -160,7 +166,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           ? {}
           : {
               code:
-                error instanceof SmokeFailure || error instanceof TemplateSkillSmokeFailure
+                error instanceof SmokeFailure ||
+                error instanceof TemplateSkillSmokeFailure ||
+                error instanceof VaultSmokeFailure
                   ? error.code
                   : "invalid_response",
               ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
@@ -174,16 +182,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
   const templatesSkills = args.includes("--templates-skills");
+  const vault = args.includes("--vault");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (github && (orchestrator || preservation || templatesSkills)) ||
+      (github && (orchestrator || preservation || templatesSkills || vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
           arg !== "--github-runtime" &&
           arg !== "--work-preservation" &&
-          arg !== "--templates-skills",
+          arg !== "--templates-skills" &&
+          arg !== "--vault",
       ) ||
       !env.ARMADA_URL ||
       !env.ARMADA_TOKEN ||
@@ -194,7 +204,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
       fail("invalid_configuration");
     origin = url.origin;
-    if ((preservation || templatesSkills) && origin !== "https://armada-mcp-staging.up.railway.app")
+    if ((preservation || templatesSkills || vault) && origin !== "https://armada-mcp-staging.up.railway.app")
       fail("invalid_configuration");
     const parsed: unknown = JSON.parse(env.ARMADA_SMOKE_CASES);
     if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) fail("invalid_configuration");
@@ -208,6 +218,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           (key) => typeof item[key] !== "string" || !item[key].trim(),
         ) ||
         !item.repo.startsWith("/") ||
+        (vault && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org)) ||
         (item.reasoningEffort !== undefined &&
           (typeof item.reasoningEffort !== "string" || !item.reasoningEffort.trim())) ||
         (orchestrator && (typeof item.goldenId !== "string" || !item.goldenId.trim()))
@@ -256,6 +267,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const deadline = io.now() + 35 * 60_000;
   const cleanupDeadline = deadline + 5 * 60_000;
   let cleaning = false;
+  const protectedCanaries = new Set<string>();
   async function request<T>(path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
@@ -274,8 +286,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
+        if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
+          throw new VaultSmokeFailure("secret_exposed");
         const code = payload?.error?.code;
-        fail(typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed");
+        throw new SmokeFailure(
+          typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed",
+          response.status,
+        );
       }
       try {
         return (await response.json()) as T;
@@ -283,7 +300,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         fail("invalid_response");
       }
     } catch (error) {
-      if (error instanceof SmokeFailure) throw error;
+      if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
       fail("request_failed");
     }
   }
@@ -294,6 +311,38 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (i + 1 < POLLS) await io.sleep(1000);
     }
     fail("poll_limit_exceeded");
+  }
+  let vaultPassed = true;
+  if (vault) {
+    for (const [index, item] of cases.entries()) {
+      const ok = await runVaultCase(item.org, {
+        request,
+        protect: (value) => protectedCanaries.add(value),
+        isFailure: (error, status, code) =>
+          error instanceof SmokeFailure && error.status === status && error.code === code,
+        step: async (name, action) => {
+          try {
+            const value = await action();
+            report(index, name);
+            return value;
+          } catch (error) {
+            report(index, name, error);
+            throw error;
+          }
+        },
+        out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
+        withCleanup: async (action) => {
+          cleaning = true;
+          try {
+            return await action();
+          } finally {
+            cleaning = false;
+          }
+        },
+      });
+      if (!ok) vaultPassed = false;
+    }
+    if (args.every((arg) => arg === "--vault")) return vaultPassed;
   }
   let templateSkillsPassed = true;
   if (templatesSkills) {
@@ -344,7 +393,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     // This mode is independently runnable; combined staging runs keep the existing
     // preservation baseline as well, under the same shared deadline.
-    if (!preservation) return templateSkillsPassed;
+    if (!preservation) return templateSkillsPassed && vaultPassed;
   }
   // Validate the entire selected matrix before any billable mutation. A later
   // disabled case must not be discovered after earlier cases have allocated.
@@ -374,7 +423,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       return false;
     }
   }
-  let passed = templateSkillsPassed;
+  let passed = templateSkillsPassed && vaultPassed;
   for (const { index, item, dirty } of cases.flatMap((item, index) =>
     (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
   )) {
