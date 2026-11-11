@@ -52,9 +52,17 @@ export async function applicationVaultCommand(
   const selected = input.org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
   if (!selected) throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada org use.");
   body.org = await resolveOrganization(selected, io);
+  const routes = {
+    set: resource === "vars" ? "variables/set" : "secrets/set",
+    list: resource === "vars" ? "variables/list" : "secrets/list",
+    read: "variables/read",
+    rotate: "secrets/rotate",
+    revoke: "secrets/revoke",
+    delete: "secrets/delete",
+  } as const;
   const result = await control<{ item?: Record<string, unknown>; items?: Record<string, unknown>[]; value?: string }>(
     io.auth,
-    `${resource === "vars" ? "variables" : "secrets"}/${input.action}`,
+    routes[input.action],
     body,
   );
   if (input.action === "list") {
