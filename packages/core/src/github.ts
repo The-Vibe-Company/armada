@@ -394,7 +394,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
         status: "unavailable",
         message: changed
           ? "The GitHub connection was updated by another request. Retry shortly with the current connection."
-          : "A GitHub refresh may still be in progress or its outcome is uncertain. Retry shortly; the previous refresh will not be replayed.",
+          : "A GitHub refresh may still be in progress or its outcome is uncertain. Retry shortly; if this persists, reconnect GitHub in the dashboard under Settings. The previous refresh will not be replayed.",
       };
     }
     let tokens: GitHubTokenSet;

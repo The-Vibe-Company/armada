@@ -87,7 +87,11 @@ Reconnect can therefore finish while an older refresh is in flight. If that
 refresh observes the changed grant during publication or validation, it returns
 retryable `unavailable` rather than overwriting the new identity or handing out
 the old account's token. A caller that loses the consume fence re-reads once
-and returns retryable `unavailable`, without asking the person to reconnect:
-the other replica may still be finishing a successful rotation. No automatic
+and returns retryable `unavailable`. If the token changed, it asks for a retry
+without asking the person to reconnect: another replica has published a rotation.
+If the token is unchanged, a rotation may still be pending, so retry shortly;
+if this persists, reconnect GitHub in the dashboard under Settings. An outage,
+timeout or crash after the durable fence was written can leave the token
+permanently unchanged, and reconnect is then the recovery path. No automatic
 retry reuses consumed refresh material. See the connection-residence and
 overlap budget in [Production readiness](production-readiness.md#connection-residence-during-github-operations).

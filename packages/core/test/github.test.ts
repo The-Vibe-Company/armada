@@ -252,7 +252,9 @@ describe("GitHub access at launch", () => {
     const retry = await resolveGitHubAccess(world.deps, USER);
     expect(retry.status).toBe("unavailable");
     expect((retry as { message: string }).message).toContain("Retry shortly");
-    expect((retry as { message: string }).message).not.toContain("Reconnect");
+    expect((retry as { message: string }).message).toContain(
+      "if this persists, reconnect GitHub in the dashboard under Settings",
+    );
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
   });
 
@@ -275,7 +277,7 @@ describe("GitHub access at launch", () => {
     const access = await resolveGitHubAccess(world.deps, USER);
     expect(access.status).toBe("unavailable");
     expect((access as { message: string }).message).toContain("Retry shortly");
-    expect((access as { message: string }).message).not.toContain("Reconnect");
+    expect((access as { message: string }).message.toLowerCase()).not.toContain("reconnect");
     expect(reads).toBe(1);
     expect(world.github.refreshTokensSent).toEqual([]);
   });
