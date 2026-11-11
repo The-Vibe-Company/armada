@@ -1,3 +1,5 @@
+import { redactKnownTokens } from "@armada/core";
+
 const LIMIT = 600;
 
 /**
@@ -6,7 +8,7 @@ const LIMIT = 600;
  * can echo a parameter, so nothing is logged raw.
  */
 export function redactForLog(text: string): string {
-  const masked = text
+  const masked = redactKnownTokens(text)
     .replace(/\b(bearer\s+)\S+/gi, "$1***")
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]*@/gi, (match) => `${match.slice(0, match.indexOf("://") + 3)}***@`)
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, "***")
