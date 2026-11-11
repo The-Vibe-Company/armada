@@ -1,4 +1,4 @@
-import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
+import { GitHubHydrationError, goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
   type ApplicationVault,
   assertGoldenMutation,
@@ -114,7 +114,10 @@ const buildOutput = {
   state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
   phase: z.string(),
   errorCode: z.literal("build_failed").nullable(),
-  failureReason: z.enum(["skillpack_integrity_failed", "provider_payment_required"]).nullable().optional(),
+  failureReason: z
+    .enum(["skillpack_integrity_failed", "provider_payment_required", "provider_snapshot_rejected"])
+    .nullable()
+    .optional(),
   result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
 };
 
@@ -1909,9 +1912,13 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   }
   return {
     isError: true,
+    ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [
       { type: "text", text: message },
       { type: "text", text: `error code: ${code}` },
+      ...(error instanceof GitHubHydrationError
+        ? [{ type: "text" as const, text: JSON.stringify({ error: { code, message, details: error.details } }) }]
+        : []),
     ],
   };
 }

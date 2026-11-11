@@ -13,6 +13,13 @@ const ENV = {
 };
 
 describe("config", () => {
+  test("database pool budget defaults to three main sessions and accepts only safe integers >= 2", () => {
+    expect(configFromEnv(ENV).databasePoolMax).toBe(3);
+    for (const max of [2, 3, 6, 12])
+      expect(configFromEnv({ ...ENV, ARMADA_DATABASE_POOL_MAX: String(max) }).databasePoolMax).toBe(max);
+    for (const value of ["", " ", "1", "0", "-2", "3.5", "NaN", "Infinity", "9007199254740992", "3e0"])
+      expect(() => configFromEnv({ ...ENV, ARMADA_DATABASE_POOL_MAX: value })).toThrow("ARMADA_DATABASE_POOL_MAX");
+  });
   test("GitHub runtime and automatic legacy preparation each require an exact explicit opt-in", () => {
     for (const value of [undefined, "", "false", "1", "TRUE", " true "])
       expect(configFromEnv({ ...ENV, ARMADA_GITHUB_RUNTIME_ENABLED: value }).githubRuntimeEnabled).toBe(false);

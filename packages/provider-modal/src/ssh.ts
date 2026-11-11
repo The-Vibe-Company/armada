@@ -70,7 +70,12 @@ Port 2222
 ListenAddress 0.0.0.0
 HostKey /run/armada-ssh/host
 PidFile /run/armada-ssh/sshd.pid
+# sshd opens AuthorizedKeysFile as the login user; provider /run may be 0700.
+# Root's fixed cat fallback reads only this root-managed expiring public-key store.
+# Do not open /run to workers or change their login identity to root.
 AuthorizedKeysFile /run/armada-ssh/authorized_keys
+AuthorizedKeysCommand /bin/cat /run/armada-ssh/authorized_keys
+AuthorizedKeysCommandUser root
 AllowUsers ${username}
 PermitRootLogin ${machine.golden ? "prohibit-password" : "no"}
 PasswordAuthentication no

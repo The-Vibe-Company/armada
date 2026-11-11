@@ -13,8 +13,12 @@ import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catal
 const db = await openDatabase();
 await applyMigrations(db);
 const sql = fixtureSql(db);
+// The fixture owns and closes its shared PGlite database after server shutdown.
 const sqlModule = await import("../../src/sql.ts");
-mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({ ...sqlModule, bunSql: () => sql }));
+mock.module(new URL("../../src/sql.ts", import.meta.url).pathname, () => ({
+  ...sqlModule,
+  bunSql: () => ({ ...sql, close: async () => {} }),
+}));
 const boots = new Map<string, string>();
 const sshCalls: string[] = [];
 const authorityInstalled = new Set<string>();

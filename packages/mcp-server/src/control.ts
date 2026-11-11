@@ -16,6 +16,7 @@ import {
 } from "@armada/auth";
 import {
   API_FAILURE_STATUS,
+  GitHubHydrationError,
   goldenForSettings,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
@@ -87,6 +88,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode } from "./api-failure.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -288,6 +290,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           error: {
             code: failureCode,
             message: error instanceof Error ? error.message : failureCode,
+            ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
             ...(error instanceof ProviderError && error.details?.keepSource === true
               ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
               : {}),
@@ -300,7 +303,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
       return fail(status, error.code, error.action);
     }
-    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
+    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message, error.details);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
@@ -1444,8 +1447,11 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(status: number, code: string, message: string): Response {
-  return Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store" } });
+function fail(status: number, code: string, message: string, details?: ToolApiError["details"]): Response {
+  return Response.json(
+    { error: { code, message, ...(details ? { details } : {}) } },
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /**
@@ -1459,10 +1465,8 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     if (!value) throw new Error(`Set ${name}.`);
     return value;
   };
-  // The same adapter `armada serve` uses (`sql.ts`'s `bunSql`), not a hand-rolled one: it wires
-  // `.transaction` to `Bun.SQL.begin`, which `withGitHubConnectionRefresh`'s advisory lock (#492)
-  // needs to actually serialize concurrent refreshes. Without it, that lock is silently skipped.
-  const sql = bunSql(need("ARMADA_DATABASE_URL"));
+  // Share the server adapter and its validated pool budget, including transaction support.
+  const sql = bunSql(need("ARMADA_DATABASE_URL"), databasePoolMax(env.ARMADA_DATABASE_POOL_MAX));
   const encryptionKey = need(ENCRYPTION_KEY_ENV);
   const githubApp = githubAppFromEnv(env);
   const store = createSqlVaultStore(sql);
