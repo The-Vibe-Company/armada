@@ -249,7 +249,7 @@ export interface SandboxInfo {
   /** SDK-confirmed physical exit, without claiming a fresh resumable checkpoint. */
   physicalExitConfirmed?: boolean;
   /** Closed ordinary-stop receipt: current disk was not saved. */
-  stopNote?: "checkpoint_failed_disk_not_retained";
+  stopNote?: "checkpoint_failed_disk_not_retained" | "application_secret_retention_disabled_disk_not_retained";
   /** When the provider stops it by itself (the TTL). */
   expiresAt?: Date;
   /** `host:port` of the SSH server when the machine has no public IPv4. */

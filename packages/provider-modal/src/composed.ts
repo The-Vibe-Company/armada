@@ -161,6 +161,17 @@ async function composeModalProvider(options: ComposedModalOptions) {
     client,
     runner,
     distribution,
+    applicationSecretTainted: async (sandboxId) => {
+      // Builders/pre-registration cleanup have no public sandbox row. Keep
+      // soft-deleted rows: exposure must outlive ordinary resource deletion.
+      const query = options.sql.autonomousQuery?.bind(options.sql) ?? options.sql.query.bind(options.sql);
+      const result = await query<{ application_secret_tainted: boolean }>(
+        `select application_secret_tainted from public.sandboxes
+         where provider='modal' and provider_sandbox_id=$1 and org_id=$2::uuid`,
+        [sandboxId, options.scope.orgId],
+      );
+      return result.rows.some((row) => row.application_secret_tainted);
+    },
   });
   const ingest = createModalIngestHandler({ sql: options.sql, verifyGrant: grants.verifyGrant });
   return {

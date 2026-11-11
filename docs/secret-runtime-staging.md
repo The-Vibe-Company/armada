@@ -101,10 +101,9 @@ Preservation checks the durable marker before contacting compute. Recovery reads
 join the sandbox marker. Ordinary prompt resume hooks refuse tainted disks; all
 ordinary exec is denied for tainted sandboxes before native preparation/commands,
 including MCP, control API and CLI exec. This blanket denial avoids relying on a
-racy stopped/archived state check. Provider-internal recovery is not yet covered:
-Modal stop can still create a filesystem recovery image, and managed Boat parent recovery
-can bypass ordinary resume hooks. These paths require explicit taint-aware
-provider fencing before hydration is permitted. There is no hydration endpoint and no client can set taint.
+racy stopped/archived state check. The provider-retention gate below additionally
+covers Modal recovery images and managed Boat parent activation. There is no
+hydration endpoint and no client can set taint.
 
 This is **not yet a concurrency-safe secret admission protocol**: a collector or
 resume already in flight must be fenced by the later shared lifecycle lease
@@ -119,10 +118,47 @@ before any rollback/restore. The migration deletes online recovery ciphertext
 for tainted machines, not backups or provider disks/events; no erasure claim is
 made for those stores. This PR applies no migration and deploys nothing.
 
-## Provider-retention gate canaries (next small PR)
+## Provider-retention gate enforcement (step 2)
 
-Before declaring step 2 complete, exercise the provider-native mutation boundaries
-with durable taint already committed (not raw secrets):
+No migration is added. The authoritative marker remains
+`public.sandboxes.application_secret_tainted`; no client, model or provider-request
+field can opt into or out of this policy.
+
+- **Modal:** production composition resolves the marker from service SQL for the
+  exact provider ID and organization, including soft-deleted rows. Native lifecycle
+  operations consult this policy before taking/reusing a recovery image. Taint observed
+  during stop permanently disables native recovery for that machine. A tainted stop
+  persists this downgrade and terminates without runner checkpoint, snapshot
+  scrubbing or filesystem snapshot. Active recovery references are removed; old
+  image IDs remain cleanup metadata, never restore authority. Repeated stop and
+  recreated providers cannot turn that machine back into a resumable checkpoint.
+- **Modal authority outage:** unknown policy cannot authorize a snapshot or restore.
+  Stop conservatively disables recovery and terminates without preserving local
+  work, with generated warning `application_secret_retention_disabled_disk_not_retained`.
+  This can lose unpushed work during a database authority outage. Known native
+  disabled recovery stays disabled even if the callback is later unavailable.
+  Managed checkpoint-and-stop still terminates compute but refuses to fabricate a
+  native checkpoint/session-success receipt; its operation may remain unverified.
+- **Boat:** the managed best-effort adapter validates current persisted owner,
+  operation, incarnation and taint before calling the cloud-only resume port.
+  It cannot reuse an absent/mismatched SQL identity or a tainted disk. No new
+  authority, prompt or command is installed after a refused activation. This is
+  the trusted managed adapter boundary, not a restriction on provider-key holders
+  calling Boat directly. Boat stop can still retain a provider-owned disk; we do
+  not claim provider erasure. Its retention/deletion evidence gate stays closed.
+
+Fresh builder/allocation cleanup may precede registration in `sandboxes`; absence
+of a row is not treated as proof of a delivered secret. Golden eligibility is
+still step 3. Service-role hard deletion/tampering, direct provider control and
+backup erasure are outside these route guarantees. Every supported hydration path
+must first register taint durably; no such hydration exists in this release.
+
+## Provider-retention gate canaries
+
+Before accepting step 2 as staging-proven release evidence, the coordinator must
+exercise provider-native mutation boundaries with durable taint already committed
+(not raw secrets). The automated tests cover these paths with disposable SQL and
+fake cloud transport; they do not replace provider canaries:
 
 - Modal ordinary and managed stop must terminate compute without invoking runner
   checkpoint/export, snapshot scrubbing or `snapshotFilesystem`. Repeat after a

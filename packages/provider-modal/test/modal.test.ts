@@ -62,6 +62,7 @@ function fixture(
   sql: Sql = db,
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
+  applicationSecretTainted?: ModalProviderOptions["applicationSecretTainted"],
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
@@ -69,6 +70,7 @@ function fixture(
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   let failSnapshot = false;
+  let failTerminate = false;
   let failCreate = false;
   let failBoot = false;
   let appId = "ap_pinned";
@@ -165,6 +167,7 @@ function fixture(
           },
           terminate: async () => {
             log.push("terminate");
+            if (failTerminate) throw Error("synthetic termination unavailable");
             state.exit = 0;
           },
         } as unknown as Sandbox;
@@ -219,6 +222,7 @@ function fixture(
     scope: accessScope,
     ...(beforePrompt ? { beforePrompt } : {}),
     ...(beforeResume ? { beforeResume } : {}),
+    ...(applicationSecretTainted ? { applicationSecretTainted } : {}),
     tokenId: "synthetic-id",
     tokenSecret: "synthetic-secret",
     appName: "pinned",
@@ -286,6 +290,9 @@ function fixture(
     },
     failSnapshot(value: boolean) {
       failSnapshot = value;
+    },
+    failTerminate(value: boolean) {
+      failTerminate = value;
     },
     failCreate(value: boolean) {
       failCreate = value;
@@ -3260,4 +3267,183 @@ test("orchestrator stop seals the final acknowledged checkpoint watermark, not i
   expect(receipt).toMatchObject({ state: "stopped", eventWatermark: 1, acknowledgedSequence: 1 });
   expect(await f.provider.readOrchestratorCheckpoint(request)).toEqual(receipt);
   expect((await f.provider.get(parent.id)).state).toBe("stopped");
+});
+
+test.each(["ordinary", "managed"] as const)(
+  "SQL application-secret taint makes Modal %s stop terminate without a recovery image across retry and restart",
+  async (mode) => {
+    const f = fixture();
+    const configuration = compositionOptions(f);
+    const usualFetch = configuration.fetcher!;
+    configuration.fetcher = (async (input, init) => {
+      const request = JSON.parse(String(init?.body));
+      if (request.op === "observeOrchestrator")
+        return Response.json({
+          version: 1,
+          requestId: request.requestId,
+          result: {
+            physicalGeneration: "1",
+            state: "quiescent",
+            nativeSessionId: null,
+            eventWatermark: 0,
+            acknowledgedSequence: 0,
+          },
+        });
+      return usualFetch(input, init);
+    }) as typeof fetch;
+    const connection = await createComposedModalProvider(configuration);
+    const builder = await connection.provider.createGolden({});
+    const snapshot = crypto.randomUUID();
+    await connection.provider.snapshot({ sandboxId: builder.id, name: snapshot });
+    const machine = await connection.provider.fork({ from: snapshot });
+    const goldenId = crypto.randomUUID();
+    const publicId = crypto.randomUUID();
+    await db.query(
+      `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+       values($1::uuid,$2::uuid,$3::uuid,$1::text,'private','modal',$4,'label-only','main','ap_pinned','{"repos":[],"init":[]}'::jsonb)`,
+      [goldenId, scope.orgId, scope.userId, snapshot],
+    );
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,application_secret_tainted,stopped_at,deleted_at)
+       values($1,$2,$3,$4,'modal',$5,'codex','deleted',true,now(),now())`,
+      [publicId, goldenId, scope.orgId, scope.userId, machine.id],
+    );
+    const baseline = f.log.length;
+    f.failTerminate(true);
+    const attempt = () =>
+      mode === "ordinary"
+        ? connection.provider.stop({ sandboxId: machine.id })
+        : connection.provider.checkpointOrchestrator({
+            sandboxId: machine.id,
+            operationId: crypto.randomUUID(),
+            physicalGeneration: "1",
+            conversationId: null,
+            harness: "codex",
+            model: "gpt-6.1-sol",
+          });
+    await expect(attempt()).rejects.toBeInstanceOf(Error);
+    const interrupted = await f.store.get(machine.id);
+    expect(interrupted).toMatchObject({ phase: "terminate", recoveryDisabled: true });
+    expect(interrupted.recoveryImageId).toBeUndefined();
+    expect(interrupted.info.stopNote).toBe("application_secret_retention_disabled_disk_not_retained");
+    f.failTerminate(false);
+    const restarted = await createComposedModalProvider(configuration);
+    if (mode === "managed") {
+      await expect(
+        restarted.provider.checkpointOrchestrator({
+          sandboxId: machine.id,
+          operationId: crypto.randomUUID(),
+          physicalGeneration: "1",
+          conversationId: null,
+          harness: "codex",
+          model: "gpt-6.1-sol",
+        }),
+      ).rejects.toMatchObject({ code: "unavailable" });
+    } else await restarted.provider.stop({ sandboxId: machine.id });
+    expect((await f.store.get(machine.id)).phase).toBe("stopped");
+    expect(f.log.slice(baseline)).toEqual(["terminate", "terminate"]);
+    await expect(
+      restarted.provider.readOrchestratorCheckpoint({ sandboxId: machine.id, operationId: "historical-stop" }),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    const allocations = f.creates;
+    await expect(restarted.provider.exec({ sandboxId: machine.id, command: "pwd" })).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    expect(f.creates).toBe(allocations);
+    await restarted.provider.stop({ sandboxId: machine.id });
+    expect((await f.store.get(machine.id)).recoveryImageId).toBeUndefined();
+    connection.close();
+    restarted.close();
+  },
+);
+
+test("an unavailable Modal retention policy still terminates without a checkpoint and never authorizes later reuse", async () => {
+  let unavailable = false;
+  const f = fixture(scope, db, undefined, undefined, async () => {
+    if (unavailable) throw Error("private SQL failure must not enter receipts");
+    return false;
+  });
+  const machine = await runningFork(f);
+  unavailable = true;
+  const baseline = f.log.length;
+  await f.provider.stop({ sandboxId: machine.id });
+  expect(f.log.slice(baseline)).toEqual(["terminate"]);
+  expect(await f.store.get(machine.id)).toMatchObject({ phase: "stopped", recoveryDisabled: true });
+  unavailable = false;
+  const allocations = f.creates;
+  await expect(f.provider.exec({ sandboxId: machine.id, command: "pwd" })).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  expect(f.creates).toBe(allocations);
+});
+
+test("new taint hides a historical Modal checkpoint and clears its active recovery handle without cloud reuse", async () => {
+  const f = fixture();
+  const configuration = compositionOptions(f);
+  const usualFetch = configuration.fetcher!;
+  configuration.fetcher = (async (input, init) => {
+    const request = JSON.parse(String(init?.body));
+    if (request.op === "observeOrchestrator")
+      return Response.json({
+        version: 1,
+        requestId: request.requestId,
+        result: {
+          physicalGeneration: "1",
+          state: "quiescent",
+          nativeSessionId: "native-logical",
+          eventWatermark: 0,
+          acknowledgedSequence: 0,
+        },
+      });
+    return usualFetch(input, init);
+  }) as typeof fetch;
+  const connection = await createComposedModalProvider(configuration);
+  const builder = await connection.provider.createGolden({});
+  const snapshot = crypto.randomUUID();
+  await connection.provider.snapshot({ sandboxId: builder.id, name: snapshot });
+  const machine = await connection.provider.fork({ from: snapshot });
+  const operationId = crypto.randomUUID();
+  const saved = await connection.provider.checkpointOrchestrator({
+    sandboxId: machine.id,
+    operationId,
+    physicalGeneration: "1",
+    conversationId: "logical",
+    harness: "codex",
+    model: "gpt-6.1-sol",
+  });
+  expect(saved.state).toBe("stopped");
+  expect(typeof saved.checkpointId).toBe("string");
+  const goldenId = crypto.randomUUID();
+  await db.query(
+    `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+     values($1::uuid,$2::uuid,$3::uuid,$1::text,'private','modal',$4,'label-only','main','ap_pinned','{"repos":[],"init":[]}'::jsonb)`,
+    [goldenId, scope.orgId, scope.userId, snapshot],
+  );
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,application_secret_tainted)
+     values($1,$2,$3,$4,'modal',$5,'codex','ready',true)`,
+    [crypto.randomUUID(), goldenId, scope.orgId, scope.userId, machine.id],
+  );
+  const restarted = await createComposedModalProvider(configuration);
+  const baseline = f.log.length;
+  const allocations = f.creates;
+  await expect(
+    restarted.provider.readOrchestratorCheckpoint({ sandboxId: machine.id, operationId }),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  await expect(
+    restarted.provider.restoreOrchestratorCheckpoint({
+      sandboxId: machine.id,
+      operationId: crypto.randomUUID(),
+      checkpoint: saved,
+    }),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  await restarted.provider.stop({ sandboxId: machine.id });
+  const stopped = await f.store.get(machine.id);
+  expect(stopped.recoveryDisabled).toBe(true);
+  expect(stopped.recoveryImageId).toBeUndefined();
+  expect(stopped.retainedRecoveryIds).toContain(saved.checkpointId!);
+  expect(f.log.slice(baseline)).toEqual([]);
+  expect(f.creates).toBe(allocations);
+  connection.close();
+  restarted.close();
 });

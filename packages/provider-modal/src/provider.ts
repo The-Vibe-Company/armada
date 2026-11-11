@@ -44,6 +44,9 @@ export interface ModalProviderOptions extends ModalConnection {
    * get/configureMcp. Failure prevents native submission; incarnation is fenced on reacquisition. */
   beforeResume?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
+  /** Trusted control-plane lookup, never supplied by a runner or launch request.
+   * A failure refuses retention/reuse; stop still terminates without a snapshot. */
+  applicationSecretTainted?(sandboxId: string): Promise<boolean>;
 }
 export interface ModalProvider extends Provider {
   checkpointOrchestrator(request: {
@@ -444,10 +447,24 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw new ModalOperationError(error, await resourceReceipt(observed));
     }
   }
+  async function retentionForbidden(row: Machine): Promise<boolean> {
+    if (row.recoveryDisabled) return true;
+    try {
+      return (await options.applicationSecretTainted?.(row.info.id)) === true;
+    } catch {
+      throw refusal("unavailable", "Sandbox retention authority is unavailable.");
+    }
+  }
+  async function assertRetentionAllowed(row: Machine): Promise<void> {
+    if (await retentionForbidden(row))
+      throw refusal("unavailable", "Application-secret exposed sandboxes cannot retain or reuse disks.");
+  }
   /** Caller holds the lifecycle lease through activation and the admitted operation. */
   async function readyLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<Machine> {
     assertMachineSource(row);
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
+    if (row.phase === "stopped" || (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase)))
+      await assertRetentionAllowed(row);
     if (row.phase === "stopped") {
       await options.beforeResume?.(provider, row.info.id);
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
@@ -571,6 +588,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     };
   }
   async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<void> {
+    // Unknown policy cannot authorize an image either. Persist the downgrade
+    // before termination so retries/restarts never re-enter checkpointing.
+    const noRetention = await retentionForbidden(row).catch(() => true);
+    if (noRetention) {
+      row.recoveryDisabled = true;
+      row.info.stopNote = "application_secret_retention_disabled_disk_not_retained";
+      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+      delete row.recoveryImageId;
+      if (row.phase !== "stopped") {
+        row.phase = "terminate";
+        row.info.state = "stopping";
+      }
+      await save(row);
+    }
     if (row.phase === "stopped") return;
     const sb = await physical(row);
     if (row.phase !== "terminate") {
@@ -695,7 +726,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
-      return source.store.lease(snapshot.sourceId, async () => launch(r, false));
+      return source.store.lease(snapshot.sourceId, async (row) => {
+        await assertRetentionAllowed(row);
+        return launch(r, false);
+      });
     },
     async observeResources(id) {
       await bound();
@@ -790,6 +824,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return await source.store.lease(sandboxId, async (row, save) => {
           observed = row;
           assertMachineSource(row);
+          await assertRetentionAllowed(row);
           if (!row.golden) throw refusal("invalid_request", "Only a golden master can be restored through this port.");
           const same =
             row.goldenRestore?.snapshotId === snapshotId &&
@@ -999,10 +1034,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     },
     async readOrchestratorCheckpoint({ sandboxId, operationId }) {
       // Store lookup only: never ready(), health admission, SDK stop or restore.
-      return checkpointReceipt(await store.get(sandboxId), operationId);
+      const row = await store.get(sandboxId);
+      await assertRetentionAllowed(row);
+      return checkpointReceipt(row, operationId);
     },
     async checkpointOrchestrator(request) {
       return admit(request.sandboxId, async (row, save) => {
+        if (await retentionForbidden(row).catch(() => true)) {
+          row.recoveryDisabled = true;
+          await save(row);
+          await stopLeased(row, save);
+          // Cloud termination is not a native checkpoint/session acknowledgement.
+          throw refusal("unavailable", "Application-secret retention policy forbids native checkpoints.");
+        }
         const prior = checkpointReceipt(row, request.operationId);
         if (prior) return prior; // Unknown dispatch never repeats the native effect.
         if (
@@ -1091,6 +1135,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       )
         throw refusal("unavailable", "No verified no-text driver for this harness.");
       const activated = await admit(request.sandboxId, async (row, save) => {
+        await assertRetentionAllowed(row);
         const saved = checkpointReceipt(row, request.checkpoint.operationId);
         if (!saved || saved.state !== "stopped" || !saved.checkpointId)
           throw refusal("conflict", "Native checkpoint is not complete.");
@@ -1280,6 +1325,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return await store.lease(r.sandboxId, async (row, save) => {
           observed = row;
           assertMachineSource(row);
+          await assertRetentionAllowed(row);
           if (!row.golden || row.phase !== "active")
             throw refusal("conflict", "Only active credential-free builders can become golden snapshots.");
           try {

@@ -76,6 +76,9 @@ export interface Machine {
   checkpointWatermark?: number;
   quiesced?: boolean;
   ordinaryStopAttempted?: boolean;
+  /** Sticky no-retention downgrade after observed application-secret taint or
+   * unavailable retention authority. Never cleared on retry or restore. */
+  recoveryDisabled?: true;
   modelDefaults?: Record<"claude" | "codex", { model: string; reasoningEffort: string }>;
   /** Trusted, nonsensitive POSIX paths only; never a wrapper command or harness auth state. */
   harnessCwds?: Partial<Record<"claude" | "codex", string>>;

@@ -121,6 +121,7 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
            join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
            where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3
            and s.provider='boat' and s.status='stopped' and s.deleted_at is null and s.stop_requested_at is null
+           and s.owner_id=o.owner_id and s.org_id=o.org_id
            and o.id=$4 and o.owner_id=$5 and o.org_id=$6 and o.revision=$7
            and p.id=$8 and p.action='resume' and p.revision=o.revision and p.state='pending' and p.actor_id=o.owner_id`,
           [
@@ -169,6 +170,7 @@ export function createBoatBestEffortAdapter(input: { sql: Sql; mcpUrl: string })
            from public.orchestrators o,public.orchestrator_operations p,public.members m
            where m.org_id=o.org_id and m.user_id=o.owner_id and s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3
            and s.status='stopped' and s.stop_requested_at is null and s.provider='boat' and not s.application_secret_tainted
+           and s.owner_id=o.owner_id and s.org_id=o.org_id
            and o.id=$4 and o.sandbox_id=s.id and o.owner_id=$5 and o.org_id=$6 and o.revision=$7
            and p.id=$8 and p.orchestrator_id=o.id and p.action='resume' and p.revision=o.revision and p.state='pending' and p.actor_id=o.owner_id returning s.id`,
           [
