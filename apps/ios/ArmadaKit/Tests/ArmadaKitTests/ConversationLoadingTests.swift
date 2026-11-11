@@ -186,3 +186,93 @@ private func run(_ loader: ConversationLoader<Entry>, _ script: Script, backoff:
     cache.removeAll()
     #expect(cache.keys.isEmpty)
 }
+
+@MainActor
+@Test func repeatedOpensReuseTheDerivedPresentationOfALongHistory() async {
+    let cache = ConversationCache<Entry>()
+    let events = (0..<2_000).map { Entry(id: "event-\($0)", body: "body-\($0)") }
+    cache.store(ConversationSnapshot(events: events, cursor: "frontier"), for: "sandbox:a")
+    var builds = 0
+    var shown: [String] = []
+    for _ in 0..<20 {
+        let loader = ConversationLoader<Entry>(key: "sandbox:a", cache: cache)
+        await loader.showCached { events in
+            let value = await cache.rendered(for: "sandbox:a", events: events) { _ in
+                builds += 1
+                return "presentation-\(builds)"
+            }
+            shown.append(value)
+        }
+    }
+    #expect(builds == 1)
+    #expect(shown == Array(repeating: "presentation-1", count: 20))
+    print("Conversation presentation work-count: events=2000 opens=20 builds=\(builds)")
+}
+
+@MainActor
+@Test func cursorProgressKeepsPresentationButChangedEventsRebuildIt() async {
+    let cache = ConversationCache<Entry>()
+    let original = [Entry(id: "event", body: "before")]
+    let changed = [Entry(id: "event", body: "after")]
+    var builds = 0
+    let build: @MainActor ([Entry]) async -> String = { events in
+        builds += 1
+        return events[0].body
+    }
+    cache.store(ConversationSnapshot(events: original, cursor: "c1"), for: "k")
+    #expect(await cache.rendered(for: "k", events: original, build: build) == "before")
+    cache.store(ConversationSnapshot(events: original, cursor: "c2"), for: "k")
+    #expect(await cache.rendered(for: "k", events: original, build: build) == "before")
+    #expect(builds == 1)
+    cache.store(ConversationSnapshot(events: changed, cursor: "c3"), for: "k")
+    #expect(await cache.rendered(for: "k", events: changed, build: build) == "after")
+    #expect(builds == 2)
+    // A stale reader can render its own window but cannot replace the current presentation.
+    #expect(await cache.rendered(for: "k", events: original, build: build) == "before")
+    #expect(await cache.rendered(for: "k", events: changed, build: build) == "after")
+    #expect(builds == 3)
+}
+
+@MainActor
+private final class SuspendedPresentation {
+    let started: AsyncStream<Void>
+    private let signal: AsyncStream<Void>.Continuation
+    var release: CheckedContinuation<String, Never>?
+
+    init() {
+        (started, signal) = AsyncStream<Void>.makeStream()
+    }
+
+    func build() async -> String {
+        await withCheckedContinuation { continuation in
+            release = continuation
+            signal.yield(())
+            signal.finish()
+        }
+    }
+}
+
+@MainActor
+@Test func lateRenderingCannotReviveForgottenOrEvictedPresentations() async {
+    for clear in 0..<3 {
+        let cache = ConversationCache<Entry>(capacity: 1)
+        let snapshot = ConversationSnapshot(events: [Entry(id: "e")], cursor: "c")
+        cache.store(snapshot, for: "k")
+        let gate = SuspendedPresentation()
+        let old = Task { await cache.rendered(for: "k", events: snapshot.events) { _ in await gate.build() } }
+        for await _ in gate.started { break }
+        switch clear {
+        case 0: cache.remove("k")
+        case 1: cache.removeAll()
+        default: cache.store(snapshot, for: "other")
+        }
+        // Even identical events reintroduced after clearing have a different privacy lifetime.
+        cache.store(snapshot, for: "k")
+        let fresh = await cache.rendered(for: "k", events: snapshot.events) { _ in "fresh" }
+        #expect(fresh == "fresh")
+        gate.release?.resume(returning: "stale")
+        #expect(await old.value == "stale")
+        let retained = await cache.rendered(for: "k", events: snapshot.events) { _ in "unexpected rebuild" }
+        #expect(retained == "fresh")
+    }
+}
