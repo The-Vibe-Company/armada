@@ -40,5 +40,22 @@ test("launch pins reject installed-slug collisions, floating private versions an
   ])
     expect(() => validateSkillPins(skills)).toThrow();
   // Anonymous public installation must not accidentally accept a workspace slug.
-  await expect(installSkill({} as Provider, "sandbox", "/home/user/repo", "codex", "notes@1.0.0")).rejects.toThrow();
+  let executions = 0;
+  const provider = {
+    exec: async () => {
+      executions++;
+      return {
+        detached: false,
+        exitCode: 0,
+        stdout: catalogLock("codex"),
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      };
+    },
+  } as unknown as Provider;
+  await expect(installSkill(provider, "sandbox", "/home/user/repo", "codex", "notes@1.0.0")).rejects.toThrow(
+    "Skills require distinct",
+  );
+  expect(executions).toBe(0);
 });
