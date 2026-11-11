@@ -766,6 +766,19 @@ describe("tools", () => {
     const listed = await call(mcp, "list");
     expect(listed.data.sandboxes).toMatchObject([{ status: "ready" }]);
 
+    // A lifecycle owner may win after the provider observation. Reads return
+    // its persisted state instead of publishing stale readiness or returning409.
+    await db.query(
+      "update sandboxes set status='running',reconcile_lease_until=now()+interval '2 minutes' where id=$1",
+      [launched.data.id],
+    );
+    expect((await call(mcp, "status", { id: launched.data.id })).data).toMatchObject({
+      status: "running",
+      settled: false,
+    });
+    await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launched.data.id]);
+    expect((await call(mcp, "status", { id: launched.data.id })).data.status).toBe("ready");
+
     await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
     const cleared = await db.query<{ status_reason: string | null }>(
       "select status_reason from sandboxes where id = $1",
