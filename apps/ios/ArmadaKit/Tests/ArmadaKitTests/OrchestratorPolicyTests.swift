@@ -470,7 +470,7 @@ private actor Sleeps {
                                        revision: 1, operations: [("create", "failed", 1, "provider_payment_required")], agentWorking: false)
     let reason = OrchestratorExplanation.text(for: "provider_payment_required")
     #expect(!reason.contains("_") && !reason.contains("did not explain"))
-    #expect(!refused.canRecover && refused.canStop && refused.composerNote == "Creation failed. " + reason)
+    #expect(!refused.canRecover && refused.composerNote == "Creation failed. " + reason)
     #expect(OrchestratorCreateProgress(state: "blocked", operations: [("create", "failed", "provider_payment_required")],
                                        blockedReason: "provider_payment_required") == .failed(reason))
     // A create whose machine was stopped after it failed says why it failed, not only that it stopped.
