@@ -1608,7 +1608,7 @@ captureGitHubAuditLogs();
 
 test("MCP launch preserves the closed busy account code and safe action", async () => {
   const { token, client, people, boat } = await start({
-    providerFor: async () => {
+    providerFor: () => {
       throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
     },
   });
