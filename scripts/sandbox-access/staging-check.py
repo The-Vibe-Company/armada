@@ -116,20 +116,53 @@ def decoded(value):
     return value
 
 
-def scoped_tools(events, prompt_id):
+def scoped_tools(events, prompt_id, allowed=("launch", "message", "read", "stop")):
+    """Audit native actions, then merge only allowed calls and correlated Claude results."""
     calls = {}
-    methods = ("launch", "message", "read", "stop")
-    names = {"mcp__armada_orchestrator__" + name: name for name in methods}
-    # Modal's Codex normalizer drops item.server and retains the bare item.tool.
-    # This requires the documented isolated golden (no unrelated MCP servers).
-    names.update({name: name for name in methods})
+    names = {"mcp__armada_orchestrator__" + name: name for name in allowed}
+    # Modal drops item.server; the isolated-golden prerequisite remains essential.
+    names.update({name: name for name in allowed})
+    metadata_items = {"reasoning", "plan", "userMessage", "agentMessage", "contextCompaction",
+                      "enteredReviewMode", "exitedReviewMode", "usage", "metadata"}
     for event in events:
-        if event.get("promptId") != prompt_id or event.get("kind") != "message":
+        turn = event.get("promptId")
+        if turn is not None and turn != prompt_id:
+            continue
+        if event.get("kind") == "other":
+            data = event.get("data")
+            item = data.get("item") if isinstance(data, dict) else None
+            kind = item.get("type") if isinstance(item, dict) else None
+            event_type = event.get("type", "")
+            if kind is not None:
+                if kind not in metadata_items:
+                    raise Failure("unapproved_native_action")
+            elif event_type in ("item/started", "item/completed"):
+                raise Failure("unsupported_native_action")
+            elif event_type.startswith("item/"):
+                if not event_type.startswith(("item/reasoning/", "item/agentMessage/", "item/plan/")):
+                    raise Failure("unapproved_native_action")
+            elif re.sub(r"[_-]", "", event_type.lower()).startswith(("tool", "command", "exec", "file", "write", "read", "search",
+                                                "websearch", "dynamictool", "collabagent", "subagent", "image", "functioncall", "hookprompt")):
+                raise Failure("unapproved_native_action")
+            continue  # Reasoning, usage and system/thread/turn metadata are not actions.
+        if event.get("kind") != "message":
             continue
         for tool in event.get("tools", []):
-            if tool.get("name") in names and isinstance(tool.get("id"), str):
-                previous = calls.get(tool["id"], {})
-                calls[tool["id"]] = dict(previous, **tool, method=names[tool["name"]])
+            call_id, name = tool.get("id"), tool.get("name")
+            if not isinstance(call_id, str) or not call_id or event.get("parentToolUseId"):
+                raise Failure("unapproved_native_action")
+            previous = calls.get(call_id)
+            if name in (None, "", "tool_result"):
+                if event.get("responseKind") != "tool_result" or previous is None or not isinstance(tool.get("result"), dict):
+                    raise Failure("uncorrelated_native_result")
+                calls[call_id] = dict(previous, result=tool["result"])
+                continue
+            if turn is None or name not in names:
+                raise Failure("unapproved_native_action")
+            method = names[name]
+            if previous is not None and previous["method"] != method:
+                raise Failure("rebound_native_call_id")
+            calls[call_id] = dict(previous or {}, **tool, method=method)
     return list(calls.values())
 
 
@@ -163,6 +196,7 @@ class Run:
         self.args, self.address, self.org, self.token = args, address, org, token
         self.run_id = str(uuid.uuid4())
         self.marker = "armada-staging-check:" + self.run_id
+        self.child_init = self.marker + " child-init: Reply exactly CHILD_READY without tools, then finish."
         self.memory, self.answer = secrets.token_hex(24), "child-answer:" + secrets.token_hex(24)
         self.started = time.time()
         self.deadline = time.monotonic() + args.timeout
@@ -325,13 +359,14 @@ class Run:
         self.baseline = {identifier(row["id"]) for row in self.listing()}
         selection = {"goldenId": self.args.golden_id, "harness": self.args.harness,
                      "credentialId": self.args.account_id, "credentialVersion": self.args.account_version,
-                     "model": self.args.model, "prompt": self.marker + " child-init"}
+                     "model": self.args.model, "prompt": self.child_init}
         if self.args.repo:
             selection["repo"] = self.args.repo
         self.phase = "delegated_child_roundtrip"
         task = (self.marker + " Remember memory nonce " + self.memory + " only in this conversation; do not write files. "
                 "Use only native armada_orchestrator MCP tools, never shell/HTTP/owner credentials. "
                 "Launch exactly ONE child, idempotencyKey " + self.run_id + "-launch, selection " + json.dumps(selection) + ". "
+                "Poll delegated read until the child-init prompt event explicitly has status finished; do not message a running turn. "
                 "Then message that child using idempotencyKey " + self.run_id + "-message and text "
                 + json.dumps(self.marker + " Reply exactly " + self.answer) + ". "
                 "Poll delegated read until the CHILD assistant answers; then stop it with idempotencyKey "
@@ -357,6 +392,23 @@ class Run:
             raise Failure("child_prompt_marker_unconfirmed")
         self.child = self.record(candidate)
         print(json.dumps({"event": "child_discovered", "id": self.child}), flush=True)
+        for call in tools:
+            method = call["method"]
+            if method == "launch":
+                continue
+            expected = {"sandboxId": self.child}
+            if method != "read":
+                expected["idempotencyKey"] = self.run_id + "-" + method
+            if method == "message":
+                expected["text"] = self.marker + " Reply exactly " + self.answer
+            if call.get("input") != expected:
+                raise Failure("unapproved_native_action")
+        message_index = next((index for index, call in enumerate(tools) if call["method"] == "message"), -1)
+        if not any(call["method"] == "read" and any(event.get("kind") == "prompt"
+                   and event.get("text") == self.child_init and event.get("status") == "finished"
+                   for event in self.successful(call).get("events", []))
+                   for call in tools[:max(message_index, 0)]):
+            raise Failure("child_initial_turn_not_confirmed_before_message")
         self.delegated_uncertain = False
         required = {"message": False, "read": False, "stop": False}
         for call in tools:
@@ -400,9 +452,11 @@ class Run:
             raise Failure("conversation_changed")
         self.settled(self.parent, resumed["promptId"])
         events = self.logs(self.parent)
-        resumed_tools = scoped_tools(events, resumed["promptId"])
+        resumed_tools = scoped_tools(events, resumed["promptId"], allowed=("read",))
         if any(call["method"] == "launch" for call in resumed_tools):
             raise Failure("unexpected_delegated_allocation")
+        if any(call.get("input") != {"sandboxId": self.child} for call in resumed_tools):
+            raise Failure("unapproved_native_action")
         reads = [call for call in resumed_tools if call["method"] == "read"
                  and call.get("input") == {"sandboxId": self.child}]
         if (not assistant_has(events, self.memory, resumed["promptId"])
@@ -418,7 +472,9 @@ class Run:
         self.control, control = self.launch(False, self.marker + " control. Try native armada_orchestrator read on " + self.child + "; do not use shell/HTTP, create resources or invent tools. Finish if unavailable.")
         self.verify_resource(self.control, owner)
         self.settled(self.control, control["promptId"])
-        control_calls = scoped_tools(self.logs(self.control), control["promptId"])
+        control_calls = scoped_tools(self.logs(self.control), control["promptId"], allowed=("read",))
+        if any(call.get("input") != {"sandboxId": self.child} for call in control_calls):
+            raise Failure("unapproved_native_action")
         if any(call["method"] == "launch" for call in control_calls):
             raise Failure("unexpected_delegated_allocation")
         if any(call.get("result", {}).get("isError") is False for call in control_calls):
@@ -467,7 +523,7 @@ class Run:
                             continue  # Not an independently correlated run resource.
                         raise
                     prompts = [event for event in self.logs(candidate) if event.get("kind") == "prompt"]
-                    if prompts and prompts[0].get("text") in self.owner_prompts | {self.marker + " child-init"}:
+                    if prompts and prompts[0].get("text") in self.owner_prompts | {self.child_init}:
                         self.record(candidate)
         except (Failure, KeyError, TypeError, ValueError):
             failed = True
@@ -532,11 +588,12 @@ def main(argv=None, env=None):
             finally:
                 signal.signal(signal.SIGINT, previous)
         signal.signal(signal.SIGTERM, previous_term)
+    cause = failure if not cleaned else None
     if not cleaned:
         failure = "cleanup_not_confirmed"
     unverified = run.unverified if run else []
     status = "FAILED" if failure else "UNVERIFIED" if unverified else "PASS"
-    print(json.dumps({"status": status, "reason": failure, "checks": run.checks if run else [],
+    print(json.dumps({"status": status, "reason": failure, "cause": cause, "phase": run.phase if run else "validation", "checks": run.checks if run else [],
                       "unverified": unverified, "cleanupConfirmed": cleaned,
                       "resources": run.ids if run else []}, sort_keys=True))
     return 0 if status == "PASS" else 1

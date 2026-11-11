@@ -46,6 +46,17 @@ class Safety(unittest.TestCase):
         native = dict(call, name="launch", result={"isError": False, "output": {"content": call["result"]["output"], "structuredContent": None, "_meta": None}})
         self.assertEqual(check.decoded(check.scoped_tools([dict(forged, tools=[native])], "p")[0]["result"]["output"]), {"sandboxId": ID})
         self.assertFalse(check.assistant_has([dict(forged, responseKind="tool_result")], "PASS"))
+        start = dict(call)
+        start.pop("result")
+        result_only = {"id": call["id"], "result": call["result"]}
+        frames = [dict(forged, tools=[start]), dict(forged, responseKind="tool_result", tools=[result_only])]
+        self.assertEqual(check.scoped_tools(frames, "p")[0]["result"], call["result"])
+        with self.assertRaises(check.Failure):
+            check.scoped_tools([dict(forged, responseKind="tool_result", tools=[dict(result_only, id="orphan")])], "p")
+        metadata = [{"id": "reasoning", "kind": "other", "promptId": "p", "type": "item/started", "data": {"item": {"type": "reasoning"}}},
+                    {"id": "usage", "kind": "other", "promptId": "p", "type": "thread/tokenUsage/updated", "data": {}}]
+        self.assertEqual(check.scoped_tools(metadata + frames, "p")[0]["result"], call["result"])
+
 
     def test_operator_grant_file_requires_private_regular_owner_file_and_is_never_changed(self):
         with tempfile.TemporaryDirectory() as root:
@@ -80,7 +91,7 @@ class Safety(unittest.TestCase):
 
     def test_interrupt_cleanup_and_unverified_reports_never_claim_pass(self):
         for problem in (KeyboardInterrupt(), check.Failure("request_outcome_unknown"), SystemExit("never-echo-this"), None):
-            fake = mock.Mock(ids=[ID], checks=["verified"], unverified=["old_grant_replay_no_operator_file"])
+            fake = mock.Mock(ids=[ID], phase="preflight", checks=["verified"], unverified=["old_grant_replay_no_operator_file"])
             fake.scenario.side_effect = problem
             fake.cleanup.return_value = True
             output = io.StringIO()
@@ -94,7 +105,7 @@ class Safety(unittest.TestCase):
 
     def test_sigterm_runs_bounded_cleanup_and_restores_the_original_handler(self):
         previous = signal.getsignal(signal.SIGTERM)
-        fake = mock.Mock(ids=[ID], checks=[], unverified=[])
+        fake = mock.Mock(ids=[ID], phase="preflight", checks=[], unverified=[])
         fake.scenario.side_effect = lambda: os.kill(os.getpid(), signal.SIGTERM)
         def cleanup():
             self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
@@ -118,7 +129,7 @@ class Safety(unittest.TestCase):
             order.append("inventory")
             return [{"id": OTHER, "ownerId": OTHER, "orgId": ID, "provider": "boat", "harness": "codex",
                      "createdAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}] if ID in order else []
-        with mock.patch.object(run, "listing", side_effect=listing), mock.patch.object(run, "stop", side_effect=stop), mock.patch.object(run, "logs", return_value=[{"kind": "prompt", "text": run.marker + " child-init"}]), mock.patch.object(run, "tool", return_value={"golden": "fixture", "model": "test-model"}):
+        with mock.patch.object(run, "listing", side_effect=listing), mock.patch.object(run, "stop", side_effect=stop), mock.patch.object(run, "logs", return_value=[{"kind": "prompt", "text": run.child_init}]), mock.patch.object(run, "tool", return_value={"golden": "fixture", "model": "test-model"}):
             self.assertTrue(run.cleanup())
         self.assertIn(OTHER, order)
         self.assertLess(order.index(ID), order.index("inventory"))
@@ -193,15 +204,16 @@ class Safety(unittest.TestCase):
                 if route == "logs/read":
                     event = {"id": "answer", "kind": "message", "partial": False, "text": self.answer, "tools": []}
                     if body["id"] == child:
-                        return {"events": [dict(event, id="init-prompt", kind="prompt", text=self.marker + " child-init"), event], "hasMore": False}
+                        return {"events": [dict(event, id="init-prompt", kind="prompt", text=self.child_init, status="finished"), event], "hasMore": False}
                     if body["id"] == control:
                         denied = self.native("read", {"sandboxId": child}, {"status": 401, "error": {"code": "invalid_epoch_authority"}})
                         denied["result"]["isError"] = True
                         return {"events": [dict(event, text="PASS", promptId="control", tools=[denied])], "hasMore": False}
                     selection = {"goldenId": ID, "harness": "codex", "credentialId": OTHER, "credentialVersion": 1,
-                                 "model": "test-model", "prompt": self.marker + " child-init"}
+                                 "model": "test-model", "prompt": self.marker + " child-init: Reply exactly CHILD_READY without tools, then finish."}
                     receipt = {"sandboxId": child, "state": "succeeded"}
                     tools = [self.native("launch", {"idempotencyKey": self.run_id + "-launch", "selection": selection}, receipt),
+                             dict(self.native("read", {"sandboxId": child}, {"id": child, "events": [{"id": "initial", "kind": "prompt", "text": self.child_init, "status": "finished"}]}), id="read-init"),
                              self.native("message", {"idempotencyKey": self.run_id + "-message", "sandboxId": child, "text": self.marker + " Reply exactly " + self.answer}, receipt),
                              self.native("read", {"sandboxId": child}, {"id": child, "credentialId": OTHER, "credentialVersion": 1, "events": [event]}),
                              self.native("stop", {"idempotencyKey": self.run_id + "-stop", "sandboxId": child}, receipt)]
@@ -227,6 +239,55 @@ class Safety(unittest.TestCase):
                 self.assertNotIn("owner-secret", output.getvalue())
                 self.assertNotIn("armada_epoch_", output.getvalue())
                 self.assertNotIn(instances[-1].answer, output.getvalue())
+            for phase, action, raw in (("first", "commandExecution", False), ("resumed", "fileWrite", False),
+                                       ("resumed", "fileChange", True), ("control", "webSearch", True),
+                                       ("first", "dynamicToolCall", True), ("control", "unknownTool", False),
+                                       ("first", "message", False)):
+                class SideEffect(Fixture):
+                    def _request(self, route, body, *args):
+                        value = super()._request(route, body, *args)
+                        target = control if phase == "control" else parent
+                        if route == "logs/read" and body["id"] == target:
+                            # Valid memory nonce, same conversation and successful scoped reads remain.
+                            if raw:
+                                value["events"].append({"id": "side-effect", "kind": "other", "promptId": phase,
+                                                        "type": "item/completed", "data": {"item": {"type": action}}})
+                            else:
+                                event = next(event for event in value["events"] if event.get("promptId") == phase)
+                                if action == "message":
+                                    extra = self.native("message", {"idempotencyKey": "persist-memory", "sandboxId": child,
+                                                                    "text": "remember nonce " + self.memory},
+                                                        {"sandboxId": child, "state": "succeeded"})
+                                    event["tools"].append(dict(extra, id="side-effect"))
+                                else:
+                                    event["tools"].append({"id": "side-effect", "name": action,
+                                                           "input": {"command": "write/read nonce from a file"},
+                                                           "result": {"isError": False, "output": self.memory}})
+                        return value
+                with self.subTest("memory proof rejects unapproved native action", phase=phase, action=action):
+                    output = io.StringIO()
+                    with mock.patch.object(check, "Run", SideEffect), contextlib.redirect_stdout(output):
+                        self.assertEqual(check.main(ARGS + ["--old-grant-file", str(path)], ENV), 1)
+                    summary = json.loads(output.getvalue().splitlines()[-1])
+                    self.assertEqual(summary["status"], "FAILED")
+                    self.assertFalse(summary["cleanupConfirmed"])
+                    self.assertEqual(summary["cause"], "unapproved_native_action")
+                    self.assertEqual(summary["phase"], {"first": "delegated_child_roundtrip", "resumed": "stop_resume_memory", "control": "no_option_control"}[phase])
+
+            class InitialStillRunning(Fixture):
+                def _request(self, route, body, *args):
+                    value = super()._request(route, body, *args)
+                    if route == "logs/read" and body["id"] == parent:
+                        value["events"][0]["tools"][1]["result"]["output"]["structuredContent"]["result"]["events"][0]["status"] = "running"
+                    return value
+            with self.subTest("initial child read must explicitly finish before challenge message"):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", InitialStillRunning), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS, ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertFalse(summary["cleanupConfirmed"])
+                self.assertEqual(summary["cause"], "child_initial_turn_not_confirmed_before_message")
+
             for unsupported in (False, True):
                 class MissingResumeRead(Fixture):
                     def _request(self, route, body, *args):
@@ -287,7 +348,7 @@ class Safety(unittest.TestCase):
                     if route == "logs/read" and body["id"] == parent:
                         value["events"][0]["tools"][0]["result"]["output"]["structuredContent"]["result"]["sandboxId"] = foreign
                     if route == "logs/read" and body["id"] == foreign:
-                        return {"events": [{"id": "foreign-prompt", "kind": "prompt", "text": self.marker + " child-init"}], "hasMore": False}
+                        return {"events": [{"id": "foreign-prompt", "kind": "prompt", "text": self.child_init}], "hasMore": False}
                     return value
             with self.subTest("untrusted native ID never authorizes cleanup of a foreign resource"):
                 output = io.StringIO()

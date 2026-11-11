@@ -1,8 +1,10 @@
 # Ordinary sandbox access: operator staging check
 
-Python 3 standard library only; runs on macOS/Linux. This is **not** a CI/live
-smoke test and is never invoked by `verify`. Its offline unit tests are.
-No deployment, migration, production endpoint or provider credentials are used.
+Python 3 standard library only; runs on macOS/Linux. This is an **operator-only
+live staging check**; `verify`/CI run only its offline unit tests, never live checks.
+The runner never reads provider credentials; the server resolves existing
+configured accounts. No deployment or migration is invoked, and production
+endpoints are refused.
 
 ## Preconditions
 
@@ -32,6 +34,8 @@ python3 scripts/sandbox-access/staging-check.py \
 ```
 
 Repeat for `--provider modal --harness codex` with its own golden/account.
+The current sandbox-access admission supports Boat/Codex and Modal/Codex only;
+selecting Claude does not enable an unsupported server pair.
 `--repo <configured repository>` is optional. Deadline defaults to 900 seconds
 (`--timeout 60..1800`), followed by a separate 90-second cleanup grace. Requests
 have socket and monotonic wall deadlines and bounded response sizes; redirects
@@ -39,8 +43,11 @@ are refused, including on the guest-side anonymous probe.
 
 ## Evidence, not model assertions
 
-The fixed task asks the opted-in parent to launch exactly one child, message it,
-poll its answer and stop it through the native delegated tools. The controller
+The fixed task asks the opted-in parent to launch exactly one child with a
+tool-free quick ACK, poll its initial prompt event until explicitly finished,
+then message the challenge, poll its answer and stop it through native delegated
+tools. The controller requires that completed initial-turn read before the
+message; busy/ambiguous messages are never blindly retried. The controller
 checks native tool inputs/server results, new owner resource metadata and the
 exact initial child prompt marker before adopting a native-result ID for cleanup,
 the selected
@@ -52,7 +59,14 @@ The controller stops the parent, resumes the same conversation with `send`, and
 requires recall of a nonce/child ID **not supplied again** plus a new successful
 native read of that child. This proves retained conversation behavior, not the
 orchestrator's stronger no-text/native-session checkpoint proof. Boat remains
-best effort. Native event formats without completed tool evidence fail closed.
+best effort. Both parent proof turns and the control are audited for native actions:
+only the expected scoped methods and child-targeted inputs are accepted. Shell,
+file/write/read/search, dynamic/unknown tools and native action items such as
+`fileChange`/`webSearch` fail closed before the allocation audit is cleared.
+Claude result-only frames must correlate to an already allowed native call ID;
+orphan results are not evidence. Reasoning, plan, usage and system metadata are
+not rejected just for being metadata. This prevents a correct nonce obtained
+through an explicit file/tool side channel from passing as conversation memory. Native event formats without completed tool evidence fail closed.
 Modal Codex currently normalizes MCP events to bare tool names, dropping server
 namespace: the isolated-golden prerequisite matters. Parent-child attribution is
 inferred from successful scoped receipts, not a nonexistent public database
@@ -101,7 +115,8 @@ rollout are external operator prerequisites, not work performed by this PR.
 ## Output, cleanup and limits
 
 Output is safe JSON lines: validated new resource UUID progress, then one closed
-summary with `PASS`, `UNVERIFIED` or `FAILED`, check names, cleanup confirmation
+summary with `PASS`, `UNVERIFIED` or `FAILED`, a closed proof phase/cause, check
+names, cleanup confirmation
 and resource UUIDs. Exit 0 means all checks—including the optional operator-grant
 sequence—and native negative-control proof—passed and cleanup was confirmed. All other results exit 1. No token,
 grant, server body, prompt/answer or exception text is emitted.
