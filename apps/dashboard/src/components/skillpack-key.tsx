@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/toast";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { type SkillpackKey, type SkillpackKeys, type SkillpackScope, skillpackAudience } from "@/lib/skillpack-key";
 
@@ -215,6 +216,7 @@ function KeyForm({
   onDone: (message: string) => void;
 }) {
   const [state, formAction] = useActionState(saveSkillpackKey, null);
+  const formRef = usePreservedActionForm();
   const [scope, setScope] = useState<SkillpackScope>(isAdmin ? initialScope : "user");
   const id = useId();
   useEffect(() => {
@@ -222,7 +224,7 @@ function KeyForm({
   }, [state, onDone]);
 
   return (
-    <form action={formAction} className="space-y-4" data-skillpack-form>
+    <form ref={formRef} action={formAction} className="space-y-4" data-skillpack-form>
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="scope" value={scope} />
       <p className="text-sm text-muted-foreground" data-skillpack-scope-note>

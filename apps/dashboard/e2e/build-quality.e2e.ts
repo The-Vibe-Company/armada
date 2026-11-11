@@ -74,3 +74,26 @@ test("shared scope radios support keyboard selection without granting organizati
   await expect(dialog.getByRole("radio", { name: "Org (Acme)", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("radio", { name: "Personal", exact: true })).toBeChecked();
 });
+
+test("a refused org secret keeps kind/scope for retry but clears its one-time value", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/variables");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: "Secret", exact: true }).check();
+  await dialog.getByRole("radio", { name: "Org (Acme)", exact: true }).check();
+  await dialog.getByLabel("Name", { exact: true }).fill("BAD.NAME");
+  await dialog.getByLabel("Secret value", { exact: true }).fill("discard-after-this-attempt");
+  await dialog.getByRole("button", { name: "Store secret", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: "Secret", exact: true })).toBeChecked();
+  await expect(dialog.getByRole("radio", { name: "Org (Acme)", exact: true })).toBeChecked();
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("BAD.NAME");
+  await expect(dialog.getByLabel("Secret value", { exact: true })).toHaveValue("");
+  await dialog.getByLabel("Name", { exact: true }).fill("RETRY_SCOPE_SECRET");
+  await dialog.getByLabel("Secret value", { exact: true }).fill("new-value-for-retry");
+  await dialog.getByRole("button", { name: "Store secret", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const row = page.locator('[data-vault-item="RETRY_SCOPE_SECRET"]');
+  await expect(row).toHaveAttribute("data-vault-kind", "secret");
+  await expect(row.getByText("Org", { exact: true })).toBeVisible();
+});

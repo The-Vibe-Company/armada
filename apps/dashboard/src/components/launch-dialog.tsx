@@ -542,14 +542,14 @@ export function Segmented<T extends string>({
         className="h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30"
       >
         {options.map((option) => (
-          <Label
+          <RadioGroupItem
             key={option.value}
-            htmlFor={`${id}-${option.value}`}
-            className="relative flex min-w-0 cursor-pointer items-center justify-center rounded-sm px-2 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground has-[[data-state=checked]]:bg-accent has-[[data-state=checked]]:font-medium has-[[data-state=checked]]:text-foreground has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50"
+            id={`${id}-${option.value}`}
+            value={option.value}
+            className="flex h-full w-full min-w-0 items-center justify-center rounded-sm border-0 bg-transparent px-2 text-sm whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-accent data-[state=checked]:font-medium data-[state=checked]:text-foreground"
           >
-            <RadioGroupItem id={`${id}-${option.value}`} value={option.value} className="sr-only" />
             {option.label}
-          </Label>
+          </RadioGroupItem>
         ))}
       </RadioGroup>
     </fieldset>

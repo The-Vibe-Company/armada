@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import {
   type CapacityState,
@@ -202,6 +203,7 @@ function ScopedGoldenForm({
   // A provider disconnected since it was chosen is not kept: the first connected one is used instead.
   const chosenProvider = choice !== null && providers.includes(choice) ? choice : (providers[0] ?? null);
   // Controlled, so a refused build keeps what was typed (React resets a form after its action).
+  const formRef = usePreservedActionForm();
   const [goldenName, setGoldenName] = useState("");
   const [init, setInit] = useState(defaults?.init ?? "");
   const [setup, setSetup] = useState("");
@@ -239,6 +241,7 @@ function ScopedGoldenForm({
   );
   return (
     <form
+      ref={formRef}
       action={formAction}
       onSubmit={guard}
       aria-busy={pending}

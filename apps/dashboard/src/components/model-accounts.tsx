@@ -60,6 +60,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import {
   type AccountKind,
@@ -707,6 +708,7 @@ function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }
       <Label htmlFor={`${idPrefix}-value`}>{info.valueLabel}</Label>
       {kind === "codex_auth" ? (
         <Textarea
+          data-secret-value
           id={`${idPrefix}-value`}
           name="value"
           rows={4}
@@ -758,6 +760,7 @@ export function AddAccountDialog({
   triggerLabel?: string;
   triggerVariant?: "default" | "outline";
 }) {
+  const formRef = usePreservedActionForm();
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useActionState(addAccount, null);
@@ -819,7 +822,7 @@ export function AddAccountDialog({
                 : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
             </DialogDescription>
           </DialogHeader>
-          <form key={generation} action={formAction} className="min-w-0 space-y-5">
+          <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="kind" value={kind} />
             <input type="hidden" name="scope" value={scope} />

@@ -226,6 +226,7 @@ export function ResourceBrowser({
             <div className="min-w-0 space-y-0.5">
               <h2
                 id={titleId}
+                data-resource-panel-title
                 ref={titleRef}
                 tabIndex={-1}
                 className="truncate text-base font-semibold tracking-tight outline-none"
@@ -393,4 +394,11 @@ function trapFocus(event: KeyboardEvent) {
     event.preventDefault();
     first.focus();
   }
+}
+
+/** Focus handoffs from nested dialogs must target the current visible frame, never a retained route's ID. */
+export function visibleResourcePanelTitle(): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>("[data-resource-panel-title]")].find(
+    (title) => title.getClientRects().length > 0,
+  );
 }

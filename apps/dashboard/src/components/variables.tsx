@@ -27,6 +27,7 @@ import { ChoiceCard } from "@/components/connections";
 import { CopyButton } from "@/components/copy-button";
 import { CreateDialog } from "@/components/create-dialog";
 import { CreatedAt } from "@/components/created-at";
+import { visibleResourcePanelTitle } from "@/components/resource-browser";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -43,6 +44,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { cn } from "@/lib/utils";
 import {
@@ -169,6 +171,7 @@ function AddVaultForm({
   onDone: (message: string) => void;
 }) {
   const [state, formAction] = useActionState(addVaultItem, null);
+  const formRef = usePreservedActionForm();
   const [kind, setKind] = useState<VaultKind>("variable");
   const [scope, setScope] = useState<VaultScope>("personal");
   const [name, setName] = useState("");
@@ -179,7 +182,7 @@ function AddVaultForm({
   }, [state, onDone]);
 
   return (
-    <form action={formAction} className="space-y-4" data-add-vault-form>
+    <form ref={formRef} action={formAction} className="space-y-4" data-add-vault-form>
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="kind" value={kind} />
       <input type="hidden" name="scope" value={scope} />
@@ -342,7 +345,7 @@ export function VaultPanel({
   const restoreFocus = useCallback((event: Event) => {
     event.preventDefault();
     if (opener.current?.isConnected) return opener.current.focus();
-    const title = document.getElementById("resource-panel-title");
+    const title = visibleResourcePanelTitle();
     if (title && !title.closest("[hidden]")) return title.focus();
     document.querySelector<HTMLElement>("[data-add-vault]")?.focus();
   }, []);

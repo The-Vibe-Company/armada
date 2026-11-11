@@ -59,6 +59,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import {
   authLabel,
@@ -139,6 +140,7 @@ type HeaderRow = { key: number; name: string };
  * submission, and nothing echoes them back. A success remounts the fields, so the form starts clean.
  */
 export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
+  const formRef = usePreservedActionForm();
   const [state, formAction] = useActionState(addConnection, null);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
@@ -146,7 +148,7 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
   }, [state]);
 
   return (
-    <form action={formAction} className="space-y-4" data-add-connection>
+    <form ref={formRef} action={formAction} className="space-y-4" data-add-connection>
       <input type="hidden" name="org" value={orgId} />
       <AddFields key={generation} orgName={orgName} isAdmin={isAdmin} result={state} />
     </form>
@@ -234,15 +236,13 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
 
 /** A segmented radio: Radix owns focus and keyboard selection, the label remains the full hit target. */
 function KindOption({ value, children }: { value: string; children: ReactNode }) {
-  const id = useId();
   return (
-    <Label
-      htmlFor={id}
-      className="flex cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap text-muted-foreground has-[[data-state=checked]]:bg-background has-[[data-state=checked]]:text-foreground has-[[data-state=checked]]:shadow-xs has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 [&_svg]:size-4"
+    <RadioGroupItem
+      value={value}
+      className="flex h-full w-full min-w-0 items-center justify-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-sm font-medium whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-background data-[state=checked]:text-foreground data-[state=checked]:shadow-xs [&_svg]:size-4"
     >
-      <RadioGroupItem id={id} value={value} className="sr-only" />
       {children}
-    </Label>
+    </RadioGroupItem>
   );
 }
 
@@ -949,9 +949,17 @@ function DefaultSwitch({
   }, [state, onResult]);
   const on = pending ? !connection.defaultForLaunch : connection.defaultForLaunch;
   const switchForm = useRef<HTMLFormElement>(null);
+  const keepSwitch = usePreservedActionForm();
   const switchId = useId();
+  const switchRef = useCallback(
+    (node: HTMLFormElement | null) => {
+      switchForm.current = node;
+      keepSwitch(node);
+    },
+    [keepSwitch],
+  );
   return (
-    <form ref={switchForm} action={formAction} className="flex items-center gap-2">
+    <form ref={switchRef} action={formAction} className="flex items-center gap-2">
       <input type="hidden" name="org" value={connection.orgId} />
       <input type="hidden" name="id" value={connection.id} />
       <input type="hidden" name="default_for_launch" value={String(!connection.defaultForLaunch)} />
