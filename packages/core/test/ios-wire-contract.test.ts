@@ -180,7 +180,6 @@ const orchestratorEvents: OrchestratorEvent[] = [
     kind: "wait" as const,
     lease: pick(waits, index),
     status,
-    reason: "runtime_uncertain",
   })),
   { ...base(400), kind: "connections", connections: [{ id: "conn-0000", name: "GitHub" }] },
   { ...base(500), kind: "child", sandboxId: "sbx-0000", operationId: "op-0000" },
