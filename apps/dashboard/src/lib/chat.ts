@@ -168,7 +168,9 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
       ...(event.model ? { model: event.model } : {}),
     };
     if (event.partial) {
-      legacyChunks.set(turnKey, [...(legacyChunks.get(turnKey) ?? []), item]);
+      const chunks = legacyChunks.get(turnKey);
+      if (chunks) chunks.push(item);
+      else legacyChunks.set(turnKey, [item]);
     } else {
       for (const chunk of legacyChunks.get(turnKey) ?? []) superseded.add(chunk.key);
       legacyChunks.delete(turnKey);
