@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { installShutdownHandlers } from "../../src/shutdown.ts";
 
+const mode = process.argv[3];
+if (mode === "deadline") {
+  globalThis.setTimeout = ((callback: () => void) => {
+    queueMicrotask(callback);
+    return 1;
+  }) as unknown as typeof setTimeout;
+}
 const entered = Promise.withResolvers<void>();
 const release = Promise.withResolvers<void>();
 const server = Bun.serve({
@@ -13,6 +20,11 @@ const server = Bun.serve({
 });
 installShutdownHandlers({
   async stop(force) {
+    if (mode === "deadline") {
+      if (force) console.log("FORCED_STOP_VERIFIED");
+      return new Promise<void>(() => {});
+    }
+    if (mode === "failure") throw new Error("private diagnostic must not escape");
     assert.equal(force, false);
     const drained = server.stop(force);
     release.resolve();

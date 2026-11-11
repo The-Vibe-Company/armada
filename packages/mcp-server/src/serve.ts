@@ -307,7 +307,17 @@ export async function startServer(
     ...(options.logError ? { log: options.logError } : {}),
   });
   mcp.startBackground();
-  const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {
+  let draining = false;
+  const requests = new Set<Promise<Response>>();
+  const fetch = (request: Request) => {
+    if (draining)
+      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
+    const pending = handler(request);
+    requests.add(pending);
+    void pending.finally(() => requests.delete(pending)).catch(() => {});
+    return pending;
+  };
+  const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch }), {
     workerDone: Promise.resolve(),
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
@@ -338,13 +348,16 @@ export async function startServer(
       if (closeActiveConnections) void stop(true);
       return shutdown;
     }
+    draining = true;
     workers.stop();
     invitationWorker?.stop();
     // Requests may still use the gateway and SQL while finishing a launch.
-    // Stop admission first, then retire shared dependencies only after HTTP drains.
+    // Drain handlers before closing MCP, but not response streams: idle SSE needs
+    // MCP close to finish. SQL stays alive until the native HTTP drain completes.
     const stopped = stop(closeActiveConnections);
-    shutdown = Promise.all([allWorkersDone, stopped])
+    shutdown = Promise.all([allWorkersDone, Promise.allSettled([...requests])])
       .then(() => mcp.close())
+      .then(() => stopped)
       .then(() => sql.close());
     server.workerDone = shutdown;
     return shutdown;
