@@ -13,7 +13,12 @@ armada detail ACTIVE_SANDBOX_UUID --json
 Use the existing staging URL/organization configuration; do not accidentally run
 against a production resource. Do not send a second turn, rebuild the golden, or
 stop/restart the first sandbox before capturing the JSON: those actions change
-the evidence. The probe does not run inference or modify guest state. It outputs
+the evidence. The probe itself does not run inference or modify guest state.
+`armada exec` still runs its normal preparation/native-auth hooks, which may update
+an entrypoint or quiesce a managed native process before the script executes.
+Therefore process/installed-wrapper facts describe probe time, not necessarily
+the preceding turn. An empty native list alone never proves the cause. Persistent
+admission/session/turn/terminal flags are the primary historical stage evidence. It outputs
 only bounded metadata booleans/counts/modes, never prompts, environments, argv,
 native/session identifiers, native paths, records, or credential values. Return its JSON on #977.
 
