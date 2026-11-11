@@ -144,7 +144,9 @@ Usage:
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-  armada detail|status|recovery|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+  armada detail|status|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
+  armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
+                                           Timeout is 0–600 seconds, default 60.
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
