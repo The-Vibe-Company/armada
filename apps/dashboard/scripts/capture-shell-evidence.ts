@@ -39,7 +39,7 @@ try {
           await page.evaluate(() => document.fonts.ready);
           await page.screenshot({
             path: join(output, `${phase}-${view}-${width}-${theme}.png`),
-            fullPage: true,
+            fullPage: false,
             animations: "disabled",
           });
         }
