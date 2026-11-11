@@ -23,3 +23,12 @@ sandbox; do not reuse a production sandbox. No migration is needed.
 If Boat remains `archiving`, investigate its archival operation rather than
 replaying stop against the shutting-down machine. Armada observes it and retains
 its data; it does not infer physical exit from elapsed time.
+
+## Read semantics during contention
+
+A lifecycle lease or concurrent activity can win after a provider observation.
+Status/detail then return the authorized persisted sandbox instead of publishing
+that stale observation or answering409. Such a contested read is conservatively
+unsettled unless persisted physical stop/deletion is confirmed. Refresh after the
+operation completes for fresh turn details; `wait` must not treat pending archival
+or an unconfirmed failed stop as proof that the native turn has settled.
