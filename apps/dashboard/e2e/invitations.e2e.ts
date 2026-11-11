@@ -60,18 +60,32 @@ test("a server without email is reported as such, and invalid or duplicate invit
   page,
 }) => {
   await openAcme(page);
-  await invite(page, "carol@corp");
+  await invite(page, "carol@corp", "admin");
   await expect(alert(page)).toContainText("Enter one full email address");
+  await expect(page.getByLabel("Email")).toHaveValue("carol@corp");
+  await expect(page.getByLabel("Role", { exact: true })).toHaveValue("admin");
+  await expect(alert(page)).toBeFocused();
+
+  // Fix only the address: retrying must keep the role the admin chose.
+  await page.getByLabel("Email").fill("carol@example.com");
+  await page.getByRole("button", { name: "Send invitation" }).click();
+  await expect(page.getByText("Invitation emailed to carol@example.com.")).toBeVisible();
+  await expect(page.locator('[data-invitation="carol@example.com"]')).toContainText("admin");
+  await expect(page.getByLabel("Email")).toHaveValue("");
+  await expect(page.getByLabel("Role", { exact: true })).toHaveValue("member");
 
   await mock("invitation-delivery", { delivery: "not_configured" });
-  await invite(page, "carol@example.com");
+  await invite(page, "dave@example.com");
   await expect(alert(page)).toContainText("this server cannot send email");
-  await expect(page.locator('[data-invitation="carol@example.com"] [data-delivery="not_configured"]')).toHaveText(
+  await expect(page.locator('[data-invitation="dave@example.com"] [data-delivery="not_configured"]')).toHaveText(
     "Email off",
   );
 
-  await invite(page, "carol@example.com");
+  await invite(page, "carol@example.com", "admin");
   await expect(alert(page)).toContainText("already has a pending invitation");
+  await expect(alert(page)).toBeFocused();
+  await expect(page.getByLabel("Email")).toHaveValue("carol@example.com");
+  await expect(page.getByLabel("Role", { exact: true })).toHaveValue("admin");
   await invite(page, "bob@example.com");
   await expect(alert(page)).toContainText("already a member");
 });

@@ -29,8 +29,11 @@ try {
         await role.selectOption("admin");
         await page.getByRole("button", { name: "Send invitation", exact: true }).click();
         await expect(page.getByRole("alert").filter({ hasText: "Enter one full email address" })).toBeVisible();
-        await expect(email).toHaveValue(phase === "after" ? "carol@corp" : "");
-        await expect(role).toHaveValue(phase === "after" ? "admin" : "member");
+        if (phase === "after") {
+          await expect(email).toHaveValue("carol@corp");
+          await expect(role).toHaveValue("admin");
+        }
+        await expect(page.getByRole("button", { name: "Send invitation", exact: true })).toBeEnabled();
         await email.scrollIntoViewIfNeeded();
         await page.evaluate(() => document.fonts.ready);
         await page.screenshot({
@@ -39,10 +42,11 @@ try {
           animations: "disabled",
         });
         await email.fill("carol@example.com");
+        const correctedRole = await role.inputValue();
         await page.getByRole("button", { name: "Send invitation", exact: true }).click();
         const invitation = page.locator('[data-invitation="carol@example.com"]');
         await expect(invitation).toBeVisible();
-        await expect(invitation).toContainText(phase === "after" ? "admin" : "member");
+        await expect(invitation).toContainText(correctedRole);
         await expect(email).toHaveValue("");
         await expect(role).toHaveValue("member");
         await invitation.scrollIntoViewIfNeeded();
@@ -73,6 +77,6 @@ if (phase === "after") {
       }
   await writeFile(
     join(output, "index.html"),
-    `<!doctype html><meta name="viewport" content="width=device-width"><title>Invitation draft evidence</title><style>body{font:16px system-ui;margin:24px}.pair{display:flex;gap:16px}.pair a{width:50%}img{width:100%}</style><h1>Invitation drafts before/after</h1><p>16 mock-only viewport captures. Before refusal loses email and admin choice, so email-only correction sends member. After refusal retains the intended draft and correction sends admin. Successful forms still reset. Exact source provenance in README.txt.</p>${parts.join("")}`,
+    `<!doctype html><meta name="viewport" content="width=device-width"><title>Invitation draft evidence</title><style>body{font:16px system-ui;margin:24px}.pair{display:flex;gap:16px}.pair a{width:50%}img{width:100%}</style><h1>Invitation drafts before/after</h1><p>16 mock-only viewport captures. Each phase records its actual baseline/candidate draft and role after refusal and email-only correction. The original regression lost the admin choice; a future baseline may already contain the fix. The candidate must retain the intended draft, and successful forms still reset. Exact source provenance in README.txt.</p>${parts.join("")}`,
   );
 }

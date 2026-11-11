@@ -14,6 +14,8 @@ type Props = {
   className?: string;
   /** Empty the fields once the action succeeded (a pasted key must not linger in the page). */
   resetOnSuccess?: boolean;
+  /** Keep non-secret drafts after a refused action. Never enable for credential or secret inputs. */
+  preserveOnFailure?: boolean;
   /** Pinned under the fields with the result above it, so the outcome sits next to the action that caused it. */
   footer?: ReactNode;
   footerClassName?: string;
@@ -32,6 +34,7 @@ export function ActionForm({
   children,
   className,
   resetOnSuccess = false,
+  preserveOnFailure = false,
   footer,
   footerClassName,
   focusError = false,
@@ -51,9 +54,17 @@ export function ActionForm({
   const [state, formAction] = useActionState(successToast === undefined ? action : run, null);
   const form = useRef<HTMLFormElement>(null);
   const message = useRef<HTMLParagraphElement>(null);
+  const allowReset = useRef(false);
 
   useEffect(() => {
-    if (resetOnSuccess && state?.ok) form.current?.reset();
+    if (resetOnSuccess && state?.ok) {
+      allowReset.current = true;
+      try {
+        form.current?.reset();
+      } finally {
+        allowReset.current = false;
+      }
+    }
   }, [state, resetOnSuccess]);
 
   useEffect(() => {
@@ -79,7 +90,20 @@ export function ActionForm({
     </p>
   );
   return (
-    <form ref={form} action={formAction} className={className}>
+    <form
+      ref={form}
+      action={formAction}
+      className={className}
+      onResetCapture={
+        preserveOnFailure
+          ? (event) => {
+              // React also resets a resolved action that returns a validation error.
+              // Only the explicit success reset above may discard this non-secret draft.
+              if (!allowReset.current) event.preventDefault();
+            }
+          : undefined
+      }
+    >
       {children}
       {footer === undefined ? (
         result

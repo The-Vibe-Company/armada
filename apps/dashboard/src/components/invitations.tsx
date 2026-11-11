@@ -31,7 +31,7 @@ const TONE: Record<Tone, string> = {
 
 export function InviteForm({ org, action }: { org: string; action: Action }) {
   return (
-    <ActionForm action={action} resetOnSuccess className="flex flex-col gap-3">
+    <ActionForm action={action} resetOnSuccess preserveOnFailure focusError className="flex flex-col gap-3">
       <input type="hidden" name="org" value={org} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="min-w-0 flex-1 space-y-2">

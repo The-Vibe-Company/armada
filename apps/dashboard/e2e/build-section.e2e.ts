@@ -153,7 +153,9 @@ test("on a phone the list fits the width and the panel is a sheet over it", asyn
   await expect(sheet).toBeHidden();
 
   await page.goto("/tools");
-  await page.locator('[data-connection="Datadog"] [data-select-item]').click();
-  await expect(page.locator('[data-connection-panel="Datadog"]')).toContainText("The grant expired.");
+  await page.locator('[data-connection="Datadog"] [data-select-item]').filter({ visible: true }).click();
+  await expect(page.locator('[data-connection-panel="Datadog"]').filter({ visible: true })).toContainText(
+    "The grant expired.",
+  );
   expect((await sheet.boundingBox())?.width).toBe(390);
 });

@@ -18,8 +18,9 @@ async function mockState(): Promise<MockState> {
 }
 
 /** A connection's row in the Tools list, and its detail panel (hidden until the row is selected). */
-const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`);
-const panelOf = (page: Page, name: string) => page.locator(`[data-connection-panel="${name}"]`);
+const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`).filter({ visible: true });
+const panelOf = (page: Page, name: string) =>
+  page.locator(`[data-connection-panel="${name}"]`).filter({ visible: true });
 
 /** Selects a connection's row, unless its panel already shows, and returns the panel. */
 async function panel(page: Page, name: string) {
