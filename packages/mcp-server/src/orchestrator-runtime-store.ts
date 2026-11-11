@@ -801,6 +801,7 @@ export class OrchestratorRuntimeStore {
       );
       if (["message", "steer"].includes(input.action) && identity.state !== "ready")
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
+      if (identity.state === "failed") throw new OrchestratorRuntimeError("conflict", "not_admitted");
       if (busy.rows.length || identity.revision !== input.expectedRevision)
         throw new OrchestratorRuntimeError("conflict", "not_admitted");
       // Foundation owns reservation; reuse the surrounding locked transaction, no nested COMMIT.

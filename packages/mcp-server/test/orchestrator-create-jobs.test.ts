@@ -409,6 +409,22 @@ test("busy account refusal is terminal before allocation and retains the reason 
         errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
       },
     });
+    await expect(
+      f.runtime.mutate(f.caller, {
+        orgId: f.p.org,
+        id: admitted.orchestratorId,
+        action: "stop",
+        key: "stop-failed",
+        expectedRevision: detail.orchestrator.revision,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const afterStop = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
+    expect(afterStop.orchestrator).toMatchObject({
+      state: "failed",
+      blockedReason: "credential_busy",
+      revision: detail.orchestrator.revision,
+    });
+    expect(afterStop.operations).toHaveLength(1);
     expect(f.provider.forks).toHaveLength(0);
   } finally {
     f.gate.resolve();
