@@ -68,7 +68,7 @@ test("a pending rebuild keeps following its job through sheet closure and breakp
   const panel = await goldenPanel(page, "shared-golden");
   await panel.getByText("Edit and rebuild").click();
   const form = panel.locator('form[data-golden-form="update"]');
-  await form.getByLabel("Branch").fill("retained");
+  await form.getByLabel("Branch").first().fill("retained");
   await form.getByRole("button", { name: "Rebuild golden" }).click();
   await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
   const tracking = new URL(page.url()).searchParams.get("build.rebuild.00000000-0000-4000-8000-000000000020");
