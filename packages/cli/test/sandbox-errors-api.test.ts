@@ -94,5 +94,6 @@ test.each(["provider_unavailable", "dependency_unavailable", "outcome_unknown"])
     const result = await capture(["stop", id, "--json"], 503, code);
     expect(result.exit).toBe(1);
     expect(JSON.parse(result.err).error).toMatchObject({ code, legacyCode: "unavailable" });
+    expect(JSON.parse(result.err).error.message).toContain("armada list --json");
   },
 );

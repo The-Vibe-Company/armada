@@ -273,7 +273,16 @@ export async function operation(
       error.serverCode !== "unavailable" &&
       error.legacyCode === undefined
     )
-      throw new ArmadaApiError(error.serverCode, error.status, error.message, error.details, "unavailable", 1);
+      throw new ArmadaApiError(
+        error.serverCode,
+        error.status,
+        error.status >= 500
+          ? `${error.message} Stop may already have been accepted. Run armada list --json to check state before retrying.`
+          : error.message,
+        error.details,
+        "unavailable",
+        1,
+      );
     if (
       command === "stop" &&
       error instanceof AuthError &&
