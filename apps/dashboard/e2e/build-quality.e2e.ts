@@ -18,7 +18,9 @@ for (const width of [1280, 390])
         ["variables", "Variables and secrets"],
       ] as const) {
         await page.goto(`/${route}`);
-        const list = page.getByRole("list", { name: label, exact: true, includeHidden: true });
+        const list = page
+          .getByRole("list", { name: label, exact: true, includeHidden: true })
+          .filter({ visible: true });
         await expect(list).toBeVisible();
         const before = await list.boundingBox();
         const select = list.locator("[data-select-item]").first();
