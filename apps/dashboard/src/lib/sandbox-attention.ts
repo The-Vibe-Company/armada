@@ -302,6 +302,9 @@ export function ackKey(sandboxId: string, parts: readonly string[]): string {
 /** The acknowledgement cookie (#801): per browser, and holding only the signed-in viewer's keys. */
 export const ACK_COOKIE = "armada-fleet-ack";
 
+/** Set on the legacy path when sandbox views write preferences, so a later import cannot replace newer choices. */
+export const ACK_MIGRATION_COOKIE = "armada-sandbox-attention-migrated";
+
 /** The most acknowledgements the cookie keeps, the newest last: each is 45 bytes, well under a cookie's 4 KB. */
 export const ACK_MAX = 60;
 

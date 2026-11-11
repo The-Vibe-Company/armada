@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { ACK_COOKIE } from "@/lib/sandbox-attention";
+import { ACK_COOKIE, ACK_MIGRATION_COOKIE } from "@/lib/sandbox-attention";
 
 /** Old bookmarks still work; carry the browser's existing acknowledgements to the sandbox views. */
 export function GET(request: NextRequest) {
@@ -8,11 +8,21 @@ export function GET(request: NextRequest) {
   response.headers.set("Cache-Control", "private, no-store");
   const legacy = request.cookies.get(ACK_COOKIE)?.value;
   if (legacy) {
-    response.cookies.set(ACK_COOKIE, legacy, {
+    // Prefer choices already made in the sandbox UI over an older snapshot that only /fleet can receive.
+    if (request.cookies.get(ACK_MIGRATION_COOKIE)?.value !== "1") {
+      response.cookies.set(ACK_COOKIE, legacy, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/sandboxes",
+        maxAge: 60 * 60 * 24 * 14,
+      });
+    }
+    response.cookies.set(ACK_MIGRATION_COOKIE, "1", {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
-      path: "/sandboxes",
+      path: "/fleet",
       maxAge: 60 * 60 * 24 * 14,
     });
     // Two same-name cookies with distinct paths: append the expiry rather than replacing the migrated cookie.

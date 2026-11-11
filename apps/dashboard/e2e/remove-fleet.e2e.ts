@@ -109,6 +109,7 @@ test("old Fleet acknowledgement cookies migrate once without restoring stale ack
   const saved = (await page.context().cookies()).find((cookie) => cookie.name === "armada-fleet-ack");
   if (!saved) throw new Error("Acknowledgement cookie was not saved");
   await page.context().clearCookies({ name: "armada-fleet-ack" });
+  await page.context().clearCookies({ name: "armada-sandbox-attention-migrated" });
   await page.context().addCookies([{ ...saved, path: "/fleet" }]);
   await page.goto("/fleet?view=all");
   await expect(page).toHaveURL(/\/sandboxes$/);
@@ -137,4 +138,17 @@ test("attention refreshes while status stays running, so an approaching deadline
   expect(response.ok).toBe(true);
   await page.clock.fastForward(60_000);
   await expect(page.locator('[data-sandbox-attention="expiring"]')).toBeVisible();
+});
+
+test("a legacy bookmark never replaces acknowledgements already made in the sandbox views", async ({ page }) => {
+  await signIn(page, "alice@example.com");
+  const failed = await attention(page, BUSY.failed);
+  await failed.getByRole("button", { name: "Acknowledge", exact: true }).click();
+  await expect(failed.getByText("Acknowledged", { exact: true })).toBeVisible();
+  const saved = (await page.context().cookies()).find((cookie) => cookie.name === "armada-fleet-ack");
+  if (!saved) throw new Error("Acknowledgement cookie was not saved");
+  await page.context().addCookies([{ ...saved, path: "/fleet", value: `${IDS.alice}|${IDS.running}.1234abcd` }]);
+  await page.goto("/fleet");
+  await attention(page, BUSY.failed);
+  await expect(failed.getByText("Acknowledged", { exact: true })).toBeVisible();
 });
