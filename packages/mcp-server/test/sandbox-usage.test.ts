@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { type AgentEvent, reportedTurnUsage } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
-import { collectSandboxUsage } from "../src/turns.ts";
+import { collectSandboxUsage, readStatus } from "../src/turns.ts";
 import { database, fakeBoat } from "./support.ts";
 
 test("native usage snapshots replace replays without summing quota or missing values", () => {
@@ -140,8 +140,17 @@ test("native collection persists retry-safe rows and preserves measurements when
       orgs: [{ orgId: p.org, role: "member" }],
     }).sandboxes;
     const row = { promptId: receipt.promptId, model: "gpt", inputTokens: 42, outputTokens: 7, cachedTokens: 8 };
-    let available = true;
+    let available = false;
     provider.collectTurnUsage = async () => (available ? [row] : []);
+    boat.finish(native.id, receipt.promptId, "finished");
+    const early = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
+    expect(early.status).toBe("ready");
+    expect(early.usage?.tokenTotals?.inputTokens).toBeNull();
+    available = true;
+    const delayed = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
+    expect(delayed.status).toBe("ready");
+    expect(delayed.usage?.tokenTotals?.inputTokens).toBe(42);
+    expect((await store.get(id))?.usage?.turns).toEqual([row]);
     for (const retry of [false, true]) {
       await collectSandboxUsage(provider, store, (await store.get(id))!);
       expect((await store.get(id))?.usage).toMatchObject({ turnCount: 1, turns: [row] });

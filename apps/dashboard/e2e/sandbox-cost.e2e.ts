@@ -87,3 +87,52 @@ test("partial token reporting stays Not reported in the card and per-turn table"
   await expect(card.getByRole("row").nth(2)).toContainText("Not reported");
   await page.screenshot({ path: "test-results/sandbox-cost-missing-counters.png", animations: "disabled" });
 });
+
+test("delayed usage refreshes a ready session's card without a status transition or repeated refreshes", async ({
+  page,
+  request,
+}) => {
+  expect((await request.post(`${MOCK}/__test/delayed-usage`, { data: {} })).ok()).toBe(true);
+  const eventsPath = `/api/sandboxes/${IDS.running}/events`;
+  const firstPoll = page.waitForResponse((response) => new URL(response.url()).pathname === eventsPath);
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  expect((await (await firstPoll).json()).status).toBe("ready");
+  const card = page.locator("[data-sandbox-cost]");
+  await expect(card).toContainText("Tokens not reported");
+  let refreshes = 0;
+  page.on("request", (sent) => {
+    if (new URL(sent.url()).pathname === `/sandboxes/${IDS.running}` && sent.headers().rsc === "1") refreshes++;
+  });
+  expect((await request.post(`${MOCK}/__test/delayed-usage`, { data: { collect: true } })).ok()).toBe(true);
+  await expect(
+    card
+      .locator("dl > div")
+      .filter({ has: page.getByText("Input", { exact: true }) })
+      .locator("dd"),
+  ).toHaveText("13.1K");
+  await expect(card.locator("p[title]")).toHaveText("$0.03");
+  const refreshed = refreshes;
+  expect(refreshed).toBeGreaterThan(0);
+  for (let i = 0; i < 2; i++) {
+    const poll = await page.waitForResponse((response) => new URL(response.url()).pathname === eventsPath);
+    expect((await poll.json()).status).toBe("ready");
+  }
+  expect(refreshes).toBe(refreshed);
+  // Another collector persisted usage while optional status telemetry is down.
+  // Successful logs must still carry the row's new observation to the card.
+  expect(
+    (
+      await request.post(`${MOCK}/__test/delayed-usage`, {
+        data: { collect: true, persisted: true, failStatus: true, inputTokens: 26272 },
+      })
+    ).ok(),
+  ).toBe(true);
+  await expect(
+    card
+      .locator("dl > div")
+      .filter({ has: page.getByText("Input", { exact: true }) })
+      .locator("dd"),
+  ).toHaveText("26.3K");
+  await expect(card.locator("p[title]")).toHaveText("$0.05");
+  await page.screenshot({ path: "test-results/sandbox-cost-delayed-collection.png", animations: "disabled" });
+});

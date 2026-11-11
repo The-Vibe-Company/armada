@@ -944,7 +944,19 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   switch (message.params?.name) {
     case "status":
       if (target.test_status_read_unavailable) return text("Status unavailable", true);
-      return text({ status: target.status, prompt: null });
+      if (target.test_delayed_usage) {
+        target.usage_turns = target.test_delayed_usage;
+        delete target.test_delayed_usage;
+      }
+      return text({
+        status: target.status,
+        prompt: null,
+        usage: {
+          computeSeconds: target.usage_runtime_seconds ?? null,
+          turnCount: (target.usage_turns as Row | undefined)?.turnCount ?? null,
+          turns: (target.usage_turns as Row | undefined)?.turns ?? [],
+        },
+      });
     case "logs": {
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
@@ -2580,6 +2592,39 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/clear-legacy-boat") {
     // An operator cleared the org's legacy Boat column (the key was revoked): the org is no longer ready.
     for (const org of state.orgs) if (org.id === body.org) org.boat_api_key_enc = null;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/delayed-usage") {
+    const target = state.sandboxes.find((row) => row.id === id(30));
+    if (!target) return json({ error: "Not found" }, 404);
+    if (body.collect) {
+      // Like readStatus: commit newly available counters during the next status
+      // read, after the dashboard route has already read the old row.
+      target.test_delayed_usage = {
+        turnCount: 1,
+        turns: [
+          {
+            promptId: "late",
+            model: "gpt-6.1-sol",
+            inputTokens: Number(body.inputTokens ?? 13136),
+            outputTokens: 5,
+            cachedTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        ],
+      };
+      if (body.persisted) {
+        target.usage_turns = target.test_delayed_usage;
+        delete target.test_delayed_usage;
+      }
+      target.test_status_read_unavailable = body.failStatus === true;
+    } else {
+      target.status = "ready";
+      target.harness = "codex";
+      target.usage_turns = { turnCount: 1, turns: [] };
+      for (const event of state.events.get(String(target.id)) ?? [])
+        if (event.kind === "prompt") event.status = "finished";
+    }
     return json({ ok: true });
   }
   if (url.pathname === "/__test/provider-status-fail") {

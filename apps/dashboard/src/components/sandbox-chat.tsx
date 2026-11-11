@@ -64,6 +64,7 @@ const CAN_SEND: readonly SandboxStatus[] = ["ready", "running", "stopped"];
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
+  initialUsageRevision: string;
   live: boolean;
   harness: Harness;
   catalog: ModelCatalog;
@@ -99,6 +100,7 @@ export function SandboxChat(props: Props) {
   const [chosen, setChosen] = useState<string | null>(null);
   const cursor = useRef<string | null>(null);
   const known = useRef(initialStatus);
+  const knownUsage = useRef(props.initialUsageRevision);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reading = useRef(false);
   const mounted = useRef(true);
@@ -116,11 +118,15 @@ export function SandboxChat(props: Props) {
     }
     if (typeof body.prompt === "object" && body.prompt !== null) setTurnModel(body.prompt);
     const next = typeof body.status === "string" ? (body.status as SandboxStatus) : known.current;
-    if (next !== known.current) {
+    const statusChanged = next !== known.current;
+    const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== knownUsage.current;
+    if (statusChanged) {
       known.current = next;
       setStatus(next);
-      router.refresh();
     }
+    if (typeof body.usageRevision === "string") knownUsage.current = body.usageRevision;
+    // Terminal counters can arrive after running -> ready has already rendered.
+    if (statusChanged || usageChanged) router.refresh();
     const error = typeof body.error === "string" ? body.error : null;
     const configured = body.configured !== false;
     setPoll((current) =>
