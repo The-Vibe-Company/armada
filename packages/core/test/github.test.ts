@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isolatedGitEnvironment } from "../../../scripts/test-support/isolated-git.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import {
   decryptSecret,
@@ -504,26 +505,27 @@ describe("git setup in the sandbox", () => {
     const home = mkdtempSync(join(tmpdir(), "armada-git-"));
     try {
       const identity = gitIdentity({ id: 583231, login: "octocat", name: 'The "Octo\'cat"' });
-      const env = { PATH: process.env.PATH ?? "", HOME: home, GH_TOKEN: ACCESS_1, GITHUB_TOKEN: ACCESS_1 };
-      const setup = Bun.spawnSync(["sh", "-c", gitSetupCommand(identity)], { env });
+      const env = { ...isolatedGitEnvironment(home), GH_TOKEN: ACCESS_1, GITHUB_TOKEN: ACCESS_1 };
+      const setup = Bun.spawnSync(["sh", "-c", gitSetupCommand(identity)], { env, cwd: home });
       expect(setup.exitCode).toBe(0);
 
       const git = (...args: string[]) =>
-        Bun.spawnSync(["git", ...args], { env, stdin: new Blob(["protocol=https\nhost=github.com\n\n"]) });
+        Bun.spawnSync(["git", ...args], { env, cwd: home, stdin: new Blob(["protocol=https\nhost=github.com\n\n"]) });
       expect(git("config", "--global", "user.name").stdout.toString().trim()).toBe(`The "Octo'cat"`);
       expect(git("config", "--global", "user.email").stdout.toString().trim()).toBe(
         "583231+octocat@users.noreply.github.com",
       );
       const filled = git("credential", "fill").stdout.toString();
-      expect(filled).toContain("username=x-access-token");
-      expect(filled).toContain(`password=${ACCESS_1}`);
-      const rewritten = Bun.spawnSync(["git", "ls-remote", "--get-url", "git@github.com:acme/app.git"], { env });
+      // Never give assertion reporters raw credential output, even on failure.
+      expect(filled.includes("username=x-access-token")).toBe(true);
+      expect(filled.includes(`password=${ACCESS_1}`)).toBe(true);
+      const rewritten = Bun.spawnSync(["git", "ls-remote", "--get-url", "git@github.com:acme/app.git"], { env, cwd: home });
       expect(rewritten.stdout.toString().trim()).toBe("https://github.com/acme/app.git");
 
       for (const name of readdirSync(home, { recursive: true, encoding: "utf8" })) {
         const path = join(home, name);
         try {
-          expect(readFileSync(path, "utf8")).not.toContain(ACCESS_1);
+          expect(readFileSync(path, "utf8").includes(ACCESS_1)).toBe(false);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EISDIR") throw error;
         }
