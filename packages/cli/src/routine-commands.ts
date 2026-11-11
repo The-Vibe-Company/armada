@@ -32,6 +32,16 @@ conflicts are not retried. Pause/delete stop new admissions, not already admitte
 Runs shows the latest 100 decisions, including readable skip/failure reasons and
 original-prompt outcomes. Launch success is not task success; unknown is not success.
 `;
+const ROUTES = {
+  create: "create",
+  list: "list",
+  show: "get",
+  update: "update",
+  enable: "enable",
+  pause: "pause",
+  delete: "delete",
+  runs: "history",
+} as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONFIG = ["name", "templateId", "templateRevision", "prompt", "intervalHours", "ttlSeconds", "maxRunsPerDay"];
 const INLINE = [
@@ -51,8 +61,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     return 0;
   }
   const [action, ...rest] = argv;
-  if (!["create", "list", "show", "update", "enable", "pause", "delete", "runs"].includes(action ?? ""))
-    throw invalid();
+  if (!action || !Object.hasOwn(ROUTES, action)) throw invalid();
   const args = parseArgs(rest, ["--scope", ...INLINE]);
   const versioned = ["update", "enable", "pause", "delete"].includes(action ?? "");
   const allowed = new Set([
@@ -143,7 +152,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
       body.id = matches[0].id;
     }
   }
-  const route = action === "show" ? "get" : action === "runs" ? "history" : action;
+  const route = ROUTES[action as keyof typeof ROUTES];
   const result = await control<Record<string, unknown>>(io.auth, `routines/${route}`, body);
   if (flag(args, "--json")) io.auth.out(`${JSON.stringify(result)}\n`);
   else if (action === "list") {
