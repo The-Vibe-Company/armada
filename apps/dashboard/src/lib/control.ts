@@ -18,6 +18,15 @@ import {
   parsePreview,
   type RecipientPreview,
 } from "./invitations.ts";
+import {
+  type LaunchOutcome,
+  parseLaunchOutcome,
+  parseRevision,
+  parseTemplate,
+  type TemplateHeader,
+  type TemplateRequest,
+  type TemplateRevision,
+} from "./templates.ts";
 import { parseVaultItem, type VaultItem, type VaultKind, type VaultScope } from "./variables.ts";
 
 /**
@@ -465,3 +474,54 @@ export function createVaultControl(options: ArmadaApiOptions) {
 }
 
 const FEATURE = "variables and secrets";
+
+/**
+ * Launch templates (#938's control API, #949's page): `templates/*`, POST with the viewer's bearer. Every answer is
+ * parsed to the header and the four choices of a revision; a launch's manifest (which carries readable values) is
+ * never kept, only its state and sandbox id.
+ */
+export function createTemplateControl(options: ArmadaApiOptions) {
+  const post = (operation: string, body: object) =>
+    controlPost(options, `/api/v1/templates/${operation}`, body, "templates");
+
+  async function saved(operation: string, body: object): Promise<{ item: TemplateHeader; revision: TemplateRevision }> {
+    const payload = await post(operation, body);
+    const item = parseTemplate(payload.item);
+    const revision = parseRevision(payload.revision);
+    if (!item || !revision) throw new ControlError("The Armada server sent an unexpected template.");
+    return { item, revision };
+  }
+
+  return {
+    /** The org's templates the viewer may see: their own personal ones and the org's. */
+    async list(org: string): Promise<TemplateHeader[]> {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no template list.");
+      return payload.items.map(parseTemplate).filter((row): row is TemplateHeader => row?.orgId === org);
+    },
+    /** One revision, the current one by default. */
+    get: (target: { org: string; id: string; revision?: number }) => saved("get", target),
+    create: (request: TemplateRequest & { org: string }) => saved("create", request),
+    /** Publishes a new immutable revision; a stale `expectedRevision` is refused (409). */
+    publish: (request: { org: string; id: string; expectedRevision: number; definition: Record<string, unknown> }) =>
+      saved("publish", request),
+    async delete(target: { org: string; id: string; expectedRevision: number }): Promise<void> {
+      const payload = await post("delete", target);
+      if (!isRecord(payload.item)) throw new ControlError("The Armada server did not confirm the deletion.");
+    },
+    async launch(request: {
+      org: string;
+      id: string;
+      revision: number;
+      requestKey: string;
+      prompt?: string;
+      ttlSeconds?: number;
+      size?: string;
+      repo?: string;
+    }): Promise<LaunchOutcome> {
+      const outcome = parseLaunchOutcome(await post("launch", request));
+      if (!outcome) throw new ControlError("The Armada server sent an unexpected launch answer.");
+      return outcome;
+    },
+  };
+}
