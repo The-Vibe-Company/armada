@@ -74,6 +74,7 @@ final class NewSandboxModel {
     /// The only place a launch is sent. Returns the new sandbox, or nil with `outcome` explaining why.
     func launch() async -> SandboxSummary? {
         guard let launcher, let catalog, let draft, !launching else { return nil }
+        outcomeExplanation = nil
         let request: ArmadaKit.SandboxLaunchRequest
         switch draft.request(catalog: catalog) {
         case .failure(let problem):
@@ -83,7 +84,6 @@ final class NewSandboxModel {
             request = built
         }
         outcome = nil
-        outcomeExplanation = nil
         launching = true
         defer { launching = false }
         do throws(ArmadaKit.SandboxLaunchFailure) {
