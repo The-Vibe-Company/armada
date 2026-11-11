@@ -188,3 +188,15 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(await restoredAgain.pendingSandboxPrompts == pending)
     #expect(await transport.requests.isEmpty)
 }
+
+@Test func emailRequestShowsTheServersSpecificRateLimitRemedy() async throws {
+    let client = try ArmadaClient(transport: ScriptedTransport([
+        .init(status: 429, body: #"{"error":{"code":"rate_limited","message":"Wait 60 seconds before requesting another code."}}"#)
+    ]), storage: MemoryStorage())
+    do {
+        try await client.startEmailLogin(email: "person@example.test")
+        Issue.record("Expected a refusal")
+    } catch {
+        #expect(error.localizedDescription == "Wait 60 seconds before requesting another code.")
+    }
+}
