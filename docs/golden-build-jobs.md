@@ -85,7 +85,7 @@ There is **no owner/admin force-release API or CLI command**. Missing builder
 metadata does not prove a refusal: a timed-out allocation can still create a
 machine. New ambiguous builds always retain their reservation.
 
-Migration 20261111010000_legacy_boat_payment_recovery.sql captures eligibility
+Migration 20261110220100_legacy_boat_payment_recovery.sql captures eligibility
 only for already-existing Boat creates in recovery_required/builder with no
 builder, snapshot, golden or recorded reason. Later jobs default ineligible,
 even with identical metadata. Nothing is automatically released.

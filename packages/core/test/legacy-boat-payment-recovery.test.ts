@@ -5,7 +5,7 @@ import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 
 test("only a service-role operator can recover captured legacy refusals; new ambiguous jobs retain capacity", async () => {
   const db = await openDatabase();
-  const migration = "20261111010000_legacy_boat_payment_recovery.sql";
+  const migration = "20261110220100_legacy_boat_payment_recovery.sql";
   try {
     await db.exec(await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text());
     for (const file of readdirSync(migrationsDir)
