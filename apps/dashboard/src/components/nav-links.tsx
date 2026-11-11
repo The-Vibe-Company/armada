@@ -5,6 +5,7 @@ import {
   CameraIcon,
   GaugeIcon,
   KeyRoundIcon,
+  LayoutTemplateIcon,
   NetworkIcon,
   PlugIcon,
   SettingsIcon,
@@ -18,9 +19,10 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { cn } from "@/lib/utils";
 
 /**
- * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), environments, tools and harness
- * subscriptions, variables and secrets are set up once (Build), and the account pages sit last. The hint, a tooltip, says what each
- * page holds. On a phone the nine links fit two rows of five, so the conversation pages keep their height.
+ * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), environments, templates,
+ * tools, variables and harness subscriptions are set up once (Build), and the account pages sit last. The hint, a
+ * tooltip, says what each page holds. On a phone the ten links fit two rows of five, so the conversation pages keep
+ * their height.
  */
 const GROUPS = [
   {
@@ -46,6 +48,13 @@ const GROUPS = [
         short: "Envs",
         hint: "Goldens: what a sandbox contains when it starts",
         icon: CameraIcon,
+      },
+      {
+        href: "/templates",
+        label: "Templates",
+        short: "Tmpls",
+        hint: "Launch presets: environment, tools, model and variables",
+        icon: LayoutTemplateIcon,
       },
       { href: "/tools", label: "Tools", hint: "MCP connections your agents can use", icon: PlugIcon },
       {
