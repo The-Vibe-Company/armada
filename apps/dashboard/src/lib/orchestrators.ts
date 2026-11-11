@@ -36,7 +36,15 @@ export class OrchestratorContractError extends Error {
   override readonly name = "OrchestratorContractError";
 }
 
-const STATES: readonly OrchestratorState[] = ["creating", "ready", "stopping", "stopped", "resuming", "blocked"];
+const STATES: readonly OrchestratorState[] = [
+  "creating",
+  "ready",
+  "stopping",
+  "stopped",
+  "resuming",
+  "blocked",
+  "failed",
+];
 const CONTINUITIES: readonly OrchestratorContinuity[] = ["not_started", "native", "unverified", "lost"];
 const OPERATION_KINDS: readonly OrchestratorOperation["kind"][] = ["create", "message", "steer", "stop", "resume"];
 const OPERATION_STATES: readonly OrchestratorOperation["state"][] = ["pending", "succeeded", "failed", "uncertain"];
@@ -149,6 +157,7 @@ export function parseOrchestrator(value: unknown): Orchestrator | null {
     idleDeadline: value.idleDeadline,
     skillRevision: value.skillRevision,
     blockedReason: value.blockedReason,
+    failureMessage: typeof value.failureMessage === "string" ? value.failureMessage : null,
   };
 }
 
@@ -411,6 +420,7 @@ export function troubledOperations(detail: OrchestratorDetail | null): Orchestra
 }
 
 export const STATE_LABELS: Record<OrchestratorState, string> = {
+  failed: "Failed",
   creating: "Starting",
   ready: "Ready",
   stopping: "Stopping",
@@ -484,6 +494,12 @@ function notice(orchestrator: Orchestrator): OrchestratorControls["notice"] {
       tone: "danger",
       title: "The conversation was lost",
       text: "Its saved native state is gone, so it cannot resume as the same conversation. Create a new orchestrator to start over.",
+    };
+  if (orchestrator.state === "failed")
+    return {
+      tone: "danger",
+      title: "Create failed",
+      text: orchestrator.failureMessage ?? orchestrator.blockedReason ?? "Create a new orchestrator to try again.",
     };
   if (orchestrator.state === "blocked")
     return {

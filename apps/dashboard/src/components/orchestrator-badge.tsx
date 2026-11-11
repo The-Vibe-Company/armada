@@ -9,6 +9,7 @@ const TONES: Record<OrchestratorState, string> = {
   stopping: "border-warning/40 bg-warning/10 text-warning",
   stopped: "text-muted-foreground",
   resuming: "border-warning/40 bg-warning/10 text-warning",
+  failed: "border-destructive/40 bg-destructive/10 text-destructive",
   blocked: "border-destructive/40 bg-destructive/10 text-destructive",
 };
 

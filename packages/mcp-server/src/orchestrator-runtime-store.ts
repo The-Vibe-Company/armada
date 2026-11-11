@@ -10,7 +10,7 @@ import type {
   PromptStatus,
 } from "@armada/core";
 import { boundEventEntries, coalesceEventMessages, reportedTurnUsage, truncateEvent } from "@armada/core";
-import { createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
+import { CREDENTIAL_BUSY_MESSAGE, createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
 export class OrchestratorRuntimeError extends Error {
@@ -307,6 +307,7 @@ export class OrchestratorRuntimeStore {
           state: receipt.state as OrchestratorOperation["state"],
           revision: receipt.revision,
           errorCode: persisted.rows[0]?.error_code ?? null,
+          errorMessage: persisted.rows[0]?.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
         },
       };
     });
@@ -457,6 +458,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
+      errorMessage: row.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
     }));
   }
 
@@ -647,6 +649,7 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
+      errorMessage: row.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
     };
   }
 
@@ -788,6 +791,7 @@ export class OrchestratorRuntimeStore {
             state: existing.state,
             revision: Number(existing.revision),
             errorCode: existing.error_code,
+            errorMessage: existing.error_code === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
           },
         };
       }
@@ -969,7 +973,10 @@ export class OrchestratorRuntimeStore {
    * This may fail a request, not publish native success or adopt a machine. */
   async failCreateBeforeFork(
     reservation: RuntimeReservation,
-    errorCode: "create_preallocation_failed" | "provider_payment_required" = "create_preallocation_failed",
+    errorCode:
+      | "create_preallocation_failed"
+      | "provider_payment_required"
+      | "credential_busy" = "create_preallocation_failed",
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
       const row = await tx.query(
@@ -979,7 +986,7 @@ export class OrchestratorRuntimeStore {
         [reservation.operation.id, reservation.createDispatchId ?? null, errorCode],
       );
       if (!row.rows.length) return false;
-      await tx.query(`update public.orchestrators set state='blocked' where id=$1 and revision=$2`, [
+      await tx.query(`update public.orchestrators set state='failed' where id=$1 and revision=$2`, [
         reservation.identity.id,
         reservation.operation.revision,
       ]);
@@ -994,7 +1001,12 @@ export class OrchestratorRuntimeStore {
           reservation.operation.revision,
           JSON.stringify({
             kind: "operation",
-            operation: { ...reservation.operation, state: "failed", errorCode },
+            operation: {
+              ...reservation.operation,
+              state: "failed",
+              errorCode,
+              errorMessage: errorCode === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+            },
           }),
         ],
       );

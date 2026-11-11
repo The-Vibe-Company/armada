@@ -176,6 +176,7 @@ export interface ControlOptions {
 export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
 
 const STATUS: Record<VaultErrorCode, number> = {
+  credential_busy: 409,
   credential_binding_required: 409,
   credential_binding_unsafe: 409,
   invalid: 400,

@@ -10,7 +10,7 @@ import type {
   SandboxRecord,
 } from "@armada/core";
 import { ProviderError } from "@armada/core";
-import { PrivateSkillError } from "@armada/core/server";
+import { CREDENTIAL_BUSY_MESSAGE, PrivateSkillError, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
@@ -707,12 +707,21 @@ export class OrchestratorRuntime {
       ) {
         diagnostics.report("failed", error);
         diagnostics.stage("failure_publication");
-        const errorCode = reservation.createForkRefusal ?? "create_preallocation_failed";
+        const errorCode =
+          reservation.createForkRefusal ??
+          (error instanceof VaultError && error.code === "credential_busy"
+            ? "credential_busy"
+            : "create_preallocation_failed");
         if (!(await this.options.store.failCreateBeforeFork(reservation, errorCode))) {
           diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
           throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
         }
-        return { ...reservation.operation, state: "failed", errorCode };
+        return {
+          ...reservation.operation,
+          state: "failed",
+          errorCode,
+          errorMessage: errorCode === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+        };
       }
       const unavailable = error instanceof BestEffortConversationUnavailable;
       if (unavailable) diagnostics.captureReason("boat_conversation_unavailable");
@@ -817,5 +826,6 @@ function wireOrchestrator(identity: RuntimeIdentity): Orchestrator {
     skillRevision: identity.skillRevision,
     skillReceipt: identity.skillReceipt ?? null,
     blockedReason: identity.blockedReason,
+    failureMessage: identity.blockedReason === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
   };
 }

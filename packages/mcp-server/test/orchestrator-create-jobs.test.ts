@@ -119,6 +119,7 @@ async function fixture(skillpackKey?: () => Promise<string | null>) {
     gate,
     entered,
     diagnostics,
+    credentials,
     replace: () => {
       replaceGeneration = true;
     },
@@ -364,6 +365,53 @@ test.each(["refused", "succeeded"])("requested skill readiness stays creating un
   } finally {
     f.gate.resolve();
     release.resolve();
+    await f.runtime.createWorker.drain();
+    await f.db.close();
+  }
+});
+
+test("busy account refusal is terminal before allocation and retains the reason in detail, replay and events", async () => {
+  const f = await fixture();
+  try {
+    f.credentials.admit = async () => {
+      throw new core.VaultError("credential_busy", core.CREDENTIAL_BUSY_MESSAGE);
+    };
+    const admitted = await f.runtime.create(f.caller, f.configuration, "busy-account");
+    f.gate.resolve();
+    await f.runtime.createWorker.drain();
+    const detail = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
+    expect(detail.orchestrator).toMatchObject({
+      state: "failed",
+      sandboxId: null,
+      blockedReason: "credential_busy",
+      failureMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    expect(detail.operations[0]).toMatchObject({
+      state: "failed",
+      errorCode: "credential_busy",
+      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    expect(await f.runtime.create(f.caller, f.configuration, "busy-account")).toMatchObject({
+      state: "failed",
+      errorCode: "credential_busy",
+      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    const events = await f.db.query<{ event: unknown }>(
+      "select event from orchestrator_runtime_events where orchestrator_id=$1",
+      [admitted.orchestratorId],
+    );
+    expect(events.rows.map((r) => r.event)).toContainEqual({
+      kind: "operation",
+      operation: {
+        ...admitted,
+        state: "failed",
+        errorCode: "credential_busy",
+        errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+      },
+    });
+    expect(f.provider.forks).toHaveLength(0);
+  } finally {
+    f.gate.resolve();
     await f.runtime.createWorker.drain();
     await f.db.close();
   }

@@ -87,14 +87,16 @@ test("real native state publication seals rotation without replacing binding, fe
     await auth.releaseUnallocated(account.id, 1, SANDBOX);
     expect(await auth.managed(SANDBOX)).toBe(false);
     await auth.claim(actor, account.id, 1, SANDBOX);
-    await expect(auth.claim(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "conflict" });
+    await expect(auth.claim(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
     const duplicate = (
       await db.query<{ id: string }>(
         "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'codex_auth','Same native file',$2) returning id",
         [OWNER, await encryptSecret(native(0), KEY)],
       )
     ).rows[0]!;
-    await expect(auth.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({ code: "conflict" });
+    await expect(auth.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+      code: "credential_busy",
+    });
 
     await db.query(
       "insert into goldens(id,org_id,owner_id,name,visibility,config) values($1,$2,$3,'native','org',$4::jsonb)",
@@ -248,7 +250,7 @@ test("real native state publication seals rotation without replacing binding, fe
     authJson = native(3);
     expect(await auth.capture(provider, "native", actor)).toContain("synthetic-refresh-3");
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
-    await expect(auth.claim(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "conflict" });
+    await expect(auth.claim(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [SANDBOX]);
     physicalStopped = true; // independent provider observation, not the SQL label
     await auth.claim(actor, account.id, 2, OTHER);
@@ -598,7 +600,7 @@ test.each([
       // not permission to rebind it or disable its ordinary shell inspection.
       await ownership.assertSandbox(actor, legacy, false, true);
     } else {
-      await expect(launch).rejects.toMatchObject({ code: "conflict" });
+      await expect(launch).rejects.toMatchObject({ code: "credential_busy" });
       expect(forks).toBe(0);
       if (!scenario.enrolled) {
         expect(
