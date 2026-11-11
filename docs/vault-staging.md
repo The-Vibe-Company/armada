@@ -57,7 +57,8 @@ or a test HTTP client; never interpolate a canary into shell arguments.
    `variables/read` with `{org,id}` returns the explicit readable value.
 2. `secrets/set` with `{org,scope:"personal",name:"APP_TOKEN",value}`
    returns `item` metadata only. `secrets/list` with `{org}` never includes
-   ciphertext or value-derived fields. `secrets/read` must fail (400).
+   ciphertext or value-derived fields. `secrets/read` must fail: 404 at the public
+   proxy (not allowlisted), or 400 at the direct control origin (unsupported).
 3. `secrets/rotate` with `{org,id,expectedVersion:1,value}` returns version
    and epoch 2. Repeat with version 1: 409. `secrets/revoke` and
    `secrets/delete` use `{org,id,expectedVersion}`, advancing version/epoch
@@ -74,8 +75,10 @@ or a test HTTP client; never interpolate a canary into shell arguments.
 5. Switch scope to `"org"`: a member's write must fail (403), admin write
    succeeds, members can list metadata and explicitly read variables, outsiders
    fail. Personal IDs return 404 to other members, including admins.
-6. Missing bearer: 401. Query parameters, unknown fields, malformed UTF-8,
-   reserved keys and oversize values: 400, without submitted content.
+6. Missing bearer: 401. Unknown fields, malformed UTF-8, reserved keys and
+   oversize values: 400, without submitted content. Direct control requests with
+   query parameters return 400; the public proxy strips query parameters before
+   forwarding, so they have no effect there. Never send values in query strings.
    A database/backend failure: generic unavailable error, no raw database text.
 
 The operator must configure the existing `ARMADA_ENCRYPTION_KEY` before writes.
