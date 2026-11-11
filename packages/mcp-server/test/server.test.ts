@@ -202,7 +202,12 @@ describe("when the auth lookup fails", () => {
     });
     const { handler, session, people } = await start({ authStore: () => broken, log: (line) => lines.push(line) });
     jwt = session(people.member);
-    const response = await rpc(handler, jwt).tool("list", {});
+    const response = await rpc(handler, jwt).post({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "list", arguments: {} },
+    });
     expect(response.status).toBe(503);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("The membership store is unavailable.");
