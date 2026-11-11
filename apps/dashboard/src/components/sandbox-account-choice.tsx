@@ -4,7 +4,7 @@ import type { SandboxStatus } from "@armada/core";
 import { KeyRoundIcon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useId, useState, useTransition } from "react";
 import { bindSandboxAccount } from "@/app/actions/sandbox-account";
 import { StopButton } from "@/components/sandbox-actions";
 import {
@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { type AccountOption, bindableStatus } from "@/lib/account-recovery";
 import type { ActionResult } from "@/lib/action";
 import type { AccountChoices } from "@/lib/data/account-recovery";
@@ -103,20 +105,20 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
         </p>
       ) : (
         <>
-          <fieldset className="space-y-2">
-            <legend className="sr-only">Account</legend>
+          <RadioGroup
+            aria-label="Account"
+            name="account"
+            value={selected ?? ""}
+            disabled={pending}
+            onValueChange={(value) => {
+              setSelected(value);
+              setResult(null);
+            }}
+          >
             {accounts.map((item) => (
-              <AccountRow
-                key={item.id}
-                account={item}
-                checked={selected === item.id}
-                onSelect={() => {
-                  setSelected(item.id);
-                  setResult(null);
-                }}
-              />
+              <AccountRow key={item.id} account={item} checked={selected === item.id} />
             ))}
-          </fieldset>
+          </RadioGroup>
           <div className="flex flex-wrap items-center gap-3">
             {gate === "ready" ? (
               <Button type="button" disabled={!account || pending} onClick={() => setConfirming(true)}>
@@ -165,23 +167,17 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
   );
 }
 
-function AccountRow({
-  account,
-  checked,
-  onSelect,
-}: {
-  account: AccountOption;
-  checked: boolean;
-  onSelect: () => void;
-}) {
+function AccountRow({ account, checked }: { account: AccountOption; checked: boolean }) {
+  const id = useId();
   return (
-    <label
+    <Label
+      htmlFor={id}
       className={cn(
         "flex cursor-pointer items-start gap-3 rounded-lg border bg-background px-3 py-2.5 text-sm has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
         checked && "border-foreground/40",
       )}
     >
-      <input type="radio" name="account" value={account.id} checked={checked} onChange={onSelect} className="mt-1" />
+      <RadioGroupItem id={id} value={account.id} className="mt-1" />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
           <span className="font-medium break-words">{account.name}</span>
@@ -191,6 +187,6 @@ function AccountRow({
           {account.kindLabel}, {account.scope === "org" ? "org" : "personal"}
         </span>
       </span>
-    </label>
+    </Label>
   );
 }

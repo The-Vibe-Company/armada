@@ -56,7 +56,9 @@ for (const intent of ["send", "steer"] as const) {
       await expect(action).toBeDisabled();
       await box.fill("Then review the release notes");
       release();
-      await expect(action).toBeEnabled();
+      await expect(page.getByRole("form", { name: "Message the agent" }).getByRole("status")).toHaveText(
+        intent === "send" ? "Sent." : "Steered.",
+      );
       await expect(box).toHaveValue("Then review the release notes");
       await expect(
         page.getByRole("log", { name: "Messages" }).getByText("Check the parser fixtures", { exact: true }),

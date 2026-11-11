@@ -1,4 +1,4 @@
-name: Conversation retirement evidence
+name: Conversation quality evidence
 
 on:
   pull_request:

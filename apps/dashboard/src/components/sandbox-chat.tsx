@@ -34,7 +34,9 @@ import { StatusBadge, StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Kbd } from "@/components/ui/kbd";
+import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -285,9 +287,9 @@ function ConversationPicker({
   const id = useId();
   return (
     <div className="flex items-center gap-2">
-      <label htmlFor={id} className="sr-only">
+      <Label htmlFor={id} className="sr-only">
         Conversation
-      </label>
+      </Label>
       <NativeSelect
         id={id}
         value={selected ?? ""}
@@ -569,21 +571,18 @@ function Outcome({ status, reason }: { status: "failed" | "interrupted"; reason:
     );
   }
   return (
-    <div
-      role="note"
-      className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-    >
-      <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <div className="min-w-0 space-y-0.5">
-        <p className="font-medium">{help?.title ?? "The turn failed"}</p>
-        {(help?.hint ?? reason) && <p className="break-words text-destructive/90">{help?.hint ?? reason}</p>}
+    <Alert role="note" variant="destructive" className="border-destructive/30 bg-destructive/5 px-3 py-2">
+      <AlertTriangleIcon aria-hidden="true" />
+      <AlertTitle className="line-clamp-none">{help?.title ?? "The turn failed"}</AlertTitle>
+      <AlertDescription className="break-words">
+        {(help?.hint ?? reason) && <p>{help?.hint ?? reason}</p>}
         {help?.fix && (
           <Link href={help.fix.href} className="font-medium underline underline-offset-4">
             {help.fix.label}
           </Link>
         )}
-      </div>
-    </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -601,45 +600,48 @@ const OUTPUT_LIMIT = 8000;
 
 function ToolRow({ tool, running }: { tool: ToolActivity; running: boolean }) {
   const [open, setOpen] = useState(false);
-  const panel = useId();
   const summary = toolSummary(tool.input);
   const failed = tool.result?.isError === true;
   const state = tool.result ? (failed ? "error" : "done") : running ? "running" : "unknown";
   return (
-    <li data-tool={tool.name} data-tool-state={state}>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-controls={panel}
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-xs outline-none hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset"
-      >
-        <ChevronRightIcon
-          className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
-          aria-hidden="true"
-        />
-        <ToolState state={state} />
-        <span className="shrink-0 font-mono font-medium">{tool.name}</span>
-        {summary && <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>}
-      </button>
-      {open && (
-        <div id={panel} className="space-y-2 border-t bg-background/60 px-3 py-2">
-          <ToolBlock label="Input" text={toolText(tool.input)} empty="No input recorded." />
-          {tool.result ? (
-            <ToolBlock
-              label={failed ? "Error" : "Result"}
-              text={toolText(tool.result.output)}
-              empty="No output."
-              danger={failed}
+    <Collapsible open={open} onOpenChange={setOpen} asChild>
+      <li data-tool={tool.name} data-tool-state={state}>
+        <CollapsibleTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-auto w-full min-w-0 justify-start gap-2 rounded-none px-3 py-2 text-left text-xs motion-safe:active:not-disabled:scale-none hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-inset"
+          >
+            <ChevronRightIcon
+              className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+              aria-hidden="true"
             />
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {running ? "Waiting for the result." : "No result recorded."}
-            </p>
+            <ToolState state={state} />
+            <span className="shrink-0 font-mono font-medium">{tool.name}</span>
+            {summary && <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>}
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-2 border-t bg-background/60 px-3 py-2">
+          {open && (
+            <>
+              <ToolBlock label="Input" text={toolText(tool.input)} empty="No input recorded." />
+              {tool.result ? (
+                <ToolBlock
+                  label={failed ? "Error" : "Result"}
+                  text={toolText(tool.result.output)}
+                  empty="No output."
+                  danger={failed}
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {running ? "Waiting for the result." : "No result recorded."}
+                </p>
+              )}
+            </>
           )}
-        </div>
-      )}
-    </li>
+        </CollapsibleContent>
+      </li>
+    </Collapsible>
   );
 }
 
@@ -730,7 +732,7 @@ function Composer({
   }
 
   function readOverride() {
-    if (form.current) setOverride(change(new FormData(form.current)) !== "none");
+    if (form.current && pending === null) setOverride(change(new FormData(form.current)) !== "none");
   }
 
   function run(intent: Intent) {
@@ -759,7 +761,9 @@ function Composer({
       setResult(outcome);
       if (!outcome.ok) return;
       if (intent !== "interrupt") {
-        setDraft("");
+        // An accepted action owns only the draft it submitted, not text typed during its round trip.
+        const submitted = String(data.get("prompt") ?? "");
+        setDraft((current) => (current === submitted ? "" : current));
         form.current?.reset();
         setOverride(false);
       }
@@ -800,9 +804,9 @@ function Composer({
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
       <input type="hidden" name="conversation" value={conversation ?? ""} />
-      <label htmlFor={`${fieldId}-message`} className="sr-only">
+      <Label htmlFor={`${fieldId}-message`} className="sr-only">
         Message
-      </label>
+      </Label>
       <Textarea
         id={`${fieldId}-message`}
         name="prompt"
@@ -819,119 +823,125 @@ function Composer({
         }
         className="max-h-60 min-h-14 resize-y bg-card shadow-xs sm:min-h-20 dark:bg-card"
       />
-      <div id={`${fieldId}-model`} hidden={!showModel}>
-        <ModelFields
-          idPrefix={`send-${sandboxId}`}
-          harness={harness}
-          catalog={catalog}
-          keepLabel="As launched"
-          launchedModel={launchedModel}
-        />
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-expanded={showModel}
-          aria-controls={`${fieldId}-model`}
-          onClick={() => setShowModel((value) => !value)}
-          className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
-        >
-          <SlidersHorizontalIcon />
-          {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
-          {override && (
-            <span className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden" aria-hidden="true" />
-          )}
-          {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
-          <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
-        </Button>
-        {steerHint ? (
-          // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
-          // It takes the place of an earlier success message, never of an error.
-          <p
-            id={`${fieldId}-steer-hint`}
-            className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
-          >
-            <span className="sr-only">Model change: </span>
-            New turn only
-          </p>
-        ) : (
-          result && (
-            <p
-              role={result.ok ? "status" : "alert"}
-              className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
-            >
-              {result.ok ? result.message : result.error}
-            </p>
-          )
-        )}
-        <div className="ml-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
-          {running && (
+      <Collapsible open={showModel} onOpenChange={setShowModel} className="space-y-3">
+        <CollapsibleContent forceMount className="data-[state=closed]:hidden">
+          <fieldset disabled={pending !== null}>
+            <ModelFields
+              idPrefix={`send-${sandboxId}`}
+              harness={harness}
+              catalog={catalog}
+              keepLabel="As launched"
+              launchedModel={launchedModel}
+            />
+          </fieldset>
+        </CollapsibleContent>
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <CollapsibleTrigger asChild>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="max-sm:px-2"
-              disabled={pending !== null}
-              onClick={() => run("interrupt")}
+              className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
             >
-              {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <CircleStopIcon />}
-              <span className="max-sm:sr-only">Interrupt</span>
+              <SlidersHorizontalIcon />
+              {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
+              {override && (
+                <span
+                  className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden"
+                  aria-hidden="true"
+                />
+              )}
+              {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
+              <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
             </Button>
+          </CollapsibleTrigger>
+          {steerHint ? (
+            // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
+            // It takes the place of an earlier success message, never of an error.
+            <p
+              id={`${fieldId}-steer-hint`}
+              className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
+            >
+              <span className="sr-only">Model change: </span>
+              New turn only
+            </p>
+          ) : (
+            result && (
+              <p
+                role={result.ok ? "status" : "alert"}
+                className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
+              >
+                {result.ok ? result.message : result.error}
+              </p>
+            )
           )}
-          {running && (
+          <div className="ml-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
+            {running && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="max-sm:px-2"
+                disabled={pending !== null}
+                onClick={() => run("interrupt")}
+              >
+                {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <CircleStopIcon />}
+                <span className="max-sm:sr-only">Interrupt</span>
+              </Button>
+            )}
+            {running && (
+              <Button
+                aria-label={restarts ? "Steer (restarts turn)" : "Steer"}
+                aria-describedby={steerHint ? `${fieldId}-steer-hint` : undefined}
+                type="button"
+                variant={primary === "steer" ? "default" : "outline"}
+                size="sm"
+                className="max-sm:px-2.5"
+                disabled={pending !== null || override}
+                title={
+                  override
+                    ? "A model or effort change needs a new turn."
+                    : restarts
+                      ? "Codex restarts the turn with your message."
+                      : "Joins the turn in progress."
+                }
+                onClick={() => run("steer")}
+              >
+                {pending === "steer" && <Loader2Icon className="animate-spin" />}
+                {restarts ? (
+                  <>
+                    <span className="max-sm:hidden">Steer (restarts turn)</span>
+                    <span className="sm:hidden">Steer</span>
+                  </>
+                ) : (
+                  "Steer"
+                )}
+                {primary === "steer" && <SendShortcut />}
+              </Button>
+            )}
             <Button
-              aria-label={restarts ? "Steer (restarts turn)" : "Steer"}
-              aria-describedby={steerHint ? `${fieldId}-steer-hint` : undefined}
+              aria-label={running ? "Send as new turn" : undefined}
               type="button"
-              variant={primary === "steer" ? "default" : "outline"}
               size="sm"
               className="max-sm:px-2.5"
-              disabled={pending !== null || override}
-              title={
-                override
-                  ? "A model or effort change needs a new turn."
-                  : restarts
-                    ? "Codex restarts the turn with your message."
-                    : "Joins the turn in progress."
-              }
-              onClick={() => run("steer")}
+              variant={primary === "send" ? "default" : "outline"}
+              disabled={pending !== null}
+              onClick={() => run("send")}
             >
-              {pending === "steer" && <Loader2Icon className="animate-spin" />}
-              {restarts ? (
+              {pending === "send" && <Loader2Icon className="animate-spin" />}
+              {running ? (
                 <>
-                  <span className="max-sm:hidden">Steer (restarts turn)</span>
-                  <span className="sm:hidden">Steer</span>
+                  <span className="max-sm:hidden">Send as new turn</span>
+                  <span className="sm:hidden">New turn</span>
                 </>
               ) : (
-                "Steer"
+                "Send"
               )}
-              {primary === "steer" && <SendShortcut />}
+              {primary === "send" && <SendShortcut />}
             </Button>
-          )}
-          <Button
-            aria-label={running ? "Send as new turn" : undefined}
-            type="button"
-            size="sm"
-            className="max-sm:px-2.5"
-            variant={primary === "send" ? "default" : "outline"}
-            disabled={pending !== null}
-            onClick={() => run("send")}
-          >
-            {pending === "send" && <Loader2Icon className="animate-spin" />}
-            {running ? (
-              <>
-                <span className="max-sm:hidden">Send as new turn</span>
-                <span className="sm:hidden">New turn</span>
-              </>
-            ) : (
-              "Send"
-            )}
-            {primary === "send" && <SendShortcut />}
-          </Button>
+          </div>
         </div>
-      </div>
+      </Collapsible>
     </form>
   );
 }
@@ -955,29 +965,36 @@ function TechnicalEvents({ events }: { events: ChatEvent[] }) {
   const [open, setOpen] = useState(false);
   if (events.length === 0) return null;
   return (
-    <details
-      className="rounded-lg border px-4 py-2 text-sm sm:px-6 sm:py-3"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary className="cursor-pointer font-medium">Technical events ({events.length})</summary>
-      {open && (
-        <ol data-fit="technical-list" className="mt-3 space-y-2" aria-label="Technical events">
-          {events.map((event) => (
-            <li key={event.id} className="rounded-md border bg-muted/30 px-3 py-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="font-mono font-medium">{event.kind === "other" ? event.type : event.kind}</span>
-                <time className="text-muted-foreground" dateTime={new Date(event.at).toISOString()}>
-                  {new Date(event.at).toISOString().slice(11, 19)} UTC
-                </time>
-              </div>
-              <pre className="mt-1 max-h-60 overflow-auto font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground">
-                {toolText(event.kind === "other" ? event.data : event)}
-              </pre>
-            </li>
-          ))}
-        </ol>
-      )}
-    </details>
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border text-sm">
+      <CollapsibleTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-auto w-full justify-start rounded-lg px-4 py-2 sm:px-6 sm:py-3"
+        >
+          <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+          Technical events ({events.length})
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {open && (
+          <ol data-fit="technical-list" className="space-y-2 px-4 pt-1 pb-3 sm:px-6" aria-label="Technical events">
+            {events.map((event) => (
+              <li key={event.id} className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-mono font-medium">{event.kind === "other" ? event.type : event.kind}</span>
+                  <time className="text-muted-foreground" dateTime={new Date(event.at).toISOString()}>
+                    {new Date(event.at).toISOString().slice(11, 19)} UTC
+                  </time>
+                </div>
+                <pre className="mt-1 max-h-60 overflow-auto font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground">
+                  {toolText(event.kind === "other" ? event.data : event)}
+                </pre>
+              </li>
+            ))}
+          </ol>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
