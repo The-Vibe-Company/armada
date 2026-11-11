@@ -8,6 +8,7 @@ create table public.armada_access_parents (
  sandbox_id uuid unique references public.sandboxes(id),
  state text not null check(state in ('creating','ready','stopping','stopped','resuming','blocked')),
  authority_epoch bigint not null default 1 check(authority_epoch > 0),
+ generation bigint not null default 1 check(generation > 0),
  golden_ids uuid[] not null default '{}',
  credential_ids uuid[] not null default '{}',
  unique(id,org_id,owner_id)
@@ -95,7 +96,7 @@ end $$;
 create or replace function public.revoke_rebound_orchestrator_native() returns trigger language plpgsql set search_path=public as $$
 begin
  if new.orchestrator_native_generation is distinct from old.orchestrator_native_generation then
-  update public.armada_access_parents set authority_epoch=authority_epoch+1 where sandbox_id=new.id;
+  update public.armada_access_parents set authority_epoch=authority_epoch+1,generation=generation+1 where sandbox_id=new.id;
  end if;
  return new;
 end $$;
@@ -110,12 +111,13 @@ begin
   (old.org_id,old.owner_id,old.access_owner_id,old.visibility,old.golden_id) then
   raise exception 'immutable delegated parent access' using errcode='23514';
  end if;
- if (new.status,new.stop_requested_at,new.lifecycle_generation) is distinct from (old.status,old.stop_requested_at,old.lifecycle_generation) then
+ if (new.status,new.stop_requested_at) is distinct from (old.status,old.stop_requested_at) then
   update public.armada_access_parents set
    state=case when new.status in ('stopped','deleted','failed') then 'stopped'
     when new.stop_requested_at is not null then 'stopping' else 'ready' end,
    authority_epoch=authority_epoch+case when new.status in ('stopped','deleted','failed') or new.stop_requested_at is not null
-    or new.lifecycle_generation is distinct from old.lifecycle_generation then 1 else 0 end
+    then 1 else 0 end,
+   generation=generation+case when new.status in ('stopped','deleted','failed') or new.stop_requested_at is not null then 1 else 0 end
    where sandbox_id=new.id and kind='sandbox';
  end if;
  return new;

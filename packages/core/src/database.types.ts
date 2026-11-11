@@ -199,6 +199,7 @@ export type Database = {
           sandbox_id: string | null;
           state: string;
           authority_epoch: number;
+          generation: number;
           golden_ids: string[];
           credential_ids: string[];
         };
@@ -210,6 +211,7 @@ export type Database = {
           sandbox_id?: string | null;
           state: string;
           authority_epoch?: number;
+          generation?: number;
           golden_ids?: string[];
           credential_ids?: string[];
         };
@@ -221,6 +223,7 @@ export type Database = {
           sandbox_id?: string | null;
           state?: string;
           authority_epoch?: number;
+          generation?: number;
           golden_ids?: string[];
           credential_ids?: string[];
         };

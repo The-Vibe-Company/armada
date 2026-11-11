@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { createSqlSandboxStore, OrchestratorAuthority, type Provider, type Sql } from "@armada/core/server";
+import {
+  createSqlMcpRegistry,
+  createSqlSandboxStore,
+  OrchestratorAuthority,
+  type Provider,
+  type Sql,
+} from "@armada/core/server";
+import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createOrchestratorChildren } from "../src/orchestrator-children.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { database, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
@@ -24,12 +31,14 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     const info = await fake.provider.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
     let token = "";
     let scrubFails = false;
+    let parentActive = false;
     const effects: string[] = [];
     const provider: Provider = {
       ...fake.provider,
       id: "modal",
       get: async (id) => ({ ...(await fake.provider.get(id)), physicalGeneration: "1" }),
       installOrchestratorEpoch: async (request) => {
+        if (parentActive) throw Error("native_busy");
         token = request.token;
         return { acknowledged: true };
       },
@@ -55,7 +64,9 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
       orgId: people.org,
       ownerId: people.owner,
       harness: "codex",
-      status: "starting", model: "m", reasoningEffort: "high",
+      status: "starting",
+      model: "m",
+      reasoningEffort: "high",
       visibility: "private",
       credentialId: account.id,
       credentialVersion: 1,
@@ -91,6 +102,23 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
       credentialVersion: 1,
       model: "m",
     };
+    const activeToken = token;
+    parentActive = true;
+    provider.prompt = async (request) => {
+      await access.beforePrompt(provider, request.sandboxId);
+      throw Error("native_busy");
+    };
+    await expect(
+      wrapped.prompt({ sandboxId: info.id, harness: "codex", text: "conflicting follow-up" }),
+    ).rejects.toThrow("native_busy");
+    expect(
+      await authority.admit(
+        activeToken,
+        { method: "launch", ...selection },
+        async (_tx, principal) => principal.ownerId,
+      ),
+    ).toBe(people.owner);
+    parentActive = false;
     expect((await children.launch(token, "first", selection)).state).toBe("uncertain");
     await expect(children.launch(token, "second", selection)).rejects.toThrow("child policy");
     expect(allocations).toBe(1);
@@ -104,6 +132,36 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     scrubFails = false;
     await wrapped.stop({ sandboxId: info.id });
     expect(effects.at(-1)).toBe("stop");
+    const previousToken = token;
+    await db.query(
+      "update sandboxes set status='stopped',stopped_at=now(),conversation_ids=array['remembered-conversation'],lifecycle_generation=lifecycle_generation+1 where id=$1",
+      [saved.id],
+    );
+    // The provider activates first; the real MCP lifecycle publishes stopped -> ready
+    // before delegated access is installed, just like the native pre-prompt hook.
+    fake.sandbox(info.id).info.state = "ready";
+    provider.configureMcp = async () => {};
+    const mcp = createMcpLifecycle({
+      sql,
+      registry: createSqlMcpRegistry(sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: PUBLIC_URL,
+    });
+    await mcp.beforePrompt(provider, info.id, { userId: people.owner, orgId: people.org });
+    await expect(access.beforePrompt(provider, info.id)).resolves.toBeUndefined();
+    await db.query("update sandboxes set status='running',lifecycle_generation=lifecycle_generation+1 where id=$1", [
+      saved.id,
+    ]);
+    expect(
+      await authority.admit(token, { method: "launch", ...selection }, async (_tx, principal) => principal.ownerId),
+    ).toBe(people.owner);
+    await expect(authority.admit(previousToken, { method: "launch", ...selection }, async () => true)).rejects.toThrow(
+      "denied",
+    );
+    expect(
+      (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [saved.id]))
+        .rows[0]?.conversation_ids,
+    ).toEqual(["remembered-conversation"]);
   } finally {
     await db.close();
   }

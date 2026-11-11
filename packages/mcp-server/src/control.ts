@@ -1331,7 +1331,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       ...options.launch,
       ...(armadaAccess
         ? {
-            privateParent: true as const,
+            privateVisibility: true as const,
             beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
               await options.launch?.beforeStart?.(provider, sandbox);
               await options.sandboxArmadaAccess!.prepare(provider, sandbox, actor, armadaAccess);

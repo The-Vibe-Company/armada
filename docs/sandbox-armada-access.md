@@ -35,7 +35,7 @@ There is no owner CLI token, credential administration or arbitrary sandbox acce
 Only the parent's selected golden/account can launch children. Current owner/org
 membership and account authorization are rechecked; messages/read/stop apply only
 to that parent's attributed children. Epochs last at most 24h and are bound to SQL
-lifecycle and physical generation. Native pre-prompt preparation rotates access
+lifecycle and physical generation. Native pre-prompt preparation reuses a valid current grant or renews access
 after activation. Pending/uncertain allocations count against the child cap; reuse
 idempotency keys and identical arguments after an ambiguous response.
 

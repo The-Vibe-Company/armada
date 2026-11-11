@@ -61,7 +61,7 @@ export async function launchOrchestratorChild(input: {
       where c.id=$1 and c.target_id=$2 and c.owner_id=$3 and c.org_id=$4 and c.action='launch'
       and c.orchestrator_id=$5 and c.parent_generation=$6 and c.parent_epoch=$7
       and c.state='pending' and c.dispatched_at is not null and o.state='ready'
-      and s.lifecycle_generation=c.parent_generation and o.authority_epoch=c.parent_epoch`,
+      and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.authority_epoch=c.parent_epoch`,
           [op.id, op.sandboxId, op.ownerId, op.orgId, op.orchestratorId, op.parentGeneration, op.parentEpoch],
         )
       ).rows[0];

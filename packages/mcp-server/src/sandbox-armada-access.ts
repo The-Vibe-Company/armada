@@ -59,13 +59,39 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
       )
     ).rows[0];
   }
-  async function install(provider: Provider, id: string) {
+  async function install(provider: Provider, id: string, restore = false) {
     const parent = await scope(provider, id);
     if (!parent) return;
     const target = native(provider);
     const physical = await target.get(id);
     if (!physical.physicalGeneration || !["ready", "running"].includes(physical.state))
       throw new VaultError("unavailable", "Delegated access requires an active native generation.");
+    // The ordinary MCP path intentionally does no SQL publication when no user
+    // connections exist. This native pre-prompt hook runs only after physical
+    // activation; publish that verified transition before issuing authority.
+    if (restore)
+      await sql.query(
+        `update public.sandboxes s set status='ready',stopped_at=null
+        where s.id=$1 and s.status='stopped' and s.stop_requested_at is null and s.deleted_at is null
+        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)`,
+        [parent.sandbox_id],
+      );
+    // Native delivery requires quiescence. Reuse a still-acknowledged grant for
+    // this incarnation instead of revoking an active turn's tools when a later
+    // ordinary send is refused as busy. Stop/rebind/expiry invalidate this check.
+    const current = await sql.query(
+      `select d.id from public.orchestrator_delegations d
+       join public.armada_access_parents p on p.id=d.orchestrator_id
+       join public.sandboxes s on s.id=p.sandbox_id
+       join public.members m on m.org_id=p.org_id and m.user_id=p.owner_id
+       where p.id=$1 and p.kind='sandbox' and p.state='ready' and d.epoch=p.authority_epoch
+       and d.acknowledged_at is not null and d.revoked_at is null and d.expires_at>now()
+       and d.native_generation=$2 and s.orchestrator_native_generation=$2
+       and d.golden_ids=p.golden_ids and d.account_ids=p.credential_ids
+       and s.status in ('starting','ready','running') and s.stop_requested_at is null`,
+      [parent.id, physical.physicalGeneration],
+    );
+    if (current.rows.length) return;
     await authority.installEpoch(
       parent.id,
       createOrchestratorTransport({
@@ -104,7 +130,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
     );
   }
   return {
-    beforePrompt: install,
+    beforePrompt: (provider: Provider, id: string) => install(provider, id, true),
     beforeSnapshot: scrub,
     async prepare(provider: Provider, sandbox: SandboxRecord, actor: GoldenActor, options: SandboxArmadaAccessOptions) {
       if (
