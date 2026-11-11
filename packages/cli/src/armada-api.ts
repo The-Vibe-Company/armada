@@ -132,6 +132,42 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           response.status,
           `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
         );
+      // Vault writes can be echoed by an upstream failure. Only closed local text is safe.
+      if (path.startsWith("/api/v1/variables/") || path.startsWith("/api/v1/secrets/")) {
+        const known: Record<string, string> = {
+          "Application vault version changed.":
+            "Version conflict. List entries and retry with the current --expected-version.",
+          "Application vault resource is not active.":
+            "Entry revoked or deleted. Revocation is terminal; delete a revoked entry before reusing its name.",
+          "An application vault name is already in use.":
+            "Name already in use, including revoked entries. Delete the old entry before reusing its name.",
+        };
+        const message = apiMessage(payload, "");
+        const messages: Record<number, string> = {
+          400: "Invalid application vault request. Check the name (uppercase, non-reserved), value (valid UTF-8, no NUL, at most 8 KiB; secrets cannot be empty), ID and version.",
+          401: "Run armada login or update ARMADA_TOKEN.",
+          403: "Application vault access denied. Current membership is required; only admins can mutate organization entries.",
+          404: "Application vault entry or organization not found or not visible.",
+          409: "Application vault conflict. List entries and check the current version, duplicate name or revoked status before retrying.",
+        };
+        throw new ArmadaApiError(
+          response.status === 400
+            ? "invalid"
+            : response.status === 401
+              ? "unauthorized"
+              : response.status === 403
+                ? "forbidden"
+                : response.status === 404
+                  ? "not_found"
+                  : response.status === 409
+                    ? "conflict"
+                    : "unavailable",
+          response.status,
+          (response.status === 409 && Object.hasOwn(known, message) ? known[message] : undefined) ??
+            messages[response.status] ??
+            "Application vault unavailable. Check entry status before retrying.",
+        );
+      }
       if (failureCode && Object.hasOwn(API_FAILURE_HELP, failureCode))
         throw new ArmadaApiError(failureCode, response.status, API_FAILURE_HELP[failureCode as ApiFailureCode]);
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)

@@ -29,6 +29,7 @@ import {
   VERSION,
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
+import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import {
@@ -57,7 +58,7 @@ export interface Deps {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   readFile?: (path: string) => Promise<string>;
-  /** The secret for `armada creds set`. By default stdin, and only when it is piped. */
+  /** Values for credential/application vault writes. By default stdin, only when piped. */
   readStdin?: () => Promise<string>;
   /** Legacy test seam; commands use the Armada API rather than direct stores. */
   actor?: GoldenActor;
@@ -190,6 +191,9 @@ Usage:
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
+  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
+                                           Personal or --org scope. --json is metadata only; no sandbox delivery.
   armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]
@@ -363,6 +367,9 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return logout(rest, io, deps);
     case "org":
       return orgCommand(rest, vaultIo(io, deps));
+    case "vars":
+    case "secrets":
+      return applicationVaultCommand(command, rest, vaultIo(io, deps));
     case "creds":
       return credsCommand(rest, vaultIo(io, deps));
     case "token":
