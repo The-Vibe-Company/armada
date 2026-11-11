@@ -78,7 +78,8 @@ Both surfaces admit durable jobs, not inline snapshots. Control API requests use
 | MCP `golden_update` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `setup`. No `config` or `private` field. |
 
 MCP `repos` contains 1–16 `owner/repo` entries. Private repositories require a
-caller-visible GitHub App installation; caller-verified public repositories need not have one. `setup`
+caller-visible GitHub App installation. Public repositories can pass authorization without
+one, but checkout is not guaranteed in that case (see the signing caveat below). `setup`
 is script text, not the CLI's local file path. MCP `org` is an org ID (needed when membership
 is ambiguous); API `org` accepts an ID or name. Use IDs for portable examples.
 
@@ -131,8 +132,10 @@ before deciding what to do, rather than treating it as a durable build job to po
   can access. Missing/revoked/unavailable GitHub access prevents a build.
 - Checkout uses the caller's cached OAuth access token, or an optional short-lived,
   repository-scoped installation token when the server has signing credentials and the
-  repositories share one installation. Public repositories without an installation and
-  repositories spanning installations use the caller-token fallback. The minted token is
+  repositories share one installation. Repositories spanning installations use the caller-token
+  fallback. With signing enabled, a public-only request without any installation currently
+  attempts to mint for installation ID 0 and fails validation; do not rely on a caller-token
+  fallback for that case. Without signing configured, checkout uses the caller token. The minted token is
   revoked after checkout; the shared user token is not revoked by the build. Credentials travel
   over pinned SSH on stdin, not argv, git config or persistent credential files.
 - Disposable builders receive no account environment secrets. A fail-closed scan covers the
