@@ -71,12 +71,12 @@ test("one deadline aborts stalled headers and stalled JSON consumption", async (
     const fetch: AuthFetch = async (_input, init) => {
       signal = init?.signal ?? undefined;
       if (stage === "headers") return lateHeaders.promise;
-      const response = new Response();
-      response.json = () => {
-        enteredBody.resolve();
-        return body.promise;
-      };
-      return response;
+      return new (class extends Response {
+        override json(): Promise<unknown> {
+          enteredBody.resolve();
+          return body.promise;
+        }
+      })();
     };
     try {
       const result = verifySupabaseUser(token, { ...project, fetch });
