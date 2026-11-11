@@ -1,8 +1,8 @@
 # Vault slice 1 staging acceptance
 
 Run only against a disposable staging database after its operator applies the new
-migration. Never use production credentials or real application secrets. Use a
-random disposable canary and authenticated JSON request bodies; do not put values
+`20261110221000_application_vault.sql` migration. Never use production credentials
+or real application secrets. Use a random disposable canary and authenticated JSON request bodies; do not put values
 in URLs, shell arguments, MCP arguments, or command logs.
 
 ## Required checks
