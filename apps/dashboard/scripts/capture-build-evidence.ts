@@ -24,9 +24,13 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
-          const notice = page
-            .getByRole(phase === "before" ? "alert" : "status")
-            .filter({ hasText: "The Armada server is not configured" });
+          const currentNotice = page.getByRole("status").filter({ hasText: "The Armada server is not configured" });
+          // A comparison label is not a feature flag: the baseline may already use
+          // the current accessible role. Candidate evidence still requires status.
+          const notice =
+            phase === "before"
+              ? currentNotice.or(page.getByRole("alert").filter({ hasText: "The Armada server is not configured" }))
+              : currentNotice;
           await expect(notice).toBeVisible();
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.screenshot({
