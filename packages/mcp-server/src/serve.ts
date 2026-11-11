@@ -35,6 +35,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
+import { retryDatabaseBoot } from "./database-boot.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
@@ -99,7 +100,13 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
   });
-  await mcp.drainInvalidations();
+  try {
+    await retryDatabaseBoot(() => mcp.drainInvalidations(), options.logError ?? console.error);
+  } catch (error) {
+    await mcp.close();
+    await sql.close();
+    throw error;
+  }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
@@ -320,7 +327,7 @@ export async function startServer(
     invitationWorker?.stop();
     const closed = mcp.close();
     const stopped = stop(closeActiveConnections);
-    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => {});
+    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => sql.close());
     return stopped;
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.
