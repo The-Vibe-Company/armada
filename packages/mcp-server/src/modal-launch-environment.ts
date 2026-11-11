@@ -117,7 +117,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     if (stored.github_enabled) {
       if (!options.github) throw new VaultError("unavailable", "This launch requires its GitHub connection.");
       const github = await resolveGitHubAccess(
-        { ...options.github, encryptionKey: options.encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
+        { ...options.github, caller: "modal_restore", encryptionKey: options.encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
         userId,
       );
       if (github.status !== "connected")

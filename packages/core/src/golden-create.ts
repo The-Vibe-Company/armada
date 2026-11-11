@@ -73,7 +73,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     app: options.installationApp,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     async accessToken(actor: GoldenActor) {
-      const access = await resolveGitHubAccess(options.github, actor.userId);
+      const access = await resolveGitHubAccess({ ...options.github, caller: "golden_create" }, actor.userId);
       if (access.status !== "connected") throw new GoldenError("forbidden", access.message);
       return access.token;
     },

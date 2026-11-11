@@ -200,7 +200,7 @@ export function createGitHubRuntime(options: {
         const provider = await options.providerForSandbox(grant.sandbox_id);
         const native = await physical(provider, before.identity);
         if (native.physical !== grant.binding.physical || native.backend !== grant.binding.backend) return denied();
-        const access = await resolveGitHubAccess(options.github, before.identity.ownerId);
+        const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, before.identity.ownerId);
         if (access.status !== "connected" || access.identity.id !== before.identity.githubId) return denied();
         const [after, still, nativeAfter] = await Promise.all([
           snapshot(grant.sandbox_id),

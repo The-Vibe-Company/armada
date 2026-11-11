@@ -135,7 +135,7 @@ export function launchCredentials(
         ...(credentialVersion !== undefined ? { credentialVersion } : {}),
       });
       const access = github
-        ? await resolveGitHubAccess({ ...github, encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 }, actor.userId)
+        ? await resolveGitHubAccess({ ...github, caller: "launch", encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 }, actor.userId)
         : undefined;
       return toHarnessCredentials(resolved, access);
     },

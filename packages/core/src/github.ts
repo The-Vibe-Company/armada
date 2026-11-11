@@ -312,6 +312,8 @@ export const GITHUB_REVOKED =
   "Your GitHub connection was revoked or has expired, so git push and gh in this sandbox are not signed in as you. Reconnect GitHub in the dashboard under Settings.";
 
 export interface GitHubResolveDeps {
+  /** Server-owned call site, never request input. */
+  caller?: "launch" | "golden_create" | "managed_runtime" | "legacy_refresh" | "legacy_prompt" | "account_status" | "modal_restore";
   /** Trusted caller policy: launches require one hour; on-demand brokers need only the refresh margin. */
   minimumLifetimeMs?: number;
   store: GitHubConnectionStore;
@@ -344,6 +346,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
         status: "unavailable",
         message: `The server has no GitHub App configured (${GITHUB_CLIENT_ID_ENV} and ${GITHUB_CLIENT_SECRET_ENV}), so GitHub was not set up in this sandbox.`,
       };
+    let reason = !connection.accessTokenEnc || !connection.accessExpiresAt ? "cache_missing" : "insufficient_lifetime";
     if (
       connection.accessTokenEnc &&
       connection.accessExpiresAt &&
@@ -369,6 +372,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
             message:
               "The stored GitHub connection could not be decrypted. Reconnect GitHub in the dashboard under Settings.",
           };
+        reason = "access_rejected";
       }
     }
     let refreshToken: string;
@@ -397,6 +401,14 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
           : "A GitHub refresh may still be in progress or its outcome is uncertain. Retry shortly; if this persists, reconnect GitHub in the dashboard under Settings. The previous refresh will not be replayed.",
       };
     }
+    const audit = {
+      caller: deps.caller ?? "unspecified",
+      ownerId: userId,
+      reason,
+      minimumLifetimeMs,
+      previousRemainingLifetimeMs: connection.accessExpiresAt ? connection.accessExpiresAt.getTime() - now.getTime() : null,
+    };
+    console.info(JSON.stringify({ event: "github_token_refresh_started", ...audit }));
     let tokens: GitHubTokenSet;
     try {
       tokens = await refreshGitHubToken(deps.app, refreshToken, request);
@@ -407,6 +419,13 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       await store.markGitHubRevoked(userId, connection.refreshTokenEnc);
       return { status: "revoked", message: GITHUB_REVOKED };
     }
+    // Record the remote rotation even if local publication loses to a reconnect.
+    console.info(JSON.stringify({
+      event: "github_token_rotated",
+      ...audit,
+      accessExpiresAt: tokens.accessExpiresAt.toISOString(),
+      observedRemainingLifetimeMs: tokens.accessExpiresAt.getTime() - (deps.now ?? (() => new Date()))().getTime(),
+    }));
     const next = {
       refreshTokenEnc: await encryptSecret(tokens.refreshToken, deps.encryptionKey),
       refreshExpiresAt: tokens.refreshExpiresAt,

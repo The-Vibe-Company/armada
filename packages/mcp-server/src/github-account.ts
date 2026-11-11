@@ -53,6 +53,7 @@ export function createGitHubAccountApi(options: {
     ).rows[0];
     const access = await resolveGitHubAccess(
       {
+        caller: "account_status",
         store: createSqlVaultStore(sql),
         encryptionKey: options.encryptionKey,
         app: options.app,
