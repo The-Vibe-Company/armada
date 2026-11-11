@@ -62,7 +62,7 @@ async function guarded(run: (context: Context) => Promise<ActionResult>, data: F
   }
 }
 
-/** The form's four choices against what the viewer can see now. */
+/** The form's choices against what the viewer can see now, with exact skills validated before publication. */
 async function request(data: FormData, scope: string, previous?: TemplateDefinition) {
   return templateRequest(
     {
@@ -75,6 +75,7 @@ async function request(data: FormData, scope: string, previous?: TemplateDefinit
       reasoningEffort: formString(data, "reasoning_effort"),
       connections: data.getAll("connections").map(String),
       variables: data.getAll("variables").map(String),
+      skills: data.getAll("skills").map(String),
     },
     await templateLookups(),
     previous,
@@ -96,8 +97,8 @@ export async function publishTemplate(_previous: ActionResult | null, data: Form
   return guarded(async ({ templates, org }) => {
     const current = target(data);
     if (!current) return fail("That request is not valid.");
-    // A publication replaces the whole definition: skill pins (set over the API, not shown here) carry over from
-    // the revision it starts from, and so do its variable keys. A pinned model account carries over only while the
+    // A publication replaces the whole definition: skills come from the picker initialized with this revision,
+    // while retained variable bindings keep their keys. A pinned model account carries over only while the
     // person keeps it ticked; an account pinned for another agent cannot run the new one, so it goes with the agent
     // change.
     const { revision: previous } = await templates.get({ org, id: current.id, revision: current.expectedRevision });
@@ -111,7 +112,6 @@ export async function publishTemplate(_previous: ActionResult | null, data: Form
       formString(data, "keep_account") === "on";
     const definition = {
       ...parsed.value.definition,
-      ...(kept.skills.length ? { skills: kept.skills } : {}),
       ...(keepAccount ? { modelAccount: kept.modelAccount } : {}),
     };
     let item: Awaited<ReturnType<Templates["publish"]>>["item"];
