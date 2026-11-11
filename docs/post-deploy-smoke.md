@@ -358,3 +358,34 @@ per pair; provider cold-start/model rates determine cost. Extension requests
 headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
 35-minute work / five-minute cleanup deadlines and 120-poll bounds remain.
 Expiry-as-stop is not claimed by this slice. No migrations or deployment actions.
+
+### GitHub access and refresh idempotency (#969, night slice)
+
+`--github-access` adds read-only GitHub verification to the clean ordinary
+worker for each selected pair. Both staging entrypoints enable it alongside
+lifecycle. The native harness runs `git ls-remote origin HEAD` and
+`gh api user --jq .login` from the recorded checkout; the latter is authenticated
+even when the origin is public. The checkout cwd also supplies repository context
+to the existing managed GitHub broker. A fresh random receipt path per turn
+prevents an old successful turn from standing in for new execution. Only numeric
+exit receipts and the public login are read internally; neither command output,
+login nor credentials are logged. Receipt files are removed after reading.
+
+Named steps: `github_access_at_launch`, `github_refresh_1`,
+`github_refresh_2`, and `github_access_after_resume`. The two consecutive
+`github/refresh` calls use the same sandbox ID and must both report connected to
+the native-observed identity. After the existing lifecycle stop/resume, native
+Git/gh access must still work with that identity. This tests observable repair
+idempotency, not token byte equality or forced expiry/rotation. No remote pushes,
+writes, broker fault injection or new GitHub capability are introduced. The
+separate `--github-runtime` push diagnostic is unchanged and cannot be combined.
+
+Standalone `--github-access` uses a second live turn after refresh instead of a
+physical resume, named `github_access_after_refresh`. Its ordinary-worker cleanup
+summary still reports leftover IDs or unknown launch outcomes. With the default
+lifecycle combination there are no extra allocations or model turns: its two
+existing turns perform the checks. Expect seconds of GitHub/API traffic plus
+model-tool latency, within the unchanged shared 35+5-minute deadline. Standalone
+adds one tiny model turn. Configured goldens need Git, gh, an accessible GitHub
+origin at `repo`, and the smoke user's staging GitHub connection. No new secrets
+or case fields. This mode also requires the exact staging origin.

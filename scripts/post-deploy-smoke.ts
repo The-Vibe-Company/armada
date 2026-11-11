@@ -45,7 +45,9 @@ type Code =
   | "preservation_failed"
   | "no_running_turn"
   | "steer_not_refused"
-  | "list_status_mismatch";
+  | "list_status_mismatch"
+  | "github_access_failed"
+  | "github_identity_mismatch";
 const API_CODES = new Set<Code>([
   ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
@@ -182,17 +184,19 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const preservation = args.includes("--work-preservation");
   const templatesSkills = args.includes("--templates-skills");
   const lifecycle = args.includes("--lifecycle");
+  const githubAccess = args.includes("--github-access");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (github && (orchestrator || preservation || templatesSkills || lifecycle)) ||
+      (github && (orchestrator || preservation || templatesSkills || lifecycle || githubAccess)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
           arg !== "--github-runtime" &&
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
-          arg !== "--lifecycle",
+          arg !== "--lifecycle" &&
+          arg !== "--github-access",
       ) ||
       !env.ARMADA_URL ||
       !env.ARMADA_TOKEN ||
@@ -203,7 +207,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
       fail("invalid_configuration");
     origin = url.origin;
-    if ((preservation || templatesSkills || lifecycle) && origin !== "https://armada-mcp-staging.up.railway.app")
+    if (
+      (preservation || templatesSkills || lifecycle || githubAccess) &&
+      origin !== "https://armada-mcp-staging.up.railway.app"
+    )
       fail("invalid_configuration");
     const parsed: unknown = JSON.parse(env.ARMADA_SMOKE_CASES);
     if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) fail("invalid_configuration");
@@ -356,7 +363,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     // This mode is independently runnable; combined staging runs keep the existing
     // preservation baseline as well, under the same shared deadline.
-    if (!preservation && !lifecycle) return templateSkillsPassed;
+    if (!preservation && !lifecycle && !githubAccess) return templateSkillsPassed;
   }
   // Validate the entire selected matrix before any billable mutation. A later
   // disabled case must not be discovered after earlier cases have allocated.
@@ -435,6 +442,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     let launchAttempted = false;
     let sandboxId: string | undefined;
     let commit: string | undefined;
+    const readGitHub = githubAccess && !dirty;
+    let githubLogin: string | undefined;
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
@@ -549,7 +558,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         fail("poll_limit_exceeded");
       }
       async function nativeTurn(second: boolean, phase?: string) {
-        const commands = `${git} status -sb >/dev/null 2>&1; a=$?; ${git} ls-remote origin HEAD >/dev/null 2>&1; b=$?; ${second ? "c=0" : `${git} push origin HEAD:refs/heads/${scratch} >/dev/null 2>&1; c=$?`}; printf '%s %s %s' "$a" "$b" "$c" > ${quote(receipt)}`;
+        const accessReceipt = `/tmp/${scratch}-github-${crypto.randomUUID()}`;
+        const commands = readGitHub
+          ? `${git} ls-remote origin HEAD >/dev/null 2>&1; a=$?; login=$(cd ${quote(item.repo)} && gh api user --jq .login 2>/dev/null); b=$?; printf '%s %s\\n%s' "$a" "$b" "$login" > ${quote(accessReceipt)}`
+          : `${git} status -sb >/dev/null 2>&1; a=$?; ${git} ls-remote origin HEAD >/dev/null 2>&1; b=$?; ${second ? "c=0" : `${git} push origin HEAD:refs/heads/${scratch} >/dev/null 2>&1; c=$?`}; printf '%s %s %s' "$a" "$b" "$c" > ${quote(receipt)}`;
         if (github) {
           await step("repository_guard", () => checkedExec(remoteGuard));
           await checkedExec(`rm -f ${quote(receipt)}`);
@@ -561,9 +573,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
               try {
                 return await sandbox<{ promptId: string }>("send", {
                   id: sandboxId,
-                  prompt: github
-                    ? `Run exactly this shell command using your terminal tool, without reading credentials or making other changes: ${commands}`
-                    : PROMPT,
+                  prompt:
+                    github || readGitHub
+                      ? `Run exactly this shell command using your terminal tool, without reading credentials or making other changes: ${commands}`
+                      : PROMPT,
                 });
               } catch (error) {
                 // Only this closed rejection guarantees the prompt was not admitted.
@@ -592,6 +605,33 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             },
           ),
         );
+        if (readGitHub)
+          await step(
+            phase === "resume"
+              ? "github_access_after_resume"
+              : second
+                ? "github_access_after_refresh"
+                : "github_access_at_launch",
+            async () => {
+              const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
+                id: sandboxId,
+                cwd: item.repo,
+                timeout_seconds: 60,
+                // A fresh path per turn proves execution, not a stale prior receipt.
+                // Remove the public-identity receipt after reading, even on failure.
+                command: `head -c 128 -- ${quote(accessReceipt)}; result=$?; rm -f -- ${quote(accessReceipt)}; exit "$result"`,
+              });
+              if (result?.exitCode !== 0 || result.timedOut !== false) fail("exec_failed");
+              if (typeof result.stdout !== "string") fail("invalid_receipt");
+              const match = /^(\d{1,3}) (\d{1,3})\n([^\n]*)\n?$/.exec(result.stdout);
+              if (!match || Number(match[1]) > 255 || Number(match[2]) > 255) fail("invalid_receipt");
+              if (match[1] !== "0" || match[2] !== "0") fail("github_access_failed");
+              const login = match[3]!;
+              if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(login)) fail("invalid_receipt");
+              if (githubLogin && login !== githubLogin) fail("github_identity_mismatch");
+              githubLogin = login;
+            },
+          );
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {
             const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
@@ -629,6 +669,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           ),
         );
       await nativeTurn(false);
+      if (readGitHub) {
+        for (const attempt of [1, 2])
+          await step(`github_refresh_${attempt}`, async () => {
+            const result = await request<{ id: string; status: string; login: string }>("github/refresh", {
+              org: item.org,
+              id: sandboxId,
+            });
+            if (result?.id !== sandboxId || result.status !== "connected") fail("invalid_response");
+            if (!githubLogin || result.login !== githubLogin) fail("github_identity_mismatch");
+          });
+        if (!lifecycle) await nativeTurn(true, "github_after_refresh");
+      }
       if (lifecycle && !dirty) {
         await step("list_ready", () => consistent("ready"));
         await step("steer_refused", async () => {
@@ -784,11 +836,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
-    if (lifecycle)
+    if (lifecycle || githubAccess)
       io.out(
         JSON.stringify({
           case: index,
-          phase: dirty ? "preservation" : "lifecycle",
+          phase: dirty ? "preservation" : lifecycle ? "lifecycle" : "github_access",
           step: "lifecycle_cleanup_summary",
           pass: !!sandboxId && stopped,
           provider: item.provider,
