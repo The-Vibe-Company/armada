@@ -113,7 +113,7 @@ test("private image org-fallback provenance survives adding a personal key, rota
     const caller = { userId: people.owner };
     const scope: Scope = { orgId: people.org, userId: people.owner, visibility: "private", binding };
     const machine: Machine = {
-      info: { id: "stored-private", name: "private", state: "ready", labels: {} },
+      info: { id: "stored-private", name: "private", state: "ready", providerState: "active", labels: {} },
       phase: "active",
       generation: 1,
       golden: false,
