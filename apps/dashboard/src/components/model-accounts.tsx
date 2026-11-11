@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -56,8 +57,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import {
   type AccountKind,
@@ -705,6 +708,7 @@ function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }
       <Label htmlFor={`${idPrefix}-value`}>{info.valueLabel}</Label>
       {kind === "codex_auth" ? (
         <Textarea
+          data-secret-value
           id={`${idPrefix}-value`}
           name="value"
           rows={4}
@@ -756,6 +760,7 @@ export function AddAccountDialog({
   triggerLabel?: string;
   triggerVariant?: "default" | "outline";
 }) {
+  const formRef = usePreservedActionForm();
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useActionState(addAccount, null);
@@ -769,10 +774,10 @@ export function AddAccountDialog({
   // Only a personal account signs in from the terminal; an org account is pasted by its admin.
   const terminal = scope === "user" ? terminalLogin(capabilities, kind, name) : null;
   const defaultBox = (
-    <label className="flex items-center gap-2 text-sm">
-      <input type="checkbox" name="default" className="size-4 accent-primary" />
+    <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
+      <Checkbox id={`${id}-default-account`} name="default" value="on" />
       Make it the default for {info.harnessLabel}
-    </label>
+    </Label>
   );
 
   // Each opening leads with the subscription sign-in again (#805): an API key chosen last time is not kept.
@@ -817,25 +822,28 @@ export function AddAccountDialog({
                 : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
             </DialogDescription>
           </DialogHeader>
-          <form key={generation} action={formAction} className="min-w-0 space-y-5">
+          <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="kind" value={kind} />
             <input type="hidden" name="scope" value={scope} />
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">{subscription ? "Subscription" : "API key"}</legend>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <RadioGroup
+                value={kind}
+                onValueChange={(value) => setKind(value as AccountKind)}
+                aria-label={subscription ? "Subscription" : "API key"}
+                className="sm:grid-cols-2"
+              >
                 {addChoices(info.billing).map((value) => (
                   <ChoiceCard
                     key={value}
-                    name={`${id}-kind`}
-                    checked={kind === value}
-                    onChange={() => setKind(value)}
+                    value={value}
                     icon={subscription ? <StarIcon /> : <KeyRoundIcon />}
                     title={KIND_INFO[value].label}
                     hint={`${KIND_INFO[value].harnessLabel}${subscription ? "" : ", billed per token"}`}
                   />
                 ))}
-              </div>
+              </RadioGroup>
               <Button
                 type="button"
                 variant="link"
@@ -851,24 +859,15 @@ export function AddAccountDialog({
             {isAdmin && (
               <fieldset className="space-y-2">
                 <legend className="text-sm font-medium">Who uses it</legend>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <ChoiceCard
-                    name={`${id}-scope`}
-                    checked={scope === "user"}
-                    onChange={() => setScope("user")}
-                    icon={<UserIcon />}
-                    title="Only you"
-                    hint="Your launches."
-                  />
-                  <ChoiceCard
-                    name={`${id}-scope`}
-                    checked={scope === "org"}
-                    onChange={() => setScope("org")}
-                    icon={<UsersIcon />}
-                    title={orgName}
-                    hint="Every member's launches."
-                  />
-                </div>
+                <RadioGroup
+                  value={scope}
+                  onValueChange={(value) => setScope(value as "user" | "org")}
+                  aria-label="Who uses it"
+                  className="sm:grid-cols-2"
+                >
+                  <ChoiceCard value="user" icon={<UserIcon />} title="Only you" hint="Your launches." />
+                  <ChoiceCard value="org" icon={<UsersIcon />} title={orgName} hint="Every member's launches." />
+                </RadioGroup>
               </fieldset>
             )}
 

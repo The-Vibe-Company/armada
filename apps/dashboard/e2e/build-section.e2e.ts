@@ -17,7 +17,7 @@ test("the strip names what blocks launching and opens its fix; the list puts wha
 }) => {
   await signIn(page, "alice@example.com", "/environments");
   const strip = page.locator("[data-readiness]");
-  await expect(strip).toContainText("2 things block launching");
+  await expect(strip).toContainText("2 items need attention");
   await expect(strip.getByRole("link")).toHaveText([/^Connect Modal/, /^Snapshot alice-private/]);
   await expect(strip.getByRole("link", { name: /^Connect Modal/ })).toHaveAttribute("href", "/settings");
   // Needs action (by name), then ready.
@@ -74,7 +74,7 @@ for (const mobile of [false, true]) {
     await signIn(page, "alice@example.com", "/environments");
     const form = await openCreate(page);
     // A dialog over the list, never the side panel beside it.
-    await expect(page.locator("#resource-panel")).toBeHidden();
+    await expect(page.locator("[data-resource-panel]")).toBeHidden();
     await expect(page.locator("[data-golden]").first()).toBeAttached();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     // The one choice nothing changes later says so beside it.
@@ -135,7 +135,7 @@ test("on a phone the list fits the width and the panel is a sheet over it", asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
   const panel = await goldenPanel(page, "web-frontend");
-  const sheet = page.locator("#resource-panel");
+  const sheet = page.locator("[data-resource-panel]");
   const box = await sheet.boundingBox();
   expect(box?.width).toBe(390);
   await expect(panel.getByRole("list", { name: "Repositories of web-frontend on Boat" })).toContainText(
