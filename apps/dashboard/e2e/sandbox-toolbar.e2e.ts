@@ -29,7 +29,9 @@ for (const theme of ["light", "dark"] as const) {
           facet.boundingBox(),
         ]);
         if (!searchBox || !sortBox || !facetBox) throw new Error("Toolbar controls must have visible bounds");
-        if (width >= 640) expect(Math.abs(searchBox.y - sortBox.y)).toBeLessThanOrEqual(2);
+        const toolbarBox = await toolbar.boundingBox();
+        if (!toolbarBox) throw new Error("Toolbar must have visible bounds");
+        if (toolbarBox.width >= 576) expect(Math.abs(searchBox.y - sortBox.y)).toBeLessThanOrEqual(2);
         else expect(sortBox.y).toBeGreaterThanOrEqual(searchBox.y + searchBox.height);
         expect(sortBox.y + sortBox.height).toBeLessThanOrEqual(facetBox.y);
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

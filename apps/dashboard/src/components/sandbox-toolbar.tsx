@@ -56,10 +56,10 @@ export function SandboxToolbar({
     });
   }
   return (
-    <section aria-label="Filters" aria-busy={pending} className="space-y-3">
-      <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+    <section aria-label="Filters" aria-busy={pending} className="@container space-y-3">
+      <div className="grid min-w-0 gap-3 @min-[36rem]:grid-cols-[minmax(0,1fr)_auto] @min-[36rem]:items-center">
         <form
-          className="flex min-w-0 items-center gap-2 sm:max-w-md"
+          className="flex min-w-0 items-center gap-2 @min-[36rem]:max-w-md"
           onSubmit={(event) => {
             event.preventDefault();
             navigate({ ...current, q: query.trim(), page: 1 });
@@ -82,7 +82,7 @@ export function SandboxToolbar({
             Search
           </Button>
         </form>
-        <div className="flex min-w-0 items-center gap-3 sm:w-64 sm:shrink-0">
+        <div className="flex min-w-0 items-center gap-3 @min-[36rem]:w-64">
           <span className="shrink-0 text-sm text-muted-foreground">Sort by</span>
           <NativeSelect
             aria-label="Sort sandboxes"
