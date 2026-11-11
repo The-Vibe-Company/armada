@@ -8,8 +8,8 @@ It is not an orchestrator, workflow engine, or privileged service identity.
 1. **Slice 1 (#1011):** configuration API, pinned template references, paused-only storage,
    read isolation and authorization. No timer, launch, or enabling endpoint is
    shipped. The API is a foundation, not completion of #1006.
-2. **This PR:** server scheduler, durable run history/claims, pause/resume and cost guards.
-3. API-only `armada routine …` commands.
+2. **Slice 2 (#1014):** server scheduler, durable run history/claims, pause/resume and cost guards.
+3. **This slice:** API-only `armada routine …` commands and a bounded coordinator staging check.
 4. Dashboard Run > Routines using CreateDialog; optional read-only iPhone last.
 
 ## Configuration and identity
@@ -155,3 +155,57 @@ history tables are required at startup; no new environment variables are needed.
 Existing routines remain paused after migration and require explicit enabling.
 For rollback, stop the scheduler-enabled server before removing any of its schema;
 retain occurrence history and template claim keys so recovery cannot refire a run.
+
+
+## CLI and bounded coordinator check
+
+`armada routine --help` documents create/list/show/update/enable/pause/delete/runs.
+Every command supports `--json`; all requests go through the authenticated Armada
+API. Mutations require the current `--expected-version` (except initial create).
+Update is a complete mutable-configuration JSON file, not a patch or an exported
+show envelope. Prompt files preserve whitespace; use `--prompt-file -` for piped
+stdin. Explicit `--org` creation also requires explicit `--scope`.
+
+The coordinator can run the Python 3.9+ stdlib check on macOS or Linux:
+
+```sh
+# Securely set STAGING_URL, STAGING_ORG (UUID), and ARMADA_TOKEN in the environment.
+# Do not put the token in arguments or paste it into logs.
+python3 scripts/routines/staging-check.py --help
+python3 scripts/routines/staging-check.py --provider boat --template BOAT_CODEX_TEMPLATE_UUID
+python3 scripts/routines/staging-check.py --provider modal --template MODAL_CODEX_TEMPLATE_UUID
+```
+
+The minimum interval is **one hour**, so the script cannot truthfully finish in a
+few minutes. Each invocation takes about **122 minutes plus setup/cleanup**, with
+a 130-minute main deadline and a five-minute cleanup budget (about 135 minutes
+maximum under normal bounded HTTP timeouts). The two provider invocations can run
+in parallel. It refuses the known production origin, requires HTTPS, does not
+follow redirects, and never prints bearer values, raw errors or event contents.
+Existing staging templates/goldens and usable current owner credentials are
+prerequisites; when multiple templates are visible, select one explicitly.
+
+The source template is read-only. The script creates a nonce-named private clone
+with **only immutable revision 1**, then a one-hour routine pinned to that revision.
+It checks the enabled definition, admitted configuration version, template request
+ID and exact prompt event in the new sandbox. The sole-revision temporary template
+makes the pinned revision unambiguous without database access or private manifests.
+It pauses after the first firing, deletes that sandbox so a live-run skip cannot
+masquerade as pause, and observes past the next due boundary plus two minutes.
+History must retain the same sole occurrence; any skip/failure reason must be a
+known closed code with a readable explanation.
+
+A finally block attempts cleanup even after interruption: pause/delete the test
+routine, drain its admitted history, stop/delete created compute, and soft-delete
+the temporary template. Lost create acknowledgements are discovered by exact nonce
+name, never retried as new creates. Definitions are tombstoned and immutable
+history is retained by the server; those records cannot be hard-deleted through
+the API. Unconfirmed creates, network/auth failures or uncertain late allocations
+exit nonzero with the nonce/resource UUIDs for manual reconciliation, never a
+false cleanup-success claim. SIGKILL or loss of the coordinator machine cannot
+execute cleanup; rerun manual cleanup for the printed nonce in that situation.
+
+**Not proved by this bounded check:** two consecutive firings, live-run skip,
+restart/replica idempotency, downtime catch-up behavior, revocation, daily cap and
+repeated-failure auto-pause. Use the longer/manual checklist above; do not infer
+those checks from a passing script. This worker has not executed staging checks.
