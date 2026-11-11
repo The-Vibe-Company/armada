@@ -9,6 +9,7 @@ import { bunLikeSql, database } from "./support.ts";
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
 for (const outcome of [
   "external-stop",
+  "invalid-stop-time",
   "expired",
   "expired-external-stop",
   "interrupt-pending",
@@ -17,6 +18,7 @@ for (const outcome of [
   "stale",
   "manual-stop",
 ] as const) {
+  const externalStop = outcome === "external-stop" || outcome === "invalid-stop-time";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await database();
     try {
@@ -43,7 +45,7 @@ for (const outcome of [
         effectiveTtlSeconds: 60,
       });
       if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-      if (outcome !== "external-stop" && outcome !== "stale" && outcome !== "manual-stop")
+      if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
         await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
       const requests: string[] = [];
       let stopped = false;
@@ -72,8 +74,9 @@ for (const outcome of [
           return Response.json({
             ok: true,
             sandbox: sandbox({
+              stoppedAt: outcome === "invalid-stop-time" ? "not-a-date" : undefined,
               state:
-                stopped || outcome === "external-stop" || outcome === "expired-external-stop" || outcome === "stale"
+                stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
                   ? "archived"
                   : "running",
             }),
@@ -89,13 +92,11 @@ for (const outcome of [
           requested_ttl_seconds: number;
           usage_runtime_seconds: number | null;
           status_reason: string | null;
-        }>("select * from sandboxes where id=$1", [id])
+          stop_time_finite: boolean | null;
+        }>("select *,isfinite(stopped_at) as stop_time_finite from sandboxes where id=$1", [id])
       ).rows[0]!;
       expect(row.status).toBe(
-        outcome === "external-stop" ||
-          outcome === "expired" ||
-          outcome === "expired-external-stop" ||
-          outcome === "manual-stop"
+        externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
           ? "stopped"
           : outcome === "stale"
             ? "running"
@@ -109,7 +110,8 @@ for (const outcome of [
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
       // Without a provider timestamp, confirmed stops close the observed interval locally.
-      if (["external-stop", "expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+      if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+        expect(row.stop_time_finite).toBe(true);
         expect(row.usage_runtime_seconds).not.toBeNull();
         expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
       }
@@ -117,10 +119,7 @@ for (const outcome of [
         expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
       expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-        outcome === "external-stop" ||
-          outcome === "expired-external-stop" ||
-          outcome === "stale" ||
-          outcome === "interrupt-pending"
+        externalStop || outcome === "expired-external-stop" || outcome === "stale" || outcome === "interrupt-pending"
           ? 0
           : 1,
       );
