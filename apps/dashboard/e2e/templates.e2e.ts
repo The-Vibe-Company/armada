@@ -149,8 +149,7 @@ test("a new revision starts from the current one; the old revision stays and the
   const state = await mockState();
   const revisions = state.templateRevisions.filter((r) => r.templateId === "00000000-0000-4000-8000-000000000091");
   expect(revisions.map((r) => r.revision)).toEqual([1, 2]);
-  expect((revisions[0]?.definition.variables as { version: number }[])[0]?.version).toBe(2);
-  expect((revisions[1]?.definition.variables as { version: number }[])[0]?.version).toBe(3);
+  expect(revisions.map((r) => (r.definition.variables as { version: number }[])[0]?.version)).toEqual([2, 3]);
   const publish = state.templateCalls.find((call) => call.route === "templates/publish");
   expect(publish?.body.expectedRevision).toBe(1);
 });
