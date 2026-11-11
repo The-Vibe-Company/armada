@@ -153,6 +153,14 @@ describe("vault control client", () => {
     expect(JSON.stringify(item)).not.toContain("canary");
   });
 
+  test("a delete answers its tombstone, which the page accepts as done", async () => {
+    const { control } = client(() => Response.json({ item: { ...wire, status: "deleted", version: 3 } }));
+    expect(await control.delete("secret", { org: ORG, id: ID, expectedVersion: 2 })).toMatchObject({
+      name: "APP_TOKEN",
+      status: "deleted",
+    });
+  });
+
   test("a stale version keeps the server's code; an older server is named as such", async () => {
     const stale = client(() =>
       Response.json({ error: { code: "conflict", message: "Application vault version changed." } }, { status: 409 }),

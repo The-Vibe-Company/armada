@@ -1,4 +1,4 @@
-import { CircleAlertIcon, InfoIcon, LockKeyholeIcon, UserIcon, UsersIcon, VariableIcon } from "lucide-react";
+import { CircleAlertIcon, InfoIcon, UserIcon, UsersIcon, VariableIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
@@ -10,7 +10,7 @@ import { AddVaultDialog, VaultMark, VaultPanel } from "@/components/variables";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedVault } from "@/lib/data/variables";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
-import { audience, canManage, itemKey, KIND_LABEL, type VaultItem, vaultState } from "@/lib/variables";
+import { audience, canManage, itemKey, type VaultItem, vaultState } from "@/lib/variables";
 
 export const metadata: Metadata = { title: "Variables" };
 export const dynamic = "force-dynamic";
@@ -114,7 +114,7 @@ function row(
   now: number,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
-  const meta = `${KIND_LABEL[item.kind]} · version ${item.version}`;
+  const meta = `${item.kind === "secret" ? "Write-only secret" : "Variable"} · version ${item.version}`;
   return {
     key: itemKey(item),
     name: item.name,
@@ -123,17 +123,10 @@ function row(
     search: [item.name, item.kind, item.scope, item.status].join(" "),
     mark: <VaultMark kind={item.kind} />,
     tags: (
-      <>
-        <RowTag>
-          {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
-          {item.scope === "personal" ? "Personal" : "Org"}
-        </RowTag>
-        {item.kind === "secret" && (
-          <RowTag className="border-primary/25 text-primary" title="Stored encrypted; nobody can read it back">
-            <LockKeyholeIcon aria-hidden /> Write-only
-          </RowTag>
-        )}
-      </>
+      <RowTag>
+        {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
+        {item.scope === "personal" ? "Personal" : "Org"}
+      </RowTag>
     ),
     meta,
     subtitle: meta,

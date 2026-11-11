@@ -8,6 +8,8 @@ import type { Bucket, ResourceState } from "./resource-list.ts";
 export type VaultKind = "variable" | "secret";
 export type VaultScope = "personal" | "org";
 export type VaultStatus = "active" | "revoked";
+/** A delete answers with its value-free tombstone; a list never includes one. */
+export type VaultAnswerStatus = VaultStatus | "deleted";
 
 export type VaultItem = {
   kind: VaultKind;
@@ -38,7 +40,17 @@ function iso(value: unknown): string | null {
  * One item of a `list`, or the `item` of a mutation, kept only when it is well formed. Only the known metadata
  * fields are copied: anything else the server might send (a value, a ciphertext) never enters the page.
  */
-export function parseVaultItem(kind: VaultKind, value: unknown): VaultItem | null {
+export function parseVaultItem(kind: VaultKind, value: unknown): VaultItem | null;
+export function parseVaultItem(
+  kind: VaultKind,
+  value: unknown,
+  options: { tombstone: true },
+): (Omit<VaultItem, "status"> & { status: VaultAnswerStatus }) | null;
+export function parseVaultItem(
+  kind: VaultKind,
+  value: unknown,
+  options?: { tombstone: true },
+): (Omit<VaultItem, "status"> & { status: VaultAnswerStatus }) | null {
   if (!isRecord(value)) return null;
   const { id, orgId, ownerId, scope, name, version, status } = value;
   const createdAt = iso(value.createdAt);
@@ -53,7 +65,7 @@ export function parseVaultItem(kind: VaultKind, value: unknown): VaultItem | nul
     !name ||
     typeof version !== "number" ||
     !Number.isSafeInteger(version) ||
-    (status !== "active" && status !== "revoked") ||
+    (status !== "active" && status !== "revoked" && !(options?.tombstone && status === "deleted")) ||
     !createdAt ||
     !updatedAt
   )
@@ -120,8 +132,6 @@ export function valueProblem(value: string, kind: VaultKind, name: string): stri
   if (kind === "secret" && name.includes(value)) return "The secret value cannot appear in its name.";
   return null;
 }
-
-export const KIND_LABEL: Record<VaultKind, string> = { variable: "Variable", secret: "Secret" };
 
 /** An item's state: an active one is ready; a revoked one is not a fault, just no longer usable. */
 export function vaultState(item: Pick<VaultItem, "status">): ResourceState & { bucket: Bucket } {

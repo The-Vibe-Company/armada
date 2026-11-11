@@ -455,8 +455,12 @@ export function createVaultControl(options: ArmadaApiOptions) {
       item("secret", "rotate", request),
     revoke: (kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) =>
       item(kind, "revoke", target),
-    delete: (kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) =>
-      item(kind, "delete", target),
+    /** Answers the deleted item's tombstone: its name and final version, no value. */
+    async delete(kind: VaultKind, target: { org: string; id: string; expectedVersion: number }) {
+      const parsed = parseVaultItem(kind, (await post(kind, "delete", target)).item, { tombstone: true });
+      if (!parsed) throw new ControlError("The Armada server sent an unexpected answer.");
+      return parsed;
+    },
   };
 }
 
