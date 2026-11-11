@@ -14,7 +14,7 @@ test("every terminal example in the Armada skill reaches CLI help or the API bou
     const command = line?.replace(/ > RECOVERY_FILE$/, "");
     const argv = (command?.match(/"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^"|"$/g, ""));
     const id = "11111111-1111-4111-8111-111111111111";
-    const resolved = argv.map((word) => (["SANDBOX", "ORG"].includes(word) ? id : word));
+    const resolved = argv.map((word) => (["SANDBOX", "ORG", "TEMPLATE"].includes(word) ? id : word));
     let reachedApi = false;
     let output = "";
     const io = {
