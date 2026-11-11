@@ -6,7 +6,7 @@ import {
   TemplateSkillSmokeFailure,
 } from "./template-skill-smoke.ts";
 
-const selected: TemplateSkillCase = {
+const selected = {
   provider: "boat",
   harness: "codex",
   org: "org",
@@ -16,7 +16,7 @@ const selected: TemplateSkillCase = {
   repo: "/home/user/repo",
   publicSkill: "example/review@1.0.0",
   privateSkill: "notes@2.0.0",
-};
+} satisfies TemplateSkillCase;
 type Fault =
   | "none"
   | "answer"
@@ -32,11 +32,23 @@ type Fault =
   | "lost_launch"
   | "lost_template"
   | "lost_variable"
-  | "cleanup";
-function fixture(options: { key?: "user" | "org" | "absent"; fault?: Fault; splitAnswer?: boolean } = {}) {
+  | "cleanup"
+  | "uncertain_launch";
+function fixture(
+  options: { key?: "user" | "org" | "absent"; fault?: Fault; splitAnswer?: boolean; refusalReason?: string } = {},
+) {
   const { key = "user", fault = "none", splitAnswer = false } = options;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
-  const lines: { step: string; pass?: boolean; skip?: boolean; reason?: string; code?: string }[] = [];
+  const lines: {
+    step: string;
+    pass?: boolean;
+    skip?: boolean;
+    reason?: string;
+    code?: string;
+    state?: string;
+    leftoverSandboxIds?: string[];
+    uncertainLaunches?: { templateId: string; templateName: string; requestKey: string; requestId?: string }[];
+  }[] = [];
   const stopped: string[] = [];
   let cleaning = false;
   let variable: { id: string; version: number; name: string; value: string } | undefined;
@@ -90,21 +102,28 @@ function fixture(options: { key?: "user" | "org" | "absent"; fault?: Fault; spli
       } else if (path === "templates/launch") {
         const template = templates.find((item) => item.id === input.id);
         const pin = template?.definition.skills[0];
-        if (!pin || !variable) throw new Error("Unexpected launch fixture");
+        if (!variable) throw new Error("Unexpected launch fixture");
         expect(template?.definition.modelAccount).toEqual({ id: selected.modelAccountId, version: 7 });
         expect(String(input.prompt)).toContain(variable.name);
         expect(String(input.prompt)).not.toContain(variable.value);
         expect(input).not.toHaveProperty("repo");
         if (fault === "lost_launch") throw new Error("secret lost compute receipt");
         output =
-          fault === "key_refused" && pin === selected.privateSkill
-            ? { state: "failed", id: `sandbox-${template.id}`, reason: "skillpack_credential_refused" }
+          (fault === "key_refused" && pin === selected.privateSkill) || fault === "uncertain_launch"
+            ? {
+                state: fault === "uncertain_launch" ? "reconciling" : "failed",
+                id: `sandbox-${template.id}`,
+                requestId: "request-1",
+                reason:
+                  options.refusalReason ??
+                  (fault === "uncertain_launch" ? "allocation_or_start_unknown" : "skillpack_credential_refused"),
+              }
             : {
                 state: "succeeded",
                 id: `sandbox-${template.id}`,
                 provider: selected.provider,
                 promptId: `prompt-${template.id}`,
-                manifest: { skillReceipts: fault === "missing_receipt" ? [] : [receipt(pin)] },
+                manifest: { skillReceipts: fault === "missing_receipt" || !pin ? [] : [receipt(pin)] },
               };
       } else if (path === "sandbox/status") {
         const template = templates.find((item) => `sandbox-${item.id}` === input.id);
@@ -179,7 +198,12 @@ function fixture(options: { key?: "user" | "org" | "absent"; fault?: Fault; spli
         lines.push({ step, pass: true });
         return result;
       } catch (error) {
-        lines.push({ step, pass: false, code: error instanceof TemplateSkillSmokeFailure ? error.code : "api_failed" });
+        lines.push({
+          step,
+          pass: false,
+          code: error instanceof TemplateSkillSmokeFailure ? error.code : "api_failed",
+          ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
+        });
         throw error;
       }
     },
@@ -229,6 +253,14 @@ test("only confirmed absent Skillpack key skips private pin; malformed metadata 
       expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
       expect(fake.lines).toContainEqual({ step: "private_skill", skip: true, reason: "skillpack_key_not_configured" });
     } else expect(fake.lines.some((line) => line.skip)).toBe(false);
+    if (fault === "key_refused")
+      expect(fake.lines).toContainEqual({
+        step: "private_skill_launch",
+        pass: false,
+        code: "template_launch_failed",
+        state: "failed",
+        reason: "skillpack_credential_refused",
+      });
     if (fault === "bad_metadata" || fault === "no_account")
       expect(fake.calls.some((call) => call.path === "variables/set")).toBe(false);
   }
@@ -264,12 +296,26 @@ test("template smoke fails closed on wrong answers, non-final/non-assistant evid
 });
 
 test("lost metadata receipts reconcile by unique run name; lost compute is never retried and cleanup failures do not strand other metadata", async () => {
-  for (const fault of ["lost_variable", "lost_template", "lost_launch", "cleanup"] as const) {
+  for (const fault of ["lost_variable", "lost_template", "lost_launch", "cleanup", "uncertain_launch"] as const) {
     const fake = fixture({ fault, key: "absent" });
     expect(await runTemplateSkillCase(selected, fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "templates/launch").length).toBeLessThanOrEqual(1);
     if (fault === "lost_launch")
       expect(fake.lines).toContainEqual({ step: "cleanup_template_sandbox", pass: false, code: "cleanup_unconfirmed" });
+    const summary = fake.lines.find((line) => line.step === "template_cleanup_summary");
+    expect(summary).toBeDefined();
+    if (fault === "cleanup") expect(summary?.leftoverSandboxIds).toEqual(["sandbox-template-1"]);
+    if (fault === "lost_launch" || fault === "uncertain_launch") {
+      const launch = fake.calls.find((call) => call.path === "templates/launch")!;
+      expect(summary?.uncertainLaunches).toContainEqual(
+        expect.objectContaining({
+          templateId: launch.body.id,
+          requestKey: launch.body.requestKey,
+          ...(fault === "uncertain_launch" ? { requestId: "request-1" } : {}),
+        }),
+      );
+      expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
+    }
     if (fault === "lost_variable") expect(fake.calls.some((call) => call.path === "variables/list")).toBe(true);
     if (fault === "lost_template") expect(fake.calls.some((call) => call.path === "templates/list")).toBe(true);
     if (fault !== "lost_variable") expect(fake.calls.some((call) => call.path === "templates/delete")).toBe(true);
@@ -277,4 +323,38 @@ test("lost metadata receipts reconcile by unique run name; lost compute is never
     expect(JSON.stringify(fake.lines)).not.toContain("secret");
     expect(JSON.stringify(fake.lines)).not.toContain(fake.value());
   }
+});
+
+test("missing pins explicitly skip their checks while the template variable still reaches the agent", async () => {
+  for (const missing of ["public", "private", "both"] as const) {
+    const fake = fixture();
+    const item = {
+      ...selected,
+      ...(missing !== "private" ? { publicSkill: undefined } : {}),
+      ...(missing !== "public" ? { privateSkill: undefined } : {}),
+    };
+    expect(await runTemplateSkillCase(item, fake.io)).toBe(true);
+    for (const kind of ["public", "private"] as const) {
+      if (item[`${kind}Skill`] === undefined)
+        expect(fake.lines).toContainEqual({ step: `${kind}_skill`, skip: true, reason: "skill_pin_not_configured" });
+    }
+    expect(fake.lines).toContainEqual({ step: "template_answer", pass: true });
+    expect(fake.lines).toContainEqual({ step: "template_exec_isolation", pass: true });
+    expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(item.privateSkill ? 2 : 1);
+    if (!item.privateSkill) expect(fake.calls.some((call) => call.path === "skillpack/connection")).toBe(false);
+    expect(JSON.stringify(fake.lines)).not.toContain(fake.value());
+  }
+});
+
+test("launch refusal diagnostics drop arbitrary remote text but retain closed uncertainty states", async () => {
+  const fake = fixture({ fault: "key_refused", refusalReason: "secret-provider-detail" });
+  expect(await runTemplateSkillCase(selected, fake.io)).toBe(false);
+  expect(fake.lines).toContainEqual({
+    step: "private_skill_launch",
+    pass: false,
+    code: "template_launch_failed",
+    state: "failed",
+    reason: "unrecognized_refusal",
+  });
+  expect(JSON.stringify(fake.lines)).not.toContain("secret-provider-detail");
 });

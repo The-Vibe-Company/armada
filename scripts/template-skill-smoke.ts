@@ -1,3 +1,6 @@
+import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
+import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
+
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
   provider: "boat" | "modal";
@@ -8,8 +11,8 @@ export interface TemplateSkillCase {
   modelAccountId: string;
   repo: string;
   reasoningEffort?: string;
-  publicSkill: string;
-  privateSkill: string;
+  publicSkill?: string | undefined;
+  privateSkill?: string | undefined;
 }
 export type TemplateSkillCode =
   | "invalid_response"
@@ -20,9 +23,30 @@ export type TemplateSkillCode =
   | "turn_failed"
   | "cleanup_unconfirmed";
 export class TemplateSkillSmokeFailure extends Error {
-  constructor(readonly code: TemplateSkillCode) {
+  constructor(
+    readonly code: TemplateSkillCode,
+    readonly details: { state?: string; reason?: string } = {},
+  ) {
     super(code);
   }
+}
+const REFUSALS = new Set<string>([
+  ...Object.keys(TEMPLATE_REFUSAL_HELP),
+  ...PRIVATE_SKILL_FAILURES,
+  "skillpack_credential_missing",
+  "skillpack_credential_refused",
+  "skillpack_skill_unavailable",
+  "allocation_or_start_unknown",
+  "launch_unavailable",
+]);
+function launchFailure(state: unknown, reason: unknown): never {
+  throw new TemplateSkillSmokeFailure("template_launch_failed", {
+    state:
+      typeof state === "string" && ["claimed", "allocating", "failed", "reconciling"].includes(state)
+        ? state
+        : "unknown",
+    reason: typeof reason === "string" && REFUSALS.has(reason) ? reason : "unrecognized_refusal",
+  });
 }
 function fail(code: TemplateSkillCode): never {
   throw new TemplateSkillSmokeFailure(code);
@@ -69,7 +93,7 @@ function verifyReceipts(receipts: unknown, pins: string[]): asserts receipts is 
   }
 }
 
-/** One pair: public-pin readable launch, then private-pin launch only when configured. */
+/** One pair: readable launch with optional public pin, then configured private-pin launch. */
 export async function runTemplateSkillCase(item: TemplateSkillCase, io: TemplateSkillIo): Promise<boolean> {
   const run = crypto.randomUUID().replaceAll("-", "");
   const key = `SMOKE_VALUE_${run.toUpperCase()}`;
@@ -83,13 +107,19 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     resource?: Template;
     sandboxId?: string;
     launchAttempted: boolean;
+    requestKey: string;
+    requestId?: string;
+    uncertain: boolean;
+    stopConfirmed: boolean;
   }[] = [];
   const api = <T>(path: string, body: object = {}) => io.request<T>(path, { org: item.org, ...body });
   async function cleanup(name: string, action: () => Promise<void>) {
     try {
       await io.step(name, action);
+      return true;
     } catch {
       passed = false;
+      return false;
     }
   }
   try {
@@ -99,21 +129,30 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       if (matches.length !== 1 || !positive(matches[0]?.version)) fail("invalid_response");
       return { id: item.modelAccountId, version: matches[0].version };
     });
-    const privateConfigured = await io.step("private_skill_configuration", async () =>
-      metadata(await api<Connections>("skillpack/connection"), item.org).some((row) => row.kind === "skillpack"),
-    );
+    const privateConfigured = item.privateSkill
+      ? await io.step("private_skill_configuration", async () =>
+          metadata(await api<Connections>("skillpack/connection"), item.org).some((row) => row.kind === "skillpack"),
+        )
+      : false;
+    if (!item.publicSkill)
+      io.out(JSON.stringify({ step: "public_skill", skip: true, reason: "skill_pin_not_configured" }));
+    if (!item.privateSkill)
+      io.out(JSON.stringify({ step: "private_skill", skip: true, reason: "skill_pin_not_configured" }));
     await io.step("template_variable_create", async () => {
       variableAttempted = true;
       const result = await api<{ item: Resource }>("variables/set", { scope: "personal", name: key, value });
       if (typeof result?.item?.id === "string" && result.item.id) variable = result.item;
       if (!variable || !positive(variable.version)) fail("invalid_response");
     });
-    async function launch(kind: "public" | "private", pin: string) {
+    async function launch(kind: "public" | "private", pin?: string) {
       const label = kind === "public" ? "template" : "private_skill";
       const record: (typeof templates)[number] = {
         name: `smoke-${run}-${kind}`,
         attempted: false,
         launchAttempted: false,
+        requestKey: `smoke-${run}-${kind}`,
+        uncertain: false,
+        stopConfirmed: false,
       };
       templates.push(record);
       await io.step(`${label}_create`, async () => {
@@ -129,7 +168,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             modelAccount: account,
             ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
             connections: [],
-            skills: [pin],
+            skills: pin ? [pin] : [],
             variables: [{ key, variableId: variable!.id, version: variable!.version }],
           },
         });
@@ -138,8 +177,11 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       });
       const result = await io.step(`${label}_launch`, async () => {
         record.launchAttempted = true;
+        record.uncertain = true;
         const result = await api<{
           state: string;
+          reason?: unknown;
+          requestId?: string;
           id?: string;
           promptId?: string;
           provider?: string;
@@ -147,12 +189,15 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         }>("templates/launch", {
           id: record.resource!.id,
           revision: record.resource!.currentRevision,
-          requestKey: `smoke-${run}-${kind}`,
+          requestKey: record.requestKey,
           ttlSeconds: 900,
           prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
         });
         if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
-        if (result?.state !== "succeeded") fail("template_launch_failed");
+        if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
+          record.requestId = result.requestId;
+        record.uncertain = result?.state !== "succeeded" && result?.state !== "failed";
+        if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
         if (
           !record.sandboxId ||
           result.provider !== item.provider ||
@@ -162,13 +207,14 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           fail("invalid_response");
         return result;
       });
-      await io.step(`${kind}_skill_receipt`, async () => {
-        verifyReceipts(result.manifest?.skillReceipts, [pin]);
-        const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
-        verifyReceipts(status.skills, [pin]);
-        for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
-          if (result.manifest!.skillReceipts[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
-      });
+      if (pin)
+        await io.step(`${kind}_skill_receipt`, async () => {
+          verifyReceipts(result.manifest?.skillReceipts, [pin]);
+          const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
+          verifyReceipts(status.skills, [pin]);
+          for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
+            if (result.manifest!.skillReceipts[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
+        });
       await io.step(`${label}_wait`, () =>
         io.poll(
           () =>
@@ -251,14 +297,16 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       });
     }
     await launch("public", item.publicSkill);
-    if (privateConfigured) await launch("private", item.privateSkill);
-    else io.out(JSON.stringify({ step: "private_skill", skip: true, reason: "skillpack_key_not_configured" }));
+    if (item.privateSkill && privateConfigured) await launch("private", item.privateSkill);
+    else if (item.privateSkill)
+      io.out(JSON.stringify({ step: "private_skill", skip: true, reason: "skillpack_key_not_configured" }));
   } catch {
     passed = false;
   } finally {
     await io.withCleanup(async () => {
       for (const record of templates.toReversed()) {
-        if (record.sandboxId) await cleanup("cleanup_template_sandbox", () => io.stopSandbox(record.sandboxId!));
+        if (record.sandboxId)
+          record.stopConfirmed = await cleanup("cleanup_template_sandbox", () => io.stopSandbox(record.sandboxId!));
         else if (record.launchAttempted)
           await cleanup("cleanup_template_sandbox", async () => fail("cleanup_unconfirmed"));
         if (!record.resource && record.attempted)
@@ -295,6 +343,26 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
         });
     });
+    const leftoverSandboxIds = templates
+      .filter((record) => record.sandboxId && !record.stopConfirmed)
+      .map((record) => record.sandboxId);
+    const uncertainLaunches = templates
+      .filter((record) => record.uncertain)
+      .map((record) => ({
+        templateId: record.resource?.id ?? null,
+        templateName: record.name,
+        requestKey: record.requestKey,
+        ...(record.requestId ? { requestId: record.requestId } : {}),
+        ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
+      }));
+    io.out(
+      JSON.stringify({
+        step: "template_cleanup_summary",
+        pass: !leftoverSandboxIds.length && !uncertainLaunches.length,
+        leftoverSandboxIds,
+        uncertainLaunches,
+      }),
+    );
   }
   return passed;
 }

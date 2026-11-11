@@ -4,8 +4,8 @@
  * modelAccountId, repo, goldenId?, reasoningEffort?}. golden is a launch name;
  * repo is an absolute sandbox cwd for exec. goldenId is required with
  * --orchestrator, which runs the lifecycle for every selected case (only enabled
- * provider/harness pairs work). --templates-skills additionally requires goldenId,
- * publicSkill and privateSkill exact pins. No defaults, provider credentials or DB access.
+ * provider/harness pairs work). --templates-skills requires goldenId; optional
+ * publicSkill/privateSkill exact pins enable install checks. No provider credentials or DB access.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -163,6 +163,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                 error instanceof SmokeFailure || error instanceof TemplateSkillSmokeFailure
                   ? error.code
                   : "invalid_response",
+              ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
             }),
       }),
     );
@@ -218,10 +219,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         if (
           typeof item.goldenId !== "string" ||
           !item.goldenId.trim() ||
-          typeof item.publicSkill !== "string" ||
-          !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.publicSkill) ||
-          typeof item.privateSkill !== "string" ||
-          !/^[A-Za-z0-9_-]+@\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.privateSkill)
+          (item.publicSkill !== undefined &&
+            (typeof item.publicSkill !== "string" ||
+              !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.publicSkill))) ||
+          (item.privateSkill !== undefined &&
+            (typeof item.privateSkill !== "string" ||
+              !/^[A-Za-z0-9_-]+@\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(item.privateSkill)))
         )
           fail("invalid_configuration");
       }
@@ -296,7 +299,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   if (templatesSkills) {
     for (const [index, item] of cases.entries()) {
       const ok = await runTemplateSkillCase(
-        { ...item, goldenId: item.goldenId!, publicSkill: item.publicSkill!, privateSkill: item.privateSkill! },
+        { ...item, goldenId: item.goldenId! },
         {
           request: (path, body) => request(path, body, undefined, path === "templates/launch" ? 600_000 : 120_000),
           poll,
