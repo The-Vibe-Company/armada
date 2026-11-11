@@ -6,6 +6,91 @@ import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { bunLikeSql, database } from "./support.ts";
 
+test("an expired observation lease cannot publish a delayed terminal result", async () => {
+  const { db, people } = await database();
+  const publishing = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let lifecycle: ReturnType<typeof createSandboxLifecycle> | undefined;
+  try {
+    const sql = bunLikeSql(db);
+    const store = createSqlData(sql)({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    }).sandboxes;
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+    if (!golden) throw Error("missing golden");
+    const id = crypto.randomUUID();
+    await store.insert({
+      id,
+      provider: "boat",
+      providerSandboxId: "bx_23456789",
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "claude",
+      status: "running",
+      model: "test",
+      reasoningEffort: "medium",
+      effectiveTtlSeconds: 3600,
+    });
+    const before = (await db.query("select status,stopped_at,last_observed_at from sandboxes where id=$1", [id]))
+      .rows[0];
+    let observations = 0;
+    const methods: string[] = [];
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (_input: Request | string | URL, init?: RequestInit) => {
+        methods.push(init?.method ?? "GET");
+        observations++;
+        return Response.json({ ok: true, sandbox: sandbox({ state: observations === 1 ? "archived" : "running" }) });
+      }) as typeof fetch,
+    });
+    let hold = true;
+    lifecycle = createSandboxLifecycle(
+      {
+        ...sql,
+        query: async <T>(text: string, params?: unknown[]) => {
+          // Queue the final publication before SQL executes, as with pool/lock delay.
+          if (hold && text.includes("last_observed_at=case")) {
+            hold = false;
+            publishing.resolve();
+            await release.promise;
+          }
+          return sql.query<T>(text, params);
+        },
+      },
+      async () => provider,
+    );
+    const controller = new AbortController();
+    const tick = lifecycle.reconcileOne(controller.signal);
+    await publishing.promise;
+    controller.abort();
+    await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
+    release.resolve();
+    expect(await tick).toBe(true);
+    expect(
+      (await db.query("select status,stopped_at,last_observed_at from sandboxes where id=$1", [id])).rows[0],
+    ).toEqual(before);
+    // The next owner can reclaim the expired lease and take a fresh observation.
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    const current = (
+      await db.query<{ status: string; stopped_at: unknown; last_observed_at: unknown }>(
+        "select status,stopped_at,last_observed_at from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(current?.status).toBe("running");
+    expect(current?.stopped_at).toBeNull();
+    expect(current?.last_observed_at).not.toBeNull();
+    expect(methods).toEqual(["GET", "GET"]);
+  } finally {
+    release.resolve();
+    await lifecycle?.drain();
+    await db.close();
+  }
+});
+
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
 for (const outcome of [
   "external-stop",
