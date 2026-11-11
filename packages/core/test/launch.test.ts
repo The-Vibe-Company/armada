@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -196,7 +197,12 @@ describe("launch", () => {
         harness: "claude",
       },
     });
-    expect(world.execs.map((exec) => exec.cwd)).toEqual([`${GOLDEN_ROOT}/web`, `${GOLDEN_ROOT}/api`, GOLDEN_ROOT]);
+    expect(world.execs.map((exec) => exec.cwd)).toEqual([
+      `${GOLDEN_ROOT}/web`,
+      `${GOLDEN_ROOT}/api`,
+      GOLDEN_ROOT,
+      GOLDEN_ROOT,
+    ]);
     expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
     expect(world.execs[1]?.command).toContain("'dev'");
     expect(world.execs[2]?.command).toBe("pnpm i");
@@ -305,12 +311,56 @@ describe("launch", () => {
         "exec",
         "exec",
         "prepare",
+        "exec",
         "prompt",
       ]);
       expect(world.forks[0]?.ttlSeconds).toBe(7500);
       expect([...world.rows.values()][0]?.status).toBe("running");
     });
   }
+
+  // A VM can report ready while its restored CLI is broken; no model turn is needed.
+  test.each(["codex", "claude"] as const)(
+    "unstartable %s fails idle and prompted launch before publication",
+    async (harness) => {
+      const dir = mkdtempSync(join(tmpdir(), "armada-broken-harness-"));
+      try {
+        writeFileSync(
+          join(dir, harness),
+          `#!/bin/sh
+echo 'Node startup failed: ${OPENAI_KEY}' >&2
+exit 1
+`,
+          { mode: 0o755 },
+        );
+        for (const prompt of [undefined, "Go"]) {
+          const world = setup({
+            golden: golden("org"),
+            credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
+            exec: (command) => {
+              if (!command.startsWith(`${harness} --version`)) return { exitCode: 0 };
+              const result = spawnSync("/bin/sh", ["-c", command], { env: { PATH: dir }, timeout: 1000 });
+              return { exitCode: result.status ?? 1, stderr: result.stderr.toString() };
+            },
+          });
+          const failure = (await launchSandbox(world.provider, world.stores, owner, {
+            golden: "web",
+            harness,
+            ...(prompt ? { prompt } : {}),
+          }).catch((error: unknown) => error)) as LaunchError;
+          expect(failure).toBeInstanceOf(LaunchError);
+          expect(failure.code).toBe("start_failed");
+          expect(failure.safeReason).toBeUndefined();
+          expect(failure.message).toBe("The agent runtime could not start in this sandbox. Relaunch in a new sandbox.");
+          expect(world.rows.get(failure.sandboxId!)).toMatchObject({ status: "failed", statusReason: failure.message });
+          expect(world.stopped).toEqual(["bx_1"]);
+          expect(world.prompts).toEqual([]);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("idle explicit repo is prepared before launch returns and a later native send", async () => {
     const world = setup({ golden: golden("org"), prepare: true });
@@ -321,9 +371,9 @@ describe("launch", () => {
     });
     expect(result.sandbox.status).toBe("ready");
     expect(world.prompts).toEqual([]);
-    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prepare"]);
+    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prepare", "exec"]);
     await world.provider.prompt({ sandboxId: result.sandbox.providerSandboxId, harness: "claude", text: "Later" });
-    expect(world.order.slice(-2)).toEqual(["prepare", "prompt"]);
+    expect(world.order.slice(-3)).toEqual(["prepare", "exec", "prompt"]);
     expect(world.preparations).toHaveLength(1);
   });
 
@@ -352,7 +402,7 @@ describe("launch", () => {
     const world = setup({ golden: golden("org"), prepare: true });
     await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "Go" });
     expect(world.preparations).toEqual([]);
-    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prompt"]);
+    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "exec", "prompt"]);
   });
 
   test("the user's own credential wins over the org's, and the org's is the fallback", async () => {
@@ -569,6 +619,7 @@ describe("launch", () => {
       GOLDEN_ROOT,
       `${GOLDEN_ROOT}/web`,
       `${GOLDEN_ROOT}/api`,
+      GOLDEN_ROOT,
       GOLDEN_ROOT,
     ]);
     expect(world.execs[0]?.command).toContain(
@@ -1101,6 +1152,9 @@ for (const harness of ["claude", "codex"] as const) {
           return { exitCode: 0 };
         },
       });
+      world.stores.credentials.skillpackKey = async () => {
+        throw new Error("Public pins must not resolve Skillpack credentials.");
+      };
       world.stores.sandboxes.recordSkills = async () => {};
       await launchSandbox(world.provider, world.stores, owner, {
         golden: "web",

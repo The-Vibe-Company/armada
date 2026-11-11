@@ -116,7 +116,7 @@ Usage:
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
-                [--skill org/slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
+                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
@@ -263,7 +263,38 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
   // Command discovery must work before login or organization selection.
-  if (command === "launch" && original.length === 1 && ["--help", "-h"].includes(original[0] ?? "")) {
+  if (
+    command &&
+    [
+      "golden",
+      "launch",
+      "list",
+      "detail",
+      "status",
+      "advice",
+      "bind-credential",
+      "rm",
+      "extend",
+      "report",
+      "send",
+      "steer",
+      "exec",
+      "stop",
+      "wait",
+      "interrupt",
+      "logs",
+      "mcp",
+      "login",
+      "logout",
+      "token",
+      "org",
+      "account",
+      "github",
+      "creds",
+    ].includes(command) &&
+    original.length === 1 &&
+    ["--help", "-h"].includes(original[0] ?? "")
+  ) {
     io.out(HELP);
     return 0;
   }
@@ -931,7 +962,8 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     cursor = nextCursor;
     const drain = all || follow;
     settled = !drain || (!result.hasMore && (!follow || result.settled));
-    if (!settled)
+    // Pace only live polling, not pages the server already has available.
+    if (!settled && !result.hasMore)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
   return 0;

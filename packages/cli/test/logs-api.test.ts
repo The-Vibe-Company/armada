@@ -89,9 +89,10 @@ describe("logs through the Armada API", () => {
     ]);
   });
 
-  test("uses the returned cursor when --all drains server batches", async () => {
+  test.each(["--all", "--follow"])("drains available %s batches without polling delays", async (mode) => {
     const bodies: unknown[] = [];
     let out = "";
+    const delays: number[] = [];
     const batches = [
       {
         events: [{ id: "first", at: 1, kind: "message", text: "first" }],
@@ -107,9 +108,12 @@ describe("logs through the Armada API", () => {
       },
     ];
     const code = await run(
-      ["logs", id, "--all"],
+      ["logs", id, mode],
       { out: (text) => (out += text), err: () => undefined },
       {
+        sleep: async (ms) => {
+          delays.push(ms);
+        },
         auth: auth(async (input, init) => {
           const request = input instanceof Request ? input : new Request(String(input), init);
           bodies.push(await request.json());
@@ -120,10 +124,11 @@ describe("logs through the Armada API", () => {
       },
     );
     expect(code).toBe(0);
+    expect(delays).toEqual([]);
     expect(out).toBe("first\nsecond\n");
     expect(bodies).toEqual([
-      { id, all: true, follow: false },
-      { id, all: true, follow: false, cursor: "one" },
+      { id, all: mode === "--all", follow: mode === "--follow" },
+      { id, all: mode === "--all", follow: mode === "--follow", cursor: "one" },
     ]);
   });
 

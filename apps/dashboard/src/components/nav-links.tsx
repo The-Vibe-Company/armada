@@ -6,7 +6,6 @@ import {
   GaugeIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
-  NetworkIcon,
   PackageIcon,
   PlugIcon,
   SettingsIcon,
@@ -20,9 +19,9 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { cn } from "@/lib/utils";
 
 /**
- * Grouped in the order the work happens: sandboxes and orchestrators are what runs (Run), environments, templates,
+ * Grouped in the order the work happens: sandboxes are what runs (Run), environments, templates,
  * tools, skills, variables and harness subscriptions are set up once (Build), and the account pages sit last. The
- * hint, a tooltip, says what each page holds. On a phone the eleven links fit two rows of six, so the conversation
+ * hint, a tooltip, says what each page holds. On a phone the links fit two rows of six, so the conversation
  * pages keep their height.
  */
 const GROUPS = [
@@ -31,13 +30,6 @@ const GROUPS = [
     links: [
       { href: "/fleet", label: "Fleet", hint: "Every agent and what needs you", icon: GaugeIcon },
       { href: "/sandboxes", label: "Sandboxes", short: "Boxes", hint: "Running agents and logs", icon: BoxesIcon },
-      {
-        href: "/orchestrators",
-        label: "Orchestrators",
-        short: "Orchs",
-        hint: "Lasting coordinators of workers",
-        icon: NetworkIcon,
-      },
     ],
   },
   {

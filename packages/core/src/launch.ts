@@ -24,6 +24,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
+import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
@@ -67,6 +68,13 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
+  /** Resolve only for private launch pins, under the already-authorized actor. Never harness env. */
+  skillpackKey?(actor: GoldenActor): Promise<string | null>;
+  /** Server transport port; the browser-safe launcher must not import SSH implementation. */
+  installPrivateSkill?(
+    provider: Provider,
+    input: Parameters<typeof import("./private-skill.ts").installPrivateSkill>[1],
+  ): ReturnType<typeof import("./private-skill.ts").installPrivateSkill>;
   /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
   refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
 
@@ -177,7 +185,7 @@ export async function launchSandbox(
   } catch {
     throw new LaunchError(
       "invalid_request",
-      "Skills require distinct public org/slug@exact-version pins (maximum 20).",
+      "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
     );
   }
   if (request.skills?.length && !stores.sandboxes.recordSkills)
@@ -388,24 +396,33 @@ export async function launchSandbox(
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
       if (request.skills?.length) {
         const receipts = [];
-        for (const skill of request.skills)
-          receipts.push(
-            await installSkill(
-              provider,
-              ready.id,
-              repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
-              harness,
-              skill,
-              golden.buildWarnings,
-            ),
-          );
+        let privateKey: string | null | undefined;
+        for (const skill of request.skills) {
+          const projectDir = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
+          if (!skill.includes("/")) {
+            if (!stores.credentials.installPrivateSkill)
+              throw new PrivateSkillError("skillpack_transport_failed", "transport");
+            if (privateKey === undefined) privateKey = (await stores.credentials.skillpackKey?.(actor)) ?? null;
+            receipts.push(
+              await stores.credentials.installPrivateSkill(provider, {
+                sandboxId: ready.id,
+                projectDir,
+                reference: skill,
+                harness,
+                key: privateKey,
+                ...(golden.buildWarnings ? { buildWarnings: golden.buildWarnings } : {}),
+              }),
+            );
+          } else
+            receipts.push(await installSkill(provider, ready.id, projectDir, harness, skill, golden.buildWarnings));
+        }
         if (repositoryDir !== null) {
           // Local Git metadata only: do not stage third-party launch skills with worker changes.
           const paths = [
             "/.companion/skills.lock.json",
             "/.companion/skills.lock.json.lock",
             ...request.skills.flatMap((skill) => {
-              const slug = skill.split("@")[0]!.split("/")[1];
+              const slug = skill.split("@")[0]!.split("/").at(-1);
               return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
             }),
           ];
@@ -426,6 +443,30 @@ export async function launchSandbox(
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       await stores.connections?.prepare?.(provider, record, actor);
       await options.beforeStart?.(provider, record);
+      // Boat goldens carry the native CLI. A restored fork can be ready while its
+      // executable cannot even boot; probe the installed wrapper (including its
+      // harness-only readable environment) without creating a session or model turn.
+      // Modal validates its separately distributed native runtime at installation.
+      if (provider.id === "boat") {
+        try {
+          const health = await provider.exec({
+            sandboxId: ready.id,
+            command: `${harness} --version >/dev/null 2>&1`,
+            cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
+            timeoutSeconds: 15,
+            signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+          });
+          if (health.detached || health.timedOut || health.truncated || health.exitCode !== 0)
+            throw new Error("harness_health_failed");
+        } catch {
+          // Fixed text only: native boot errors can include paths or credentials.
+          // Reuse the existing public code; iPhone clients decode closed lists.
+          throw new LaunchError(
+            "start_failed",
+            "The agent runtime could not start in this sandbox. Relaunch in a new sandbox.",
+          );
+        }
+      }
       progress("initialization_publish");
       if (prompt === undefined) {
         signal.throwIfAborted();
@@ -694,6 +735,16 @@ function output(stderr: string, stdout: string, secrets: readonly string[]): str
 }
 
 function withSandbox(error: unknown, sandboxId: string, secrets: readonly string[]): LaunchError {
+  if (error instanceof PrivateSkillError)
+    return new LaunchError(
+      "start_failed",
+      `Private Skillpack installation failed at ${error.stage}: ${error.reason}.`,
+      {
+        cause: error,
+        sandboxId,
+        skillFailure: { reason: error.reason, stage: error.stage },
+      },
+    );
   if (error instanceof LaunchError) {
     return error.sandboxId === sandboxId
       ? error
@@ -701,6 +752,7 @@ function withSandbox(error: unknown, sandboxId: string, secrets: readonly string
           cause: error.cause,
           sandboxId,
           ...(error.safeReason ? { safeReason: error.safeReason } : {}),
+          ...(error.skillFailure ? { skillFailure: error.skillFailure } : {}),
         });
   }
   return new LaunchError("start_failed", `The sandbox could not be started: ${redact(messageOf(error), secrets)}`, {

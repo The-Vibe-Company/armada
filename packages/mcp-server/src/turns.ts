@@ -15,7 +15,7 @@ import {
   type TurnModelEvidence,
   turnModelEvidence,
 } from "@armada/core";
-import type { SandboxView, ServerSandboxStore } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -86,6 +86,8 @@ export async function readStatus(
   // after its lease expires) may publish completion; status must remain readable.
   if (
     sandbox.status === "starting" ||
+    sandbox.status === "stopping" ||
+    sandbox.stopRequestedAt ||
     isInterruptedLaunch(sandbox) ||
     (sandbox.status === "failed" && sandbox.stoppedAt !== null)
   )
@@ -219,7 +221,23 @@ export async function readStatus(
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
-    await store.update(sandbox.id, patch);
+    try {
+      await store.update(sandbox.id, patch);
+    } catch (error) {
+      if (!(error instanceof DataError && error.code === "sandbox_not_ready")) throw error;
+      // Observation is not an activity: a concurrent lifecycle owner wins, but
+      // must not turn an authorized read into a lease conflict or stale publish.
+      const current = await store.get(sandbox.id);
+      if (!current) throw error;
+      return {
+        ...report(current, current.status, null, null, null),
+        settled:
+          !current.stopRequestedAt &&
+          (current.status === "stopped" ||
+            current.status === "deleted" ||
+            (current.status === "failed" && current.stoppedAt !== null)),
+      };
+    }
   }
   const refreshed = store.recordUsage ? await store.get(sandbox.id) : null;
   return report(
@@ -258,7 +276,7 @@ function report(
   prompt: PromptReport | null,
   expiresAt: Date | null,
 ): StatusReport {
-  const machineDown = status === "stopped" || status === "deleted" || status === "failed";
+  const machineDown = status === "stopped" || status === "deleted" || (status === "failed" && !sandbox.stopRequestedAt);
   return {
     usage: sandbox.usage ?? null,
     taskOutcome: sandbox.taskOutcome ?? null,
@@ -274,13 +292,21 @@ function report(
     credentialId: sandbox.credentialId ?? null,
     credentialVersion: sandbox.credentialVersion ?? null,
     status,
-    statusReason: status === "failed" || status === "stopped" || status === "stopping" ? sandbox.statusReason : null,
+    statusReason:
+      status === "stopping"
+        ? (sandbox.lifecycleError ?? sandbox.statusReason)
+        : status === "failed" || status === "stopped"
+          ? sandbox.statusReason
+          : null,
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
     expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
     prompt,
-    settled: machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting"),
+    settled:
+      !sandbox.stopRequestedAt &&
+      (machineDown ||
+        (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping")),
   };
 }
 

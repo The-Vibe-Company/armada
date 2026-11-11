@@ -342,7 +342,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         400,
         error.code,
         error.message,
-        error.reason ? { reason: error.reason, action: error.action } : undefined,
+        error.reason
+          ? { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) }
+          : undefined,
       );
     if (error instanceof InvitationError)
       return Response.json(
