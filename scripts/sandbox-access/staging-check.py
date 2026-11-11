@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""Operator-only staging proof; no server bodies, prompts, credentials or grants are emitted."""
+import argparse
+import contextlib
+import json
+import os
+import re
+import secrets
+import signal
+import ssl
+import stat
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+LIMIT = 1024 * 1024
+PRODUCTION = {"armada.thevibecompany.co", "armada.thevibecompany.com"}
+
+
+class Failure(Exception):
+    pass
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, _message):
+        raise Failure("invalid_arguments")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+@contextlib.contextmanager
+def request_deadline(seconds):
+    # POSIX/macOS wall deadline also bounds a peer slowly dripping a response.
+    def expired(_signal, _frame):
+        raise Failure("request_deadline_exceeded")
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def identifier(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", value):
+        raise Failure("invalid_identifier")
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        raise Failure("invalid_identifier") from None
+
+
+def origin(value):
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or parsed.hostname.lower() in PRODUCTION
+            or not re.search(r"(^|[.-])(stage|staging)([.-]|$)", parsed.hostname.lower())):
+        raise Failure("explicit_staging_https_origin_required")
+    return value.rstrip("/")
+
+
+def grant_file(path):
+    """Read an operator-supplied grant only; never retrieve it from the sandbox."""
+    try:
+        before = os.lstat(path)
+        if (not stat.S_ISREG(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o600
+                or before.st_uid != os.getuid()):
+            raise Failure("unsafe_grant_file")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(fd)
+            if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or not stat.S_ISREG(opened.st_mode) or stat.S_IMODE(opened.st_mode) != 0o600
+                    or opened.st_uid != os.getuid()):
+                raise Failure("unsafe_grant_file")
+            token = os.read(fd, 256).decode("ascii").rstrip("\r\n")
+        finally:
+            os.close(fd)
+        if not re.fullmatch(r"armada_epoch_[a-f0-9]{64}", token):
+            raise Failure("invalid_grant_file")
+        return token
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError):
+        raise Failure("unsafe_grant_file") from None
+
+
+def decoded(value):
+    """Accept known MCP result envelopes, not arbitrary recursive model text."""
+    for _ in range(6):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise Failure("unsupported_tool_evidence") from None
+        elif isinstance(value, list) and len(value) == 1 and value[0].get("type") == "text":
+            value = value[0].get("text")
+        elif isinstance(value, dict) and value.get("structuredContent") is not None:
+            value = value["structuredContent"]
+        elif isinstance(value, dict) and set(value) == {"result"}:
+            value = value["result"]
+        elif isinstance(value, dict) and "content" in value and "id" not in value:
+            value = value["content"]
+        else:
+            break
+    if not isinstance(value, dict):
+        raise Failure("unsupported_tool_evidence")
+    return value
+
+
+def scoped_tools(events, prompt_id):
+    calls = {}
+    methods = ("launch", "message", "read", "stop")
+    names = {"mcp__armada_orchestrator__" + name: name for name in methods}
+    # Modal's Codex normalizer drops item.server and retains the bare item.tool.
+    # This requires the documented isolated golden (no unrelated MCP servers).
+    names.update({name: name for name in methods})
+    for event in events:
+        if event.get("promptId") != prompt_id or event.get("kind") != "message":
+            continue
+        for tool in event.get("tools", []):
+            if tool.get("name") in names and isinstance(tool.get("id"), str):
+                previous = calls.get(tool["id"], {})
+                calls[tool["id"]] = dict(previous, **tool, method=names[tool["name"]])
+    return list(calls.values())
+
+
+def assistant_has(events, text, prompt_id=None):
+    return any(event.get("kind") == "message" and not event.get("partial", True)
+               and event.get("responseKind", "assistant") == "assistant"
+               and not event.get("retracted") and not event.get("parentToolUseId")
+               and (prompt_id is None or event.get("promptId") == prompt_id)
+               and text in event.get("text", "") for event in events)
+
+
+class Run:
+    def __init__(self, args, address, org, token):
+        self.args, self.address, self.org, self.token = args, address, org, token
+        self.run_id = str(uuid.uuid4())
+        self.marker = "armada-staging-check:" + self.run_id
+        self.memory, self.answer = secrets.token_hex(24), "child-answer:" + secrets.token_hex(24)
+        self.started = time.time()
+        self.deadline = time.monotonic() + args.timeout
+        self.opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+        self.ids, self.checks, self.unverified = [], [], []
+        self.parent = self.control = self.child = None
+        self.baseline = set()
+        self.unknown_allocation = False
+        self.phase = "preflight"
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise Failure("deadline_exceeded")
+        return remaining
+
+    def call(self, route, body, token=None, expected=200, code=None, timeout=30):
+        with request_deadline(min(timeout, self.remaining())):
+            return self._request(route, body, token, expected, code, timeout)
+
+    def _request(self, route, body, token, expected, code, timeout):
+        request = urllib.request.Request(self.address + "/api/v1/" + route,
+                                        data=json.dumps(body).encode(), method="POST",
+                                        headers={"Authorization": "Bearer " + (self.token if token is None else token),
+                                                 "Content-Type": "application/json"})
+        try:
+            response = self.opener.open(request, timeout=min(timeout, self.remaining()))
+        except urllib.error.HTTPError as error:
+            response = error
+        except (OSError, urllib.error.URLError):
+            raise Failure("request_outcome_unknown") from None
+        try:
+            raw = response.read(LIMIT + 1)
+            if len(raw) > LIMIT:
+                raise Failure("response_too_large")
+            value = json.loads(raw)
+            if response.code != expected or (code and value.get("error", {}).get("code") != code):
+                raise Failure("api_refused_or_unexpected")
+            if not isinstance(value, dict) or (expected == 200 and "error" in value):
+                raise Failure("response_invalid")
+            return value
+        except (ValueError, TypeError, AttributeError):
+            raise Failure("response_invalid") from None
+        except (OSError, urllib.error.URLError):
+            raise Failure("request_outcome_unknown") from None
+        finally:
+            response.close()
+
+    def tool(self, method, **body):
+        return self.call("sandbox/" + method, dict(body, org=self.org))
+
+    def listing(self):
+        rows = []
+        for page in range(1, 11):
+            value = self.tool("list", owner="me", golden=self.args.golden_id, page=page, limit=200)
+            rows.extend(value["sandboxes"])
+            if value.get("hasMore") is False:
+                return rows
+        raise Failure("resource_inventory_too_large")
+
+    def logs(self, resource):
+        events, cursor = {}, None
+        for _ in range(20):
+            body = {"id": resource, "org": self.org, "limit": 500, "maxBytes": LIMIT // 2}
+            if cursor:
+                body["cursor"] = cursor
+            value = self.call("logs/read", body)
+            for event in value.get("events", []):
+                events[event["id"]] = event
+            if not value.get("hasMore"):
+                return list(events.values())
+            if value.get("cursor") == cursor:
+                raise Failure("event_cursor_not_advancing")
+            cursor = value.get("cursor")
+        raise Failure("event_evidence_too_large")
+
+    def record(self, resource):
+        resource = identifier(resource)
+        if resource in self.baseline or resource in self.ids:
+            raise Failure("resource_not_new_or_distinct")
+        self.ids.append(resource)
+        return resource
+
+    def verify_resource(self, resource, owner=None):
+        rows = [row for row in self.listing() if row.get("id") == resource]
+        if len(rows) != 1:
+            raise Failure("resource_identity_unconfirmed")
+        row = rows[0]
+        try:
+            created = __import__("datetime").datetime.fromisoformat(row["createdAt"].replace("Z", "+00:00")).timestamp()
+        except (ValueError, KeyError, TypeError):
+            raise Failure("resource_identity_unconfirmed") from None
+        if (row.get("orgId") != self.org or row.get("provider") != self.args.provider
+                or row.get("harness") != self.args.harness or created < self.started - 5
+                or (owner and row.get("ownerId") != owner)):
+            raise Failure("resource_identity_unconfirmed")
+        state = self.tool("status", id=resource)
+        if state.get("golden") != self.args.golden or state.get("model") != self.args.model:
+            raise Failure("resource_selection_unconfirmed")
+        return row
+
+    def settled(self, resource, prompt):
+        while True:
+            value = self.tool("status", id=resource, prompt_id=prompt)
+            if value.get("settled"):
+                if value.get("prompt", {}).get("state") != "finished":
+                    raise Failure("agent_turn_not_finished")
+                return value
+            time.sleep(min(2, self.remaining()))
+
+    def stop(self, resource):
+        if self.tool("status", id=resource).get("status") != "stopped":
+            result = self.tool("stop", id=resource)
+            if result.get("preservationNote") == "checkpoint_failed_disk_not_retained":
+                raise Failure("checkpoint_not_retained")
+        while self.tool("status", id=resource).get("status") != "stopped":
+            time.sleep(min(2, self.remaining()))
+
+    def launch(self, access, prompt):
+        body = {"org": self.org, "golden": self.args.golden, "provider": self.args.provider,
+                "harness": self.args.harness, "credentialId": self.args.account_id,
+                "model": self.args.model, "ttlSeconds": self.args.timeout,
+                "connections": [], "skills": [], "skipSkillDefaults": True, "prompt": prompt}
+        if self.args.repo:
+            body["repo"] = self.args.repo
+        if access:
+            body.update(armadaAccessVersion=1, armadaAccess={"maxActiveChildren": 1})
+        self.unknown_allocation = True
+        value = self.call("sandbox/launch-access-v1" if access else "sandbox/launch", body, timeout=120)
+        resource = self.record(value["sandbox"]["id"])
+        if value["sandbox"].get("credentialId") != self.args.account_id or value["sandbox"].get("credentialVersion") != self.args.account_version:
+            raise Failure("account_binding_unconfirmed")
+        self.unknown_allocation = False
+        if (access and value.get("armadaAccess", {}).get("enabled") is not True) or (not access and value.get("armadaAccess")):
+            raise Failure("access_option_not_confirmed")
+        return resource, value
+
+    def successful(self, call):
+        result = call.get("result", {})
+        if result.get("isError") is not False:
+            raise Failure("scoped_operation_not_successful")
+        return decoded(result.get("output"))
+
+    def scenario(self):
+        selected = [row for row in self.call("golden/list", {"org": self.org})["goldens"]
+                    if row.get("id") == self.args.golden_id and row.get("name") == self.args.golden
+                    and row.get("provider") == self.args.provider and row.get("orgId") == self.org]
+        if len(selected) != 1:
+            raise Failure("golden_selection_unconfirmed")
+        self.baseline = {identifier(row["id"]) for row in self.listing()}
+        selection = {"goldenId": self.args.golden_id, "harness": self.args.harness,
+                     "credentialId": self.args.account_id, "credentialVersion": self.args.account_version,
+                     "model": self.args.model, "prompt": self.marker + " child-init"}
+        if self.args.repo:
+            selection["repo"] = self.args.repo
+        self.phase = "delegated_child_roundtrip"
+        task = (self.marker + " Remember memory nonce " + self.memory + " only in this conversation; do not write files. "
+                "Use only native armada_orchestrator MCP tools, never shell/HTTP/owner credentials. "
+                "Launch exactly ONE child, idempotencyKey " + self.run_id + "-launch, selection " + json.dumps(selection) + ". "
+                "Then message that child using idempotencyKey " + self.run_id + "-message and text "
+                + json.dumps(self.marker + " Reply exactly " + self.answer) + ". "
+                "Poll delegated read until the CHILD assistant answers; then stop it with idempotencyKey "
+                + self.run_id + "-stop. Retain its ID and the memory nonce; finish without extra workers or tools.")
+        self.parent, first = self.launch(True, task)
+        print(json.dumps({"event": "parent_created", "id": self.parent}), flush=True)
+        owner = self.verify_resource(self.parent)["ownerId"]
+        prompt_id, conversation = first["promptId"], first["conversationId"]
+        self.settled(self.parent, prompt_id)
+        tools = scoped_tools(self.logs(self.parent), prompt_id)
+        launches = [call for call in tools if call["method"] == "launch"]
+        if len(launches) != 1 or launches[0].get("input") != {"idempotencyKey": self.run_id + "-launch", "selection": selection}:
+            raise Failure("scoped_launch_evidence_missing")
+        receipt = self.successful(launches[0])
+        self.child = self.record(receipt["sandboxId"])
+        print(json.dumps({"event": "child_discovered", "id": self.child}), flush=True)
+        if receipt.get("state") != "succeeded":
+            raise Failure("child_allocation_unconfirmed")
+        self.verify_resource(self.child, owner)
+        required = {"message": False, "read": False, "stop": False}
+        for call in tools:
+            method = call["method"]
+            if method not in required or call.get("input", {}).get("sandboxId") != self.child:
+                continue
+            value = self.successful(call)
+            if method == "read":
+                required[method] |= (value.get("id") == self.child and value.get("credentialId") == self.args.account_id
+                                     and value.get("credentialVersion") == self.args.account_version
+                                     and assistant_has(value.get("events", []), self.answer))
+            else:
+                required[method] |= (value.get("sandboxId") == self.child and value.get("state") == "succeeded"
+                                     and call["input"].get("idempotencyKey") == self.run_id + "-" + method
+                                     and (method != "message" or call["input"].get("text") == self.marker + " Reply exactly " + self.answer))
+        if not all(required.values()) or not assistant_has(self.logs(self.child), self.answer):
+            raise Failure("child_roundtrip_evidence_missing")
+        if self.tool("status", id=self.child).get("status") != "stopped":
+            raise Failure("delegated_stop_not_confirmed")
+        self.checks.append("scoped_launch_message_read_stop_and_child_answer")
+        old = None
+        if self.args.old_grant_file:
+            self.phase = "await_operator_grant_file"
+            while old is None:
+                old = grant_file(self.args.old_grant_file)
+                if old is None:
+                    time.sleep(min(2, self.remaining()))
+            before = self.call("orchestrator-tools/read", {"sandboxId": self.child}, token=old)
+            if before.get("result", {}).get("id") != self.child:
+                raise Failure("old_grant_positive_control_failed")
+        else:
+            self.unverified.append("old_grant_replay_no_operator_file")
+        self.phase = "stop_resume_memory"
+        self.stop(self.parent)
+        if old:
+            self.call("orchestrator-tools/read", {"sandboxId": self.child}, token=old, expected=403, code="scoped_authority_denied")
+        resumed = self.tool("send", id=self.parent, conversation_id=conversation,
+                            prompt=self.marker + " Recall your prior memory nonce and child ID without files or shell. Use native delegated read on that child; do not launch any worker. Answer with the recalled nonce and child ID.")
+        if resumed.get("conversationId") != conversation:
+            raise Failure("conversation_changed")
+        self.settled(self.parent, resumed["promptId"])
+        events = self.logs(self.parent)
+        reads = [call for call in scoped_tools(events, resumed["promptId"]) if call["method"] == "read"
+                 and call.get("input") == {"sandboxId": self.child}]
+        if (not assistant_has(events, self.memory, resumed["promptId"])
+                or not assistant_has(events, self.child, resumed["promptId"])
+                or not any(self.successful(call).get("id") == self.child for call in reads)):
+            raise Failure("memory_or_renewed_authority_unconfirmed")
+        if old:
+            self.call("orchestrator-tools/read", {"sandboxId": self.child}, token=old, expected=403, code="scoped_authority_denied")
+            self.checks.append("old_grant_positive_then_stopped_and_resumed_denial")
+        self.checks.append("retained_conversation_nonce_and_new_scoped_read")
+        self.phase = "no_option_control"
+        self.control, control = self.launch(False, self.marker + " control. Try native armada_orchestrator read on " + self.child + "; do not use shell/HTTP, create resources or invent tools. Finish if unavailable.")
+        self.verify_resource(self.control, owner)
+        self.settled(self.control, control["promptId"])
+        if any(call.get("result", {}).get("isError") is False for call in scoped_tools(self.logs(self.control), control["promptId"])):
+            raise Failure("control_has_delegated_authority")
+        # Fixed guest-side anonymous probe: never ask the model to report PASS.
+        source = ("import urllib.request,urllib.error,json\n"
+                  "r=urllib.request.Request(" + repr(self.address + "/api/v1/orchestrator-tools/read")
+                  + ",data=" + repr(json.dumps({"sandboxId": self.child}).encode()) + ",headers={'Content-Type':'application/json'})\n"
+                  "class N(urllib.request.HTTPRedirectHandler):\n def redirect_request(self,*a,**k): return None\n"
+                  "try:\n urllib.request.build_opener(N()).open(r,timeout=15); print('unexpected_success')\n"
+                  "except urllib.error.HTTPError as e:\n b=e.read(4096); v=json.loads(b); print('control-denied' if e.code==401 and v.get('error',{}).get('code')=='invalid_epoch_authority' else 'unexpected_denial')\n")
+        import shlex
+        probe = self.tool("exec", id=self.control, command="python3 -c " + shlex.quote(source), timeout_seconds=20)
+        if probe.get("exitCode") != 0 or probe.get("truncated") or probe.get("timedOut"):
+            raise Failure("control_probe_unconfirmed")
+        if probe.get("stdout", "").strip() != "control-denied":
+            raise Failure("control_probe_not_denied")
+        self.checks.append("control_anonymous_gateway_denied_no_successful_native_call")
+
+    def cleanup(self):
+        self.deadline = time.monotonic() + 90
+        failed = False
+        try:
+            # Only prompt-marked, newly created owner resources can be discovered.
+            for row in sorted(self.listing(), key=lambda row: row.get("createdAt", "")):
+                candidate = identifier(row["id"])
+                if candidate not in self.baseline and candidate not in self.ids:
+                    if any(event.get("kind") == "prompt" and self.marker in event.get("text", "") for event in self.logs(candidate)):
+                        self.record(candidate)
+        except (Failure, KeyError, TypeError, ValueError):
+            failed = True
+        # Fence parent authority before cleaning children; a model must not race cleanup.
+        order = [resource for resource in (self.parent, self.control) if resource]
+        order.extend(resource for resource in self.ids if resource not in order)
+        for resource in order:
+            try:
+                self.stop(resource)
+            except (Failure, KeyError, TypeError, ValueError):
+                failed = True
+        return not failed and not self.unknown_allocation
+
+
+def arguments(argv):
+    parser = Parser(description=__doc__)
+    parser.add_argument("--provider", choices=("boat", "modal"), required=True)
+    parser.add_argument("--harness", choices=("codex", "claude"), required=True)
+    for name in ("golden", "golden-id", "account-id", "model"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--account-version", type=int, required=True)
+    parser.add_argument("--repo")
+    parser.add_argument("--old-grant-file")
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--confirm-real-compute", action="store_true", required=True)
+    args = parser.parse_args(argv)
+    args.golden_id, args.account_id = identifier(args.golden_id), identifier(args.account_id)
+    if not 60 <= args.timeout <= 1800 or args.account_version < 1:
+        raise Failure("invalid_arguments")
+    return args
+
+
+def main(argv=None, env=None):
+    env = os.environ if env is None else env
+    run, failure, cleaned = None, None, True
+    def terminate(_signal, _frame):
+        raise SystemExit(1)
+    previous_term = signal.signal(signal.SIGTERM, terminate)
+    try:
+        args = arguments(sys.argv[1:] if argv is None else argv)
+        if not all(env.get(name) for name in ("STAGING_URL", "STAGING_ORG", "ARMADA_TOKEN")):
+            raise Failure("staging_environment_required")
+        run = Run(args, origin(env["STAGING_URL"]), identifier(env["STAGING_ORG"]), env["ARMADA_TOKEN"])
+        run.scenario()
+    except Failure as error:
+        failure = str(error)
+    except KeyboardInterrupt:
+        failure = "interrupted"
+    except SystemExit:
+        if run is None:
+            raise
+        failure = "terminated"
+    except Exception:
+        failure = "unsupported_response_or_local_failure"
+    finally:
+        if run:
+            previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            try:
+                cleaned = run.cleanup()
+            except BaseException:
+                cleaned = False
+            finally:
+                signal.signal(signal.SIGINT, previous)
+        signal.signal(signal.SIGTERM, previous_term)
+    if not cleaned:
+        failure = "cleanup_not_confirmed"
+    unverified = run.unverified if run else []
+    status = "FAILED" if failure else "UNVERIFIED" if unverified else "PASS"
+    print(json.dumps({"status": status, "reason": failure, "checks": run.checks if run else [],
+                      "unverified": unverified, "cleanupConfirmed": cleaned,
+                      "resources": run.ids if run else []}, sort_keys=True))
+    return 0 if status == "PASS" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
