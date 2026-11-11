@@ -199,7 +199,8 @@ export async function forwardControl(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  if (orchestrator || sandboxDeletion) target.search = new URL(request.url).search;
+  if (orchestrator || sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
+    target.search = new URL(request.url).search;
   const idempotencyKey = orchestrator && method === "POST" ? request.headers.get("idempotency-key") : null;
   let response: Response;
   try {

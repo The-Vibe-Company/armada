@@ -620,3 +620,23 @@ test("orchestrator body limit counts streamed UTF-8 bytes and never sends oversi
     else process.env.ARMADA_MCP_URL = env;
   }
 });
+
+test("catalog proxy preserves query parameters for strict upstream refusal", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  const seen: string[] = [];
+  for (const operation of ["catalog", "versions"]) {
+    await forwardControl(
+      new Request(`https://dashboard.test/api/v1/skillpack/${operation}?unexpected=1`, {
+        method: "POST",
+        headers: { authorization: "Bearer masked" },
+        body: "{}",
+      }),
+      ["skillpack", operation],
+      async (input) => {
+        seen.push(new URL(String(input)).search);
+        return Response.json({});
+      },
+    );
+  }
+  expect(seen).toEqual(["?unexpected=1", "?unexpected=1"]);
+});
