@@ -41,6 +41,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
   orchestratorPairs?: readonly OrchestratorPair[];
@@ -174,6 +175,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           ? {
               providerMetadata: (selection) => options.providerMetadata!(selection, caller),
             }
+          : {}),
+        ...(options.storedProviderFor
+          ? { storedProvider: (target: ProviderTarget) => options.storedProviderFor!(target, caller) }
           : {}),
         provider: (target) => providerRegistry(options).resolve(target, caller),
         deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),

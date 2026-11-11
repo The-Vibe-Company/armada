@@ -113,6 +113,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { RequestTiming } from "./request-timing.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -126,6 +127,9 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
+  timing?: RequestTiming;
+  storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
   routines?: RoutineService;
@@ -240,8 +244,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
+  const timing = new RequestTiming();
+  options = { ...options, timing };
   try {
-    const caller = await authenticatedCaller(request, options);
+    const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
       (route.startsWith("templates/") ||
         route.startsWith("routines/") ||
@@ -283,7 +289,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           : invitationAction === "accept"
             ? await options.invitations.accept(caller, body.token)
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
-    } else result = await dispatch(deletion ? "sandbox/delete" : route, caller, body, options);
+    } else
+      result = await timing.measure("dispatch", () =>
+        dispatch(deletion ? "sandbox/delete" : route, caller, body, options),
+      );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
@@ -293,7 +302,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         "jobId" in result
           ? 202
           : 200,
-      headers: { "cache-control": "no-store" },
+      headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
     const failureCode = apiFailureCode(error);
@@ -796,10 +805,19 @@ async function dispatch(
         caller: scopedCaller,
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
+        measure: (phase, work) => measured(options, phase, work),
+        ...(options.storedProviderFor
+          ? {
+              storedProvider: (target: ProviderTarget) =>
+                measured(options, "stored_provider", () => options.storedProviderFor!(target, scopedCaller)),
+            }
+          : {}),
         provider: (target) =>
-          options.providers
-            ? options.providers.resolve(target, scopedCaller)
-            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+          measured(options, "provider", () =>
+            options.providers
+              ? options.providers.resolve(target, scopedCaller)
+              : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
+          ),
         deletionProvider: (sandbox) =>
           options.providers
             ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
@@ -1199,6 +1217,14 @@ async function connectGoldenRoute(options: ControlOptions, caller: Caller, body:
   return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
 }
 
+async function measured<T>(
+  options: ControlOptions,
+  phase: import("./request-timing.ts").TimingPhase,
+  work: () => Promise<T>,
+): Promise<T> {
+  return options.timing ? options.timing.measure(phase, work) : work();
+}
+
 async function readLogs(
   options: ControlOptions,
   caller: Caller,
@@ -1212,7 +1238,7 @@ async function readLogs(
   olderCursor?: string;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
-  const target = await options.logs(caller, id);
+  const target = await measured(options, "logs_target", () => options.logs!(caller, id));
   if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")
     throw new VaultError("invalid", "Invalid event direction.");
   for (const key of ["limit", "maxBytes"])
@@ -1230,15 +1256,17 @@ async function readLogs(
   let hasMore = false;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await target.provider.events({
-      sandboxId: target.providerSandboxId,
-      ...(cursor ? { cursor } : {}),
-      ...(backward ? { direction: "backward" as const } : {}),
-      ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
-      ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
-      ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
-      ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
-    });
+    const page = await measured(options, "events", () =>
+      target.provider.events({
+        sandboxId: target.providerSandboxId,
+        ...(cursor ? { cursor } : {}),
+        ...(backward ? { direction: "backward" as const } : {}),
+        ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+        ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
+        ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
+        ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
+      }),
+    );
     olderCursor = page.olderCursor;
     events.push(...page.events);
     hasMore = page.hasMore;
@@ -1251,12 +1279,14 @@ async function readLogs(
   }
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
-  const info = follow ? await target.provider.get(target.providerSandboxId) : null;
+  const info = follow ? await measured(options, "state", () => target.provider.get(target.providerSandboxId)) : null;
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
     follow && latest && info?.state !== "stopped" && info?.state !== "failed"
-      ? await target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest })
+      ? await measured(options, "prompt", () =>
+          target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
+        )
       : null;
   return {
     ...(olderCursor ? { olderCursor } : {}),
@@ -1638,6 +1668,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),
     providers,
+    storedProviderFor: async (target, caller) => (await modalIntegration()).storedProviderFor(target, caller),
     data: createSqlData(sql),
     providerMetadata: createProviderMetadata({ sql, vault: store, encryptionKey, providerFor }),
     goldenTarget: async (target, caller) =>

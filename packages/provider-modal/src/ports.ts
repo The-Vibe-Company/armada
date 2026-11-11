@@ -150,6 +150,8 @@ export interface ModalStore {
   /** Server-only boolean: checks references across target visibility scopes without exposing rows. */
   imageReferenced(imageId: string): Promise<boolean>;
   events(input: EventsRequest): Promise<EventPage>;
+  /** Latest ingested transition of a turn, without replaying its transcript. */
+  latestPrompt(sandboxId: string, promptId: string): Promise<Extract<AgentEvent, { kind: "prompt" }> | null>;
 }
 export interface RunnerGrant {
   token: string;
