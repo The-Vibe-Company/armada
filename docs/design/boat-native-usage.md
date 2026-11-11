@@ -45,3 +45,11 @@ Retry status collection and verify identical totals; interrupt a third turn and
 stop the sandbox, verifying retained observations and explicit missing coverage.
 Use only anonymized counter output, never raw native session files. Production
 checks are not performed by this change's delivery owner.
+
+A local, no-model Codex app-server handshake also succeeded: `initialize`
+returned a result, and `thread/start` with `ephemeral: true` returned
+`result.thread.id` and `result.thread.sessionId` as equal UUID-shaped strings.
+Two existing local `session_meta` records had a JSONL filename suffix matching
+their `payload.id`. Only field names and boolean/count results were exported.
+This validates installed protocol/schema shape, not a Boat-dispatched model turn
+or the completed identity bridge end to end.
