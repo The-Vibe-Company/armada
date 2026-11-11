@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
+import type { GoldenBuildWarning } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
 import { database } from "./support.ts";
 
 test("scoped golden reads preserve persisted build warnings without exposing private or removed rows", async () => {
   const { db, people } = await database();
   try {
-    const warnings = ["skillpack_download_unavailable"];
+    const warnings: GoldenBuildWarning[] = ["skillpack_download_unavailable"];
     await db.query("update goldens set build_warnings=$1::text[] where org_id=$2", [warnings, people.org]);
     await db.query(
       "insert into goldens(org_id,name,visibility,owner_id,config,removed_at) select org_id,'removed',visibility,owner_id,config,now() from goldens where name='shared'",
