@@ -8,15 +8,25 @@ test("Git credential test cannot consult host configuration or expose host token
   // Synthetic only: never read a live host credential to test non-disclosure.
   const canary = "ghp_" + "z".repeat(36);
   try {
-    writeFileSync(join(root, "git"), `#!/bin/sh
+    writeFileSync(
+      join(root, "git"),
+      `#!/bin/sh
 printf '%s\\n' '${canary}' >&2
 printf '%s\\n' '${canary}'
 exit 1
-`, { mode: 0o700 });
+`,
+      { mode: 0o700 },
+    );
     const config = join(root, "host.gitconfig");
     writeFileSync(config, `[credential]\n helper = "!echo password=${canary}"\n`);
     const result = Bun.spawnSync(
-      [process.execPath, "test", resolve("packages/core/test/github.test.ts"), "--test-name-pattern", "sets the identity"],
+      [
+        process.execPath,
+        "test",
+        resolve("packages/core/test/github.test.ts"),
+        "--test-name-pattern",
+        "sets the identity",
+      ],
       {
         env: {
           ...process.env,

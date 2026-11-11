@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isolatedGitEnvironment } from "../../../scripts/test-support/isolated-git.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { isolatedGitEnvironment } from "../../../scripts/test-support/isolated-git.ts";
 import {
   decryptSecret,
   EncryptionKeyError,
@@ -519,7 +519,10 @@ describe("git setup in the sandbox", () => {
       // Never give assertion reporters raw credential output, even on failure.
       expect(filled.includes("username=x-access-token")).toBe(true);
       expect(filled.includes(`password=${ACCESS_1}`)).toBe(true);
-      const rewritten = Bun.spawnSync(["git", "ls-remote", "--get-url", "git@github.com:acme/app.git"], { env, cwd: home });
+      const rewritten = Bun.spawnSync(["git", "ls-remote", "--get-url", "git@github.com:acme/app.git"], {
+        env,
+        cwd: home,
+      });
       expect(rewritten.stdout.toString().trim()).toBe("https://github.com/acme/app.git");
 
       for (const name of readdirSync(home, { recursive: true, encoding: "utf8" })) {
