@@ -626,7 +626,7 @@ test.each([
               )
             ).rows[0]!;
             await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
-              code: "conflict",
+              code: "credential_busy",
             });
             // A rotated token is not in the original imported credential. No
             // event/exec output may escape without a trustworthy registry.
@@ -656,7 +656,7 @@ test.each([
               await encryptSecret(native(70, "different-replacement"), ENCRYPTION_KEY),
             ]);
             await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
-              code: "conflict",
+              code: "credential_busy",
             });
             // Restoring the fixture advances version again; the old home remains
             // unowned and is still fenced below, never implicitly adopted.

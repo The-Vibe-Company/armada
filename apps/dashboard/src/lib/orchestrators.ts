@@ -181,6 +181,7 @@ export function parseOperation(value: unknown): OrchestratorOperation | null {
     state: value.state,
     revision: value.revision,
     errorCode: value.errorCode,
+    errorMessage: typeof value.errorMessage === "string" ? value.errorMessage : null,
   };
 }
 
