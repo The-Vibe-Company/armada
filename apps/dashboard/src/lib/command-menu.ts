@@ -46,6 +46,13 @@ export const COMMANDS: readonly Command[] = [
   },
   { id: "tools", label: "Tools", href: "/tools", group: "Go to", keywords: ["mcp", "connections"] },
   {
+    id: "variables",
+    label: "Variables",
+    href: "/variables",
+    group: "Go to",
+    keywords: ["secrets", "environment", "env", "config"],
+  },
+  {
     id: "harness",
     label: "Harness",
     href: "/harness",

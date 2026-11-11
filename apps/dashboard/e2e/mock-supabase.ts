@@ -112,6 +112,13 @@ type State = {
   unverifiedEmails: string[];
   /** GoTrue calls that establish or check an identity (`/verify`, `/token`, `/user`), in order. */
   authCalls: string[];
+  /**
+   * #921's application vault: readable variables (`value`) and write-only secrets (`sealed`, which no response ever
+   * includes; a deleted or revoked item has none). `vaultCalls` records each `variables/*`/`secrets/*` route with the
+   * body's field names only, so a test can check what was sent without the mock keeping a submitted value around.
+   */
+  vault: Row[];
+  vaultCalls: { route: string; fields: string[]; authorized: boolean }[];
 };
 
 function seed(): State {
@@ -190,6 +197,14 @@ function seed(): State {
       },
     ],
     github_connections: [],
+    vault: [
+      vaultItem(id(80), "variable", "org", ALICE, "APP_REGION", { value: "eu-west-1", version: 3 }),
+      vaultItem(id(81), "secret", "org", ALICE, "STRIPE_API_KEY", { sealed: "sk_e2e_seeded_org_secret" }),
+      vaultItem(id(82), "secret", "personal", ALICE, "ALICE_DEPLOY_TOKEN", { sealed: "e2e_seeded_alice_secret" }),
+      vaultItem(id(83), "secret", "personal", ALICE, "OLD_WEBHOOK_SECRET", { status: "revoked", version: 2 }),
+      vaultItem(id(84), "variable", "personal", BOB, "BOB_NOTES_URL", { value: "https://notes.bob.test" }),
+    ],
+    vaultCalls: [],
     githubInstallations: [
       {
         id: 4242,
@@ -1061,6 +1076,120 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
       ...(sized ? { machineSize } : {}),
     },
   });
+}
+
+function vaultItem(
+  itemId: string,
+  kind: "variable" | "secret",
+  scope: "personal" | "org",
+  owner: string,
+  name: string,
+  extra: Row = {},
+): Row {
+  return {
+    id: itemId,
+    kind,
+    org_id: ACME,
+    owner_id: owner,
+    scope,
+    name,
+    version: 1,
+    epoch: 1,
+    status: "active",
+    expires_at: null,
+    created_at: "2026-11-09T10:00:00.000Z",
+    updated_at: "2026-11-10T10:00:00.000Z",
+    ...extra,
+  };
+}
+
+/** The metadata DTO of `application-vault.ts`: never a value, never the sealed secret. */
+function vaultDto(row: Row): Row {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    ownerId: row.owner_id,
+    scope: row.scope,
+    name: row.name,
+    version: row.version,
+    epoch: row.epoch,
+    status: row.status,
+    ...(row.kind === "secret" ? { expiresAt: row.expires_at } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** `POST /api/v1/{variables,secrets}/<operation>`, with the server's membership, admin and version rules. */
+function vaultRoute(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.vaultCalls.push({ route, fields: Object.keys(body).sort(), authorized: userId !== null });
+  if (!userId) return json({ error: "Unauthorized." }, 401);
+  const [resource, operation] = route.split("/");
+  const kind = resource === "variables" ? "variable" : "secret";
+  const refuse = (status: number, code: string, message: string) => controlFail(status, code, message);
+  const invalid = () => refuse(400, "invalid", "Invalid application vault request.");
+  const denied = () => refuse(403, "forbidden", "Application vault access denied.");
+  if (kind === "secret" && operation === "read") return invalid();
+  if (!isMember(body.org, userId)) return denied();
+  const visible = (row: Row) =>
+    row.kind === kind && row.org_id === body.org && (row.scope === "org" || row.owner_id === userId);
+  const nameOk = (value: unknown) =>
+    typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !/^(ARMADA_|GITHUB_|GH_)/.test(value);
+  const taken = (name: unknown, scope: unknown, except?: unknown) =>
+    state.vault.some(
+      (row) =>
+        row.kind === kind &&
+        row.org_id === body.org &&
+        row.status !== "deleted" &&
+        row.name === name &&
+        row.scope === scope &&
+        (scope === "org" || row.owner_id === userId) &&
+        row.id !== except,
+    );
+  const now = new Date().toISOString();
+  if (operation === "list")
+    return json({ items: state.vault.filter((row) => visible(row) && row.status !== "deleted").map(vaultDto) });
+  if (operation === "set") {
+    if (body.scope !== "personal" && body.scope !== "org") return invalid();
+    if (body.scope === "org" && !isAdmin(body.org, userId)) return denied();
+    if (!nameOk(body.name) || typeof body.value !== "string" || (kind === "secret" && !body.value)) return invalid();
+    if (taken(body.name, body.scope)) return refuse(409, "conflict", "An application vault name is already in use.");
+    const row = vaultItem(id(++sequence), kind, body.scope, userId, String(body.name), {
+      org_id: body.org,
+      created_at: now,
+      updated_at: now,
+      ...(kind === "secret" ? { sealed: body.value } : { value: body.value }),
+    });
+    state.vault.push(row);
+    return json({ item: vaultDto(row) });
+  }
+  const row = state.vault.find((item) => item.id === body.id && visible(item));
+  if (!row) return refuse(404, "not_found", "Application vault resource unavailable.");
+  if (operation === "read") {
+    if (row.status !== "active") return refuse(404, "not_found", "Application vault resource unavailable.");
+    return json({ item: vaultDto(row), value: row.value });
+  }
+  if (row.scope === "org" && !isAdmin(body.org, userId)) return denied();
+  if (row.version !== body.expectedVersion) return refuse(409, "conflict", "Application vault version changed.");
+  if ((operation === "update" || operation === "rotate") && row.status !== "active")
+    return refuse(409, "conflict", "Application vault resource is not active.");
+  if (operation === "update" || operation === "rotate") {
+    if (body.name !== undefined && !nameOk(body.name)) return invalid();
+    if (body.name !== undefined && taken(body.name, row.scope, row.id))
+      return refuse(409, "conflict", "An application vault name is already in use.");
+    if (operation === "rotate" && (typeof body.value !== "string" || !body.value)) return invalid();
+    if (body.name !== undefined) row.name = body.name;
+    if (body.value !== undefined) row[kind === "secret" ? "sealed" : "value"] = body.value;
+  } else if (operation === "revoke" || operation === "delete") {
+    row.status = operation === "revoke" ? "revoked" : "deleted";
+    delete row.sealed;
+    delete row.value;
+  } else return invalid();
+  row.version = Number(row.version) + 1;
+  row.epoch = Number(row.epoch) + 1;
+  row.updated_at = now;
+  return json({ item: vaultDto(row) });
 }
 
 /* The registry's control API (issue #522): POST /api/v1/mcp/<operation>, user JWT as the bearer. */
@@ -2312,6 +2441,14 @@ function control(url: URL, body: Row): Response {
     state.invitations.push(row);
     return json({ ok: true });
   }
+  /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
+  if (url.pathname === "/__test/vault-revoke") {
+    const row = state.vault.find((item) => item.id === body.id);
+    if (!row) return json({ error: "unknown item" }, 404);
+    Object.assign(row, { status: "revoked", version: Number(row.version) + 1, epoch: Number(row.epoch) + 1 });
+    delete row.sealed;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/state") {
     return json({
       orgBoatKeys: state.orgs.filter((org) => org.boat_api_key_enc).map((org) => org.id),
@@ -2335,6 +2472,9 @@ function control(url: URL, body: Row): Response {
       invitations: state.invitations.map(invitationDto),
       members: state.members,
       connections: state.connections.map((row) => ({ ...row })),
+      vaultCalls: state.vaultCalls,
+      // Whether the mock holds a sealed value for each secret, never the value itself.
+      vault: state.vault.map(({ sealed, value, ...row }) => ({ ...row, sealed: sealed !== undefined, value })),
     });
   }
   return json({ message: "not found" }, 404);
@@ -2387,6 +2527,7 @@ const server = Bun.serve({
         return orgProvider(route, body, request);
       if (route === "creds/list" || route.startsWith("creds/accounts/")) return accounts(route, body, request);
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
+      if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
       if (route.startsWith("org/invitations/"))
         return invitations(route.slice("org/invitations/".length), body, request);
       if (route === "golden/list")
