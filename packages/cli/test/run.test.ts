@@ -56,6 +56,29 @@ describe("run", () => {
     expect(out).toContain(command);
   });
 
+  test("retired orchestrator commands explain the scoped sandbox replacement without authenticating", async () => {
+    let requested = false;
+    let err = "";
+    const code = await run(
+      ["orchestrator", "list"],
+      { out: () => {}, err: (text) => (err += text) },
+      {
+        fetch: Object.assign(
+          async () => {
+            requested = true;
+            throw new Error("must not request");
+          },
+          { preconnect: () => {} },
+        ),
+      },
+    );
+    expect(code).toBe(1);
+    expect(requested).toBe(false);
+    expect(err).toContain("removed");
+    expect(err).toContain("--armada-access");
+    expect(err).toContain("#1002");
+  });
+
   test.each(["--help", "-h"])("logs %s explains the reader without login, preferences or requests", async (option) => {
     let out = "";
     let err = "";

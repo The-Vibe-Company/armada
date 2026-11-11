@@ -42,7 +42,6 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { operation, parseTtl } from "./operations.ts";
-import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
@@ -80,7 +79,6 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
 
 Usage:
-  armada orchestrator --help               Persistent coordinator create/list/detail/send/steer/stop/resume/recover/events/capabilities
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -329,12 +327,10 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     return 0;
   }
   if (command === "orchestrator") {
-    const auth = authOf(io, deps);
-    return orchestratorCommand(original, {
-      ...auth,
-      fetch: deps.fetch ?? auth.fetch,
-      ...(deps.sleep ? { sleep: deps.sleep } : {}),
-    });
+    io.err(
+      "Orchestrators have been removed. Launch an ordinary sandbox with --armada-access instead; see docs/sandbox-armada-access.md (#1002).\n",
+    );
+    return 1;
   }
   let rest = original;
   const terminator = rest.indexOf("--");
