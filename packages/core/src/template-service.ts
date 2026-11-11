@@ -4,9 +4,9 @@ import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
-import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
+import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
 import { validateSkillPins } from "./skillpack.ts";
@@ -98,7 +98,8 @@ function refusalReason(error: unknown): string | undefined {
     // Public installs predate typed private-install diagnostics. Accept only their
     // closed classifications, never guest output or arbitrary exception messages.
     const skill = /^Skillpack installation failed: (skillpack_[a-z_]+)\./.exec(current.message)?.[1];
-    if (skill && [...PRIVATE_SKILL_FAILURES, "skillpack_skill_unavailable"].includes(skill as never)) return skill;
+    if (skill && ([...PRIVATE_SKILL_FAILURES, "skillpack_skill_unavailable"] as readonly string[]).includes(skill))
+      return skill;
     if (current instanceof VaultError) {
       const match = /^Template launch refused: ([a-z_]+)\.$/.exec(current.message);
       if (match) return match[1];
