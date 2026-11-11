@@ -145,7 +145,7 @@ test("an admin creates an org template from org resources only; it is published 
   await tools.getByRole("checkbox", { name: /Acme Docs/ }).check();
   const variables = dialog.getByRole("group", { name: /Variables/ });
   await variables.getByRole("checkbox", { name: /APP_REGION/ }).check();
-  const secrets = dialog.getByRole("group", { name: "Secrets", exact: true });
+  const secrets = dialog.getByRole("group", { name: /^Secrets/ });
   await expect(secrets.getByRole("checkbox", { name: /ALICE_DEPLOY_TOKEN/ })).toHaveCount(0);
   await secrets.getByRole("checkbox", { name: /STRIPE_API_KEY/ }).check();
   await expect(variables).toContainText("1 chosen");
