@@ -2,8 +2,8 @@
 
 Run only against a disposable staging database after its operator applies the new
 `20261110221000_application_vault.sql` migration. Never use production credentials
-or real application secrets. Use a random disposable canary and authenticated JSON request bodies; do not put values
-in URLs, shell arguments, MCP arguments, or command logs.
+or real application secrets. Use a random disposable canary and authenticated JSON
+request bodies; do not put values in URLs, shell arguments, MCP arguments, or logs.
 
 ## Required checks
 
@@ -32,6 +32,9 @@ in URLs, shell arguments, MCP arguments, or command logs.
 ## Explicit limits
 
 This slice does not deliver variables or application secrets to sandboxes.
+Application-secret `expiresAt` is stored metadata only in this management slice;
+it does not expire/revoke entries or authorize delivery. Enforcement is deferred
+to the delivery slice. Upload-reference expiry is enforced now.
 It does not add templates, routines, CLI, dashboard or iOS management.
 It does not protect existing model credentials, arbitrary prompts, logs, provider
 transcripts, work-preservation archives or agent/network output with application
@@ -43,7 +46,9 @@ No raw-secret launch security guarantee is enabled by this change.
 ## API calls and expected results
 
 All routes below are authenticated POSTs under `/api/v1/`, return no-store
-JSON, and reject query parameters. Use a request-body file outside the checkout,
+JSON, and reject query parameters at the control service. The public dashboard
+origin proxies these routes (including `secrets/upload`) to the control service
+without forwarding query strings. Use a request-body file outside the checkout,
 or a test HTTP client; never interpolate a canary into shell arguments.
 
 1. `variables/set` with `{org,scope:"personal",name:"APP_REGION",value:""}`
@@ -56,7 +61,10 @@ or a test HTTP client; never interpolate a canary into shell arguments.
 3. `secrets/rotate` with `{org,id,expectedVersion:1,value}` returns version
    and epoch 2. Repeat with version 1: 409. `secrets/revoke` and
    `secrets/delete` use `{org,id,expectedVersion}`, advancing version/epoch
-   and clearing active ciphertext. Revoked entries cannot rotate.
+   and clearing active ciphertext. Revoked entries are terminal and cannot rotate;
+   delete the revoked entry before reusing its name. Rotation without `expiresAt`
+   preserves the existing expiry; explicit `null` clears it. Verify both through
+   direct API rotation and upload → commit, including upload-set with an expiry.
 4. For MCP ingress, `secrets/upload` with
    `{org,operation:"set",scope:"personal",name:"APP_TOKEN",value}` returns
    only a random reference and a 300-second lifetime. Call MCP `secret_commit`

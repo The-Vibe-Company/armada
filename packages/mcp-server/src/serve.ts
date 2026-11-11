@@ -33,7 +33,7 @@ import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
-import { pruneResourceObservations } from "./resource-store.ts";
+import { pruneServerRetention } from "./retention-maintenance.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
@@ -302,10 +302,7 @@ export async function startServer(
     lifecycle,
     options.logError,
     goldenRetirements,
-    async () => {
-      await control.applicationVault?.purgeExpired();
-      await pruneResourceObservations(sql, new Date());
-    },
+    () => pruneServerRetention(sql, control.applicationVault, new Date()),
     orchestrators
       ? [
           orchestrators.runtime.createWorker,

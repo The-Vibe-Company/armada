@@ -87,7 +87,9 @@ function metadata(row: Row) {
     version: row.version,
     epoch: row.epoch,
     status: row.status,
-    ...(row.expires_at !== undefined ? { expiresAt: row.expires_at } : {}),
+    ...(row.expires_at !== undefined
+      ? { expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at }
+      : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -217,7 +219,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
         );
         changes.push(`${kind === "variable" ? "value" : "value_enc"}=$${params.length}`);
       } else if (operation === "rotate") invalid();
-      if (kind === "secret") {
+      if (kind === "secret" && input.expiresAt !== undefined) {
         params.push(expiry(input.expiresAt));
         changes.push(`expires_at=$${params.length}`);
       }
@@ -283,11 +285,12 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
           const orgId = identifier(input.org),
             role = await membership(tx, actor, orgId);
           let scope = input.scope,
-            key = input.name;
+            key = input.name,
+            secretExpiry = expiry(input.expiresAt);
           if (input.operation === "rotate") {
             const row = (
               await tx.query<Row>(
-                `select ${columns} from public.application_secrets where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) for update`,
+                `select ${columns},expires_at from public.application_secrets where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) for update`,
                 [identifier(input.id), orgId, actor.userId],
               )
             ).rows[0];
@@ -296,6 +299,9 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
               throw new VaultError("conflict", "Application vault version changed.");
             scope = row.scope;
             key = input.name ?? row.name;
+            // Upload captures the current expiry when omitted; the pinned version fences commit.
+            if (input.expiresAt === undefined)
+              secretExpiry = row.expires_at instanceof Date ? row.expires_at.toISOString() : expiry(row.expires_at);
           } else if (input.id !== undefined || input.expectedVersion !== undefined) invalid();
           if (scope !== "personal" && scope !== "org") invalid();
           if (scope === "org" && role !== "admin")
@@ -317,7 +323,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
               scope,
               name(key, kind),
               ciphertext,
-              expiry(input.expiresAt),
+              secretExpiry,
             ],
           );
           return { uploadReference: reference, expiresInSeconds: 300 };
@@ -335,7 +341,7 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
               scope: string;
               name: string;
               value_enc: Uint8Array;
-              secret_expires_at: string | null;
+              secret_expires_at: string | Date | null;
             }>(
               `delete from public.application_secret_uploads where hash=$1 and actor_id=$2 and org_id=$3 and expires_at>clock_timestamp() returning operation,target_id,expected_version,scope,name,value_enc,secret_expires_at`,
               [hash(input.uploadReference), actor.userId, orgId],
@@ -353,7 +359,10 @@ export function createApplicationVault(sql: Sql, encryptionKey: string | undefin
               expectedVersion: upload.expected_version,
               scope: upload.scope,
               name: upload.name,
-              expiresAt: upload.secret_expires_at,
+              expiresAt:
+                upload.secret_expires_at instanceof Date
+                  ? upload.secret_expires_at.toISOString()
+                  : upload.secret_expires_at,
             },
             upload.value_enc,
           );
