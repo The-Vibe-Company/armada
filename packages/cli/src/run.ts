@@ -263,7 +263,38 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
   // Command discovery must work before login or organization selection.
-  if (command === "launch" && original.length === 1 && ["--help", "-h"].includes(original[0] ?? "")) {
+  if (
+    command &&
+    [
+      "golden",
+      "launch",
+      "list",
+      "detail",
+      "status",
+      "advice",
+      "bind-credential",
+      "rm",
+      "extend",
+      "report",
+      "send",
+      "steer",
+      "exec",
+      "stop",
+      "wait",
+      "interrupt",
+      "logs",
+      "mcp",
+      "login",
+      "logout",
+      "token",
+      "org",
+      "account",
+      "github",
+      "creds",
+    ].includes(command) &&
+    original.length === 1 &&
+    ["--help", "-h"].includes(original[0] ?? "")
+  ) {
     io.out(HELP);
     return 0;
   }
@@ -931,7 +962,8 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     cursor = nextCursor;
     const drain = all || follow;
     settled = !drain || (!result.hasMore && (!follow || result.settled));
-    if (!settled)
+    // Pace only live polling, not pages the server already has available.
+    if (!settled && !result.hasMore)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
   return 0;
