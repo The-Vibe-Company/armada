@@ -74,13 +74,21 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 /** HTTP and MCP run precisely the same validated operations and authorization context. */
 export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
-  const server = createArmadaServer(context, "2.0.2");
-  const client = new Client({ name: "armada-http", version: "1" });
-  const [a, b] = InMemoryTransport.createLinkedPair();
+  const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
+  const server = await measure("tool_register", async () => createArmadaServer(context, "2.0.2"));
+  const { client, a, b } = await measure("tool_connect", async () => {
+    const client = new Client({ name: "armada-http", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    return { client, a, b };
+  });
   try {
-    await server.connect(a);
-    await client.connect(b);
-    const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 660_000 });
+    await measure("tool_connect", async () => {
+      await server.connect(a);
+      await client.connect(b);
+    });
+    const result = await measure("tool_call", () =>
+      client.callTool({ name, arguments: args }, undefined, { timeout: 660_000 }),
+    );
     if (result.isError) {
       const block = (result.content as { type: string; text?: string }[]).find((item) => item.type === "text");
       const marker = (result.content as { type: string; text?: string }[]).find(
@@ -103,7 +111,9 @@ export async function callSharedTool(context: ToolContext, name: string, args: R
     }
     return result.structuredContent;
   } finally {
-    await client.close();
-    await server.close();
+    await measure("tool_close", async () => {
+      await client.close();
+      await server.close();
+    });
   }
 }

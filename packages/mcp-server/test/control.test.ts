@@ -552,6 +552,8 @@ describe("armada org and armada creds against the control API", () => {
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({ id, status: "ready" });
       expect(response?.headers.get("server-timing")).toContain("stored_provider;dur=");
+      for (const phase of ["tool_register", "tool_connect", "tool_call", "tool_close"])
+        expect(response?.headers.get("server-timing")).toContain(`${phase};dur=`);
       expect(storedReads).toBe(1);
       expect((await read(ADA))?.status).toBe(404);
       expect(storedReads).toBe(1);
