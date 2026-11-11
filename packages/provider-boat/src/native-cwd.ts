@@ -305,6 +305,10 @@ if managed:
     threading.Thread(target=watch_admission, daemon=True).start()
 output_lock = threading.Lock()
 pending_reload = {}
+# Boat can submit another prompt before turn/start has returned its native turn ID.
+# Do not let overlapping starts/steers reach Codex during that admission window.
+starting_turns = {}
+starting_lock = threading.Lock()
 def output(line):
     if managed:
         try:
@@ -339,6 +343,9 @@ def receive():
                 pending[1].append("result" in message and "error" not in message)
                 pending[0].set()
                 continue
+        if isinstance(message, dict) and "method" not in message and "id" in message:
+            with starting_lock:
+                starting_turns.pop(message["id"], None)
         output(line)
 receiver = threading.Thread(target=receive, daemon=True)
 receiver.start()
@@ -380,6 +387,15 @@ def relay():
                 message = json.loads(line)
             except (ValueError, UnicodeDecodeError):
                 message = None
+            if (isinstance(message, dict)
+                    and message.get("method") in ("turn/start", "turn/steer")
+                    and isinstance(message.get("params"), dict)):
+                with starting_lock:
+                    busy = message["params"].get("threadId") in starting_turns.values()
+                if busy:
+                    if "id" in message:
+                        output((json.dumps({"id":message["id"],"error":{"code":-32000,"message":"turn_starting: wait for the current turn to start before sending another message."}})+"\\n").encode())
+                    continue
             if (isinstance(message, dict)
                     and message.get("method") in ("thread/start", "thread/resume", "turn/start")
                     and isinstance(message.get("params"), dict)):
@@ -423,6 +439,9 @@ def relay():
                     continue
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
             native_registry()
+            if isinstance(message, dict) and message.get("method") == "turn/start" and "id" in message:
+                with starting_lock:
+                    starting_turns[message["id"]] = message["params"].get("threadId")
             child.stdin.write(line)
             child.stdin.flush()
     except Exception:
