@@ -15,8 +15,9 @@ armada golden update web --config golden.json --provider boat --org <org> \
   --idempotency-key <new-saved-key> --timeout 60
 ```
 
-- Create/update accept repeated `--repo <url>[@branch]` or `--config <file>`, and repeated
-  `--init <cmd>`. `--setup <local-file>` reads a local script and sends its **contents** to run
+- Create/update accept repeated `--repo <url>[@branch]` or `--config <file>`. Repeated
+  `--init <cmd>` is supported with `--repo`, not `--config`; put init commands in the
+  config file when using that form. `--setup <local-file>` reads a local script and sends its **contents** to run
   after cloning, before scanning. Do not put credentials in config, init or setup.
 - Create defaults to org visibility; `--private` makes it owner-only. Org mutations require an
   admin; private mutations require their owner. Update retains the existing owner/visibility.
@@ -31,8 +32,10 @@ armada golden update web --config golden.json --provider boat --org <org> \
   `0` returns after admission. Acceptance or a successful exit after local waiting is **not
   publication**. Only `state: succeeded` establishes completion.
 - When the job succeeds during the wait, the CLI prints the completed result (with `--json`,
-  the result object, not just a receipt). If still pending, it reports status/recovery guidance;
-  `--json` prints the current job status. Disconnecting does not cancel or resubmit the build.
+  the result object, not just a receipt). If still pending, it can print the current status (`--json` prints the job object),
+  or exit with a polling-stopped error and recovery guidance when its local deadline expires.
+  Very short waits such as `--timeout 1` can expire during the fixed two-second polling interval;
+  use `0` for admission-only output. Disconnecting does not cancel or resubmit the build.
 
 Recover without starting another build:
 
@@ -74,7 +77,8 @@ Both surfaces admit durable jobs, not inline snapshots. Control API requests use
 | MCP `golden_create` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `private`, `setup`. No `config` field. |
 | MCP `golden_update` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `setup`. No `config` or `private` field. |
 
-MCP `repos` contains 1–16 `owner/repo` entries from one GitHub App installation. `setup`
+MCP `repos` contains 1–16 `owner/repo` entries. Private repositories require a
+caller-visible GitHub App installation; caller-verified public repositories need not have one. `setup`
 is script text, not the CLI's local file path. MCP `org` is an org ID (needed when membership
 is ambiguous); API `org` accepts an ID or name. Use IDs for portable examples.
 
@@ -123,15 +127,17 @@ before deciding what to do, rather than treating it as a durable build job to po
 ## Security model
 
 - Repository access is checked with the caller's connected [GitHub identity](github-app.md),
-  never the App's broader visibility. Requested repositories must share an installation the
-  caller can access. Missing/revoked/unavailable GitHub access prevents a build.
+  never the App's broader visibility. Private repositories require an installation the caller
+  can access. Missing/revoked/unavailable GitHub access prevents a build.
 - Checkout uses the caller's cached OAuth access token, or an optional short-lived,
-  repository-scoped installation token when the server has signing credentials. The latter is
+  repository-scoped installation token when the server has signing credentials and the
+  repositories share one installation. Public repositories without an installation and
+  repositories spanning installations use the caller-token fallback. The minted token is
   revoked after checkout; the shared user token is not revoked by the build. Credentials travel
   over pinned SSH on stdin, not argv, git config or persistent credential files.
 - Disposable builders receive no account environment secrets. A fail-closed scan covers the
-  filesystem and git history/objects before snapshot publication; matches report filenames,
-  never secret values. A match, timeout or inability to run the scan blocks publication.
+  filesystem and git history/objects before snapshot publication; diagnostics disclose bounded location classes/counts,
+  never matched values or file paths. A match, timeout or inability to run the scan blocks publication.
   This is a defensive check, **not proof that every possible secret has been removed**.
 - Successful create/update publication follows scanning and a ready snapshot. Failed or
   ambiguous builds do not publish a new golden pointer; update retains the last-good snapshot.
