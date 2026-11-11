@@ -31,6 +31,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let fault: "none" | "launcher" | "fork" | "initialization" | "skills" | "epoch" = "none";
   let throwLogger = false;
   let stopUnconfirmed = false;
+  let deletePending = false;
   const lines: string[] = [];
   const childPreparation: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
@@ -66,6 +67,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       return placement.provider.stop(request);
     },
     async delete(request) {
+      if (deletePending) return { status: "pending" };
       if (stopUnconfirmed) throw new Error(privateText);
       await placement.provider.stop(request);
       return { status: "deleted" };
@@ -436,6 +438,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       "skills",
       "private-skill",
       "private-skill-stop-unconfirmed",
+      "private-skill-delete-pending",
       "expired-skill-key",
       "undecryptable-skill-key",
       "epoch",
@@ -444,7 +447,8 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     ] as const) {
       lines.length = 0;
       stopUnconfirmed = scenario === "private-skill-stop-unconfirmed";
-      const privateSkill = scenario === "private-skill" || stopUnconfirmed;
+      deletePending = scenario === "private-skill-delete-pending";
+      const privateSkill = scenario === "private-skill" || stopUnconfirmed || deletePending;
       fault = ["launcher", "fork", "initialization", "skills", "epoch"].includes(scenario)
         ? (scenario as typeof fault)
         : "none";
@@ -495,7 +499,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       );
       if (storedSkillKey || privateSkill) {
         const failedParent = (await bundle.runtime.detail(caller, p.org, admitted.orchestratorId)).orchestrator;
-        expect(failedParent.state).toBe(stopUnconfirmed ? "blocked" : "stopped");
+        expect(failedParent.state).toBe(stopUnconfirmed || deletePending ? "blocked" : "stopped");
         expect(failedParent.conversationId).toBeNull();
         expect(failedParent.skillReceipt).toBeNull();
         await expect(
@@ -513,9 +517,12 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
             [failedParent.sandboxId],
           )
         ).rows[0];
-        if (!stopUnconfirmed) {
+        if (!stopUnconfirmed && !deletePending) {
           expect(sandbox?.status).toBe("deleted");
           expect(sandbox?.stopped_at).not.toBeNull();
+        } else {
+          expect(sandbox?.status).not.toBe("deleted");
+          expect(sandbox?.stopped_at).toBeNull();
         }
       }
       if (storedSkillKey) {
@@ -553,6 +560,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         skills: ["skills", "skill_command_missing"],
         "private-skill": ["skills_credential", "skillpack_credential_missing"],
         "private-skill-stop-unconfirmed": ["skills_credential", "skillpack_credential_missing"],
+        "private-skill-delete-pending": ["skills_credential", "skillpack_credential_missing"],
         "expired-skill-key": ["skills_credential", "skillpack_credential_refused"],
         "undecryptable-skill-key": ["skills_credential", "skillpack_credential_unreadable"],
         epoch: ["epoch_install", "authority_denied"],
@@ -566,6 +574,15 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         stage: expected[0],
         reason: expected[1],
       });
+      const cleanupRecords = records.filter((record) => record.event === "orchestrator_create_cleanup_failure");
+      if (stopUnconfirmed || deletePending) {
+        expect(cleanupRecords).toHaveLength(1);
+        expect(cleanupRecords[0]).toMatchObject({
+          action: "create",
+          outcome: "unconfirmed",
+          step: deletePending ? "unconfirmed" : "delete",
+        });
+      } else expect(cleanupRecords).toHaveLength(0);
       expect(records[0].operationId).toMatch(/^[a-f0-9-]{36}$/);
       expect(records[0].orchestratorId).toMatch(/^[a-f0-9-]{36}$/);
       if (scenario === "failure_publication")

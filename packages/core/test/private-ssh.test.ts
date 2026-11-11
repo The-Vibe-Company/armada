@@ -15,6 +15,9 @@ test.each([
   ["ARMADA_PRIVATE_FAILURE node_missing", "skillpack_ssh_node_missing"],
   ["ARMADA_PRIVATE_FAILURE flock_missing", "skillpack_ssh_flock_missing"],
   ["ARMADA_PRIVATE_FAILURE key_cleanup_failed", "skillpack_ssh_key_cleanup_failed"],
+  ["exit255", "skillpack_ssh_connection_failed"],
+  ["kex_exchange_identification: banner exchange: connection closed", "skillpack_ssh_connection_failed"],
+  ["Connection closed by 127.0.0.1 port 2222", "skillpack_ssh_connection_failed"],
   ["unrecognized", "skillpack_ssh_remote_failed"],
 ])("private SSH classifies %s without forwarding diagnostics", async (scenario, reason) => {
   const opaque = "untrusted-private-detail";
@@ -35,7 +38,17 @@ test.each([
             p.stderr.emit("data", opaque + "\n" + scenario.slice(0, 8));
             p.stderr.emit("data", scenario.slice(8) + "\n");
           }
-          p.emit("close", file === "ssh" || scenario === "keygen" ? 1 : 0);
+          p.emit(
+            "close",
+            file === "ssh" &&
+              (scenario === "exit255" ||
+                scenario.startsWith("kex_exchange_identification") ||
+                scenario.startsWith("Connection closed by"))
+              ? 255
+              : file === "ssh" || scenario === "keygen"
+                ? 1
+                : 0,
+          );
         }),
     };
     return p;

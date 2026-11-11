@@ -10,6 +10,7 @@ export const PRIVATE_SSH_FAILURES = [
   "skillpack_ssh_local_storage_failed",
   "skillpack_ssh_authorization_failed",
   "skillpack_ssh_connection_invalid",
+  "skillpack_ssh_connection_failed",
   "skillpack_ssh_host_key_rejected",
   "skillpack_ssh_authentication_failed",
   "skillpack_ssh_unreachable",
@@ -421,6 +422,8 @@ function command(
               privateReason = "skillpack_ssh_host_key_rejected";
             else if (line.includes("Permission denied (publickey"))
               privateReason = "skillpack_ssh_authentication_failed";
+            else if (/kex_exchange_identification|Connection closed by/.test(line))
+              privateReason = "skillpack_ssh_connection_failed";
             else if (
               /Connection refused|Connection timed out|Could not resolve hostname|Network is unreachable|Connection reset by peer/.test(
                 line,
@@ -478,7 +481,8 @@ function command(
                 ? "skillpack_ssh_timeout"
                 : overflow
                   ? "skillpack_ssh_output_invalid"
-                  : (privateReason ?? "skillpack_ssh_remote_failed"),
+                  : (privateReason ??
+                    (code === 255 ? "skillpack_ssh_connection_failed" : "skillpack_ssh_remote_failed")),
             ),
           );
           return;

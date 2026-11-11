@@ -346,6 +346,7 @@ raw SSH stderr, credentials, endpoint details or the SDK exception:
 | `skillpack_ssh_local_storage_failed` | Check server ephemeral directory/file permissions and cleanup; the transport could not manage its local SSH material. |
 | `skillpack_ssh_keygen_failed` | Check server ephemeral storage and `ssh-keygen` availability/permissions. |
 | `skillpack_ssh_authorization_failed` | Check provider key registration and active sandbox lifecycle; the guest was not reached. |
+| `skillpack_ssh_connection_failed` | SSH exited 255 without a more specific classification, or failed during key exchange/closed the connection. Check the Modal TCP tunnel and whether sshd is serving port 2222; this is not proof the guest command ran. |
 | `skillpack_ssh_connection_invalid` | Check provider-returned SSH username, endpoint and pinned host-key metadata. |
 | `skillpack_ssh_host_key_rejected` | Reconcile the provider's actual host key; do not disable pinning. |
 | `skillpack_ssh_authentication_failed` | Check provider authorization, worker user and key expiry. |
@@ -386,3 +387,10 @@ This fixes new creates, not historical stranded allocations. Do not introduce a
 cross-scope fallback or delete older resources by name: use exact, fenced create
 recovery/management proof. The namespace mismatch explains failed cleanup, not
 the original live SSH failure; the staging transport sub-step still needs proof.
+
+Failed-create cleanup emits exactly one additional secret-free
+`orchestrator_create_cleanup_failure` record if it cannot confirm cleanup. Its
+closed `step` is `fence`, `resolve`, `revalidate`, `delete`, `stop` or `unconfirmed`.
+The original install reason remains the operation errorCode/parent blockedReason;
+cleanup exceptions and provider messages are never forwarded. A pending delete
+is `unconfirmed`, not proof of deletion or grounds to publish a terminal parent.
