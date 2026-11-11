@@ -203,7 +203,7 @@ test("token routes distinguish auth-store outages, post-auth I/O and invalid req
         if (route === "token/create") store.insertToken = fail;
         if (route === "token/revoke") store.revokeToken = fail;
       }
-      const response = await call(route, jwt(ALICE), { org: "Alpha", id: "missing" });
+      const response = await call(route, jwt(ALICE), { org: "Alpha", id: BOB });
       expect(response.status).toBe(503);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(await response.json()).toMatchObject({ error: { code: "dependency_unavailable" } });
@@ -214,6 +214,7 @@ test("token routes distinguish auth-store outages, post-auth I/O and invalid req
     ["token/create", { org: 1 }],
     ["token/create", { org: "Alpha", label: " " }],
     ["token/revoke", {}],
+    ["token/revoke", { id: "not-a-uuid" }],
   ] as const) {
     const response = await call(route, jwt(ALICE), body);
     expect(response.status).toBe(400);

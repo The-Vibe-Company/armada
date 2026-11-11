@@ -441,6 +441,7 @@ async function tokenRevokeRoute(request: Request, options: ControlOptions): Prom
     const store = tokenRouteStore(options.authStore);
     const body = await readBody(request);
     const id = required(body, "id");
+    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a token UUID.");
     if (caller.via !== "supabase") {
       const visible = await listServiceTokens(store, caller.userId);
       const target = visible.find((token) => token.id === id);
