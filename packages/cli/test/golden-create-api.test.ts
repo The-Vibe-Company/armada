@@ -180,7 +180,7 @@ for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnect
       );
     if (outcome === "recovery") {
       expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
-        `armada: Build ${jobId}: recovery_required (Recovery required; capacity is still held. Reconcile the original build before retrying.).`,
+        `armada: Build ${jobId}: recovery_required (Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.).`,
       );
       expect(error).not.toContain("then retry.");
     }

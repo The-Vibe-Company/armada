@@ -19,7 +19,7 @@ export function providerPaymentRequiredMessage(provider?: "boat" | "modal"): str
 /** Recovery retains capacity, so never advise a retry until the build is failed. */
 export function goldenBuildFailureText(status: GoldenBuildStatus): string {
   if (status.state === "recovery_required")
-    return "Recovery required; capacity is still held. Reconcile the original build before retrying.";
+    return "Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.";
   return status.state === "failed" && status.failureReason === "provider_payment_required"
     ? providerPaymentRequiredMessage(status.provider)
     : (status.failureReason ?? "build_failed");
