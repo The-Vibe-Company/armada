@@ -15,6 +15,7 @@ async function invoke(
     status?: number;
     file?: string;
     fetchError?: Error;
+    unreadableReply?: boolean;
     beforeLaunch?: (stderr: string) => void;
   } = {},
 ) {
@@ -49,6 +50,7 @@ async function invoke(
           requests.push(request);
           if (request.url.endsWith("/templates/launch")) options.beforeLaunch?.(err);
           if (options.fetchError) throw options.fetchError;
+          if (options.unreadableReply) return new Response("{truncated");
           if (request.url.endsWith("/templates/list")) return Response.json({ items: [template] });
           return Response.json(options.response ?? { item: template, revision: { revision: 1, definition } }, {
             status: options.status ?? 200,
@@ -244,8 +246,12 @@ test("name-based launch prints recovery ID before submission and ID retries bypa
 });
 
 test("template launch transport failures warn of unknown outcome and preserve idempotent recovery", async () => {
-  for (const error of [new Error("private transport failure"), new DOMException("private timeout", "TimeoutError")]) {
-    const result = await invoke(["template", "launch", id, "--request-key", "durable-1"], { fetchError: error });
+  for (const options of [
+    { fetchError: new Error("private transport failure") },
+    { fetchError: new DOMException("private timeout", "TimeoutError") },
+    { unreadableReply: true },
+  ]) {
+    const result = await invoke(["template", "launch", id, "--request-key", "durable-1"], options);
     expect(result.code).not.toBe(0);
     expect(result.err).toContain("outcome unknown");
     expect(result.err).toContain("same template ID, request key and body");

@@ -12,6 +12,8 @@ import type { SessionStore } from "./session.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const TEMPLATE_LAUNCH_UNKNOWN =
+  "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown.";
 
 export interface ArmadaApiIo {
   env: NodeJS.ProcessEnv;
@@ -85,7 +87,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       } catch (error) {
         throw new AuthError(
           path === "/api/v1/templates/launch"
-            ? "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown."
+            ? TEMPLATE_LAUNCH_UNKNOWN
             : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
               ? `The server did not answer in time; the operation may have been accepted.${
                   path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
@@ -111,7 +113,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         } catch (error) {
           throw new AuthError(
             path === "/api/v1/templates/launch"
-              ? "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown."
+              ? TEMPLATE_LAUNCH_UNKNOWN
               : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
                 ? `The server did not answer in time; the operation may have been accepted.${
                     path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
@@ -124,6 +126,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         }
       }
       const payload: unknown = await response.json().catch(() => null);
+      if (
+        response.ok &&
+        path === "/api/v1/templates/launch" &&
+        (!payload || typeof payload !== "object" || Array.isArray(payload))
+      )
+        throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
       const failureCode =
         payload && typeof payload === "object" && "error" in payload
@@ -177,11 +185,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         );
       }
       if (path === "/api/v1/templates/launch" && response.status >= 500)
-        throw new ArmadaApiError(
-          "unavailable",
-          response.status,
-          "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown.",
-        );
+        throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (path.startsWith("/api/v1/templates/")) {
         const known: Record<string, string> = {
           "Template revision changed.":
