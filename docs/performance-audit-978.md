@@ -18,7 +18,7 @@ DOM rendering, transport or the owner's reported ~10 seconds on the phone.
 Existing chat projection tests own ordering, turn isolation and final-snapshot
 supersession; no timing assertions are added to CI.
 
-## Staging handoff (required before readiness)
+## Repeatable staging measurement procedure
 
 From a fresh checkout, install workspace links before running chat tests:
 
@@ -60,10 +60,50 @@ APIs; the report marks those unavailable. Dashboard paint/navigation and actual
 long-session phone-open remain unmeasured. These gaps must not be presented as
 zero or inferred from synthetic CPU timing.
 
-Coordinator: post the JSON and revision/host details on #978. Run consistently
-against baseline/candidate to obtain user-facing before/after. Until those
-numbers are folded in, this PR is blocked and **does not establish biggest-wait
-priorities**. The list below is a measurement backlog, not a ranked fix plan.
+## Coordinator staging baseline
+
+Source: [coordinator results on #978](https://github.com/The-Vibe-Company/armada/issues/978#issuecomment-6798001869). Script revision
+`67969b0b`, macOS 27.0.1 arm64, Python 3.14.6, public internet to staging,
+golden `smoke-modal`, Modal × Codex. Twenty samples per read/CLI command,
+nearest-rank p50/p95; body bytes are decoded HTTP response bytes.
+
+| API read | p50 ms | p95 ms | Response bytes |
+| --- | ---: | ---: | ---: |
+| golden/list | 251 | 329 | 1096 |
+| sandbox/list | 335 | 663 | 22474 |
+| sandbox/detail | 1750 | 2806 | 743 |
+| logs/read | 1398 | 2307 | 58 |
+
+| CLI (source) | p50 ms | p95 ms |
+| --- | ---: | ---: |
+| --version | 21 | 21 |
+| --help | 21 | 21 |
+| list | 405 | 994 |
+| golden | 454 | 884 |
+| detail | 1836 | 2657 |
+
+| Single lifecycle observation | ms |
+| --- | ---: |
+| launch_to_ready_including_auth_fork_init | 9956 |
+| prompt_admission | 2907 |
+| prompt_to_first_text_observed | 8583 |
+| cleanup_stop | 6315 |
+| cleanup_delete | 6815 |
+
+The disposable sandbox was deleted successfully. Lifecycle timings are one
+sample, not percentiles. First text includes prompt admission and 500ms polling.
+
+**Next measured target:** investigate `sandbox/detail` and `logs/read`, used
+when opening a conversation. Their 1.75s/1.40s p50 reads substantially exceed
+the sampled list routes' 0.25s/0.34s; a 58-byte logs response still takes 1.40s.
+This identifies the next investigation, not its cause. Use this same script
+against baseline/candidate staging revisions for the next PR's before/after.
+
+The current PR's chat change has only synthetic CPU before/after evidence;
+these staging numbers do not demonstrate its end-to-end user impact. Missing:
+Boat/Claude lifecycle, resume, browser/navigation, real long-session phone-open,
+internal launch subphases, complete route census and SQL trip counts. #978 stays
+open. Orchestrators remain excluded.
 
 ## Scope exclusion
 
@@ -89,14 +129,13 @@ provider waits against CPU numbers until staging traces exist.
 
 ## Proposed next small PRs
 
-1. Staging baseline harness and route census: read-only timings/bytes plus SQL
-   instrumentation evidence; provider lifecycle measurements only with approved
-   disposable fixtures. Establish the biggest user-visible wait.
+1. Investigate and fix detail/logs read latency using the same staging script
+   before/after. Preserve authorization, provider state and cursor semantics.
 2. Conversation-open transport/render optimization selected from those traces;
    preserve pagination, ordering and cursor contracts.
 3. Launch/resume critical-path optimization selected from phase data.
 4. CLI startup and per-command polish, then dashboard waterfalls/bundles,
    prioritized using the same measurements.
 
-Missing staging measurements remain open under #978; this first PR does not
+Remaining measurement gaps stay open under #978; this first PR does not
 claim completion of the entire campaign.
