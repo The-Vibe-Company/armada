@@ -102,7 +102,7 @@ function fixture(
       } else if (path === "templates/launch") {
         const template = templates.find((item) => item.id === input.id);
         const pin = template?.definition.skills[0];
-        if (!variable) throw new Error("Unexpected launch fixture");
+        if (!template || !variable) throw new Error("Unexpected launch fixture");
         expect(template?.definition.modelAccount).toEqual({ id: selected.modelAccountId, version: 7 });
         expect(String(input.prompt)).toContain(variable.name);
         expect(String(input.prompt)).not.toContain(variable.value);
