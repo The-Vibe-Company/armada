@@ -76,6 +76,7 @@ armada send SANDBOX "Inspect the assigned issue; report a plan." --json
 armada wait SANDBOX --timeout 60 --json
 armada status SANDBOX --json
 armada logs SANDBOX --all --json
+armada logs SANDBOX --since CURSOR --json
 armada steer SANDBOX "Keep the change inside the assigned issue." --json
 armada interrupt SANDBOX --json
 armada extend SANDBOX --ttl 1h --json
