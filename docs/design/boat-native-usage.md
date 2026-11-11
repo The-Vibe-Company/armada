@@ -95,3 +95,13 @@ session's current dashboard tokens, then run Boat × Codex and Modal × Codex
 turns and capture non-zero API and dashboard values. This sandbox currently has
 Boat HTTP 401, no staging Armada session, and no browser login. Secure staging
 access is required; no live acceptance or readiness is claimed.
+
+Boundary source reference: official Codex `rust-v0.167.1`, resolved commit
+`0a94398fa60c4fac0e7659e4213a0a36e613dd46`,
+`codex-rs/core/src/session/mod.rs` (`send_event_raw_with_persistence`),
+`codex-rs/core/src/session/turn.rs` (awaited token-count emission),
+`codex-rs/core/src/tasks/mod.rs` (terminal emission after task completion), and
+`codex-rs/protocol/src/protocol.rs` (serialized marker names). Native aborted
+turns emit `turn_aborted`, not `task_complete`: the parser closes that sequence
+without claiming complete counters, leaves the immediate next baseline unknown,
+and permits later closed turns to establish a new verified baseline.

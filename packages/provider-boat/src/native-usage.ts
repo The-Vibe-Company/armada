@@ -189,6 +189,11 @@ def snapshot(harness,session,turn,fresh):
             if active is None or payload.get('turn_id')!=active: raise ValueError('boundary')
             if active==turn: finished=True
             active=None;closed=True
+        elif kind=='turn_aborted':
+            if active is None or payload.get('turn_id')!=active: raise ValueError('boundary')
+            # An abort closes the sequence, not a complete usage snapshot. The
+            # next turn has an unknown baseline; later closed turns can recover.
+            active=None;closed=False;last=None
     if not identity or not seen or not finished or baseline is None or counts is None: raise ValueError('missing boundary')
     model=next(iter(models)) if len(models)==1 else ''
     if model and not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,160}',model): raise ValueError('model')

@@ -128,6 +128,28 @@ print(json.dumps([resume,linked,valid,collect('p2')]))
       ),
     ).toEqual([[], [], 1, []]);
   });
+  test("an interrupted native turn leaves counters unknown without poisoning later closed turns", () => {
+    expect(
+      guest(
+        setup +
+          `
+admit('one','p1');capture('codex',session,True);start('one','t1')
+write([100,20,0,0,0]);terminal('one','t1')
+admit('two','p2');capture('codex',session,False);start('two','t2')
+write([150,30,0,0,0],mode='a',turn='t2')
+lines=open(path).readlines()
+with open(path,'w') as f: f.writelines(lines[:-1])
+with open(path,'a') as f: f.write(json.dumps({'type':'event_msg','payload':{'type':'turn_aborted','turn_id':'t2'}})+'\\n')
+terminal('two','t2')
+admit('three','p3');capture('codex',session,False);start('three','t3')
+write([200,40,0,0,0],mode='a',turn='t3');terminal('three','t3')
+admit('four','p4');capture('codex',session,False);start('four','t4')
+write([250,50,0,0,0],mode='a',turn='t4');terminal('four','t4')
+print(json.dumps([collect('p1')[0]['inputTokens'],collect('p2'),collect('p3'),collect('p4')[0]['inputTokens']]))
+`,
+      ),
+    ).toEqual([100, [], [], 50]);
+  });
   test("Claude cumulative files without a proven native boundary remain unknown", () => {
     expect(
       guest(`
