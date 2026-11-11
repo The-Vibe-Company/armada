@@ -62,9 +62,11 @@ test("browser login exchanges a valid state-bound callback code with its PKCE ve
       const body = (await new Request(String(input), init).json()) as Record<string, string>;
       expect(body.code).toBe("authorization-code");
       expect(body.verifier).toMatch(/^[A-Za-z0-9_-]{43,128}$/);
-      expect(createHash("sha256").update(body.verifier ?? "").digest("base64url")).toBe(
-        new URL(await opened).searchParams.get("code_challenge") ?? "",
-      );
+      expect(
+        createHash("sha256")
+          .update(body.verifier ?? "")
+          .digest("base64url"),
+      ).toBe(new URL(await opened).searchParams.get("code_challenge") ?? "");
       return Response.json({ accessToken: "access", refreshToken: "refresh", expiresAt: "2099-01-01T00:00:00.000Z" });
     }) as typeof fetch,
   });
