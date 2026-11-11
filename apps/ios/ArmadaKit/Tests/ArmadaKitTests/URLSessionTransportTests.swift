@@ -1,12 +1,30 @@
 import Foundation
 import Testing
+import ObjectiveC
 @testable import ArmadaKit
 
-/// Registered before transport creation; only claims this fixture's unique hosts.
-/// No session/configuration injection or real network is involved.
+// Custom URLSession instances use configuration-scoped protocols, not the shared
+// session's global registry. Interpose the public factory only in this test process,
+// once, before transport creation; production needs no testing initializer/API.
+private extension URLSessionConfiguration {
+    @objc class func transportFixtureEphemeral() -> URLSessionConfiguration {
+        let configuration = transportFixtureEphemeral() // Original getter after exchange.
+        configuration.protocolClasses = [TransportProtocol.self] + (configuration.protocolClasses ?? [])
+        return configuration
+    }
+}
+
+/// Only claims the fixture's unique hosts; all other package traffic is unchanged.
 private final class TransportProtocol: URLProtocol, @unchecked Sendable {
     static let routes = Routes()
-    static let installed = URLProtocol.registerClass(TransportProtocol.self)
+    static let installed: Bool = {
+        guard let original = class_getClassMethod(URLSessionConfiguration.self,
+                                                 #selector(getter: URLSessionConfiguration.ephemeral)),
+              let fixture = class_getClassMethod(URLSessionConfiguration.self,
+                                                #selector(URLSessionConfiguration.transportFixtureEphemeral)) else { return false }
+        method_exchangeImplementations(original, fixture)
+        return true
+    }()
 
     final class Routes: @unchecked Sendable {
         private let lock = NSLock()
@@ -131,7 +149,7 @@ private final class TransportFixture {
     #expect(data == Data("fixture".utf8))
 }
 
-@Test func transportDoesNotCarryCookiesCredentialsOrCachedResponses() async throws {
+@Test func transportDoesNotCarryCookiesBearerOrCachedResponses() async throws {
     let fixture = TransportFixture()
     var transport: URLSessionTransport? = URLSessionTransport()
     weak var released = transport
