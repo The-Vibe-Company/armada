@@ -765,6 +765,7 @@ test("template skills retain verified receipts and closed refusals without repla
     const checksum = `sha256:${"a".repeat(64)}`;
     const publicId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const privateReceipt = {
+      workspaceId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
       reference: skills[1]!,
       version: "2.0.0",
       skillId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
@@ -774,7 +775,7 @@ test("template skills retain verified receipts and closed refusals without repla
     const exec = f.provider.exec;
     f.provider.exec = async (r) => {
       const result = await exec(r);
-      if (r.command.includes("skillpack install"))
+      if (!result.detached && r.command.includes("skillpack install"))
         result.stdout = JSON.stringify({
           lockfileVersion: 3,
           workspaces: {
