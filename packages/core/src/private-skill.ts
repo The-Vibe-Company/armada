@@ -2,10 +2,11 @@ import type { Harness } from "./contract.ts";
 import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import type { Provider } from "./provider.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
-import { sshPrivateSkillCommand } from "./ssh-executor.ts";
+import { PRIVATE_SSH_FAILURES, PrivateSshError, sshPrivateSkillCommand } from "./ssh-executor.ts";
 import { cleanupGuestKey } from "./ssh-key-cleanup.ts";
 
 export const PRIVATE_SKILL_FAILURES = [
+  ...PRIVATE_SSH_FAILURES,
   "skillpack_credential_unreadable",
   "skillpack_process_failed",
   "skillpack_install_nonzero",
@@ -65,7 +66,15 @@ export async function installPrivateSkill(
   const [slug, version] = input.reference.split("@");
   const tool = input.harness === "claude" ? "claude-code" : "codex";
   // Only fixed failure labels or the validated receipt leave the guest. Never forward CLI stderr/stdout.
-  const script = `${cleanupGuestKey}
+  const script = `set +x
+command -v node >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE node_missing\\n' >&2; exit 91; }
+command -v flock >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE flock_missing\\n' >&2; exit 91; }
+[ -d '/home/user' ] && [ -x '/home/user' ] || { printf 'ARMADA_PRIVATE_FAILURE home_unavailable\\n' >&2; exit 91; }
+armada_cleanup_pending=1
+trap 'if [ "$armada_cleanup_pending" = 1 ]; then printf "ARMADA_PRIVATE_FAILURE key_cleanup_failed\\n" >&2; fi' EXIT
+${cleanupGuestKey}
+armada_cleanup_pending=0
+trap - EXIT
 node <<'ARMADA_SKILL_INSTALL'
 const {spawnSync}=require('node:child_process'),fs=require('node:fs');
 const key=process.env.ARMADA_GIT_TOKEN;delete process.env.ARMADA_GIT_TOKEN;
@@ -134,6 +143,7 @@ ARMADA_SKILL_INSTALL`;
         throw new PrivateSkillError("skillpack_download_unavailable", error.stage);
       throw error;
     }
-    throw new PrivateSkillError("skillpack_transport_failed", "transport");
+    if (error instanceof PrivateSshError) throw new PrivateSkillError(error.reason, "transport");
+    throw new PrivateSkillError("skillpack_ssh_output_invalid", "transport");
   }
 }
