@@ -9,6 +9,7 @@ import argparse
 import json
 import math
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -31,13 +32,17 @@ org = os.environ.get("STAGING_ORG", "")
 token = os.environ.get("ARMADA_TOKEN", "")
 if url.scheme != "https" or not url.netloc or url.username or url.password or url.query or url.fragment:
     parser.error("STAGING_URL must be an HTTPS origin without credentials/query/fragment")
-if url.hostname in {"armada.thevibecompany.co", "armada.thevibecompany.com"}:
+if (url.hostname or "").rstrip(".").lower() in {
+    "armada.thevibecompany.co", "armada.thevibecompany.com",
+    "armada-mcp-production.up.railway.app",
+}:
     parser.error("Refusing known production origin; use the staging deployment")
 if not org or not token:
     parser.error("STAGING_ORG and ARMADA_TOKEN are required")
 origin = urllib.parse.urlunsplit((url.scheme, url.netloc, "", "", ""))
 report = {
-    "schema": 1, "samples": args.samples, "api": [], "cli": [], "phases": [],
+    "schema": 1, "python": platform.python_version(), "host": platform.platform(),
+    "samples": args.samples, "api": [], "cli": [], "phases": [],
     "limits": [
         "Client wall time, not server-only time; payload bytes are decoded HTTP body bytes.",
         "No internal launch subphase timing or SQL trip counts exposed by these APIs.",
