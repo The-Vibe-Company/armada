@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -344,6 +344,35 @@ test("HTTP and MCP share strict template operations; secure routes require authe
     expect(created?.status).toBe(200);
     expect(created?.headers.get("cache-control")).toBe("no-store");
     const saved = (await created!.json()) as { item: LaunchTemplate };
+    // A visible Claude template without a compatible account is an admission refusal, never a missing template.
+    await f.db.query("delete from credentials where kind in ('anthropic','claude_oauth')");
+    const claude = (
+      await f.create(f.people.owner, "personal", {
+        ...f.definition,
+        harness: "claude",
+        model: "claude-opus-5-5",
+        reasoningEffort: "medium",
+      })
+    ).item as LaunchTemplate;
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const refused = await api("launch", { org: f.people.org, id: claude.id, requestKey: "missing-claude" });
+      expect(refused?.status).toBe(409);
+      expect(await refused!.json()).toEqual({
+        error: { code: "conflict", message: "Template launch refused: model_account_unavailable." },
+      });
+      expect(warning.mock.calls).toEqual([
+        ["armada: template launch refused", { reason: "model_account_unavailable" }],
+      ]);
+      expect(f.boat.forks).toHaveLength(0);
+      expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(0);
+      expect((await api("get", { org: f.people.org, id: claude.id }))?.status).toBe(200);
+      expect(
+        (await api("launch", { org: f.people.org, id: crypto.randomUUID(), requestKey: "missing-template" }))?.status,
+      ).toBe(404);
+    } finally {
+      warning.mockRestore();
+    }
     const context = {
       templates: f.service,
       caller: f.actor(),

@@ -44,7 +44,8 @@ export const TEMPLATE_REFUSAL_HELP = {
   variable_version_changed: "Readable variable version changed. Publish a revision with its current version.",
   variable_delivery_unavailable:
     "Readable variable delivery is unavailable for this environment. Check runtime support.",
-  model_account_unavailable: "Template model account is missing or inaccessible. Check the account binding.",
+  model_account_unavailable:
+    "No usable model account is available for this agent in this organization. Add one in Build > Harness or choose another agent.",
   model_account_version_changed:
     "Template model account version changed. Publish a revision with the current account version.",
   model_account_incompatible:

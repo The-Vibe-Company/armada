@@ -57,6 +57,7 @@ import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
@@ -340,6 +341,19 @@ function TemplateForm({
           onChange={setHarness}
           options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
         />
+        {lookups.accounts?.state === "ready" &&
+          ["none", "unusable"].includes(
+            launchDefault(lookups.accounts.accounts, harness, lookups.accounts.now).state,
+          ) && (
+            <p role="status" className="text-sm text-amber-700 dark:text-amber-300">
+              No usable {HARNESS_LABELS[harness]} account is available to you in this organization. Add or reconnect one
+              in{" "}
+              <Link className="underline" href={HARNESS_PATH}>
+                Build &gt; Harness
+              </Link>{" "}
+              or choose another agent. You can save this template, but launching it requires an account.
+            </p>
+          )}
         <ModelFields
           key={harness}
           idPrefix={id}
