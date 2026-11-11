@@ -7,6 +7,7 @@ import {
   KeyRoundIcon,
   LayoutTemplateIcon,
   NetworkIcon,
+  PackageIcon,
   PlugIcon,
   SettingsIcon,
   UsersIcon,
@@ -57,6 +58,7 @@ const GROUPS = [
         icon: LayoutTemplateIcon,
       },
       { href: "/tools", label: "Tools", hint: "MCP connections your agents can use", icon: PlugIcon },
+      { href: "/skills", label: "Skills", hint: "The Skillpack key for private skills", icon: PackageIcon },
       {
         href: "/variables",
         label: "Variables",
