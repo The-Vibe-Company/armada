@@ -890,18 +890,6 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
-    case "golden/build/reconcile":
-      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
-      if (required(body, "confirmation") !== "provider_payment_required")
-        throw new GoldenError(
-          "invalid_config",
-          "Confirm a definitive provider payment refusal from the original build diagnostics, not merely an absent builder ID.",
-        );
-      return options.goldenBuilds.reconcilePaymentRefusal(
-        caller.userId,
-        required(body, "jobId"),
-        caller.orgs.map((org) => org.orgId),
-      );
     case "golden/build/status":
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       return options.goldenBuilds.status(

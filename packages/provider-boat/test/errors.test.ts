@@ -16,7 +16,7 @@ const cases: Case[] = [
     {
       code: "payment_required",
       retryable: false,
-      message: "The provider account cannot create machines: add billing or credits on the provider, then retry.",
+      message: "The Boat account cannot create machines: add billing or credits on Boat, then retry.",
     },
   ],
   ["suspended org", errorBody(403, "org_suspended", "Suspended"), { code: "forbidden", retryable: false }],

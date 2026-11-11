@@ -115,7 +115,7 @@ export {
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
-export { PROVIDER_PAYMENT_REQUIRED_MESSAGE } from "./golden-build-status.ts";
+export { goldenBuildFailureText, providerPaymentRequiredMessage } from "./golden-build-status.ts";
 export type { GoldenBuildWarning } from "./golden-build-warning.ts";
 export {
   assignDirs,

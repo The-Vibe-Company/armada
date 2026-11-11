@@ -366,6 +366,7 @@ export type Database = {
           revision_known: boolean;
           build_warnings: string[];
           failure_reason: string | null;
+          legacy_payment_recovery_eligible: boolean;
         };
         Insert: {
           id: string;
@@ -393,6 +394,7 @@ export type Database = {
           revision_known?: boolean;
           build_warnings?: string[];
           failure_reason?: string | null;
+          legacy_payment_recovery_eligible?: boolean;
         };
         Update: {
           id?: string;
@@ -420,6 +422,7 @@ export type Database = {
           revision_known?: boolean;
           build_warnings?: string[];
           failure_reason?: string | null;
+          legacy_payment_recovery_eligible?: boolean;
         };
         Relationships: [
           {

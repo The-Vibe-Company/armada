@@ -7,13 +7,13 @@ import {
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  goldenBuildFailureText,
   HARNESSES,
   type Harness,
   isSandboxProvider,
   LaunchError,
   type LaunchResult,
   MODEL_CATALOG,
-  PROVIDER_PAYMENT_REQUIRED_MESSAGE,
   type Provider,
   ProviderError,
   ProviderRoutingError,
@@ -96,8 +96,6 @@ Usage:
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
-  armada golden build-reconcile <job-id> --confirm-provider-payment-refused
-                                         Settle a legacy build only after verifying its payment refusal
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -505,28 +503,6 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       io.out(`${JSON.stringify(result)}\n`);
       return 0;
     }
-    case "build-reconcile": {
-      const jobId = oneName(args.positionals);
-      if (!flag(args, "--confirm-provider-payment-refused"))
-        throw new GoldenError(
-          "invalid_config",
-          "Verify the original build log proves payment_required with no allocation, then pass --confirm-provider-payment-refused. An absent builder ID alone is not proof.",
-        );
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient({
-        env: auth.env,
-        fetch: deps.fetch ?? auth.fetch,
-        session: auth.session,
-      });
-      const result = await client.request<GoldenBuildStatus>("/api/v1/golden/build/reconcile", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jobId, confirmation: "provider_payment_required" }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      io.out(JSON.stringify(result) + "\n");
-      return 0;
-    }
     case "build-status": {
       const auth = authOf(io, deps);
       const client = await createArmadaApiClient({
@@ -595,7 +571,7 @@ async function admitGoldenBuild(
       if (current.state === "failed" || current.state === "recovery_required")
         throw new GoldenError(
           "build_failed",
-          `Build ${job.jobId}: ${current.state} (${current.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : (current.failureReason ?? "build_failed")}).`,
+          `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`,
         );
       deadline.throwIfAborted();
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
@@ -618,10 +594,7 @@ async function admitGoldenBuild(
     return current.result ?? undefined;
   }
   if (current.state === "failed" || current.state === "recovery_required")
-    throw new GoldenError(
-      "build_failed",
-      `Build ${job.jobId}: ${current.state} (${current.failureReason === "provider_payment_required" ? PROVIDER_PAYMENT_REQUIRED_MESSAGE : (current.failureReason ?? "build_failed")}).`,
-    );
+    throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`);
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
   else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
   return undefined;

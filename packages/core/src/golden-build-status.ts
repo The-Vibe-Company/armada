@@ -10,6 +10,17 @@ export interface GoldenBuildStatus {
   result: { name: string; visibility: "org" | "private"; snapshot: string; warnings?: GoldenBuildWarning[] } | null;
 }
 
-/** Closed remediation, safe for every client surface. */
-export const PROVIDER_PAYMENT_REQUIRED_MESSAGE =
-  "The provider account cannot create machines: add billing or credits on the provider, then retry.";
+/** Closed provider names only; never interpolate an upstream error payload. */
+export function providerPaymentRequiredMessage(provider?: "boat" | "modal"): string {
+  const name = provider === "boat" ? "Boat" : provider === "modal" ? "Modal" : "the provider";
+  return `The ${name === "the provider" ? "provider" : name} account cannot create machines: add billing or credits on ${name}, then retry.`;
+}
+
+/** Recovery retains capacity, so never advise a retry until the build is failed. */
+export function goldenBuildFailureText(status: GoldenBuildStatus): string {
+  if (status.state === "recovery_required")
+    return "Recovery required; capacity is still held. Reconcile the original build before retrying.";
+  return status.state === "failed" && status.failureReason === "provider_payment_required"
+    ? providerPaymentRequiredMessage(status.provider)
+    : (status.failureReason ?? "build_failed");
+}

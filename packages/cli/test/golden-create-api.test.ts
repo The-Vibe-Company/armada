@@ -107,7 +107,7 @@ test("token-only golden create prints an actionable API conflict and exits nonze
   expect(requests).toBe(1);
 });
 
-for (const outcome of ["succeeded", "failed", "disconnected"] as const) {
+for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnected"] as const) {
   test("golden polls its admitted job without replaying admission: " + outcome, async () => {
     const requests: { path: string; body: Record<string, unknown>; init: RequestInit | undefined }[] = [];
     const jobId = crypto.randomUUID();
@@ -154,7 +154,9 @@ for (const outcome of ["succeeded", "failed", "disconnected"] as const) {
             if (outcome === "disconnected") throw new Error("transport failed");
             return Response.json({
               jobId,
-              state: outcome,
+              provider: "boat",
+              failureReason: outcome === "billing" || outcome === "recovery" ? "provider_payment_required" : null,
+              state: outcome === "billing" ? "failed" : outcome === "recovery" ? "recovery_required" : outcome,
               phase: outcome === "failed" ? "secret_scan" : "complete",
               errorCode: outcome === "failed" ? "build_failed" : null,
               result: outcome === "succeeded" ? { name: "web", visibility: "org", snapshot: "new-snapshot" } : null,
@@ -172,6 +174,16 @@ for (const outcome of ["succeeded", "failed", "disconnected"] as const) {
     expect(code).toBe(outcome === "succeeded" ? 0 : 1);
     if (outcome === "failed") expect(error).toContain("build_failed");
     if (outcome === "disconnected") expect(error).toContain("do not resubmit");
+    if (outcome === "billing")
+      expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
+        `armada: Build ${jobId}: failed (The Boat account cannot create machines: add billing or credits on Boat, then retry.).`,
+      );
+    if (outcome === "recovery") {
+      expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
+        `armada: Build ${jobId}: recovery_required (Recovery required; capacity is still held. Reconcile the original build before retrying.).`,
+      );
+      expect(error).not.toContain("then retry.");
+    }
   });
 }
 
@@ -219,44 +231,3 @@ for (const state of ["succeeded", "queued"] as const) {
     expect(output).not.toContain(token);
   });
 }
-
-test("legacy build reconciliation requires explicit refusal confirmation and uses only the control API", async () => {
-  const requests: Request[] = [];
-  const jobId = crypto.randomUUID();
-  let output = "";
-  const deps = {
-    auth: {
-      out: () => undefined,
-      err: () => undefined,
-      env: { ARMADA_TOKEN: token },
-      now: () => new Date(),
-      open: () => undefined,
-      fetch: async (input: string | URL | Request, init?: RequestInit) => {
-        const request = input instanceof Request ? input : new Request(String(input), init);
-        requests.push(request);
-        return Response.json({
-          jobId,
-          state: "failed",
-          phase: "builder",
-          errorCode: "build_failed",
-          failureReason: "provider_payment_required",
-          result: null,
-        });
-      },
-      session: memorySessionStore(),
-    },
-  };
-  const io = {
-    out: (text: string) => {
-      output += text;
-    },
-    err: () => undefined,
-  };
-  expect(await run(["golden", "build-reconcile", jobId], io, deps)).toBe(2);
-  expect(requests).toHaveLength(0);
-  expect(await run(["golden", "build-reconcile", jobId, "--confirm-provider-payment-refused"], io, deps)).toBe(0);
-  expect(requests).toHaveLength(1);
-  expect(new URL(requests[0]!.url).pathname).toBe("/api/v1/golden/build/reconcile");
-  expect(await requests[0]!.json()).toEqual({ jobId, confirmation: "provider_payment_required" });
-  expect(JSON.parse(output).failureReason).toBe("provider_payment_required");
-});

@@ -79,52 +79,47 @@ in [async-build-contract.md](async-build-contract.md).
 
 No production migration/rebuild/deployment is part of this change.
 
-## Recover a legacy Boat billing refusal with no golden
+## Operator recovery of the historical Boat billing incident
 
-New builds persist `provider_payment_required` and fail/release capacity when
-Boat definitively refuses allocation. Older workers did not persist this proof:
-a `recovery_required` job at phase `builder` with a null builder ID could be
-either a refusal **or an unknown allocation outcome**. Upgrading does not
-automatically release these indistinguishable legacy reservations.
+There is **no owner/admin force-release API or CLI command**. Missing builder
+metadata does not prove a refusal: a timed-out allocation can still create a
+machine. New ambiguous builds always retain their reservation.
 
-An authenticated build owner (or an org administrator for an org-visible job)
-can explicitly attest the original provider refusal:
+Migration 20261111010000_legacy_boat_payment_recovery.sql captures eligibility
+only for already-existing Boat creates in recovery_required/builder with no
+builder, snapshot, golden or recorded reason. Later jobs default ineligible,
+even with identical metadata. Nothing is automatically released.
 
-    armada golden build-reconcile <job-id> --confirm-provider-payment-refused
+For staging incident **aa2f54f7**, after migrations/server rollout:
 
-This is not a force-clear command. Before confirming, verify the original server
-diagnostic for **that full job ID** reports `golden_build_failed`,
-`phase=builder`, `code=payment_required`, with no resource created.
-An absent builder ID, an empty golden list, a timeout, or a now-working billing
-account is **not** proof of the old request's outcome. Never use it for an
-ambiguous request. If the old diagnostics cannot prove refusal, retain the slot
-and investigate the original account's allocation outcome.
+1. Obtain the full UUID from the first create receipt (the prefix is not a UUID).
+   Verify the matching original diagnostic proves golden_build_failed,
+   phase=builder, code=payment_required, with no allocation. Present billing
+   status, an empty golden list or an absent builder ID is not sufficient.
+2. A trusted database operator connected to **staging** using its normal
+   service-role/database-owner access runs this transaction with that full ID:
 
-The control API is `POST /api/v1/golden/build/reconcile` with
-`{jobId, confirmation: "provider_payment_required"}`. It locks the job and
-rechecks current membership, owner/admin mutation rights and caller org scope.
-Only a legacy Boat **create** in `recovery_required` / `builder`, with no
-builder, snapshot, golden or recorded failure reason, can change. It atomically
-releases only that attempt's pending reservation and records
-`failed/provider_payment_required`. Repeating a completed confirmation is
-read-only. It makes no provider calls and never restarts commands or deletes
-artifacts. Private jobs remain owner-only.
+       begin;
+       select public.reconcile_legacy_boat_payment_refusal(
+         '<full-uuid-beginning-aa2f54f7>'::uuid,
+         'provider_payment_required'
+       );
+       commit;
 
-### Staging incident aa2f54f7 (2026-11-10)
+   The invoker-security function is executable only by service_role (and the
+   database owner), never a user JWT. It rechecks migration-captured eligibility
+   and current resource/state guards under a job lock, atomically releases only
+   that pending reservation, and records failed/provider_payment_required.
+   Repeating a completed confirmation is read-only.
+3. The owner runs:
 
-After deploying the migration, server and CLI from this PR, use the **full UUID**
-from the original create receipt (the supplied incident prefix is not a UUID):
+       armada golden build-status <full-job-uuid> --json
+       armada golden create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
 
-    JOB_ID=<full-uuid-beginning-aa2f54f7-from-the-original-create-receipt>
-    armada golden build-status "$JOB_ID" --json
-    # Confirm the matching original log: phase=builder, code=payment_required.
-    armada golden build-reconcile "$JOB_ID" --confirm-provider-payment-refused
-    armada golden build-status "$JOB_ID" --json
-    armada golden capabilities --provider boat --org <staging-org>
-    armada golden create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
+   Expect the old job failed with failureReason=provider_payment_required
+   (build-status exits 1 for terminal failure). Retry with a fresh admission key;
+   the old reservation must no longer block creation.
 
-Expect the reconciled job to be `failed` with
-`failureReason=provider_payment_required`; build-status returns exit 1 for this
-terminal failure. The new create uses a **new admission key** (do not reuse the
-failed attempt's key) and must no longer be blocked by its reservation.
-No golden ID, direct database write or retirement command is needed.
+No golden ID is needed. Do not expose this function through the control API or
+use an attestation to release a post-migration ambiguous job.
+No staging/production database operation is performed by this PR's agent.
