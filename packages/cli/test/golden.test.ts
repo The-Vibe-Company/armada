@@ -112,7 +112,7 @@ describe("golden command", () => {
       expect(created.code).toBe(0);
       expect(created.err).toContain("Build admission key:");
       expect(created.out).toContain("Created golden monorepo (private).");
-      expect(created.out).toContain("golden-bx_1");
+      expect(created.out).toContain("golden-bx-1");
       expect(created.out).toContain("web, api");
       expect(sshCalls).toHaveLength(1);
       expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
