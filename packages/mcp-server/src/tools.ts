@@ -606,6 +606,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     const provider =
       found.status === "deleted" ||
       found.status === "starting" ||
+      found.status === "stopping" ||
       isInterruptedLaunch(found) ||
       (found.status === "failed" && found.stoppedAt !== null)
         ? null
@@ -1704,7 +1705,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       destructive: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id, true);
+      const found = await visible(args.id);
+      // A repeated stop observes the admitted request; it must not compete with
+      // its activity/reconciliation lease or replay provider hooks on archiving compute.
+      if (["stopping", "stopped"].includes(found.status)) return { id: found.id, status: found.status };
+      const { provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
         found,

@@ -69,7 +69,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         physicalExit = info.physicalExitConfirmed === true;
         if (
           !physicalExit &&
-          !["stopped", "deleted"].includes(info.state) &&
+          !["stopping", "stopped", "deleted"].includes(info.state) &&
           (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
         ) {
           signal?.throwIfAborted();
@@ -112,7 +112,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         physicalExit = info.physicalExitConfirmed === true;
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
-        if (!terminal && expired) error = "Lifetime expired; provider stop is not yet confirmed. Retrying.";
+        if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null)) error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.

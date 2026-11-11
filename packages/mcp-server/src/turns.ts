@@ -86,6 +86,7 @@ export async function readStatus(
   // after its lease expires) may publish completion; status must remain readable.
   if (
     sandbox.status === "starting" ||
+    sandbox.status === "stopping" ||
     isInterruptedLaunch(sandbox) ||
     (sandbox.status === "failed" && sandbox.stoppedAt !== null)
   )
