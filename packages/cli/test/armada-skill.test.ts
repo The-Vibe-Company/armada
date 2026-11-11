@@ -10,7 +10,9 @@ test("every terminal example in the Armada skill reaches CLI help or the API bou
   const examples = [...skill.matchAll(/^armada (.+)$/gm)];
   expect(examples.length).toBeGreaterThan(0);
   for (const [, line] of examples) {
-    const argv = (line?.match(/"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^"|"$/g, ""));
+    // Redirection is shell syntax; do not write recovery data while validating CLI arguments.
+    const command = line?.replace(/ > RECOVERY_FILE$/, "");
+    const argv = (command?.match(/"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^"|"$/g, ""));
     const id = "11111111-1111-4111-8111-111111111111";
     const resolved = argv.map((word) => (["SANDBOX", "ORG"].includes(word) ? id : word));
     let reachedApi = false;

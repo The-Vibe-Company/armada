@@ -101,7 +101,8 @@ armada exec SANDBOX "git status --short" --json
 armada github status
 armada github refresh SANDBOX
 armada stop SANDBOX --json
-armada recovery SANDBOX --json
+umask 077
+armada recovery SANDBOX --json > RECOVERY_FILE
 ```
 
 Before stopping, have the agent commit and push authorized work, then verify the
