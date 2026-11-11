@@ -71,6 +71,8 @@ describe("database", () => {
         "golden_snapshot_publications",
         "golden_snapshot_retirements",
         "goldens",
+        "launch_template_revisions",
+        "launch_templates",
         "mcp_actor_epochs",
         "mcp_bindings",
         "mcp_bootstraps",
@@ -113,6 +115,7 @@ describe("database", () => {
         "sandbox_work_recovery",
         "sandboxes",
         "service_tokens",
+        "template_launch_requests",
       ]);
 
       const unlocked = await db.query<{ name: string }>(`
@@ -198,6 +201,8 @@ describe("database", () => {
         "goldens INSERT(boat_sandbox_id,boat_snapshot_id,config,created_at,id,modal_app_id,modal_environment,modal_workspace,name,org_id,owner_id,provider,provider_sandbox_id,provider_snapshot_id,removed_at,size_policy,visibility)",
         "goldens SELECT",
         "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name,provider_sandbox_id,provider_snapshot_id)",
+        "launch_template_revisions SELECT",
+        "launch_templates SELECT",
         "mcp_connections SELECT",
         "mcp_tokens DELETE",
         "mcp_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
@@ -227,6 +232,7 @@ describe("database", () => {
         "service_tokens INSERT",
         "service_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
         "service_tokens UPDATE(revoked_at)",
+        "template_launch_requests SELECT",
       ]);
 
       // Whatever else is granted, no SELECT grant of a user JWT names a secret column.

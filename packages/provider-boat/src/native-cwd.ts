@@ -481,5 +481,6 @@ try:
   raise
 except FileNotFoundError: pass
 os.execve("/bin/bash",["bash","-c",sys.argv[2],"--"]+sys.argv[3:],e)`;
-  return `exec python3 -I -c ${quote(loader)} ${quote(harness)} ${quote(command)} "$@"`;
+  // Ordinary native Claude retains its no-Python path when no values were delivered.
+  return `if [ -f ${quote(`/run/armada-readable-variables/${harness}.json`)} ]; then exec /usr/bin/python3 -I -c ${quote(loader)} ${quote(harness)} ${quote(command)} "$@"; fi; ${command}`;
 }

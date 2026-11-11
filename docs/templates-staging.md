@@ -125,7 +125,12 @@ Request keys and immutable manifests have no expiry/automatic deletion: tombston
 must not turn retries into new work. The first claim freezes revision/hash, golden
 config/provider/snapshot (including Modal binding), tool generations/versions, resolved
 account ID/version, variable ID/version/copied readable values, actor/membership epoch
-and request key before any fork. The key digest is canonical over the non-secret
+and request key before any fork. The winning claim transaction also acquires the
+existing golden-operation fence for that exact snapshot/master; later provider or
+credential awaits cannot invalidate it merely because a rebuild publishes B. The
+immutable request keeps its historical fence ID after the live fence is released.
+Confirmed no-allocation/registered-child outcomes release the fence; ambiguous
+allocation or a crash retains it for reconciliation. The key digest is canonical over the non-secret
 request; prompts are not copied into generic request metadata.
 
 There is **no automatic ambiguous-request recovery or retry worker** in this slice.

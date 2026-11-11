@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ApplicationVaultActor } from "./application-vault.ts";
-import type { GoldenActor, GoldenRecord } from "./golden.ts";
+import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { parseMachineSize } from "./machine-size.ts";
@@ -48,6 +48,7 @@ type RequestRow = {
   digest: string;
   manifest: Manifest;
   sandbox_id: string;
+  golden_operation_fence_id: string;
   state: string;
   result: Record<string, unknown> | null;
   reason: string | null;
@@ -452,6 +453,9 @@ export function createTemplateService(sql: Sql) {
       if (previous) return previous;
       const r = await revision(tx, h, input.revision);
       if (r.id !== selection.r.id) unavailable("template_revision_changed");
+      // Acquire the strongest row lock FIRST: fence insertion also takes FOR UPDATE.
+      // Taking FOR SHARE in references before this would allow concurrent lock upgrades.
+      await tx.query("select id from public.goldens where id=$1 for update", [def.goldenId]);
       const resolved = await references(
         tx,
         a,
@@ -478,10 +482,11 @@ export function createTemplateService(sql: Sql) {
         requestKey: key,
       };
       const sandboxId = crypto.randomUUID();
+      const fenceId = crypto.randomUUID();
       const result = (
         await tx.query<RequestRow>(
-          "insert into public.template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id) values($1,$2,$3,$4,$5,$6,$7::text::jsonb,$8) on conflict(org_id,actor_id,client_key) do nothing returning *",
-          [org, a.userId, key, bodyDigest, h.id, r.id, JSON.stringify(manifest), sandboxId],
+          "insert into public.template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id,golden_operation_fence_id) values($1,$2,$3,$4,$5,$6,$7::text::jsonb,$8,$9) on conflict(org_id,actor_id,client_key) do nothing returning *",
+          [org, a.userId, key, bodyDigest, h.id, r.id, JSON.stringify(manifest), sandboxId, fenceId],
         )
       ).rows[0];
       if (!result)
@@ -491,12 +496,29 @@ export function createTemplateService(sql: Sql) {
             [org, a.userId, key],
           )
         ).rows[0]!;
+      // Snapshot A is protected in the SAME transaction that claims the request.
+      // Existing retirement guards now see the reference before any provider/credential await.
+      await tx.query(
+        "insert into public.golden_operation_fences(id,golden_id,expected_snapshot_id,expected_sandbox_id,revision_known,operation_kind) values($1,$2,$3,$4,true,'launch')",
+        [fenceId, resolved.golden.id, resolved.golden.providerSnapshotId, resolved.golden.providerSandboxId],
+      );
       claimed = true;
       return result;
     });
     if (!claimed) return replay(request, bodyDigest);
     const m = request.manifest;
     let allocating = false;
+    let fenceConsumed = false;
+    // These handles deliberately use root SQL, never the ended claim transaction connection.
+    const releaseFence: GoldenOperation = async () => {
+      await sql.query("delete from public.golden_operation_fences where id=$1", [request.golden_operation_fence_id]);
+    };
+    releaseFence.retain = async (receipt) => {
+      await sql.query("update public.golden_operation_fences set receipt=$2::text::jsonb where id=$1", [
+        request.golden_operation_fence_id,
+        JSON.stringify(receipt),
+      ]);
+    };
     try {
       const provider = await runtime.provider(m.golden);
       if (def.variables.length && !provider.configureReadableVariables) unavailable("variable_delivery_unavailable");
@@ -504,7 +526,29 @@ export function createTemplateService(sql: Sql) {
         provider,
         {
           ...runtime.stores,
-          goldens: { ...runtime.stores.goldens, findByName: async () => [m.golden] },
+          goldens: {
+            ...runtime.stores.goldens,
+            findByName: async () => [m.golden],
+            beginOperation: async (goldenId, expected) => {
+              if (
+                fenceConsumed ||
+                goldenId !== m.golden.id ||
+                expected.kind !== "launch" ||
+                expected.snapshotId !== m.golden.providerSnapshotId ||
+                expected.sandboxId !== m.golden.providerSandboxId
+              )
+                unavailable("environment_admission_unavailable");
+              const fence = (
+                await sql.query(
+                  "select id from public.golden_operation_fences where id=$1 and golden_id=$2 and expected_snapshot_id=$3 and expected_sandbox_id is not distinct from $4::text and revision_known and operation_kind='launch'",
+                  [request.golden_operation_fence_id, goldenId, expected.snapshotId, expected.sandboxId],
+                )
+              ).rows[0];
+              if (!fence) unavailable("environment_admission_unavailable");
+              fenceConsumed = true;
+              return releaseFence;
+            },
+          },
           credentials: {
             ...runtime.stores.credentials,
             resolve: async () =>
@@ -566,6 +610,9 @@ export function createTemplateService(sql: Sql) {
       );
       return output;
     } catch (error) {
+      // Before adoption no provider mutation is possible. After adoption launchSandbox
+      // owns release (registered child/confirmed absence) vs retention (unknown fork).
+      if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const state = allocating ? "reconciling" : "failed";
       const safeReason = refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable");

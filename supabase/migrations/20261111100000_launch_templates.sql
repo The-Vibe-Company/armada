@@ -28,6 +28,8 @@ create table public.template_launch_requests (
  template_id uuid not null references public.launch_templates(id),
  revision_id uuid not null references public.launch_template_revisions(id),
  manifest jsonb not null check(jsonb_typeof(manifest)='object'),
+ -- Historical fence identity: no FK, because confirmed launches release the live fence.
+ golden_operation_fence_id uuid not null,
  sandbox_id uuid not null,
  state text not null default 'claimed' check(state in ('claimed','allocating','succeeded','failed','reconciling')),
  result jsonb, reason text,
@@ -39,8 +41,8 @@ begin raise exception 'Template revisions are immutable'; end $$;
 create trigger immutable_template_revision before update or delete on public.launch_template_revisions for each row execute function public.immutable_template_revision();
 create function public.freeze_template_launch_manifest() returns trigger language plpgsql set search_path=public as $$
 begin
- if (new.org_id,new.actor_id,new.client_key,new.digest,new.template_id,new.revision_id,new.manifest,new.sandbox_id) is distinct from
- (old.org_id,old.actor_id,old.client_key,old.digest,old.template_id,old.revision_id,old.manifest,old.sandbox_id) then raise exception 'Launch manifest is immutable'; end if;
+ if (new.org_id,new.actor_id,new.client_key,new.digest,new.template_id,new.revision_id,new.manifest,new.sandbox_id,new.golden_operation_fence_id) is distinct from
+ (old.org_id,old.actor_id,old.client_key,old.digest,old.template_id,old.revision_id,old.manifest,old.sandbox_id,old.golden_operation_fence_id) then raise exception 'Launch manifest is immutable'; end if;
  return new;
 end $$;
 create trigger freeze_template_launch_manifest before update on public.template_launch_requests for each row execute function public.freeze_template_launch_manifest();

@@ -249,6 +249,14 @@ test("unknown provider outcomes remain durable reconciling across service restar
     expect(retry.state).toBe("reconciling");
     expect(calls).toBe(1);
     expect(f.boat.prompts).toHaveLength(0);
+    // Unknown allocation keeps the existing retirement barrier through process restart.
+    expect(
+      (
+        await f.db.query(
+          "select f.id from golden_operation_fences f join template_launch_requests r on r.golden_operation_fence_id=f.id",
+        )
+      ).rows,
+    ).toHaveLength(1);
   } finally {
     await f.db.close();
   }
@@ -432,6 +440,60 @@ test("reference revocation during initialization stops the allocated sandbox bef
     expect(f.boat.prompts).toHaveLength(0);
     expect(f.configured).toHaveLength(0);
     expect(f.boat.stops).toHaveLength(1);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("a rebuild published during provider selection cannot replace or invalidate the already claimed snapshot", async () => {
+  const f = await fixture();
+  try {
+    const template = (await f.create()).item as LaunchTemplate;
+    const rebuilt = `a${"8".repeat(62)}`;
+    let frozen = "";
+    let rebuild = true;
+    f.runtime.provider = async (golden) => {
+      if (rebuild) {
+        rebuild = false;
+        frozen = golden.providerSnapshotId ?? "";
+        // After immutable request claim, but BEFORE normal launch's beginOperation.
+        await f.db.query("update goldens set provider_snapshot_id=$2,boat_snapshot_id=$2 where id=$1", [
+          f.goldenId,
+          rebuilt,
+        ]);
+      }
+      return f.provider;
+    };
+    const first = await f.launch(template.id);
+    expect(first.state).toBe("succeeded");
+    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen]);
+    expect(await f.launch(template.id)).toEqual(first);
+    expect(f.boat.forks).toHaveLength(1);
+    expect((await f.launch(template.id, "after-rebuild")).state).toBe("succeeded");
+    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen, rebuilt]);
+    expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
+    await expect(
+      f.db.query("update template_launch_requests set golden_operation_fence_id=gen_random_uuid()"),
+    ).rejects.toThrow("immutable");
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("claimed snapshot fences release on pre-adoption launch refusals without losing request tombstones", async () => {
+  const f = await fixture();
+  try {
+    const template = (await f.create()).item as LaunchTemplate;
+    f.runtime.provider = async () => {
+      throw Error("provider routing unavailable before launch");
+    };
+    expect((await f.launch(template.id, "routing-refusal")).state).toBe("failed");
+    expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
+    f.runtime.provider = async () => f.provider;
+    expect((await f.launch(template.id, "ttl-refusal", { ttlSeconds: 3000000 })).state).toBe("failed");
+    expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
+    expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(2);
+    expect(f.boat.forks).toHaveLength(0);
   } finally {
     await f.db.close();
   }
