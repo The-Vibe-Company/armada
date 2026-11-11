@@ -46,12 +46,22 @@ try {
         ] as const) {
           await page.goto(`/${route}`);
           await expect(page.getByRole("heading", { name: title, level: 1, exact: true })).toBeVisible();
-          const selector = page.locator("[data-select-item]").filter({ visible: true }).first();
-          if (await selector.count()) {
+          const hasDetail = route !== "skills" && route !== "harness";
+          if (hasDetail) {
+            // The header can stream before its rows. Never substitute a loading frame for detail evidence.
+            const list = page.getByRole("list", {
+              name: route === "variables" ? "Variables and secrets" : title,
+              exact: true,
+            });
+            await expect(list).toBeVisible();
+            const selector = list.locator("[data-select-item]").first();
+            await expect(selector).toBeVisible();
             await selector.click();
-            await expect(
-              page.locator(phase === "before" ? "#resource-panel" : "[data-resource-panel]").filter({ visible: true }),
-            ).toBeVisible();
+            await expect(page.locator("aside[aria-labelledby]").filter({ visible: true })).toBeVisible();
+          } else if (route === "skills") {
+            await expect(page.getByRole("list", { name: "Skillpack keys", exact: true })).toBeVisible();
+          } else {
+            await expect(page.locator("[data-account]").filter({ visible: true }).first()).toBeVisible();
           }
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.evaluate(() => document.fonts.ready);
@@ -60,7 +70,7 @@ try {
             fullPage: true,
             animations: "disabled",
           });
-          if (await selector.count()) await page.keyboard.press("Escape");
+          if (hasDetail) await page.keyboard.press("Escape");
           await page.getByRole("button", { name: trigger, exact: true }).click();
           await expect(page.getByRole("dialog")).toBeVisible();
           if (route === "environments" && (await page.getByText("Show the create form", { exact: true }).isVisible())) {
