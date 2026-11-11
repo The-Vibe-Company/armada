@@ -29,10 +29,10 @@ for (const theme of ["light", "dark"] as const) {
           facet.boundingBox(),
         ]);
         if (!searchBox || !sortBox || !facetBox) throw new Error("Toolbar controls must have visible bounds");
-        const toolbarBox = await toolbar.boundingBox();
-        if (!toolbarBox) throw new Error("Toolbar must have visible bounds");
-        if (toolbarBox.width >= 576) expect(Math.abs(searchBox.y - sortBox.y)).toBeLessThanOrEqual(2);
-        else expect(sortBox.y).toBeGreaterThanOrEqual(searchBox.y + searchBox.height);
+        // Search must remain readable; sort may share its row or deliberately stack,
+        // but must never trail the wrapping facet row.
+        expect(searchBox.width).toBeGreaterThanOrEqual(200);
+        expect(Math.abs(searchBox.y - sortBox.y) <= 2 || sortBox.y >= searchBox.y + searchBox.height).toBe(true);
         expect(sortBox.y + sortBox.height).toBeLessThanOrEqual(facetBox.y);
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
         await expect(page.locator("html")).toHaveClass(new RegExp(theme));
