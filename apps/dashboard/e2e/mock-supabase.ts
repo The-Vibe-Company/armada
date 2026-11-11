@@ -9,7 +9,6 @@ import { type MachineSizePolicy, resolveMachineSize } from "@armada/core";
  * The real rules are tested against Postgres in packages/core/test.
  */
 
-
 type Row = Record<string, unknown>;
 type Fail = { status: number; code: string; message: string };
 

@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  costFigure,
-  costOfRow,
-  formatUsd,
-  usageFromRow,
-} from "@/lib/sandbox-cost";
+import { costFigure, costOfRow, formatUsd, usageFromRow } from "@/lib/sandbox-cost";
 
 const turns = (list: unknown[], turnCount: unknown = list.length) => ({ turnCount, turns: list });
 
