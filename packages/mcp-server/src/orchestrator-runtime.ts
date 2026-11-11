@@ -360,7 +360,7 @@ export class OrchestratorRuntime {
         assertCurrent: () => this.options.store.assertCreateCurrent(reservation),
       });
       diagnostics.stage("preparing");
-      const identity = await this.options.store.preparing(reservation, false);
+      const identity = await this.options.store.preparing(reservation, { publishReady: false });
       reservation.identity = identity;
       diagnostics.bind({ sandboxId: identity.sandboxId });
       await this.prepare(
@@ -644,7 +644,7 @@ export class OrchestratorRuntime {
       configureAuthority: async () => {
         await validate();
         // Bootstrap has installed and durably recorded the requested skill.
-        // Only now arm ready for the existing epoch admission contract.
+        // Intentionally publish ready before installEpoch: epoch admission requires ready.
         await publishReady();
         await this.configureAuthority(backend, identity, diagnostics);
       },

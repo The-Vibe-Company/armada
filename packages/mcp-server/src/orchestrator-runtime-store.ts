@@ -1123,7 +1123,10 @@ export class OrchestratorRuntimeStore {
     });
   }
 
-  async preparing(reservation: RuntimeReservation, publishReady = true): Promise<RuntimeIdentity> {
+  async preparing(
+    reservation: RuntimeReservation,
+    { publishReady = true }: { publishReady?: boolean } = {},
+  ): Promise<RuntimeIdentity> {
     return this.transaction(async (tx) => {
       const identity = await this.read(
         reservation.identity.ownerId,
