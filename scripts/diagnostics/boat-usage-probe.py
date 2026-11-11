@@ -112,7 +112,7 @@ try:
         decoder=zlib.decompressobj()
         code=decoder.decompress(base64.b64decode(match[1],validate=True),LIMIT+1)
         valid=len(code)<=LIMIT and decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail
-        if not valid: raise ValueError()
+        if not valid or b'def fresh_mcp(' not in code: raise ValueError()
         out['installedUsageBridge']=valid and b'usage["capture"]' in code
         out['installedDigestCapture']=valid and b'usage["prompt_digest"]' in code
     else: out['installedWrapperFormatUnknown']=True

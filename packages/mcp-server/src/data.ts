@@ -337,13 +337,18 @@ export function createSqlData(sql: Sql): DataSource {
             ), merged as (
               select distinct on (value->>'promptId', value->>'model')
                 value || jsonb_strip_nulls(jsonb_build_object(
+                  'unavailableReason', first_value(value->'unavailableReason') over diagnostic,
                   'inputTokens', max((value->>'inputTokens')::bigint) over identity,
                   'outputTokens', max((value->>'outputTokens')::bigint) over identity,
                   'cachedTokens', max((value->>'cachedTokens')::bigint) over identity,
                   'cacheWriteTokens', max((value->>'cacheWriteTokens')::bigint) over identity,
                   'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) as value
               from snapshots
-              window identity as (partition by value->>'promptId', value->>'model')
+              window identity as (partition by value->>'promptId', value->>'model'),
+                diagnostic as (partition by value->>'promptId', value->>'model' order by
+                  case when jsonb_typeof(value->'unavailableReason')='object' then
+                    case when value#>>'{unavailableReason,code}' in ('compute_inactive','reader_unavailable') then 1 else 0 end
+                    else 2 end, ordinal desc)
               order by value->>'promptId', value->>'model', ordinal desc
             ), retained as (
               select case when m.value->>'inputTokens' is not null or m.value->>'outputTokens' is not null

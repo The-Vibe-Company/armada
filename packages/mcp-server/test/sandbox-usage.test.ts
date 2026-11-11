@@ -193,6 +193,27 @@ test("native collection persists retry-safe rows and preserves measurements when
       ],
     });
     expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    const diagnostic = {
+      promptId: "diagnostic",
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null,
+    };
+    await store.recordUsage!(id, {
+      turnCount: 3,
+      turns: [{ ...diagnostic, unavailableReason: usageUnavailableReason("native_start_unobserved") }],
+    });
+    // These writers sampled before the useful reason was committed. Last writer
+    // wins must not turn stop/missing telemetry into loss of the original stage.
+    await store.recordUsage!(id, {
+      turnCount: 3,
+      turns: [{ ...diagnostic, unavailableReason: usageUnavailableReason("compute_inactive") }],
+    });
+    await store.recordUsage!(id, { turnCount: 3, turns: [diagnostic] });
+    expect(
+      (await store.get(id))?.usage?.turns.find((row) => row.promptId === "diagnostic")?.unavailableReason?.code,
+    ).toBe("native_start_unobserved");
   } finally {
     await db.close();
   }

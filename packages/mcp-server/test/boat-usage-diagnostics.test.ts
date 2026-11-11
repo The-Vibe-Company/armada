@@ -51,6 +51,28 @@ test("shared status API retains a readable missing-usage stage across stop, then
     expect(measured.usage.tokenTotals?.inputTokens).toBe(42);
     expect(measured.usage.turns).toHaveLength(1);
     expect(measured.usage.turns[0]?.unavailableReason).toBeUndefined();
+    // A legacy unmeasured turn behind a stop fence must explain the refusal
+    // without reading or waking the still-physically-ready guest.
+    await db.query("update sandboxes set status='stopping',stop_requested_at=$2,usage_turns=$3::jsonb where id=$1", [
+      id,
+      server.clock.now.toISOString(),
+      JSON.stringify({
+        turnCount: 2,
+        turns: [
+          observation,
+          { promptId: "legacy", model: null, inputTokens: null, outputTokens: null, cachedTokens: null },
+        ],
+      }),
+    ]);
+    boat.provider.get = async () => {
+      throw new Error("Fenced status must not read the guest");
+    };
+    const fenced = await detail();
+    expect(fenced.status).toBe("stopping");
+    expect(fenced.usage.turns.find((row) => row.promptId === "legacy")?.unavailableReason?.code).toBe(
+      "compute_inactive",
+    );
+    expect(fenced.usage.turns.find((row) => row.promptId === receipt.promptId)?.inputTokens).toBe(42);
   } finally {
     await server.close();
   }

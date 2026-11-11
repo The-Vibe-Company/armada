@@ -279,9 +279,10 @@ function report(
   expiresAt: Date | null,
 ): StatusReport {
   const machineDown = status === "stopped" || status === "deleted" || (status === "failed" && !sandbox.stopRequestedAt);
+  const collectionFenced = machineDown || status === "stopping" || sandbox.stopRequestedAt != null;
   return {
     usage:
-      sandbox.usage && sandbox.provider === "boat" && machineDown
+      sandbox.usage && sandbox.provider === "boat" && collectionFenced
         ? {
             ...sandbox.usage,
             turns: sandbox.usage.turns.map((row) =>

@@ -259,6 +259,7 @@ def retire_pending(pending,reason='admission_superseded'):
 
 @locked
 def capture(harness,session,fresh,digest):
+    if not isinstance(session,str) or not UUID.fullmatch(session): raise ValueError('unsafe')
     init()
     # Old pre-fingerprint draft state cannot be disambiguated safely; a fresh
     # physical generation clears it. New admissions never write this global flag.
@@ -266,6 +267,7 @@ def capture(harness,session,fresh,digest):
     try: pending=load('pending.json')
     except FileNotFoundError: return None
     ticket=pending['ticket']
+    if not isinstance(ticket,str) or not ID.fullmatch(ticket): raise ValueError('unsafe')
     if time.time()-pending['at']>90:
         retire_pending(pending,'admission_expired');return None
     if not isinstance(digest,str) or pending.get('digest')!=digest:
@@ -285,7 +287,7 @@ def capture(harness,session,fresh,digest):
 
 @locked
 def start(ticket,turn):
-    if not ID.fullmatch(turn): raise ValueError('turn')
+    if not ID.fullmatch(ticket) or not ID.fullmatch(turn): raise ValueError('turn')
     entry=load(ticket+'.json')
     if entry.get('turn') not in (None,turn): entry['invalid']=True;entry['collectionReason']='native_boundary_unverified'
     entry['turn']=turn;save(ticket+'.json',entry)
@@ -318,6 +320,7 @@ def collect(prompt): return collection_result(prompt)['turns']
 
 @locked
 def terminal(ticket,turn=None):
+    if not ID.fullmatch(ticket): raise ValueError('unsafe')
     entry=load(ticket+'.json')
     if turn is None or entry.get('turn')!=turn: entry['invalid']=True;entry['collectionReason']='native_boundary_unverified'
     entry['terminal']=True;save(ticket+'.json',entry)
