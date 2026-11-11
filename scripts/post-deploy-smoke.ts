@@ -82,7 +82,7 @@ function verifyRecovery(archive: string, repo: string, commit: string) {
   if (archive.length > 3 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(archive)) fail("preservation_failed");
   const bytes = Buffer.from(archive, "base64");
   const entries = new Map<string, Buffer>();
-  for (let offset = 0; offset + 512 <= bytes.length;) {
+  for (let offset = 0; offset + 512 <= bytes.length; ) {
     const header = bytes.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
     const name = header.subarray(0, 100).toString().replace(/\0.*$/s, "");
@@ -96,8 +96,13 @@ function verifyRecovery(archive: string, repo: string, commit: string) {
   try {
     const manifest = JSON.parse(entries.get("manifest.json")?.toString() ?? "");
     const entry = manifest.repositories.find((entry: { path: string }) => entry.path === repo);
-    if (manifest.version !== 2 || entry?.head !== commit || entry.bundle !== true ||
-        !/^repo-\d+$/.test(entry.directory)) fail("preservation_failed");
+    if (
+      manifest.version !== 2 ||
+      entry?.head !== commit ||
+      entry.bundle !== true ||
+      !/^repo-\d+$/.test(entry.directory)
+    )
+      fail("preservation_failed");
     const bundle = entries.get(`${entry.directory}/commits.bundle`);
     const header = bundle?.subarray(0, bundle.indexOf(Buffer.from("\n\n"))).toString();
     if (!header?.split("\n").includes(`${commit} HEAD`) || !bundle?.includes(Buffer.from("PACK")))
@@ -443,7 +448,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       }
       if (preservation)
         await step("preservation_clean_checkout", () =>
-          checkedExec(`test -z "$(${git} status --porcelain)" && test -z "$(${git} rev-list HEAD --branches --tags --not --remotes)"`),
+          checkedExec(
+            `test -z "$(${git} status --porcelain)" && test -z "$(${git} rev-list HEAD --branches --tags --not --remotes)"`,
+          ),
         );
       await nativeTurn(false);
       for (const [name, command] of [
@@ -507,7 +514,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           if (!dirty) {
             if (preservationNote || result.archive !== null) fail("preservation_failed");
           } else {
-            if (!commit || typeof result.archive !== "string") fail("preservation_failed");
+            if (
+              !commit ||
+              typeof result.archive !== "string" ||
+              !preservationNote?.startsWith("unpushed work preserved at work_recovery:")
+            )
+              fail("preservation_failed");
             verifyRecovery(result.archive, item.repo, commit);
           }
         });

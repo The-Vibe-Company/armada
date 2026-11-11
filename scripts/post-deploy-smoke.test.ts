@@ -759,3 +759,102 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
     expect(fake.lines.join("")).not.toContain("secret");
   }
 });
+
+// Exercises the smoke's verdict, not the product collector (covered in core).
+test("preservation checks both providers and rejects missing, wrong or overwritten recovery without leaking material", async () => {
+  const commit = "a".repeat(40);
+  function archive(head: string) {
+    const files = {
+      "manifest.json": JSON.stringify({
+        version: 2,
+        repositories: [{ path: selected.repo, directory: "repo-0", head, bundle: true }],
+      }),
+      "repo-0/commits.bundle": `# v2 git bundle\n${head} HEAD\n\nPACKsynthetic-offline-payload`,
+    };
+    return Buffer.concat(
+      Object.entries(files)
+        .flatMap(([name, value]) => {
+          const header = Buffer.alloc(512);
+          header.write(name);
+          header.write(Buffer.byteLength(value).toString(8).padStart(11, "0"), 124);
+          return [header, Buffer.from(value), Buffer.alloc((512 - (Buffer.byteLength(value) % 512)) % 512)];
+        })
+        .concat([Buffer.alloc(1024)]),
+    ).toString("base64");
+  }
+  for (const provider of ["boat", "modal"]) {
+    for (const fault of [
+      "none",
+      "missing",
+      "wrong",
+      "corrupt",
+      "clean_note",
+      "clean_archive",
+      "overwritten",
+    ] as const) {
+      let launches = 0;
+      let stopping = false;
+      const fake = fixture((call) => {
+        if (call.path === "sandbox/launch") {
+          launches++;
+          stopping = false;
+        }
+        if (call.path === "sandbox/stop") stopping = true;
+        if (call.path === "sandbox/status")
+          return json({
+            status: stopping ? "stopped" : "ready",
+            providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+            ...(stopping && launches === 2
+              ? {
+                  preservationNote:
+                    fault === "overwritten"
+                      ? "secret-failure"
+                      : "unpushed work preserved at work_recovery:sandbox/recovery",
+                }
+              : {}),
+            ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
+          });
+        if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty"))
+          return json({ exitCode: 0, timedOut: false, stdout: `${commit}\n` });
+        if (call.path === "sandbox/recovery")
+          return json({
+            archive:
+              launches === 1
+                ? fault === "clean_archive"
+                  ? archive(commit)
+                  : null
+                : fault === "missing"
+                  ? null
+                  : fault === "corrupt"
+                    ? Buffer.from("secret-invalid").toString("base64")
+                    : archive(fault === "wrong" ? "b".repeat(40) : commit),
+          });
+      });
+      const staging = "https://armada-mcp-staging.up.railway.app";
+      const result = await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_URL: staging,
+          ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
+        },
+        ["--work-preservation"],
+        {
+          ...fake.io,
+          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+        },
+      );
+      expect(result).toBe(fault === "none");
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(fake.lines.join("")).not.toContain(commit);
+      expect(fake.lines.join("")).not.toContain("secret");
+      if (fault !== "none")
+        expect(fake.receipts()).toContainEqual(expect.objectContaining({ pass: false, code: "preservation_failed" }));
+    }
+  }
+});
+
+test("preservation refuses non-staging origins before requests", async () => {
+  const fake = fixture();
+  expect(await postDeploySmoke(env, ["--work-preservation"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+});
