@@ -40,6 +40,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
@@ -182,19 +183,15 @@ function AddVaultForm({
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="kind" value={kind} />
       <input type="hidden" name="scope" value={scope} />
-      <Choice legend="Kind">
+      <Choice legend="Kind" value={kind} onValueChange={(value) => setKind(value as VaultKind)}>
         <ChoiceCard
-          name={`${id}-kind`}
-          checked={kind === "variable"}
-          onChange={() => setKind("variable")}
+          value="variable"
           icon={<BracesIcon />}
           title="Variable"
           hint="Readable configuration. Anyone who can use it can see it."
         />
         <ChoiceCard
-          name={`${id}-kind`}
-          checked={kind === "secret"}
-          onChange={() => setKind("secret")}
+          value="secret"
           icon={<LockKeyholeIcon />}
           title="Secret"
           hint="Write-only. Stored encrypted; nobody can read it back."
@@ -207,19 +204,15 @@ function AddVaultForm({
       ) : (
         <ValueField key="variable" id={id} kind="variable" value={value} onValue={setValue} />
       )}
-      <Choice legend="Who can use it">
+      <Choice legend="Who can use it" value={scope} onValueChange={(value) => setScope(value as VaultScope)}>
         <ChoiceCard
-          name={`${id}-scope`}
-          checked={scope === "personal"}
-          onChange={() => setScope("personal")}
+          value="personal"
           icon={<UserIcon />}
           title="Personal"
           hint="Only you, in the sandboxes you launch."
         />
         <ChoiceCard
-          name={`${id}-scope`}
-          checked={scope === "org"}
-          onChange={() => setScope("org")}
+          value="org"
           disabled={!isAdmin}
           icon={<UsersIcon />}
           title={`Org (${orgName})`}
@@ -235,7 +228,17 @@ function AddVaultForm({
 }
 
 /** A two-card choice that cannot be changed after creation, marked as such. */
-function Choice({ legend, children }: { legend: string; children: ReactNode }) {
+function Choice({
+  legend,
+  children,
+  value,
+  onValueChange,
+}: {
+  legend: string;
+  children: ReactNode;
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
   return (
     <fieldset className="space-y-2">
       <legend className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm font-medium">
@@ -244,7 +247,9 @@ function Choice({ legend, children }: { legend: string; children: ReactNode }) {
           <LockIcon aria-hidden /> Cannot be changed later
         </span>
       </legend>
-      <div className="grid gap-2 sm:grid-cols-2">{children}</div>
+      <RadioGroup value={value} onValueChange={onValueChange} aria-label={legend} className="sm:grid-cols-2">
+        {children}
+      </RadioGroup>
     </fieldset>
   );
 }

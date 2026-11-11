@@ -8,6 +8,7 @@ import { buildGolden, goldenBuildStatus, recoverGoldenBuild } from "@/app/action
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
 import {
@@ -272,30 +273,27 @@ function ScopedGoldenForm({
             </div>
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">Who sees it</legend>
-              <div className="flex flex-wrap gap-4 pt-1 text-sm">
-                <label className={cn("flex items-center gap-2", !isAdmin && "text-muted-foreground")}>
-                  <input
-                    type="radio"
-                    name="visibility"
+              <RadioGroup
+                name="visibility"
+                value={chosenVisibility}
+                onValueChange={(value) => setChosenVisibility(value as "org" | "private")}
+                aria-label="Visibility"
+                className="flex flex-wrap gap-4 pt-1 text-sm"
+              >
+                <Label htmlFor={`${id}-visibility-org`} className="flex items-center gap-2 font-normal">
+                  <RadioGroupItem
+                    id={`${id}-visibility-org`}
                     value="org"
-                    checked={chosenVisibility === "org"}
-                    onChange={() => setChosenVisibility("org")}
                     disabled={!isAdmin}
                     aria-describedby={`${id}-visibility-hint`}
                   />
                   Everyone in {orgName}
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="visibility"
-                    value="private"
-                    checked={chosenVisibility === "private"}
-                    onChange={() => setChosenVisibility("private")}
-                  />
+                </Label>
+                <Label htmlFor={`${id}-visibility-private`} className="flex items-center gap-2 font-normal">
+                  <RadioGroupItem id={`${id}-visibility-private`} value="private" />
                   Only me
-                </label>
-              </div>
+                </Label>
+              </RadioGroup>
               <p id={`${id}-visibility-hint`} className="max-w-64 text-xs text-muted-foreground">
                 {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org goldens."}
               </p>
@@ -564,27 +562,32 @@ function ProviderChoice({
         Provider <Permanent />
       </legend>
       <input type="hidden" name="provider" value={value} />
-      <div className="grid gap-2 sm:grid-cols-2">
+      <RadioGroup
+        name={`${idPrefix}-provider`}
+        value={value}
+        onValueChange={(next) => onChange(next as SandboxProviderId)}
+        aria-label="Provider"
+        className="sm:grid-cols-2"
+      >
         {providers.map((option) => {
           const capacity = capacities?.[option];
           const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
           const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";
           return (
-            <label
+            <Label
               key={option}
+              htmlFor={`${idPrefix}-provider-choice-${option}`}
               className={cn(
                 "relative flex cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
                 value === option ? "border-primary bg-accent" : "hover:bg-accent/50",
               )}
               data-provider-choice={option}
             >
-              <input
-                type="radio"
-                name={`${idPrefix}-provider`}
-                checked={value === option}
-                onChange={() => onChange(option)}
+              <RadioGroupItem
+                id={`${idPrefix}-provider-choice-${option}`}
+                value={option}
                 aria-describedby={`${idPrefix}-provider-${option}`}
-                className="absolute inset-0 size-full cursor-pointer appearance-none rounded-md opacity-0"
+                className="mt-0.5"
               />
               <span className="min-w-0">
                 <span className="block font-medium">{PROVIDER_LABELS[option]}</span>
@@ -595,10 +598,10 @@ function ProviderChoice({
                   {hint}
                 </span>
               </span>
-            </label>
+            </Label>
           );
         })}
-      </div>
+      </RadioGroup>
       <p className="text-xs text-muted-foreground">The same name may exist once on each provider.</p>
     </fieldset>
   );

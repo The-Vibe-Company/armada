@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { type SkillpackKey, type SkillpackKeys, type SkillpackScope, skillpackAudience } from "@/lib/skillpack-key";
@@ -244,19 +245,15 @@ function KeyForm({
           Stored encrypted. Nobody can read it back, admins included.
         </p>
       </div>
-      <Choice legend="Who uses it">
+      <Choice legend="Who uses it" value={scope} onValueChange={(value) => setScope(value as SkillpackScope)}>
         <ChoiceCard
-          name={`${id}-scope`}
-          checked={scope === "user"}
-          onChange={() => setScope("user")}
+          value="user"
           icon={<UserIcon />}
           title="Personal"
           hint="Only you. Used before the organization's key."
         />
         <ChoiceCard
-          name={`${id}-scope`}
-          checked={scope === "org"}
-          onChange={() => setScope("org")}
+          value="org"
           disabled={!isAdmin}
           icon={<UsersIcon />}
           title={`Org (${orgName})`}
@@ -280,11 +277,23 @@ function KeyForm({
   );
 }
 
-function Choice({ legend, children }: { legend: string; children: ReactNode }) {
+function Choice({
+  legend,
+  children,
+  value,
+  onValueChange,
+}: {
+  legend: string;
+  children: ReactNode;
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
   return (
     <fieldset className="space-y-2">
       <legend className="text-sm font-medium">{legend}</legend>
-      <div className="grid gap-2 sm:grid-cols-2">{children}</div>
+      <RadioGroup value={value} onValueChange={onValueChange} aria-label={legend} className="sm:grid-cols-2">
+        {children}
+      </RadioGroup>
     </fieldset>
   );
 }

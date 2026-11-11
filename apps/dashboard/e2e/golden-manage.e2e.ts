@@ -452,7 +452,10 @@ test("same-name goldens on Boat and Modal are listed apart, and rebuild and laun
   await expect(dialog.getByLabel("Project").locator("option")).toHaveText(["Default directory", "docs"]);
   const summary = dialog.locator("[data-launch-summary]");
   await expect(summary).toContainText("docs");
-  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog
+    .locator("[data-launch-advanced]")
+    .getByRole("button", { name: /^Advanced/ })
+    .click();
   await dialog.getByLabel("Project").selectOption("");
   await expect(summary).toContainText("Default directory");
   await page.keyboard.press("Escape");

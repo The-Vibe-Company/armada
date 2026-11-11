@@ -41,6 +41,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +53,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
+import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
@@ -293,25 +295,21 @@ function TemplateForm({
                 <LockIcon aria-hidden /> Cannot be changed later
               </span>
             </legend>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <RadioGroup
+              value={scope}
+              onValueChange={(value) => setScope(value as TemplateScope)}
+              aria-label="Who can use it"
+              className="sm:grid-cols-2"
+            >
+              <ChoiceCard value="personal" icon={<UserIcon />} title="Personal" hint="Only you launch it." />
               <ChoiceCard
-                name={`${id}-scope`}
-                checked={scope === "personal"}
-                onChange={() => setScope("personal")}
-                icon={<UserIcon />}
-                title="Personal"
-                hint="Only you launch it."
-              />
-              <ChoiceCard
-                name={`${id}-scope`}
-                checked={scope === "org"}
-                onChange={() => setScope("org")}
+                value="org"
                 disabled={!isAdmin}
                 icon={<UsersIcon />}
                 title={`Org (${orgName})`}
                 hint={isAdmin ? "Every member launches it. Only admins change it." : "Only an org admin adds these."}
               />
-            </div>
+            </RadioGroup>
           </fieldset>
         )}
         <div className="space-y-2">
@@ -372,13 +370,18 @@ function TemplateForm({
             : {})}
         />
         {editing?.definition.modelAccount && harness === editing.definition.harness && (
-          <label className="flex items-start gap-3 rounded-md border p-3 text-sm" data-keep-account>
-            <input
-              type="checkbox"
+          <Label
+            htmlFor={`${id}-keep-account`}
+            className="flex items-start gap-3 rounded-md border p-3 text-sm font-normal"
+            data-keep-account
+          >
+            <Checkbox
+              id={`${id}-keep-account`}
               name="keep_account"
+              value="on"
               checked={keepAccount}
-              onChange={(event) => setKeepAccount(event.target.checked)}
-              className="mt-0.5 size-4 shrink-0 accent-primary"
+              onCheckedChange={(value) => setKeepAccount(value === true)}
+              className="mt-0.5"
             />
             <span>
               <span className="block font-medium">Keep its pinned model account</span>
@@ -386,7 +389,7 @@ function TemplateForm({
                 Set over the API. Untick to let each launch use the launcher's own account.
               </span>
             </span>
-          </label>
+          </Label>
         )}
         {problem && (
           <p role="alert" className="text-sm text-destructive">
@@ -539,6 +542,7 @@ function PickList({
   hint?: string;
   mono?: boolean;
 }) {
+  const pickerId = useId();
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set(initial));
   const count = options.filter((option) => checked.has(option.id) && !option.disabled).length;
   return (
@@ -555,25 +559,25 @@ function PickList({
         <ul className="max-h-40 divide-y overflow-y-auto overscroll-contain rounded-md border">
           {options.map((option) => (
             <li key={option.id}>
-              <label
+              <Label
+                htmlFor={`${pickerId}-${option.id}`}
                 className={cn(
                   "flex cursor-pointer items-center gap-3 px-3 py-2 text-sm has-[:focus-visible]:bg-accent/60 hover:bg-accent/50",
                   option.disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
                 )}
               >
-                <input
-                  type="checkbox"
+                <Checkbox
+                  id={`${pickerId}-${option.id}`}
                   name={name}
                   value={option.id}
                   checked={checked.has(option.id) && !option.disabled}
                   disabled={option.disabled}
-                  onChange={(event) => {
+                  onCheckedChange={(value) => {
                     const nextSet = new Set(checked);
-                    if (event.target.checked) nextSet.add(option.id);
+                    if (value === true) nextSet.add(option.id);
                     else nextSet.delete(option.id);
                     setChecked(nextSet);
                   }}
-                  className="size-4 shrink-0 accent-primary"
                 />
                 <span className="text-muted-foreground [&_svg]:size-4" aria-hidden>
                   {icon}
@@ -582,7 +586,7 @@ function PickList({
                 <span className={cn("shrink-0 text-xs", option.disabled ? "text-warning" : "text-muted-foreground")}>
                   {option.note}
                 </span>
-              </label>
+              </Label>
             </li>
           ))}
         </ul>

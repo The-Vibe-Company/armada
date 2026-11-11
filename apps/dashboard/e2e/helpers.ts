@@ -43,7 +43,11 @@ export async function signIn(page: Page, email: string, next = "/sandboxes"): Pr
 export async function openLaunch(page: Page, golden: string, { advanced = true } = {}): Promise<Locator> {
   await page.getByRole("button", { name: `Launch from ${golden}` }).click();
   const dialog = page.getByRole("dialog");
-  if (advanced) await dialog.locator("[data-launch-advanced] > summary").click();
+  if (advanced)
+    await dialog
+      .locator("[data-launch-advanced]")
+      .getByRole("button", { name: /^Advanced/ })
+      .click();
   return dialog;
 }
 

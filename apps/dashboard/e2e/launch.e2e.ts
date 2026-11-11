@@ -94,7 +94,10 @@ test("errors are never hidden: an invalid override opens Advanced, a refused lau
   await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden");
   await dialog.getByLabel("Model", { exact: true }).selectOption("other");
-  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog
+    .locator("[data-launch-advanced]")
+    .getByRole("button", { name: /^Advanced/ })
+    .click();
   await expect(dialog.getByLabel("Model id")).toBeHidden();
   await dialog.getByLabel("Task").fill("Keep me");
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
@@ -189,7 +192,10 @@ test("on a phone the keyboard never covers Launch, the field being typed or an e
   await keyboard(0);
 
   // The usual order: a lower field is tapped first, then the keyboard opens over it.
-  await dialog.locator("[data-launch-advanced] > summary").click();
+  await dialog
+    .locator("[data-launch-advanced]")
+    .getByRole("button", { name: /^Advanced/ })
+    .click();
   const effort = dialog.getByLabel("Reasoning effort");
   await effort.focus();
   await keyboard(300);
