@@ -82,6 +82,42 @@ for (const mobile of [false, true]) {
   });
 }
 
+test("a missing agent account warns before publication and choosing a usable agent clears it", async ({ page }) => {
+  await fetch(`${MOCK}/__test/accounts`, {
+    method: "POST",
+    body: JSON.stringify({
+      user: [],
+      org: [
+        {
+          id: "00000000-0000-4000-8000-000000000799",
+          kind: "openai",
+          name: "Organization Codex",
+          version: 1,
+          status: "active",
+          updatedAt: "2026-11-11T00:00:00.000Z",
+        },
+      ],
+    }),
+  });
+  await signIn(page, "alice@example.com", "/templates");
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New template" });
+  const warning = dialog.getByRole("status");
+  await expect(warning).toContainText("No usable Claude Code account is available to you in this organization.");
+  await expect(warning.getByRole("link", { name: "Build > Harness" })).toHaveAttribute("href", "/harness");
+  await dialog.getByRole("radio", { name: "Codex" }).check();
+  await expect(warning).toHaveCount(0);
+  await dialog.getByRole("radio", { name: "Claude Code" }).check();
+  await expect(warning).toBeVisible();
+  // A warning is not a publication ban: another launcher may already have an account.
+  await dialog.getByLabel("Name").fill("Needs Claude account");
+  await dialog.getByLabel("Environment").selectOption({ label: "shared-golden on Boat" });
+  await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
+  await dialog.getByRole("button", { name: "Publish template" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(row(page, "Needs Claude account")).toBeVisible();
+});
+
 test("an admin creates an org template from org resources only; it is published as revision 1", async ({ page }) => {
   await signIn(page, "alice@example.com", "/templates");
   await page.getByRole("button", { name: "New", exact: true }).click();
