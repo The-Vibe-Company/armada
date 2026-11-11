@@ -2,16 +2,26 @@ import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "
 import { isUuid } from "@/lib/action";
 import { parseSandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
-import { PAGE_SIZE, type SandboxFilters } from "@/lib/sandbox-filters";
+import {
+  type Facet,
+  filterSandboxes,
+  PAGE_SIZE,
+  type SandboxFilters,
+  sandboxFacetCounts,
+  sortSandboxes,
+} from "@/lib/sandbox-filters";
 import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
-export type SandboxPage = { rows: SandboxListMetadata[]; total: number };
+export type SandboxPage = {
+  rows: SandboxListMetadata[];
+  total: number;
+  inventoryTotal: number;
+  facets: Record<Facet, Map<string, number>>;
+};
 
-/**
- * One page of the selected organization's sandboxes, from the #680 metadata read port: every current member gets
- * every launched sandbox of the organization, with `canOpen`/`canManage` as hints only, and the raw `sandboxes`
- * table stays interior-only. Filters, count and paging run in the database; the rows are checked against the contract.
+/** Read the existing RLS-protected metadata port in stable pages, then filter the whole organization inventory.
+ * No interior rows or new server capability are needed for search and cross-facet counts.
  */
 export async function listSandboxes(
   supabase: Supabase,
@@ -19,30 +29,30 @@ export async function listSandboxes(
   viewerId: string,
 ): Promise<SandboxPage> {
   const selected = await selectedOrganization();
-  if (!selected) return { rows: [], total: 0 };
-  const orgId = selected.org.id;
-  const filtered = (options: { count: "exact"; head?: boolean }) => {
-    let query = supabase.rpc("sandbox_list_metadata", {}, options).eq("orgId", orgId);
-    if (filters.status) query = query.eq("status", filters.status);
-    else query = query.neq("status", "deleted");
-    if (filters.harness) query = query.eq("harness", filters.harness);
-    if (filters.owner) query = query.eq("ownerId", filters.owner === "me" ? viewerId : filters.owner);
-    return query;
-  };
-  const from = (filters.page - 1) * PAGE_SIZE;
-  const { data, error, count } = await filtered({ count: "exact" })
-    .order("createdAt", { ascending: false })
-    .order("id")
-    .range(from, from + PAGE_SIZE - 1);
-  if (error?.code === "PGRST103") {
-    // A page past the last one (a stale link): no rows, and the real total for the pager.
-    const head = await filtered({ count: "exact", head: true });
-    if (head.error) throw new Error(head.error.message);
-    return { rows: [], total: head.count ?? 0 };
+  const inventory: SandboxListMetadata[] = [];
+  if (selected) {
+    const batch = 500;
+    for (let from = 0; ; from += batch) {
+      const { data, error } = await supabase
+        .rpc("sandbox_list_metadata")
+        .eq("orgId", selected.org.id)
+        .order("id")
+        .range(from, from + batch - 1);
+      if (error?.code === "PGRST103") break;
+      if (error) throw new Error(error.message);
+      const rows = parseSandboxListMetadata(data);
+      inventory.push(...rows);
+      if (rows.length < batch) break;
+    }
   }
-  if (error) throw new Error(error.message);
-  const rows = parseSandboxListMetadata(data);
-  return { rows, total: count ?? rows.length };
+  const matching = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
+  const from = (filters.page - 1) * PAGE_SIZE;
+  return {
+    rows: matching.slice(from, from + PAGE_SIZE),
+    total: matching.length,
+    inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
+    facets: sandboxFacetCounts(inventory, filters, viewerId),
+  };
 }
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */

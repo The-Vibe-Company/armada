@@ -27,18 +27,41 @@ test("the list shows every sandbox of the organization and filters them", async 
   await page.screenshot({ path: "test-results/sandbox-providers-mobile.png", fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
 
-  await page.getByLabel("Harness").selectOption("codex");
-  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByRole("button", { name: "Harness", exact: true }).click();
+  await page.getByRole("option", { name: /Codex/ }).click();
+  await page.keyboard.press("Escape");
   await expect(page).toHaveURL(/harness=codex/);
   await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
   await expect(page.getByText(LABELS.running)).toHaveCount(0);
 
-  await page.getByRole("link", { name: "Clear" }).click();
+  await page.getByRole("button", { name: "Clear all" }).click();
   await expect(page).toHaveURL(/\/sandboxes$/);
-  await page.getByLabel("Status").selectOption("running");
-  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByRole("button", { name: "Status", exact: true }).click();
+  await page.getByRole("option", { name: /Running/ }).click();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
   await expect(page.getByText(LABELS.failed)).toHaveCount(0);
+  // OR within status; reload and history preserve the shared view.
+  await page
+    .getByRole("button", { name: /^Status/ })
+    .first()
+    .click();
+  await page.getByRole("option", { name: /Failed/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
+  await page.getByLabel("Sort sandboxes").selectOption("oldest");
+  await page.reload();
+  await expect(page.getByLabel("Sort sandboxes")).toHaveValue("oldest");
+  await expect(page.getByRole("button", { name: "Remove Status: Running" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove Status: Failed" })).toBeVisible();
+  await page.getByLabel("Search sandboxes").fill("not-a-sandbox");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page.getByText("No sandbox matches these filters")).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await page.getByRole("button", { name: `Actions for ${LABELS.running}` }).click();
+  await expect(page.getByRole("menuitem", { name: "Open sandbox" })).toBeVisible();
+  await page.keyboard.press("Escape");
 });
 
 test("a member sees every sandbox's metadata but opens only their own", async ({ page }) => {
@@ -53,7 +76,7 @@ test("a member sees every sandbox's metadata but opens only their own", async ({
   const row = page.getByRole("row").filter({ has: restricted });
   await expect(row.getByRole("cell", { name: "alice@example.com" })).toBeVisible();
   await expect(row.getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
-  await expect(row.locator("time")).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
+  await expect(row.locator("time").first()).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
   await page.screenshot({ path: "test-results/sandbox-access-member-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(restricted).toBeVisible();
@@ -570,7 +593,7 @@ for (const [timezoneId, zone] of [
       await page.clock.runFor(30_000);
 
       const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running }) });
-      const created = row.locator("time");
+      const created = row.locator("time").first();
       await expect(created).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
       await expect(created).toHaveText("5 min ago");
       await page.clock.runFor("02:00");
@@ -595,10 +618,11 @@ for (const [timezoneId, zone] of [
       await page.mouse.move(0, 0, { steps: 5 });
       await page.clock.runFor(1_000);
       await expect(tooltip).toHaveCount(0);
-      // A phone keeps the compact table: the Created column steps aside, the row link stays.
+      // A phone uses a full-width identity and a compact owner/age footer.
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
       await expect(created).toBeHidden();
+      await expect(row.locator("time").last()).toBeVisible();
       await page.screenshot({ path: `${shot}-mobile.png`, fullPage: true, animations: "disabled" });
 
       expect(errors.filter((text) => /hydrat|#418|#423|#425/i.test(text))).toEqual([]);
