@@ -49,9 +49,9 @@ for (const [device, width, height] of [
     );
 
     const dialog = await openAdd(page);
-    // The scope rule is said before the key is pasted.
+    // Least privilege is advice, not a restriction on valid keys.
     await expect(dialog.locator("[data-skillpack-scope-note]")).toContainText("skills:read");
-    await expect(dialog.locator("[data-skillpack-scope-note]")).toContainText("refused");
+    await expect(dialog.locator("[data-skillpack-scope-note]")).toContainText("recommend a read-only key");
     await expect(dialog.getByRole("radio", { name: /Personal/ })).toBeChecked();
     if (!mobile) await expect(dialog.getByRole("button", { name: "Store key" })).toBeInViewport({ ratio: 1 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
@@ -94,8 +94,10 @@ test("a key is stored write-only: never in an answer, the page or the form after
   dialog = page.getByRole("dialog", { name: "Add a Skillpack key" });
   await expect(dialog.locator("[data-skillpack-replaces]")).toContainText("replaces the personal key");
   await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("");
-  await page.keyboard.press("Escape");
-  await expect(row(page, "user").getByRole("button", { name: "Replace your Skillpack key" })).toBeFocused();
+  await dialog.getByLabel("Key", { exact: true }).fill(ORG_KEY);
+  await dialog.getByRole("button", { name: "Store key" }).click();
+  await expect(dialog).toBeHidden();
+  expect(await stored()).toHaveLength(1);
 
   // The organization's key, by its admin.
   await row(page, "org").getByRole("button", { name: "Add the organization's Skillpack key" }).click();
@@ -113,6 +115,7 @@ test("a key is stored write-only: never in an answer, the page or the form after
   await expect(row(page, "user")).toHaveAttribute("data-skillpack-state", "not-set");
   await expect(row(page, "user").getByRole("button", { name: "Add your Skillpack key" })).toBeFocused();
   expect((await calls()).map((call) => [call.route, call.body.scope])).toEqual([
+    ["creds/set", "user"],
     ["creds/set", "user"],
     ["creds/set", "org"],
     ["creds/rm", "user"],

@@ -1,7 +1,7 @@
 import { parseCredentialValue, VaultError } from "@armada/core";
 
 /**
- * The Skillpack key (#957): the read-only personal access token Armada uses to install private skills. One per
+ * The Skillpack key (#957): the personal access token Armada uses to install private skills. One per
  * person and one per organization, set, replaced and removed through the existing credential routes of the control
  * API as the signed-in viewer. It is write-only: `creds/list` answers its kind and dates, never its value.
  */
@@ -11,9 +11,6 @@ export const SKILLPACK_ROUTES = { list: "creds/list", set: "creds/set", remove: 
 
 /** The credential kind's name on the control API. */
 export const SKILLPACK_KIND = "skillpack";
-
-/** The only scope Armada accepts on the key. */
-export const SKILLPACK_SCOPE = "skills:read";
 
 export type SkillpackScope = "user" | "org";
 

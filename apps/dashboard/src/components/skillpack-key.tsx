@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyRoundIcon, ShieldCheckIcon, UserIcon, UsersIcon } from "lucide-react";
+import { KeyRoundIcon, UserIcon, UsersIcon } from "lucide-react";
 import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { removeSkillpackKey, saveSkillpackKey } from "@/app/actions/skillpack-key";
 import { SubmitButton } from "@/components/action-form";
@@ -22,13 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
-import {
-  SKILLPACK_SCOPE,
-  type SkillpackKey,
-  type SkillpackKeys,
-  type SkillpackScope,
-  skillpackAudience,
-} from "@/lib/skillpack-key";
+import { type SkillpackKey, type SkillpackKeys, type SkillpackScope, skillpackAudience } from "@/lib/skillpack-key";
 
 type Props = {
   title: string;
@@ -230,14 +224,9 @@ function KeyForm({
     <form action={formAction} className="space-y-4" data-skillpack-form>
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="scope" value={scope} />
-      <div className="flex gap-3 rounded-md border bg-muted/40 p-3 text-sm" data-skillpack-scope-note>
-        <ShieldCheckIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        <p className="text-pretty">
-          Create the key in Skillpack with only the <code className="font-mono text-xs">{SKILLPACK_SCOPE}</code> scope.
-          Armada checks the scope before each install: a key with any other or extra scope is refused, and no private
-          skill installs with it until you replace it.
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground" data-skillpack-scope-note>
+        We recommend a read-only key with the <code className="font-mono text-xs">skills:read</code> scope.
+      </p>
       <div className="space-y-2">
         <Label htmlFor={`${id}-value`}>Key</Label>
         <Input
