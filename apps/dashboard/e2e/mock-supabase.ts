@@ -2240,6 +2240,51 @@ function accountDto(row: Row): Row {
   };
 }
 
+/* The Skillpack key (#957): `creds/set` and `creds/rm`, one per scope, never a value in an answer. */
+const SKILLPACK_PAT = /^cmp_pat_[a-f0-9]{48}$/;
+
+function skillpackDto(row: Row): Row {
+  return {
+    kind: row.kind,
+    status: row.status ?? "active",
+    expiresAt: row.expires_at ?? null,
+    updatedAt: row.updated_at ?? row.created_at,
+    createdAt: row.created_at,
+  };
+}
+
+function singleton(route: string, body: Row, scope: "user" | "org", owner: string): Response {
+  if (body.kind !== "skillpack") return controlFail(400, "invalid", "Unknown credential.");
+  const mine = (row: Row) => row.scope === scope && row.owner_id === owner && row.kind === "skillpack";
+  const now = new Date().toISOString();
+  if (route === "creds/rm") {
+    const before = state.credentials.length;
+    state.credentials = state.credentials.filter((row) => !mine(row));
+    return before === state.credentials.length
+      ? controlFail(404, "not_found", "No such credential is stored.")
+      : json({ ok: true });
+  }
+  if (typeof body.value !== "string" || !SKILLPACK_PAT.test(body.value.trim()))
+    return controlFail(
+      400,
+      "invalid",
+      "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
+    );
+  state.credentials = state.credentials.filter((row) => !mine(row));
+  state.credentials.push({
+    id: crypto.randomUUID(),
+    scope,
+    owner_id: owner,
+    kind: "skillpack",
+    // Sealed as the server does: the mock keeps random bytes, never the text it was sent.
+    value_enc: `\\x${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`,
+    created_at: now,
+    updated_at: now,
+    status: "active",
+  });
+  return json({ ok: true });
+}
+
 function accounts(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
   state.accountCalls.push({ route, body: { ...body, ...(body.value === undefined ? {} : { value: "[sent]" }) } });
@@ -2247,10 +2292,12 @@ function accounts(route: string, body: Row, request: Request): Response {
   const model = (row: Row) => String(row.kind) in MODEL_KINDS;
   if (route === "creds/list") {
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
+    // As the server: every kind of the scope, the Skillpack key (#957) as kind and dates only.
+    const listed = (row: Row) => model(row) || row.kind === "skillpack";
     const rows = (scope: string, owner: unknown) =>
       state.credentials
-        .filter((row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted")
-        .map(accountDto);
+        .filter((row) => row.scope === scope && row.owner_id === owner && listed(row) && row.status !== "deleted")
+        .map((row) => (model(row) ? accountDto(row) : skillpackDto(row)));
     return json({
       user: rows("user", userId),
       orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
@@ -2270,6 +2317,7 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (scope === "org" && !isAdmin(body.org, userId))
     return controlFail(403, "forbidden", "Only an org admin can do that.");
   const owner = scope === "org" ? body.org : userId;
+  if (route === "creds/set" || route === "creds/rm") return singleton(route, body, scope, String(owner));
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
   const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
   if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
@@ -2795,7 +2843,13 @@ const server = Bun.serve({
       if (route === "golden/size-policy") return goldenSizePolicy(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
-      if (route === "creds/list" || route.startsWith("creds/accounts/")) return accounts(route, body, request);
+      if (
+        route === "creds/list" ||
+        route === "creds/set" ||
+        route === "creds/rm" ||
+        route.startsWith("creds/accounts/")
+      )
+        return accounts(route, body, request);
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
       if (route.startsWith("templates/")) return templateRoute(route, body, request);
