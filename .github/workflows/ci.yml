@@ -113,7 +113,8 @@ jobs:
   # The dashboard runs as a production build against a mock of Supabase and the Armada server.
   e2e:
     name: Dashboard e2e
-    runs-on: ubuntu-latest
+    # Keep browser dependencies and screenshot rendering on a stable runner image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

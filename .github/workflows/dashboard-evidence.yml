@@ -18,7 +18,8 @@ concurrency:
 jobs:
   screenshots:
     name: Resource before/after evidence
-    runs-on: ubuntu-latest
+    # Match the dashboard e2e runner rather than the rolling ubuntu-latest image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
