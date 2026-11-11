@@ -514,3 +514,71 @@ if os.environ.get("ARMADA_ORPHAN_PROOF"):
     }
   },
 );
+
+test("Codex bridge refuses a second message until the first turn/start replies, then recovers", async () => {
+  const base = mkdtempSync(join(tmpdir(), "armada-codex-start-"));
+  const path = join(base, "codex");
+  const native = join(base, "native");
+  // A protocol barrier, not a timer: only release replies to the pending start.
+  // Overlap models the native failure; the wrapper must prevent it reaching Codex.
+  writeFileSync(
+    native,
+    `#!/usr/bin/python3
+import json, sys
+pending = None
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("method") == "turn/start":
+        if pending is not None:
+            sys.exit(99)
+        pending = m["id"]
+        print(json.dumps({"method":"test/starting"}), flush=True)
+    elif m.get("method") == "release":
+        print(json.dumps({"id":pending,"result":{"turn":{"id":"native-turn"}}}), flush=True)
+        pending = None
+    elif m.get("method") == "turn/steer":
+        print(json.dumps({"id":m["id"],"result":{}}), flush=True)
+`,
+  );
+  chmodSync(native, 0o755);
+  symlinkSync(native, path);
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    expect(installProtocolFixture(path, base).status).toBe(0);
+    child = spawn(path, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
+    const { createInterface } = await import("node:readline");
+    const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+    const read = async () => {
+      const next = await lines.next();
+      expect(next.done).toBe(false);
+      return JSON.parse(next.value!);
+    };
+    const send = (id: number, method: string) =>
+      child!.stdin!.write(`${JSON.stringify({ id, method, params: { threadId: "thread", input: [] } })}\n`);
+    send(1, "turn/start");
+    expect(await read()).toEqual({ method: "test/starting" });
+    for (const [id, method] of [
+      [2, "turn/start"],
+      [3, "turn/steer"],
+    ] as const) {
+      send(id, method);
+      const reply = await read();
+      expect(reply.id).toBe(id);
+      expect(reply.error.message).toContain("turn_starting");
+    }
+    send(4, "release");
+    expect(await read()).toEqual({ id: 1, result: { turn: { id: "native-turn" } } });
+    send(5, "turn/steer");
+    expect(await read()).toEqual({ id: 5, result: {} });
+    send(6, "turn/start");
+    expect(await read()).toEqual({ method: "test/starting" });
+    send(7, "release");
+    expect(await read()).toEqual({ id: 6, result: { turn: { id: "native-turn" } } });
+    child.stdin!.end();
+    const code = await new Promise<number | null>((resolve) => child!.once("exit", resolve));
+    expect(code).toBe(0);
+  } finally {
+    child?.kill("SIGKILL");
+    rmSync(base, { recursive: true, force: true });
+  }
+});
