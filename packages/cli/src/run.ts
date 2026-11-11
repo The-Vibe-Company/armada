@@ -145,7 +145,7 @@ Usage:
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-  armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+  armada detail|status|recovery|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
@@ -226,7 +226,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         error instanceof AuthError)
     ) {
       io.err(
-        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message } })}\n`,
+        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message, ...(error instanceof ArmadaApiError && error.legacyCode ? { legacyCode: error.legacyCode } : {}) } })}\n`,
       );
       return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
     }
@@ -270,6 +270,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       "launch",
       "list",
       "detail",
+      "recovery",
       "status",
       "advice",
       "bind-credential",

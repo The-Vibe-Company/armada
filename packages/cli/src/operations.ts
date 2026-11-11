@@ -1,7 +1,7 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { authorizeConnection, type ConnectionStatus, validateConnectionStatus } from "./connection-authorization.ts";
 import { control } from "./control.ts";
@@ -265,7 +265,12 @@ export async function operation(
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000),
   ).catch((error: unknown) => {
-    if (command === "stop" && error instanceof AuthError && error.code === "unavailable")
+    if (
+      command === "stop" &&
+      error instanceof AuthError &&
+      !(error instanceof ArmadaApiError) &&
+      error.code === "unavailable"
+    )
       throw new AuthError(
         `${error.message} Outcome unknown. Run armada status ${args.positionals[0]} to check before retrying.`,
         "unavailable",

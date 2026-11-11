@@ -9,6 +9,7 @@ import {
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
 import type { SessionStore } from "./session.ts";
+import { sandboxFailure } from "./sandbox-errors.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -35,8 +36,21 @@ export class ArmadaApiError extends AuthError {
     readonly status: number,
     message: string,
     readonly details?: Readonly<{ phase: string }>,
+    readonly legacyCode?: string,
+    exitCode?: 1 | 2,
   ) {
-    super(message, status === 400 ? "usage" : status === 409 || status === 403 ? "conflict" : "unavailable");
+    super(
+      message,
+      exitCode === 2
+        ? "usage"
+        : exitCode === 1
+          ? "unavailable"
+          : status === 400
+            ? "usage"
+            : status === 409 || status === 403
+              ? "conflict"
+              : "unavailable",
+    );
   }
 }
 
@@ -243,6 +257,16 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
+      const sandboxError = sandboxFailure(path, response.status, failureCode);
+      if (sandboxError)
+        throw new ArmadaApiError(
+          sandboxError.code,
+          response.status,
+          sandboxError.message,
+          undefined,
+          sandboxError.legacyCode,
+          sandboxError.exitCode,
+        );
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.
       if (isSandboxInteriorPath(path) && response.status !== 401) {
         const denied = response.status === 403;
