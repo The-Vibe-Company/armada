@@ -138,7 +138,7 @@ describe("golden command", () => {
       ).rejects.toThrow(/No golden named 'monorepo'/);
       expect(await asUser(db, people.owner, () => goldenForLaunch(store, owner, "monorepo"))).toMatchObject({
         name: "monorepo",
-        providerSnapshotId: "golden-bx_1",
+        providerSnapshotId: "golden-bx-1",
       });
       await db.query(`insert into goldens
         (org_id, name, visibility, owner_id, provider, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config)
