@@ -256,3 +256,14 @@ list consistency and timings/leftover summaries; GitHub refresh; vault; template
 public/private skills and golden pinned digest verification. These are
 verification follow-ups, not new product capabilities. Per the owner decision
 on #969, orchestrators are excluded; their removal belongs to a separate ticket.
+
+### Template and skill pins slice (#969)
+
+The next staging slice exercises personal readable-variable templates and pinned
+public/private skills on the explicitly selected provider × harness cases.
+Orchestrators are excluded. A random disposable value must be read by the native
+agent (not included in the prompt), while a plain exec must not inherit its
+environment binding. Installation receipts must match the requested exact pins.
+Private installation is skipped only when Skillpack connection metadata confirms
+no personal or matching-org key is configured; a configured but unusable key is
+a failure. Template, variable and sandbox cleanup runs even after a failed check.
