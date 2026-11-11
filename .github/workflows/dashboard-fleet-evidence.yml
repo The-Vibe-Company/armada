@@ -22,7 +22,7 @@ jobs:
   screenshots:
     name: Fleet before/after evidence
     runs-on: ubuntu-24.04
-    # Same immutable browser/dependency image as the dashboard e2e suite.
+    # Exact-version browser/dependency bundle for repeatable evidence.
     container:
       image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
       options: --ipc=host
