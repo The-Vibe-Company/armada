@@ -29,7 +29,7 @@ test("a sandbox with usage shows its cost, one without says so", async ({ page }
   await expect(card.getByText("API-equivalent cost", { exact: true })).toBeVisible();
   await expect(card.getByText("$1.05", { exact: true })).toBeVisible();
   await expect(card.getByText("1.1M", { exact: true })).toBeVisible(); // cached input
-  await expect(card.getByText("100K", { exact: true })).toBeVisible(); // priced cache writes
+  await expect(card.getByRole("definition").filter({ hasText: /^100K$/ })).toBeVisible(); // priced cache writes
   await expect(card.getByText("12 min", { exact: true })).toBeVisible();
   await expect(card.getByText("claude-opus-5-5", { exact: true })).toBeVisible();
   await card.getByText("Per turn").click();
@@ -108,7 +108,7 @@ test("partial token reporting stays Not reported in the card and per-turn table"
   const card = page.locator("[data-sandbox-cost=priced]");
   const output = card.locator("dl > div").filter({ has: page.getByText("Output", { exact: true }) });
   await expect(output.locator("dd")).toHaveText("Not reported");
-  await expect(card.getByText("$0.83", { exact: true })).toBeVisible();
+  await expect(card.locator("p[title]")).toHaveText("$0.83");
   await card.getByText("Per turn").click();
   await expect(card.getByRole("row").nth(2)).toContainText("Not reported");
   await page.screenshot({ path: "test-results/sandbox-cost-missing-counters.png", animations: "disabled" });
