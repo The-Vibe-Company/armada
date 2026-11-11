@@ -72,10 +72,10 @@ test("one deadline aborts stalled headers and stalled JSON consumption", async (
       signal = init?.signal ?? undefined;
       if (stage === "headers") return lateHeaders.promise;
       return new (class extends Response {
-        override json(): Promise<unknown> {
+        override readonly json = (): Promise<unknown> => {
           enteredBody.resolve();
           return body.promise;
-        }
+        };
       })();
     };
     try {
