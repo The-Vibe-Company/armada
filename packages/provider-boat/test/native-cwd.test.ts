@@ -151,6 +151,9 @@ for line in sys.stdin.buffer:
         msg = json.loads(line)
     except ValueError:
         sys.stdout.buffer.write(line); sys.stdout.buffer.flush(); continue
+    if isinstance(msg, dict) and msg.get("method") == "initialize":
+        print(json.dumps({"id":msg["id"], "result":{}}), flush=True)
+        continue
     if isinstance(msg, dict) and msg.get("method") in ("thread/start", "thread/resume", "turn/start"):
         msg["proof"] = subprocess.check_output(["pwd"], cwd=msg["params"]["cwd"], text=True).strip()
     print(json.dumps(msg), flush=True)
@@ -215,7 +218,11 @@ sys.exit(23)
     expect(lines.pop()).toBe("not-json");
     expect(lines.map((line) => JSON.parse(line))).toEqual(
       messages.map((m) =>
-        m && "params" in m && m.method !== "initialize" ? { ...m, params: { ...m.params, cwd }, proof: cwd } : m,
+        m && "params" in m
+          ? m.method === "initialize"
+            ? { id: m.id, result: {} }
+            : { ...m, params: { ...m.params, cwd }, proof: cwd }
+          : m,
       ),
     );
   } finally {
@@ -582,3 +589,45 @@ for line in sys.stdin:
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test.each(["abort", "exit"] as const)(
+  "Codex lone startup %s returns readable relaunch guidance on the pending RPC",
+  async (failure) => {
+    const base = mkdtempSync(join(tmpdir(), "armada-codex-boot-"));
+    const path = join(base, "codex");
+    const native = join(base, "native");
+    try {
+      writeFileSync(
+        native,
+        `#!/usr/bin/python3
+import json, os, signal, sys
+json.loads(sys.stdin.readline())
+print("sanitized native boot diagnostic", file=sys.stderr, flush=True)
+${failure === "abort" ? "os.kill(os.getpid(), signal.SIGABRT)" : "sys.exit(1)"}
+`,
+        { mode: 0o755 },
+      );
+      symlinkSync(native, path);
+      expect(installProtocolFixture(path, base).status).toBe(0);
+      const result = spawnSync(path, ["app-server"], {
+        input: JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "boat" } } }) + "\n",
+        encoding: "utf8",
+        timeout: 5000,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      });
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toEqual({
+        id: 1,
+        error: {
+          code: -32603,
+          message: "The agent runtime could not start in this sandbox. Relaunch in a new sandbox.",
+        },
+      });
+      expect(result.stderr).toContain("sanitized native boot diagnostic");
+      expect(result.stderr).toContain("Relaunch in a new sandbox.");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);

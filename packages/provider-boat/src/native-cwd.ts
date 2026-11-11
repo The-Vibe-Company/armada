@@ -307,6 +307,8 @@ output_lock = threading.Lock()
 pending_reload = {}
 # Boat can submit another prompt before turn/start has returned its native turn ID.
 # Do not let overlapping starts/steers reach Codex during that admission window.
+native_pending = {}
+native_replied = False
 starting_turns = {}
 starting_lock = threading.Lock()
 def output(line):
@@ -332,6 +334,7 @@ def output(line):
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
 def receive():
+    global native_replied
     for line in child.stdout:
         try:
             message = json.loads(line)
@@ -346,6 +349,9 @@ def receive():
         if isinstance(message, dict) and "method" not in message and "id" in message:
             with starting_lock:
                 starting_turns.pop(message["id"], None)
+                if message["id"] in native_pending:
+                    native_replied = True
+                    native_pending.pop(message["id"], None)
         output(line)
 receiver = threading.Thread(target=receive, daemon=True)
 receiver.start()
@@ -439,9 +445,11 @@ def relay():
                     continue
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
             native_registry()
-            if isinstance(message, dict) and message.get("method") == "turn/start" and "id" in message:
+            if isinstance(message, dict) and "method" in message and "id" in message:
                 with starting_lock:
-                    starting_turns[message["id"]] = message["params"].get("threadId")
+                    native_pending[message["id"]] = message["method"]
+                    if message["method"] == "turn/start":
+                        starting_turns[message["id"]] = message["params"].get("threadId")
             child.stdin.write(line)
             child.stdin.flush()
     except Exception:
@@ -478,6 +486,16 @@ if managed:
         time.sleep(0.01)
 receiver.join()
 github_errors.join()
+# A native executable that dies before its first RPC reply never booted.
+# Reply on Boat's existing request channel, rather than exposing only SIGABRT.
+with starting_lock:
+    startup_pending = list(native_pending) if code != 0 and not native_replied else []
+if startup_pending:
+    diagnosis = "The agent runtime could not start in this sandbox. Relaunch in a new sandbox."
+    for request_id in startup_pending:
+        output((json.dumps({"id":request_id,"error":{"code":-32603,"message":diagnosis}})+"\\n").encode())
+    sys.stderr.write(diagnosis + "\\n")
+    sys.exit(1)
 if code < 0:
     if -code not in (signal.SIGKILL, signal.SIGSTOP):
         signal.signal(-code, signal.SIG_DFL)
