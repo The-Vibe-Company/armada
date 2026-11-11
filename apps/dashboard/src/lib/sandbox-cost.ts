@@ -38,6 +38,7 @@ export function usageFromRow(row: UsageColumns): SandboxUsage {
       inputTokens: count(turn.inputTokens),
       outputTokens: count(turn.outputTokens),
       cachedTokens: count(turn.cachedTokens),
+      cacheWriteTokens: count(turn.cacheWriteTokens),
     });
   }
   return {
@@ -63,8 +64,8 @@ export function formatUsd(usd: number): string {
 const COMPACT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
 /** "950", "12.3K", "4.1M". */
-export function formatTokens(tokens: number): string {
-  return COMPACT.format(tokens);
+export function formatTokens(tokens: number | null): string {
+  return tokens === null ? "Not reported" : COMPACT.format(tokens);
 }
 
 export type CostFigure =
@@ -77,7 +78,10 @@ export type CostFigure =
  * leaves out unpriced turns is partial and says so where it is shown.
  */
 export function costFigure(cost: SandboxCost): CostFigure {
-  if (cost.turns.length === 0) return { kind: "none", text: "No usage recorded yet" };
+  if (cost.turns.length === 0)
+    return cost.turnCount > 0
+      ? { kind: "unknown", text: "Tokens not reported" }
+      : { kind: "none", text: "No usage recorded yet" };
   if (cost.usd === null)
     return {
       kind: "unknown",

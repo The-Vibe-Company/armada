@@ -163,8 +163,22 @@ function seed(): State {
         usage_turns: {
           turnCount: 2,
           turns: [
-            { promptId: "p-1", model: "claude-opus-5-5", inputTokens: 12000, outputTokens: 9500, cachedTokens: 480000 },
-            { promptId: "p-2", model: "claude-opus-5-5", inputTokens: 3000, outputTokens: 4200, cachedTokens: 610000 },
+            {
+              promptId: "p-1",
+              model: "claude-opus-5-5",
+              inputTokens: 12000,
+              outputTokens: 9500,
+              cachedTokens: 480000,
+              cacheWriteTokens: 100000,
+            },
+            {
+              promptId: "p-2",
+              model: "claude-opus-5-5",
+              inputTokens: 3000,
+              outputTokens: 4200,
+              cachedTokens: 610000,
+              cacheWriteTokens: 0,
+            },
           ],
         },
       },
@@ -2390,6 +2404,31 @@ function control(url: URL, body: Row): Response {
     failConnectionList = false;
     failCatalog = false;
     failConnect = false;
+    if (body.missingUsage) {
+      const running = state.sandboxes.find((row) => row.id === id(30));
+      if (running)
+        running.usage_turns = {
+          turnCount: 2,
+          turns: [
+            {
+              promptId: "p-1",
+              model: "claude-opus-5-5",
+              inputTokens: 12000,
+              outputTokens: 9500,
+              cachedTokens: 480000,
+              cacheWriteTokens: 100000,
+            },
+            {
+              promptId: "p-2",
+              model: "claude-opus-5-5",
+              inputTokens: 3000,
+              outputTokens: null,
+              cachedTokens: 610000,
+              cacheWriteTokens: 0,
+            },
+          ],
+        };
+    }
     if (body.multiOrg) {
       const now = "2026-11-08T10:00:00.000Z";
       state.orgs.push({ id: id(11), name: "Zenith", created_at: now, boat_api_key_enc: "\\x0102" });

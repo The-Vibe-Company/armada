@@ -1,6 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
-import { type ModelPrice, modelPrice } from "./model-prices.ts";
+import { modelPrice } from "./model-prices.ts";
 import type { SandboxUsage, TurnTokenUsage } from "./sandbox-usage.ts";
 
 /**
@@ -34,6 +34,8 @@ export interface TurnCost {
   /** Input tokens read from the cache. */
   cachedTokens: number | null;
   outputTokens: number | null;
+  /** Tokens written to the prompt cache; null when not reported. */
+  cacheWriteTokens: number | null;
   /** USD, or null when the model has no price or a counter was not reported. */
   usd: number | null;
   /** Why `usd` is null. */
@@ -47,8 +49,8 @@ export interface SandboxCost {
   /** Prompts sent, from the server's count; else the distinct prompts with reported tokens. */
   turnCount: number;
   computeSeconds: number | null;
-  /** Sums over the turns that reported each counter. */
-  tokens: { input: number; cached: number; output: number };
+  /** Totals are null when any counter or prompt coverage is missing. */
+  tokens: { input: number | null; cached: number | null; cacheWrite: number | null; output: number | null };
   /** The sum of the priced turns, or null when no turn could be priced. */
   usd: number | null;
   /** Turns (prompts) with at least one model whose cost is unknown: the total leaves those out. */
@@ -62,45 +64,69 @@ const PER_MILLION = 1_000_000;
 /**
  * The cost of one model's share of a turn. The harnesses count cached input differently (docs/sandbox-usage.md):
  * Claude's input excludes cache reads, Codex's cached input is part of its input. Both are brought to "uncached input
- * + cache reads" by harness, whatever the model, before pricing. Armada does not record cache writes: not counted.
+ * + cache reads + cache writes" by harness before pricing. Missing counters are never priced as zero.
  */
 export function turnCost(turn: TurnTokenUsage, harness: Harness): TurnCost {
   const price = modelPrice(turn.model);
-  const reported = turn.inputTokens !== null && turn.outputTokens !== null && turn.cachedTokens !== null;
   const subset = harness === "codex";
-  const cached =
-    turn.cachedTokens === null
+  const cached = turn.cachedTokens;
+  const cacheWrite = turn.cacheWriteTokens ?? null;
+  const input =
+    turn.inputTokens === null
       ? null
-      : subset && turn.inputTokens !== null
-        ? Math.min(turn.cachedTokens, turn.inputTokens)
-        : turn.cachedTokens;
-  const input = turn.inputTokens === null ? null : subset ? turn.inputTokens - (cached ?? 0) : turn.inputTokens;
-  const base = { promptId: turn.promptId, model: turn.model, inputTokens: input, cachedTokens: cached };
-  if (!price) return { ...base, outputTokens: turn.outputTokens, usd: null, unknown: "price" };
-  if (!reported) return { ...base, outputTokens: turn.outputTokens, usd: null, unknown: "tokens" };
+      : subset
+        ? cached === null || cacheWrite === null || cached + cacheWrite > turn.inputTokens
+          ? null
+          : turn.inputTokens - cached - cacheWrite
+        : turn.inputTokens;
+  const base = {
+    promptId: turn.promptId,
+    model: turn.model,
+    inputTokens: input,
+    cachedTokens: cached,
+    cacheWriteTokens: cacheWrite,
+    outputTokens: turn.outputTokens,
+  };
+  if (!price) return { ...base, usd: null, unknown: "price" };
+  if (input === null || cached === null || cacheWrite === null || turn.outputTokens === null)
+    return { ...base, usd: null, unknown: "tokens" };
   return {
     ...base,
-    outputTokens: turn.outputTokens,
-    usd: priced(price, input ?? 0, cached ?? 0, turn.outputTokens ?? 0),
+    usd:
+      (input * price.input +
+        cached * price.cacheRead +
+        cacheWrite * price.cacheWrite +
+        turn.outputTokens * price.output) /
+      PER_MILLION,
     unknown: null,
   };
 }
 
-function priced(price: ModelPrice, input: number, cached: number, output: number): number {
-  return (input * price.input + cached * price.cacheRead + output * price.output) / PER_MILLION;
-}
+const add = (a: number | null, b: number | null): number | null => {
+  if (a === null || b === null) return null;
+  const total = a + b;
+  return Number.isSafeInteger(total) ? total : null;
+};
 
 /** The cost of a sandbox from its reported usage. Null usage (never collected, or not visible) costs nothing known. */
 export function sandboxCost(usage: SandboxUsage | null, harness: Harness, basis: CostBasis): SandboxCost {
   const turns = (usage?.turns ?? []).map((turn) => turnCost(turn, harness));
-  const tokens = { input: 0, cached: 0, output: 0 };
+  const complete = usage?.turnCount != null && new Set(turns.map((turn) => turn.promptId)).size === usage.turnCount;
+  const tokens: SandboxCost["tokens"] = {
+    input: complete ? 0 : null,
+    cached: complete ? 0 : null,
+    cacheWrite: complete ? 0 : null,
+    output: complete ? 0 : null,
+  };
   let usd: number | null = null;
   const unpriced = new Set<string>();
+  const missing = Math.max(0, (usage?.turnCount ?? 0) - new Set(turns.map((turn) => turn.promptId)).size);
   const models: string[] = [];
   for (const turn of turns) {
-    tokens.input += turn.inputTokens ?? 0;
-    tokens.cached += turn.cachedTokens ?? 0;
-    tokens.output += turn.outputTokens ?? 0;
+    tokens.input = add(tokens.input, turn.inputTokens);
+    tokens.cached = add(tokens.cached, turn.cachedTokens);
+    tokens.cacheWrite = add(tokens.cacheWrite, turn.cacheWriteTokens);
+    tokens.output = add(tokens.output, turn.outputTokens);
     if (turn.usd === null) unpriced.add(turn.promptId);
     else usd = (usd ?? 0) + turn.usd;
     if (turn.model && !models.includes(turn.model)) models.push(turn.model);
@@ -113,7 +139,7 @@ export function sandboxCost(usage: SandboxUsage | null, harness: Harness, basis:
     computeSeconds: usage?.computeSeconds ?? null,
     tokens,
     usd,
-    unpricedTurns: unpriced.size,
+    unpricedTurns: unpriced.size + missing,
     models,
   };
 }
@@ -126,14 +152,15 @@ export function sandboxCost(usage: SandboxUsage | null, harness: Harness, basis:
 export function combineCosts(costs: readonly SandboxCost[]): SandboxCost {
   const basis: CostBasis =
     costs.length > 0 && costs.every((cost) => cost.basis === "estimated") ? "estimated" : "api_equivalent";
-  const tokens = { input: 0, cached: 0, output: 0 };
+  const tokens: SandboxCost["tokens"] = { input: 0, cached: 0, cacheWrite: 0, output: 0 };
   let usd: number | null = null;
   let computeSeconds: number | null = costs.length > 0 ? 0 : null;
   const models: string[] = [];
   for (const cost of costs) {
-    tokens.input += cost.tokens.input;
-    tokens.cached += cost.tokens.cached;
-    tokens.output += cost.tokens.output;
+    tokens.input = add(tokens.input, cost.tokens.input);
+    tokens.cached = add(tokens.cached, cost.tokens.cached);
+    tokens.cacheWrite = add(tokens.cacheWrite, cost.tokens.cacheWrite);
+    tokens.output = add(tokens.output, cost.tokens.output);
     if (cost.usd !== null) usd = (usd ?? 0) + cost.usd;
     computeSeconds =
       computeSeconds === null || cost.computeSeconds === null ? null : computeSeconds + cost.computeSeconds;

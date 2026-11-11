@@ -15,6 +15,7 @@ const turn = (model: string | null, input: number | null, cached: number | null,
   inputTokens: input,
   cachedTokens: cached,
   outputTokens: output,
+  cacheWriteTokens: 0,
 });
 
 describe("model prices", () => {
@@ -71,12 +72,61 @@ describe("cost", () => {
     );
     expect(cost.usd).toBeCloseTo(2, 10);
     expect(cost).toMatchObject({ unpricedTurns: 1, turnCount: 2, computeSeconds: 90 });
-    expect(cost.tokens).toEqual({ input: 1_000_010, cached: 0, output: 10 });
+    expect(cost.tokens).toEqual({ input: 1_000_010, cached: 0, cacheWrite: 0, output: 10 });
     expect(cost.models).toEqual(["claude-sonnet-5-5", "mystery-model", "other-mystery"]);
     expect(
       sandboxCost({ computeSeconds: null, turnCount: 1, turns: [turn("x", 1, 0, 1)] }, "claude", "estimated").usd,
     ).toBeNull();
   });
+
+  test("missing fields or whole turns keep token totals unknown, including combined costs", () => {
+    const complete = {
+      computeSeconds: 1,
+      turnCount: 1,
+      turns: [{ ...turn("gpt-6.1-sol", 100, 20, 5), cacheWriteTokens: 0 }],
+    };
+    const partial = sandboxCost(
+      { ...complete, turns: [{ ...complete.turns[0], outputTokens: null }] },
+      "codex",
+      "estimated",
+    );
+    expect(partial.tokens).toEqual({ input: 80, cached: 20, cacheWrite: 0, output: null });
+    const missingTurn = sandboxCost({ ...complete, turnCount: 2 }, "codex", "estimated");
+    expect(missingTurn.tokens).toEqual({ input: null, cached: null, cacheWrite: null, output: null });
+    expect(missingTurn.unpricedTurns).toBe(1);
+    expect(combineCosts([sandboxCost(complete, "codex", "estimated"), partial]).tokens.output).toBeNull();
+    expect(sandboxCost({ ...complete, turnCount: 1, turns: [] }, "codex", "estimated").tokens.input).toBeNull();
+  });
+
+  test.each([
+    {
+      harness: "claude" as const,
+      model: "claude-opus-5-5",
+      input: 1_000_000,
+      cached: 200_000,
+      writes: 300_000,
+      expectedInput: 1_000_000,
+      usd: 4 + 0.04 + 1.5 + 2,
+    },
+    {
+      harness: "codex" as const,
+      model: "gpt-6.1-sol",
+      input: 1_000_000,
+      cached: 200_000,
+      writes: 300_000,
+      expectedInput: 500_000,
+      usd: 1 + 0.02 + 0.75 + 1,
+    },
+  ])(
+    "reported cache writes are priced without double-counting $harness input",
+    ({ harness, model, input, cached, writes, expectedInput, usd }) => {
+      const cost = turnCost({ ...turn(model, input, cached, 100_000), cacheWriteTokens: writes }, harness);
+      expect(cost.inputTokens).toBe(expectedInput);
+      expect(cost.cacheWriteTokens).toBe(writes);
+      expect(cost.usd).toBeCloseTo(usd, 10);
+      expect(turnCost({ ...turn(model, input, cached, 100_000), cacheWriteTokens: undefined }, harness).usd).toBeNull();
+    },
+  );
 
   test("no usage recorded is no turn and no figure", () => {
     expect(sandboxCost(null, "codex", "estimated")).toMatchObject({
@@ -111,7 +161,7 @@ describe("cost", () => {
     const total = combineCosts([own, worker]);
     expect(total.usd).toBeCloseTo(4, 10);
     expect(total).toMatchObject({ basis: "api_equivalent", turnCount: 3, computeSeconds: 90, unpricedTurns: 1 });
-    expect(total.tokens).toEqual({ input: 2_000_001, cached: 0, output: 1 });
+    expect(total.tokens).toEqual({ input: 2_000_001, cached: 0, cacheWrite: 0, output: 1 });
     expect(combineCosts([own, own]).basis).toBe("estimated");
     expect(combineCosts([own, sandboxCost(null, "claude", "estimated")]).computeSeconds).toBeNull();
   });

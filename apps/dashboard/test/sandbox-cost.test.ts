@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   costFigure,
   costOfRow,
+  formatTokens,
   formatUsd,
   orchestratorCost,
   orchestratorCostRows,
@@ -24,7 +25,16 @@ describe("sandbox usage from its row", () => {
     expect(usage).toEqual({
       computeSeconds: 120,
       turnCount: 3,
-      turns: [{ promptId: "a", model: "claude-opus-5-5", inputTokens: 10, outputTokens: 5, cachedTokens: null }],
+      turns: [
+        {
+          promptId: "a",
+          model: "claude-opus-5-5",
+          inputTokens: 10,
+          outputTokens: 5,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+        },
+      ],
     });
     expect(
       usageFromRow({ usage_runtime_seconds: 120, usage_running_since: "2026-11-10T00:00:00Z" }).computeSeconds,
@@ -36,9 +46,23 @@ describe("sandbox usage from its row", () => {
 describe("cost figure", () => {
   test("no usage, an unpriced model and a priced one each read as such", () => {
     expect(costFigure(costOfRow({ harness: "claude" }, null))).toEqual({ kind: "none", text: "No usage recorded yet" });
-    const unknown = { promptId: "a", model: "mystery", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
+    const unknown = {
+      promptId: "a",
+      model: "mystery",
+      inputTokens: 1,
+      outputTokens: 1,
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+    };
     expect(costFigure(costOfRow({ harness: "claude", usage_turns: turns([unknown]) }, null)).kind).toBe("unknown");
-    const priced = { promptId: "b", model: "gpt-6.1-sol", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0 };
+    const priced = {
+      promptId: "b",
+      model: "gpt-6.1-sol",
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+    };
     expect(costFigure(costOfRow({ harness: "codex", usage_turns: turns([priced, unknown]) }, "codex_auth"))).toEqual({
       kind: "priced",
       text: "$2.00",
@@ -49,6 +73,26 @@ describe("cost figure", () => {
   test("tokens the harness did not report are said to be missing, not unpriced", () => {
     const missing = { promptId: "c", model: "gpt-6.1-sol", inputTokens: null, outputTokens: null, cachedTokens: null };
     expect(costFigure(costOfRow({ harness: "codex", usage_turns: turns([missing]) }, null))).toEqual({
+      kind: "unknown",
+      text: "Tokens not reported",
+    });
+  });
+
+  test("stored writes reach pricing, while absent counters render Not reported", () => {
+    const reported = {
+      promptId: "p",
+      model: "claude-opus-5-5",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheWriteTokens: 1_000_000,
+    };
+    const cost = costOfRow({ harness: "claude", usage_turns: turns([reported]) }, "anthropic");
+    expect(cost.usd).toBe(5);
+    expect(cost.tokens.cacheWrite).toBe(1_000_000);
+    expect(formatTokens(null)).toBe("Not reported");
+    expect(formatTokens(0)).toBe("0");
+    expect(costFigure(costOfRow({ harness: "codex", usage_turns: turns([], 1) }, null))).toEqual({
       kind: "unknown",
       text: "Tokens not reported",
     });
@@ -75,6 +119,7 @@ describe("orchestrator cost", () => {
       inputTokens: 1_000_000,
       outputTokens: 0,
       cachedTokens: 0,
+      cacheWriteTokens: 0,
     });
     const costs = new Map([
       ["own", costOfRow({ harness: "claude", usage_turns: turns([priced("a")]) }, "anthropic")],
@@ -96,6 +141,7 @@ describe("orchestrator cost", () => {
       inputTokens: 1_000_000,
       outputTokens: 0,
       cachedTokens: 0,
+      cacheWriteTokens: 0,
     };
     const costs = new Map([["w1", costOfRow({ harness: "claude", usage_turns: turns([priced]) }, null)]]);
     const cost = orchestratorCost(null, ["w1"], costs);
