@@ -1,5 +1,60 @@
 import type { AgentEvent } from "./provider.ts";
 
+/** Closed, secret-free explanations for an unmeasured Boat turn. */
+export const USAGE_UNAVAILABLE_CODES = [
+  "admission_missing",
+  "admission_expired",
+  "admission_superseded",
+  "legacy_disabled",
+  "native_start_unobserved",
+  "native_input_unmatched",
+  "native_turn_unobserved",
+  "native_terminal_unobserved",
+  "native_history_unavailable",
+  "native_boundary_unverified",
+  "unsafe_reader_state",
+  "reader_unavailable",
+  "compute_inactive",
+  "unsupported_harness",
+] as const;
+export type UsageUnavailableCode = (typeof USAGE_UNAVAILABLE_CODES)[number];
+export interface UsageUnavailableReason {
+  code: UsageUnavailableCode;
+  message: string;
+}
+const USAGE_UNAVAILABLE_MESSAGES: Record<UsageUnavailableCode, string> = {
+  admission_missing:
+    "No usage admission was bound to this prompt. Check pre-prompt installation/admission; counters are unknown, not zero.",
+  admission_expired:
+    "Usage admission expired before a matching native start was observed. Waiting for a log flush cannot repair that attribution.",
+  admission_superseded:
+    "An unclaimed usage admission was superseded. Its counters cannot safely be attributed to this prompt.",
+  legacy_disabled:
+    "Legacy ambiguous admission state disables attribution until a fresh physical sandbox generation. Do not delete safety state to guess counters.",
+  native_start_unobserved:
+    "Admission exists, but no matching native start was observed. Check the live process bridge, entrypoint and input matching before rebuilding a golden.",
+  native_input_unmatched:
+    "The bridge observed native input that did not exactly match the pending admission, or used an unsupported input shape. No counters were guessed.",
+  native_turn_unobserved: "The native session was captured, but a native turn ID has not been observed.",
+  native_terminal_unobserved:
+    "The native turn was identified, but its matching terminal notification has not been observed.",
+  native_history_unavailable:
+    "Native session history is missing, unreadable, ambiguous or exceeds the bounded read budget.",
+  native_boundary_unverified:
+    "Native history does not yet prove this turn's identity, closed boundary and baseline. Delayed or unsupported records remain unknown.",
+  unsafe_reader_state:
+    "The guest usage reader refused unsafe or unreadable local state. Check directory ownership/permissions without removing safety files.",
+  reader_unavailable:
+    "The guest usage reader could not return a valid bounded observation. No raw guest error, command output or transcript is exposed.",
+  compute_inactive:
+    "Collection requires active, admitted compute. This read will not resume stopped or fenced compute; earlier observations are retained.",
+  unsupported_harness:
+    "This Boat harness has no verified native per-turn usage collector. Missing counters are unknown, not zero.",
+};
+export function usageUnavailableReason(code: UsageUnavailableCode): UsageUnavailableReason {
+  return { code, message: USAGE_UNAVAILABLE_MESSAGES[code] };
+}
+
 /**
  * Harness-native counters, not disjoint pricing buckets. For Codex, cachedTokens
  * and cacheWriteTokens are subsets of inputTokens; do not add them to input.
@@ -15,6 +70,8 @@ export interface TurnTokenUsage {
   cachedTokens: number | null;
   cacheWriteTokens?: number | null;
   reasoningTokens?: number | null;
+  /** Why no counters could be collected; never a raw provider/guest error. */
+  unavailableReason?: UsageUnavailableReason;
 }
 export interface SandboxUsage {
   /** Seconds between Armada-recorded compute transitions; null for legacy/incomplete history. */

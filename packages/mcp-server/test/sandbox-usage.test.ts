@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type AgentEvent, reportedTurnUsage } from "@armada/core";
+import { type AgentEvent, reportedTurnUsage, usageUnavailableReason } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage, readStatus } from "../src/turns.ts";
 import { database, fakeBoat } from "./support.ts";
@@ -177,6 +177,21 @@ test("native collection persists retry-safe rows and preserves measurements when
     expect(measured?.tokenTotals?.inputTokens).toBe(142);
     const unknownModel = { ...row, model: null, inputTokens: 7 };
     await store.recordUsage!(id, { turnCount: 2, turns: [unknownModel] });
+    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    // A stale diagnostic writer must not attach an unavailable reason to
+    // concurrently retained numeric observations, including unknown-model rows.
+    await store.recordUsage!(id, {
+      turnCount: 2,
+      turns: [
+        {
+          ...unknownModel,
+          inputTokens: null,
+          outputTokens: null,
+          cachedTokens: null,
+          unavailableReason: usageUnavailableReason("reader_unavailable"),
+        },
+      ],
+    });
     expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
   } finally {
     await db.close();

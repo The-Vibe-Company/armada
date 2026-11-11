@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { deflateSync } from "node:zlib";
-import type { Provider, TurnTokenUsage } from "@armada/core";
+import {
+  type Provider,
+  ProviderError,
+  type TurnTokenUsage,
+  USAGE_UNAVAILABLE_CODES,
+  type UsageUnavailableCode,
+  usageUnavailableReason,
+} from "@armada/core";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const command = (operation: string, ...args: string[]) =>
@@ -40,7 +47,21 @@ export async function collectNativeUsage(
   provider: Provider,
   sandboxId: string,
   promptId: string,
+  harness: "claude" | "codex" = "codex",
 ): Promise<TurnTokenUsage[]> {
+  const unavailable = (code: UsageUnavailableCode): TurnTokenUsage[] => [
+    {
+      promptId,
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      unavailableReason: usageUnavailableReason(code),
+    },
+  ];
+  if (harness !== "codex") return unavailable("unsupported_harness");
   try {
     const r = await provider.exec({
       sandboxId,
@@ -48,15 +69,27 @@ export async function collectNativeUsage(
       timeoutSeconds: 10,
       onlyIfRunning: true,
     });
-    if (r.detached || r.exitCode !== 0 || r.truncated || r.stdout.length > 32768) return [];
-    const rows: unknown = JSON.parse(r.stdout);
-    if (!Array.isArray(rows) || rows.length > 32) return [];
-    return rows.flatMap((row) => {
+    if (r.detached || r.timedOut || r.exitCode !== 0 || r.truncated || r.stdout.length > 32768)
+      return unavailable("reader_unavailable");
+    const result: unknown = JSON.parse(r.stdout);
+    if (!result || typeof result !== "object" || Array.isArray(result)) return unavailable("reader_unavailable");
+    const { turns, reason } = result as { turns?: unknown; reason?: unknown };
+    if (!Array.isArray(turns) || turns.length > 32) return unavailable("reader_unavailable");
+    if (turns.length === 0)
+      return unavailable(
+        typeof reason === "string" && (USAGE_UNAVAILABLE_CODES as readonly string[]).includes(reason)
+          ? (reason as UsageUnavailableCode)
+          : "reader_unavailable",
+      );
+    const rows = turns.flatMap((row): TurnTokenUsage[] => {
       if (!row || typeof row !== "object") return [];
       const v = row as Record<string, unknown>;
       if (v.model !== null && (typeof v.model !== "string" || !/^[a-zA-Z0-9._:/-]{1,160}$/.test(v.model))) return [];
       const keys = ["inputTokens", "outputTokens", "cachedTokens", "cacheWriteTokens", "reasoningTokens"] as const;
-      if (keys.some((k) => v[k] !== null && !(typeof v[k] === "number" && Number.isSafeInteger(v[k]) && v[k] >= 0)))
+      if (
+        keys.every((k) => v[k] === null) ||
+        keys.some((k) => v[k] !== null && !(typeof v[k] === "number" && Number.isSafeInteger(v[k]) && v[k] >= 0))
+      )
         return [];
       return [
         {
@@ -66,8 +99,11 @@ export async function collectNativeUsage(
         } as TurnTokenUsage,
       ];
     });
-  } catch {
-    return [];
+    return rows.length === turns.length ? rows : unavailable("reader_unavailable");
+  } catch (error) {
+    return unavailable(
+      error instanceof ProviderError && error.code === "sandbox_not_ready" ? "compute_inactive" : "reader_unavailable",
+    );
   }
 }
 /** Inert guest-local helper. Never exports transcript data or native filenames. */
@@ -212,10 +248,10 @@ def prompt_digest(items):
     if not isinstance(item,dict) or item.get('type')!='text' or not isinstance(item.get('text'),str): return None
     return hashlib.sha256(item['text'].encode('utf-8')).hexdigest()
 
-def retire_pending(pending):
+def retire_pending(pending,reason='admission_superseded'):
     ticket=pending['ticket'];digest=pending.get('digest')
     if not ID.fullmatch(ticket) or not isinstance(digest,str) or not DIGEST.fullmatch(digest): raise ValueError('legacy admission')
-    entry=load(ticket+'.json');entry['invalid']=True;save(ticket+'.json',entry)
+    entry=load(ticket+'.json');entry['invalid']=True;entry['collectionReason']=reason;save(ticket+'.json',entry)
     # A delayed callback can still arrive. Quarantine only its exact input,
     # never the whole sandbox, and never guess which identical request it is.
     save('blocked-'+digest+'.json',{})
@@ -231,15 +267,17 @@ def capture(harness,session,fresh,digest):
     except FileNotFoundError: return None
     ticket=pending['ticket']
     if time.time()-pending['at']>90:
-        retire_pending(pending);return None
-    if not isinstance(digest,str) or pending.get('digest')!=digest: return None
+        retire_pending(pending,'admission_expired');return None
+    if not isinstance(digest,str) or pending.get('digest')!=digest:
+        entry=load(ticket+'.json');entry['collectionReason']='native_input_unmatched';save(ticket+'.json',entry)
+        return None
     if os.path.exists(ROOT+'/blocked-'+digest+'.json') or load(ticket+'.json').get('session'): return None
     previous='session-'+session+'.json'
     try:
         prior_ticket=load(previous)['ticket'];prior=load(prior_ticket+'.json')
         if not prior.get('terminal'):
-            prior['invalid']=True;save(prior_ticket+'.json',prior)
-            entry=load(ticket+'.json');entry['invalid']=True;save(ticket+'.json',entry)
+            prior['invalid']=True;prior['collectionReason']='native_boundary_unverified';save(prior_ticket+'.json',prior)
+            entry=load(ticket+'.json');entry['invalid']=True;entry['collectionReason']='native_boundary_unverified';save(ticket+'.json',entry)
     except FileNotFoundError: pass
     entry=load(ticket+'.json');entry.update(harness=harness,session=session,fresh=fresh)
     save(ticket+'.json',entry);save(previous,{'ticket':ticket});os.unlink(ROOT+'/pending.json')
@@ -249,22 +287,39 @@ def capture(harness,session,fresh,digest):
 def start(ticket,turn):
     if not ID.fullmatch(turn): raise ValueError('turn')
     entry=load(ticket+'.json')
-    if entry.get('turn') not in (None,turn): entry['invalid']=True
+    if entry.get('turn') not in (None,turn): entry['invalid']=True;entry['collectionReason']='native_boundary_unverified'
     entry['turn']=turn;save(ticket+'.json',entry)
 
-def collect(prompt):
-    ticket=load('prompt-'+prompt+'.json')['ticket'];entry=load(ticket+'.json')
-    if entry.get('invalid') or not entry.get('session') or not entry.get('terminal') or not entry.get('turn'): return []
+def collection_result(prompt):
+    def missing(reason): return {'turns':[],'reason':reason}
+    if os.path.exists(ROOT+'/disabled.json'): return missing('legacy_disabled')
+    try:
+        ticket=load('prompt-'+prompt+'.json')['ticket']
+        if not ID.fullmatch(ticket): return missing('unsafe_reader_state')
+        entry=load(ticket+'.json')
+    except FileNotFoundError: return missing('admission_missing')
+    except (OSError,ValueError,KeyError,TypeError): return missing('unsafe_reader_state')
+    if entry.get('invalid'): return missing(entry.get('collectionReason','native_boundary_unverified'))
+    if not entry.get('session'): return missing(entry.get('collectionReason','native_start_unobserved'))
+    if not entry.get('turn'): return missing('native_turn_unobserved')
+    if not entry.get('terminal'): return missing('native_terminal_unobserved')
     if 'final' not in entry:
         try: entry['final']=snapshot(entry['harness'],entry['session'],entry['turn'],entry['fresh'])
-        except Exception: return []
+        except FileNotFoundError: return missing('native_history_unavailable')
+        except PermissionError: return missing('unsafe_reader_state')
+        except OSError: return missing('unsafe_reader_state')
+        except ValueError as error:
+            return missing('unsafe_reader_state' if str(error)=='unsafe' else
+              'native_history_unavailable' if str(error) in ('mapping','bound','size') else 'native_boundary_unverified')
         save(ticket+'.json',entry)
-    return entry['final']
+    return {'turns':entry['final'],'reason':None if entry['final'] else 'native_boundary_unverified'}
+
+def collect(prompt): return collection_result(prompt)['turns']
 
 @locked
 def terminal(ticket,turn=None):
     entry=load(ticket+'.json')
-    if turn is None or entry.get('turn')!=turn: entry['invalid']=True
+    if turn is None or entry.get('turn')!=turn: entry['invalid']=True;entry['collectionReason']='native_boundary_unverified'
     entry['terminal']=True;save(ticket+'.json',entry)
 
 def main():
@@ -297,12 +352,12 @@ def main():
     elif operation=='collect':
         prompt=args[0]
         if not ID.fullmatch(prompt): raise ValueError('id')
-        print(json.dumps(collect(prompt)))
+        print(json.dumps(collection_result(prompt)))
 if __name__=='__main__':
     try:
         with lock(): main()
     except Exception:
-        if len(sys.argv)>1 and sys.argv[1]=='collect': print('[]')
+        if len(sys.argv)>1 and sys.argv[1]=='collect': print(json.dumps({'turns':[],'reason':'unsafe_reader_state'}))
         else: sys.exit(1)
 `;
 

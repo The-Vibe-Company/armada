@@ -161,7 +161,7 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: Any, setting path: Str
     let full = try JSONSerialization.jsonObject(with: Data(usage.utf8)) as! [String: Any]
     var partial = full
     partial["tokenTotals"] = ["inputTokens": NSNull(), "outputTokens": NSNull(), "cachedTokens": NSNull(), "cacheWriteTokens": NSNull()]
-    partial["turns"] = [["promptId": "p1", "model": "gpt-6.1-sol", "inputTokens": NSNull(), "outputTokens": NSNull(), "cachedTokens": NSNull()]]
+    partial["turns"] = [["promptId": "p1", "model": "gpt-6.1-sol", "inputTokens": NSNull(), "outputTokens": NSNull(), "cachedTokens": NSNull(), "unavailableReason": ["code": "native_start_unobserved", "message": "No matching native start was observed."]]]
     for counters in [full as Any, partial as Any, NSNull()] {
         var list = response("sandboxList") as! [String: Any]
         let originalRows = list["sandboxes"] as! [[String: Any]]

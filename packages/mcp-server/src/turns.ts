@@ -13,7 +13,9 @@ import {
   type SandboxUsage,
   type TaskOutcome,
   type TurnModelEvidence,
+  type TurnTokenUsage,
   turnModelEvidence,
+  usageUnavailableReason,
 } from "@armada/core";
 import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
@@ -70,6 +72,11 @@ export interface StatusReport {
   /** The agent is not working: nothing more will happen until the next send. */
   settled: boolean;
 }
+
+const hasReportedCounters = (row: TurnTokenUsage) =>
+  [row.inputTokens, row.outputTokens, row.cachedTokens, row.cacheWriteTokens, row.reasoningTokens].some(
+    (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+  );
 
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
@@ -273,7 +280,17 @@ function report(
 ): StatusReport {
   const machineDown = status === "stopped" || status === "deleted" || (status === "failed" && !sandbox.stopRequestedAt);
   return {
-    usage: sandbox.usage ?? null,
+    usage:
+      sandbox.usage && sandbox.provider === "boat" && machineDown
+        ? {
+            ...sandbox.usage,
+            turns: sandbox.usage.turns.map((row) =>
+              hasReportedCounters(row) || row.unavailableReason
+                ? row
+                : { ...row, unavailableReason: usageUnavailableReason("compute_inactive") },
+            ),
+          }
+        : (sandbox.usage ?? null),
     taskOutcome: sandbox.taskOutcome ?? null,
     id: sandbox.id,
     golden: sandbox.golden,
@@ -410,7 +427,12 @@ export async function collectSandboxUsage(
             harness: sandbox.harness,
           });
           for (const row of native) {
-            if (row.promptId === promptId) rows.set(JSON.stringify([row.promptId, row.model]), row);
+            if (row.promptId !== promptId) continue;
+            const prior = [...rows.values()].filter((known) => known.promptId === promptId);
+            if (row.unavailableReason && prior.some(hasReportedCounters)) continue;
+            if (row.unavailableReason?.code === "compute_inactive" && prior.some((known) => known.unavailableReason))
+              continue;
+            rows.set(JSON.stringify([row.promptId, row.model]), row);
           }
         } catch {
           /* A missing native file must not erase an earlier observation. */
@@ -427,7 +449,9 @@ export async function collectSandboxUsage(
         cachedTokens: null,
       });
     }
-    const measuredPrompts = new Set([...rows.values()].filter((row) => row.model !== null).map((row) => row.promptId));
+    const measuredPrompts = new Set(
+      [...rows.values()].filter((row) => row.model !== null && hasReportedCounters(row)).map((row) => row.promptId),
+    );
     for (const [key, row] of rows) {
       if (
         row.model === null &&

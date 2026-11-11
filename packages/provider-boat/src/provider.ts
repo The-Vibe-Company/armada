@@ -570,7 +570,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async collectTurnUsage(request) {
-      return collectNativeUsage(provider, request.sandboxId, request.promptId);
+      return collectNativeUsage(provider, request.sandboxId, request.promptId, request.harness);
     },
 
     async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {

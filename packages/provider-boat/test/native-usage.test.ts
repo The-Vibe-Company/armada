@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NATIVE_USAGE_PYTHON } from "../src/native-usage.ts";
+import { type Provider, ProviderError } from "@armada/core";
+import { collectNativeUsage, NATIVE_USAGE_PYTHON } from "../src/native-usage.ts";
 
 /** Exercises real guest admission and parsing, no harness/model or network. */
 function guest(scenario: string): unknown {
@@ -193,6 +194,35 @@ print(json.dumps([expired,admitted,late,matched,a[0]['inputTokens'],collect('old
       ),
     ).toEqual([null, "admitted", null, "current", 100, [], "admitted", null, "next", 50, [], null]);
   });
+  test("collection explains the failed stage without exposing raw state or changing counters", () => {
+    expect(
+      guest(
+        setup +
+          `
+reasons=[collection_result('missing')['reason']]
+admit('one','p1');reasons.append(collection_result('p1')['reason'])
+capture('codex',session,True,hashlib.sha256(b'PRIVATE_NATIVE_INPUT').hexdigest())
+reasons.append(collection_result('p1')['reason'])
+capture('codex',session,True,digest);reasons.append(collection_result('p1')['reason'])
+start('one','t1');reasons.append(collection_result('p1')['reason'])
+terminal('one','t1');reasons.append(collection_result('p1')['reason'])
+write([100,20,0,0,0]);result=collection_result('p1')
+print(json.dumps([reasons,result['reason'],result['turns'][0]['inputTokens']]))
+`,
+      ),
+    ).toEqual([
+      [
+        "admission_missing",
+        "native_start_unobserved",
+        "native_input_unmatched",
+        "native_turn_unobserved",
+        "native_terminal_unobserved",
+        "native_history_unavailable",
+      ],
+      null,
+      100,
+    ]);
+  });
   test("identical ambiguous inputs stay unknown while later distinct admissions and fresh forks recover", () => {
     expect(
       guest(
@@ -217,4 +247,48 @@ print(json.dumps([collect('p1') if os.path.exists(ROOT+'/prompt-p1.json') else [
       ),
     ).toEqual([[], "", null, "", "admitted", "admitted", "five", true]);
   });
+});
+
+test("native reader transport failures expose only closed public diagnostics", async () => {
+  const secret = "PRIVATE_NATIVE_OUTPUT_NOT_A_CREDENTIAL";
+  const execute = async (response: unknown) =>
+    collectNativeUsage({ exec: async () => response } as unknown as Provider, "sandbox", "prompt");
+  const response = (stdout: string) => ({
+    detached: false,
+    exitCode: 0,
+    stdout,
+    stderr: secret,
+    timedOut: false,
+    truncated: false,
+  });
+  const unobserved = await execute(
+    response(JSON.stringify({ turns: [], reason: "native_start_unobserved", private: secret })),
+  );
+  expect(unobserved[0]).toMatchObject({
+    promptId: "prompt",
+    inputTokens: null,
+    unavailableReason: { code: "native_start_unobserved" },
+  });
+  expect(unobserved[0]?.unavailableReason?.message).toContain("no matching native start");
+  for (const r of [
+    response(JSON.stringify({ turns: [], reason: secret })),
+    response(secret),
+    { ...response(secret), exitCode: 1 },
+    { ...response(secret), timedOut: true },
+  ]) {
+    const rows = await execute(r);
+    expect(rows[0]?.unavailableReason?.code).toBe("reader_unavailable");
+    expect(JSON.stringify(rows)).not.toContain(secret);
+  }
+  const stopped = await collectNativeUsage(
+    {
+      exec: async () => {
+        throw new ProviderError({ provider: "boat", code: "sandbox_not_ready", message: secret, retryable: false });
+      },
+    } as unknown as Provider,
+    "sandbox",
+    "prompt",
+  );
+  expect(stopped[0]?.unavailableReason?.code).toBe("compute_inactive");
+  expect(JSON.stringify(stopped)).not.toContain(secret);
 });

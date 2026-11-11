@@ -15,7 +15,7 @@ against a production resource. Do not send a second turn, rebuild the golden, or
 stop/restart the first sandbox before capturing the JSON: those actions change
 the evidence. The probe does not run inference or modify guest state. It outputs
 only bounded metadata booleans/counts/modes, never prompts, environments, argv,
-identifiers, native paths, records, or credential values. Return its JSON on #977.
+native/session identifiers, native paths, records, or credential values. Return its JSON on #977.
 
 ## Interpretation, not assumptions
 

@@ -346,12 +346,18 @@ export function createSqlData(sql: Sql): DataSource {
               window identity as (partition by value->>'promptId', value->>'model')
               order by value->>'promptId', value->>'model', ordinal desc
             ), retained as (
-              select value from merged m where m.value->>'model' is not null
+              select case when m.value->>'inputTokens' is not null or m.value->>'outputTokens' is not null
+                or m.value->>'cachedTokens' is not null or m.value->>'cacheWriteTokens' is not null
+                or m.value->>'reasoningTokens' is not null then value - 'unavailableReason' else value end as value
+              from merged m where m.value->>'model' is not null
                 or m.value->>'inputTokens' is not null or m.value->>'outputTokens' is not null
                 or m.value->>'cachedTokens' is not null or m.value->>'cacheWriteTokens' is not null
                 or m.value->>'reasoningTokens' is not null
                 or not exists (select 1 from merged known
-                  where known.value->>'promptId'=m.value->>'promptId' and known.value->>'model' is not null)
+                  where known.value->>'promptId'=m.value->>'promptId' and known.value->>'model' is not null
+                    and (known.value->>'inputTokens' is not null or known.value->>'outputTokens' is not null
+                      or known.value->>'cachedTokens' is not null or known.value->>'cacheWriteTokens' is not null
+                      or known.value->>'reasoningTokens' is not null))
             )
             select jsonb_build_object(
               'turnCount', greatest((s.usage_turns->>'turnCount')::int,

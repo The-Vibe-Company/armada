@@ -1,5 +1,5 @@
 """Read-only Boat triage: booleans/counts only; no env, argv, prompts or paths exported."""
-import base64, glob, json, os, re, stat, time, zlib
+import base64, json, os, re, stat, time, zlib
 LIMIT=256*1024
 
 def read(path,limit=LIMIT):
@@ -23,33 +23,47 @@ def read(path,limit=LIMIT):
 
 def source(arg):
     prefix=b'import base64,zlib;exec(zlib.decompress(base64.b64decode("';suffix=b'")))'
-    if not arg.startswith(prefix): return arg
-    if len(arg)>128*1024 or not arg.endswith(suffix): return b''
+    if not arg.startswith(prefix):
+        if b'base64.b64decode' in arg and b'decompress' in arg: raise ValueError()
+        return arg
+    if len(arg)>128*1024 or not arg.endswith(suffix): raise ValueError()
     try:
         decoder=zlib.decompressobj()
         code=decoder.decompress(base64.b64decode(arg[len(prefix):-len(suffix)],validate=True),LIMIT+1)
-        return code if len(code)<=LIMIT and decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail else b''
-    except Exception: return b''
+        if len(code)>LIMIT or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail: raise ValueError()
+        return code
+    except Exception: raise ValueError() from None
 
 def ancestry(pid):
     usage=digest=False
-    complete=False
+    complete=False;unknown=False
     for _ in range(16):
         try:
             exe=os.path.basename(os.readlink('/proc/%d/exe'%pid))
             if exe.startswith('python'):
-                for arg in read('/proc/%d/cmdline'%pid).split(b'\0')[1:]:
-                    code=source(arg)
+                args=read('/proc/%d/cmdline'%pid).split(b'\0')
+                position=args.index(b'-c') if b'-c' in args else -1
+                if position<1 or position+1>=len(args) or any(not arg.startswith(b'-') for arg in args[1:position]):
+                    unknown=True
+                else:
+                    code=source(args[position+1])
                     usage|=b'usage["capture"]' in code
                     digest|=b'usage["prompt_digest"]' in code
             pid=int(read('/proc/%d/stat'%pid).rsplit(b')',1)[1].split()[1])
             if pid<=1:
-                complete=True;break
+                complete=not unknown;break
         except Exception: break
     return {'usageBridge':usage,'digestCapture':digest,'inspectionComplete':complete}
 
-out={'probeUid':os.getuid(),'native':[],'stateReadable':False}
-processes=glob.glob('/proc/[0-9]*')
+out={'probeUid':os.getuid(),'native':[],'stateReadable':False,'processReadFailures':0,
+     'nativeCount':0,'nativeSummariesTruncated':False}
+processes=[]
+try:
+    with os.scandir('/proc') as entries:
+        for entry in entries:
+            if entry.name.isdecimal(): processes.append(entry.path)
+            if len(processes)>8192: break
+except OSError: out['procReadFailed']=True
 out['procScanTruncated']=len(processes)>8192
 for directory in processes[:8192]:
     try:
@@ -57,9 +71,12 @@ for directory in processes[:8192]:
         if os.path.basename(os.readlink(directory+'/exe'))!='codex': continue
         args=read(directory+'/cmdline').split(b'\0')
         if b'app-server' not in args: continue
+        out['nativeCount']+=1
+        if len(out['native'])>=16:
+            out['nativeSummariesTruncated']=True;continue
         out['native'].append({'sameUid':os.stat(directory).st_uid==os.getuid(),
           'globalOptionsBeforeAppServer':args.index(b'app-server')>1,**ancestry(pid)})
-    except Exception: continue
+    except Exception: out['processReadFailures']+=1
 parent=os.path.expanduser('~/.armada');root=parent+'/native-usage'
 for name,path in [('armadaMode',parent),('usageMode',root)]:
     try:
@@ -80,10 +97,9 @@ try:
     out['ticketCount']=len(tickets)
     out['ticketSummariesTruncated']=len(tickets)>16
     for name in tickets[:16]:
-        if True:
-            entry=json.loads(read(root+'/'+name,65536))
-            out['tickets'].append({**{k:bool(entry.get(k)) for k in ('session','turn','terminal','invalid','fresh')},
-              'finalCached':'final' in entry,'finalRows':len(entry['final']) if isinstance(entry.get('final'),list) else 0})
+        entry=json.loads(read(root+'/'+name,65536))
+        out['tickets'].append({**{k:bool(entry.get(k)) for k in ('session','turn','terminal','invalid','fresh')},
+          'finalCached':'final' in entry,'finalRows':len(entry['final']) if isinstance(entry.get('final'),list) else 0})
     out['pending']='pending.json' in names
     if out['pending']:
         pending=json.loads(read(root+'/pending.json',65536))
@@ -96,6 +112,7 @@ try:
         decoder=zlib.decompressobj()
         code=decoder.decompress(base64.b64decode(match[1],validate=True),LIMIT+1)
         valid=len(code)<=LIMIT and decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail
+        if not valid: raise ValueError()
         out['installedUsageBridge']=valid and b'usage["capture"]' in code
         out['installedDigestCapture']=valid and b'usage["prompt_digest"]' in code
     else: out['installedWrapperFormatUnknown']=True
