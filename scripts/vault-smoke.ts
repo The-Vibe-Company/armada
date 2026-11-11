@@ -50,6 +50,7 @@ function fail(code: VaultSmokeCode): never {
 
 /** One personal readable variable and one write-only secret; no sandbox/provider allocation. */
 export async function runVaultCase(org: string, io: VaultSmokeIo): Promise<boolean> {
+  org = org.toLowerCase();
   const suffix = crypto.randomUUID().replaceAll("-", "").toUpperCase();
   const variable: Resource = { family: "variables", name: `SMOKE_VAR_${suffix}`, attempted: false, confirmed: false };
   const secret: Resource = { family: "secrets", name: `SMOKE_SECRET_${suffix}`, attempted: false, confirmed: false };
@@ -73,6 +74,7 @@ export async function runVaultCase(org: string, io: VaultSmokeIo): Promise<boole
       value.scope === "personal" &&
       typeof value.id === "string" &&
       uuid.test(value.id) &&
+      (!resource.handle || value.id === resource.handle.id) &&
       positive(value.version)
     )
       resource.handle = { id: value.id, version: value.version };

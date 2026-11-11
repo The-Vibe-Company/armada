@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { runVaultCase, VaultSmokeFailure, type VaultSmokeIo } from "./vault-smoke.ts";
 
-const org = "11111111-1111-4111-8111-111111111111";
+const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const owner = "22222222-2222-4222-8222-222222222222";
 type Row = {
   id: string;
@@ -28,7 +28,8 @@ type Fault =
   | "lost_revoke"
   | "lost_delete"
   | "delete_unavailable"
-  | "cleanup_list_omits";
+  | "cleanup_list_omits"
+  | "changed_id";
 
 /** Stateful wire peer, not the smoke implementation: CAS, tombstones and HTTP errors. */
 function fixture(fault: Fault = "none") {
@@ -148,6 +149,12 @@ function fixture(fault: Fault = "none") {
             ...(response as { items: object[] }).items[0],
             value_enc: "not-a-canary",
           };
+        } else if (fault === "changed_id" && operation === "rotate") {
+          injected = true;
+          (response as { item: Row }).item = {
+            ...(response as { item: Row }).item,
+            id: "33333333-3333-4333-8333-333333333333",
+          };
         } else if (fault === `lost_${operation}`) {
           injected = true;
           throw wireError(502, "unknown_result");
@@ -217,6 +224,21 @@ describe("deployed vault smoke at its injected HTTP boundary", () => {
     const f = fixture("cleanup_list_omits");
     expect(await runVaultCase(org, f.io)).toBe(true);
     expect(f.calls.filter((call) => call.path.endsWith("/delete"))).toHaveLength(2);
+    expect([...f.rows.values()].every((row) => row.status === "deleted")).toBe(true);
+    checkNoLeaks(f);
+  });
+
+  test("accepted uppercase org UUIDs use canonical requests and retain cleanup handles", async () => {
+    const f = fixture();
+    expect(await runVaultCase(org.toUpperCase(), f.io)).toBe(true);
+    expect([...f.rows.values()].every((row) => row.status === "deleted")).toBe(true);
+    checkNoLeaks(f);
+  });
+
+  test("a mutation response cannot replace an established resource ID before validation", async () => {
+    const f = fixture("changed_id");
+    expect(await runVaultCase(org, f.io)).toBe(false);
+    expect(f.failures).toContain("vault_secret_rotate:invalid_response");
     expect([...f.rows.values()].every((row) => row.status === "deleted")).toBe(true);
     checkNoLeaks(f);
   });
