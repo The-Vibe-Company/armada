@@ -5,6 +5,7 @@
  * The dashboard (and anything else that ships to a browser) must import `@armada/core` instead.
  */
 
+export { type ApplicationVault, type ApplicationVaultActor, createApplicationVault } from "./application-vault.ts";
 export { boatSnapshotName } from "./boat-snapshot-name.ts";
 export {
   githubAppJwt,

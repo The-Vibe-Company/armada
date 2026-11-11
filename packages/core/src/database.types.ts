@@ -6,6 +6,190 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      application_secret_uploads: {
+        Row: {
+          hash: string;
+          actor_id: string;
+          org_id: string;
+          operation: string;
+          target_id: string | null;
+          expected_version: number | null;
+          scope: string;
+          name: string;
+          value_enc: string;
+          secret_expires_at: string | null;
+          expires_at: string;
+        };
+        Insert: {
+          hash: string;
+          actor_id: string;
+          org_id: string;
+          operation: string;
+          target_id?: string | null;
+          expected_version?: number | null;
+          scope: string;
+          name: string;
+          value_enc: string;
+          secret_expires_at?: string | null;
+          expires_at?: string;
+        };
+        Update: {
+          hash?: string;
+          actor_id?: string;
+          org_id?: string;
+          operation?: string;
+          target_id?: string | null;
+          expected_version?: number | null;
+          scope?: string;
+          name?: string;
+          value_enc?: string;
+          secret_expires_at?: string | null;
+          expires_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "application_secret_uploads_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_secret_uploads_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      application_secrets: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value_enc: string | null;
+          version: number;
+          epoch: number;
+          status: string;
+          expires_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value_enc?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          expires_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          value_enc?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          expires_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "application_secrets_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_secrets_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      application_vault_audit: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          actor_id: string;
+          resource_id: string;
+          kind: string;
+          operation: string;
+          version: number;
+          epoch: number;
+          outcome: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          actor_id: string;
+          resource_id: string;
+          kind: string;
+          operation: string;
+          version: number;
+          epoch: number;
+          outcome?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          actor_id?: string;
+          resource_id?: string;
+          kind?: string;
+          operation?: string;
+          version?: number;
+          epoch?: number;
+          outcome?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "application_vault_audit_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_vault_audit_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "application_vault_audit_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       credentials: {
         Row: {
           id: string;
@@ -2340,6 +2524,63 @@ export type Database = {
         };
         Relationships: [];
       };
+      readable_variables: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value: string | null;
+          version: number;
+          epoch: number;
+          status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          scope: string;
+          name: string;
+          value?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          scope?: string;
+          name?: string;
+          value?: string | null;
+          version?: number;
+          epoch?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "readable_variables_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "readable_variables_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       resource_observations: {
         Row: {
           id: number;
@@ -2693,6 +2934,9 @@ export type Database = {
   };
 };
 
+export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
+export type ApplicationSecretRow = Database["public"]["Tables"]["application_secrets"]["Row"];
+export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
@@ -2742,6 +2986,7 @@ export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
