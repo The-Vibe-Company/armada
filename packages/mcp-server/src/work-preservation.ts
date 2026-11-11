@@ -29,6 +29,15 @@ function unknownNote(reason: string): string {
   return `could not check for unpushed work (${reason}). If this sandbox had local work, resume it and push or copy it before stopping again.`;
 }
 
+// Fence all writes to the stop epoch observed at entry. A completed receipt wins
+// over any late failure/timeout, even one whose provider request began earlier.
+const NOTE_FENCE = `id=$1::uuid
+  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $3::bigint
+  and ($3::bigint is null or preservation_stop_generation is distinct from $3::bigint)`;
+function writeNote(sql: Sql, id: string, note: string | null, stopToken: string | null) {
+  return sql.query(`update public.sandboxes set preservation_note=$2 where ${NOTE_FENCE}`, [id, note, stopToken]);
+}
+
 type StopSource = "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
 /** Mark dispatch at the caller, separately from Boat's beforeStop hook/API boundary. */
 export function recordStopDispatch(sandboxId: string, providerSandboxId: string, source: StopSource): void {
@@ -50,7 +59,7 @@ export async function preserveBeforeStop(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   const controller = new AbortController();
-  const progress = { stage: "observe", workAtRisk: false, checkedClean: false };
+  const progress = { stage: "observe", workAtRisk: false, checkedClean: false, stopToken: null as string | null };
   try {
     return await Promise.race([
       captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal, source),
@@ -60,7 +69,7 @@ export async function preserveBeforeStop(
           controller.abort();
           const diagnostic = { errorClass: "timeout", providerStatus: null };
           const reason = closedFailure(progress.stage, "timeout", diagnostic);
-          const pending = ["observe", "quiesce"].includes(progress.stage);
+          const pending = progress.checkedClean || ["observe", "quiesce"].includes(progress.stage);
           console.warn(
             JSON.stringify({
               event: pending ? "work_preservation_deferred" : "work_preservation_failed",
@@ -75,16 +84,16 @@ export async function preserveBeforeStop(
             resolve("pending");
             return;
           }
-          void sql
-            .query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [
-              id,
-              progress.workAtRisk
-                ? failureNote(`${progress.stage}_timeout`)
-                : progress.checkedClean
-                  ? null
-                  : unknownNote(`${progress.stage}_timeout`),
-            ])
-            .catch(() => {});
+          void writeNote(
+            sql,
+            id,
+            progress.workAtRisk
+              ? failureNote(`${progress.stage}_timeout`)
+              : progress.checkedClean
+                ? null
+                : unknownNote(`${progress.stage}_timeout`),
+            progress.stopToken,
+          ).catch(() => {});
           resolve();
         }, 20_000);
       }),
@@ -101,7 +110,7 @@ async function captureAndStore(
   id: string,
   providerId: string,
   expired: () => boolean,
-  progress: { stage: string; workAtRisk: boolean; checkedClean: boolean },
+  progress: { stage: string; workAtRisk: boolean; checkedClean: boolean; stopToken: string | null },
   signal: AbortSignal,
   source: StopSource,
 ): Promise<"pending" | void> {
@@ -109,6 +118,7 @@ async function captureAndStore(
   let stage = "observe";
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
   let note: string | null;
+  let stopLoaded = false;
   const observed = (phase: string, state?: string) => {
     try {
       console.info(
@@ -130,6 +140,25 @@ async function captureAndStore(
     }
   };
   try {
+    const stop = (
+      await sql.query<{ stop_token: string | null; complete: boolean }>(
+        `select case when stop_requested_at is null then null else stop_generation::text end as stop_token,
+        (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
+       from public.sandboxes where id=$1::uuid`,
+        [id],
+      )
+    ).rows[0];
+    if (expired()) return;
+    if (!stop) return "pending";
+    stopLoaded = true;
+    // Null is intentional for managed-child stops: their core store does not
+    // create a stop generation, and their operation journal publishes stopped
+    // directly (no ordinary lifecycle recapture). These one-off calls stay uncached.
+    progress.stopToken = stop.stop_token;
+    if (stop.complete) {
+      observed("capture_reused");
+      return;
+    }
     // Exec may implicitly resume retained compute. Never activate a machine known stopped.
     const current = await provider.get(providerId);
     if (expired()) return;
@@ -158,17 +187,32 @@ async function captureAndStore(
       const encrypted = await encryptSecret(result.archive);
       if (expired()) return;
       const recoveryId = crypto.randomUUID();
-      await sql.query(
-        `insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc) values($1::uuid,$2::uuid,$3::bytea)`,
-        [recoveryId, id, encrypted],
-      );
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
+      // Receipt and encrypted archive commit atomically. A competing successful
+      // pass or a changed stop epoch cannot create/replace a recovery receipt.
+      const saved = await sql.query<{ id: string }>(
+        `with accepted as (
+        update public.sandboxes set preservation_note=$2,preservation_stop_generation=$3::bigint
+        where ${NOTE_FENCE} returning id
+      ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
+        select $4::uuid,id,$5::bytea from accepted returning id`,
+        [id, note, progress.stopToken, recoveryId, encrypted],
+      );
+      if (!saved.rows.length) return "pending";
+      observed("capture_committed");
+      return;
     } else if (result.status === "clean") {
       progress.checkedClean = true;
       stage = progress.stage = "storage";
       reason = "failed";
-      // A clean stop has no current work at risk; historical archives remain retrievable.
-      await sql.query("update public.sandboxes set preservation_note=null where id=$1::uuid", [id]);
+      // Clean success is also durable: NULL note alone is not a receipt.
+      const saved = await sql.query<{ id: string }>(
+        `update public.sandboxes set preservation_note=$2::text,
+        preservation_stop_generation=$3::bigint where ${NOTE_FENCE} returning id`,
+        [id, null, progress.stopToken],
+      );
+      if (!saved.rows.length) return "pending";
+      observed("capture_committed");
       return;
     } else {
       reason = result.reason;
@@ -183,6 +227,18 @@ async function captureAndStore(
       reason = closedFailure(stage, reason, diagnostic);
     }
   } catch (error) {
+    if (!stopLoaded) {
+      console.warn(
+        JSON.stringify({
+          event: "work_preservation_deferred",
+          sandboxId: id,
+          stage: "receipt_lookup",
+          reason: "receipt_lookup_failed",
+          ...workPreservationError(error),
+        }),
+      );
+      return "pending";
+    }
     if (
       stage === "quiesce" &&
       error instanceof ProviderError &&
@@ -215,7 +271,7 @@ async function captureAndStore(
       }),
     );
   try {
-    await sql.query("update public.sandboxes set preservation_note=$2 where id=$1::uuid", [id, note]);
+    await writeNote(sql, id, note, progress.stopToken);
   } catch (error) {
     if (!expired() && note?.startsWith("unpushed work preserved"))
       console.warn(
@@ -228,6 +284,7 @@ async function captureAndStore(
         }),
       );
   }
+  if (progress.checkedClean) return "pending";
 }
 
 export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {

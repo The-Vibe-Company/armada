@@ -2832,6 +2832,8 @@ export type Database = {
           usage_running_since: string | null;
           usage_turns: Json | null;
           skills: Json;
+          stop_generation: number;
+          preservation_stop_generation: number | null;
         };
         Insert: {
           id?: string;
@@ -2882,6 +2884,8 @@ export type Database = {
           usage_running_since?: string | null;
           usage_turns?: Json | null;
           skills?: Json;
+          stop_generation?: number;
+          preservation_stop_generation?: number | null;
         };
         Update: {
           id?: string;
@@ -2932,6 +2936,8 @@ export type Database = {
           usage_running_since?: string | null;
           usage_turns?: Json | null;
           skills?: Json;
+          stop_generation?: number;
+          preservation_stop_generation?: number | null;
         };
         Relationships: [
           {

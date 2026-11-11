@@ -169,7 +169,14 @@ export function createProductionOrchestrators(input: {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       await input.credentials.assertTurn?.(actor, saved.id, saved.status === "stopped");
-      await sandboxActivity(stores.sandboxes, saved, { status: "running" }, async (signal) => {
+      const scoped = createSqlData(sql)({
+        via: "service",
+        userId: operation.ownerId,
+        orgs: [{ orgId: operation.orgId, role: "member" }],
+      }).sandboxes;
+      // Explicit new work cancels the pending stop epoch under the same activity
+      // fences used by ordinary send, so an older receipt cannot cover this turn.
+      await sandboxActivity(scoped, saved, { status: "running", stopRequested: false }, async (signal) => {
         const receipt = await provider.prompt({
           sandboxId: saved.providerSandboxId,
           harness: saved.harness,

@@ -8,6 +8,7 @@ import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
+import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
@@ -1327,6 +1328,186 @@ describe("tools", () => {
     },
   );
 
+  test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const id = launched.data.id;
+    const before = (
+      await db.query<{ lifecycle_generation: string | number | bigint }>(
+        "select lifecycle_generation from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0]?.lifecycle_generation;
+    const execute = boat.provider.exec;
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    boat.provider.exec = async (request) => {
+      if (request.command === "held command") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+          entered?.();
+        });
+      }
+      return execute(request);
+    };
+    const first = call(mcp, "exec", { id, command: "held command" });
+    await running;
+    let second: Awaited<ReturnType<typeof call>>;
+    try {
+      second = await call(mcp, "exec", { id, command: "parallel command" });
+    } finally {
+      release?.();
+    }
+    const completed = await first;
+    expect(second.isError).not.toBe(true);
+    expect(second.data.exitCode).toBe(0);
+    expect(completed.isError).not.toBe(true);
+    const after = (
+      await db.query<{ lifecycle_generation: string | number | bigint; activity_lease_id: string | null }>(
+        "select lifecycle_generation,activity_lease_id from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(after?.lifecycle_generation).toEqual(before);
+    expect(after?.activity_lease_id).toBeNull();
+  });
+
+  test.each(["exec", "steer"])("pending successful stop blocks %s workspace mutation", async (tool) => {
+    let preparations = 0;
+    const { token, client, people, boat, db } = await start({
+      connections: {
+        validate: async () => {},
+        bind: async () => {},
+        prepare: async () => {
+          preparations++;
+        },
+      },
+    });
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const id = launched.data.id;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    boat.provider.stop = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "unavailable",
+        retryable: true,
+        message: "Stop did not dispatch",
+      });
+    };
+    expect((await call(mcp, "stop", { id })).isError).toBe(true);
+    // Expire the retained unknown-outcome lease without a wall-clock wait.
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    const prepared = preparations;
+    const commands = boat.execs.length,
+      steers = boat.steers.length;
+    expect(
+      (
+        await call(
+          mcp,
+          tool,
+          tool === "exec" ? { id, command: "touch after-capture" } : { id, text: "change after capture" },
+        )
+      ).isError,
+    ).toBe(true);
+    expect(boat.execs).toHaveLength(commands);
+    expect(boat.steers).toHaveLength(steers);
+    expect(preparations).toBe(prepared);
+  });
+
+  test("explicit new work cancels a pending stop receipt before the next stop", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const id = launched.data.id;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const stop = boat.provider.stop;
+    boat.provider.stop = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "unavailable",
+        retryable: true,
+        message: "Stop did not dispatch",
+      });
+    };
+    expect((await call(mcp, "stop", { id })).isError).toBe(true);
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    const sent = await call(mcp, "send", { id, prompt: "new work" });
+    expect(sent.isError).not.toBe(true);
+    const promptId = sent.data.promptId;
+    if (typeof promptId !== "string") throw new Error("Missing accepted prompt id");
+    boat.finish("bx_1", promptId, "finished");
+    boat.provider.stop = stop;
+    const count = boat.execs.filter((r) => r.preservationStage === "collect_exec").length;
+    expect((await call(mcp, "stop", { id })).isError).not.toBe(true);
+    expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
+  });
+
+  test.each(["preserved", "clean"] as const)("user stop then lifecycle stop reuses its %s capture", async (result) => {
+    const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
+    process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
+    try {
+      const { token, client, people, boat, db } = await start();
+      const mcp = await client(await token(people.member));
+      const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+      const id = launched.data.id;
+      const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
+      boat.setExecOutput({ stdout: JSON.stringify({ status: result }) });
+      const capture = encryptedRecoveryExec(() => archive, boat.provider.exec);
+      let captures = 0;
+      boat.provider.exec = async (request) => {
+        if (request.preservationStage === "collect_exec") captures++;
+        if (boat.sandbox("bx_1").info.state !== "ready")
+          throw new ProviderError({
+            provider: "boat",
+            code: "sandbox_not_ready",
+            retryable: false,
+            message: "Archiving",
+          });
+        return capture(request);
+      };
+      const stop = boat.provider.stop;
+      boat.provider.stop = async (request) => {
+        await stop(request);
+        if (boat.stops.length === 1)
+          boat.sandbox(request.sandboxId).info = {
+            ...boat.sandbox(request.sandboxId).info,
+            state: "stopping",
+            providerState: "archiving",
+          };
+      };
+      expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
+      const before = (
+        await db.query<{
+          preservation_note: string | null;
+        }>("select preservation_note from sandboxes where id=$1", [id])
+      ).rows[0];
+      expect(captures).toBe(1);
+      const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+      expect(await lifecycle.reconcileOne()).toBe(true);
+      const after = (
+        await db.query<{ status: string; preservation_note: string | null }>(
+          "select status::text,preservation_note from sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0];
+      expect(after?.status).toBe("stopped");
+      expect(after?.preservation_note).toBe(before?.preservation_note);
+      expect(captures).toBe(1);
+      expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(
+        result === "preserved" ? 1 : 0,
+      );
+      expect((await call(mcp, "work_recovery", { id })).data.archive).toBe(result === "preserved" ? archive : null);
+    } finally {
+      if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+      else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
+    }
+  });
+
   test("a clean fully-pushed stop leaves no preservation note", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
@@ -1356,6 +1537,7 @@ describe("tools", () => {
         "quiesce_finished",
         "capture_started",
         "capture_clean",
+        "capture_committed",
       ]);
       expect(events.at(-1)).toMatchObject({
         event: "sandbox_stop_dispatch",

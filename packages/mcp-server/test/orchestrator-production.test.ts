@@ -7,6 +7,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -340,6 +341,26 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
     ).toEqual([{ sandbox_id: childReceipt.result.sandboxId }]);
     expect(placement.forks.map((fork) => fork.from)).toEqual(["modal-image", "modal-image"]);
+    // A prior successful stop epoch must not cover newly admitted child work.
+    await sql.query("update sandboxes set stop_requested_at=clock_timestamp(),stop_generation=1 where id=$1", [
+      childReceipt.result.sandboxId,
+    ]);
+    placement.setExecOutput({ stdout: '{"status":"clean"}' });
+    await preserveBeforeStop(
+      sql,
+      provider,
+      childReceipt.result.sandboxId,
+      (
+        await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from sandboxes where id=$1", [
+          childReceipt.result.sandboxId,
+        ])
+      ).rows[0]!.provider_sandbox_id,
+      "managed_child_stop",
+    );
+    const capturesBeforeMessage = placement.execs.filter((r) => r.preservationStage === "collect_exec").length;
+    placement.setExecOutput({
+      stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills\n`,
+    });
     const messagedChild = await scoped(
       "message",
       { sandboxId: childReceipt.result.sandboxId, text: "child hello" },
@@ -374,6 +395,9 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     ).toEqual([{ requested_model: "gpt-6.1-sol" }, { requested_model: "gpt-6.1-sol" }]);
     const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
     expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
+    expect(placement.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(
+      capturesBeforeMessage + 1,
+    );
     const childRead = await scoped("read", { sandboxId: childReceipt.result.sandboxId });
     expect(await childRead?.json()).toMatchObject({
       result: { status: "stopped", ownerId: p.owner, credentialId: account.id },

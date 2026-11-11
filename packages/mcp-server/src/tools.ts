@@ -1394,17 +1394,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         );
       const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
       if (!member) throw new ToolError("forbidden", "No current organization membership.");
-      await context.connections?.prepare?.(provider, found, {
-        userId: caller.userId,
-        orgId: found.orgId,
-        role: member.role,
-      });
       let acknowledged = false;
       return sandboxActivity(
         data.sandboxes,
         found,
         { clearTaskOutcome: true },
         async () => {
+          await context.connections?.prepare?.(provider, found, {
+            userId: caller.userId,
+            orgId: found.orgId,
+            role: member.role,
+          });
+
           const receipt = await provider
             .steer({
               sandboxId: found.providerSandboxId,
@@ -1568,7 +1569,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           );
         }
       };
-      if (!managedNative) return execute();
+      if (!managedNative) {
+        // Admission-only check: already-running ordinary commands remain concurrent
+        // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
+        await data.sandboxes.assertExecAllowed?.(found.id);
+        return execute();
+      }
       // Stop and native-file mutation must not interleave: a stop receipt sampled
       // before this command cannot authenticate output produced after auto-resume.
       return sandboxActivity(

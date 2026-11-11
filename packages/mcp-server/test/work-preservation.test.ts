@@ -1,8 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
-import { constants, createCipheriv, createHash, pbkdf2Sync, publicEncrypt, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { decryptSecret, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
+import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { bunLikeSql, database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // Primary owner for encrypted persistence and recovery authorization. Collector behavior
@@ -26,7 +27,6 @@ test("recovery receipts retain encrypted versions and only current interior owne
     const owner = data(people.owner);
     const boat = fakeBoat();
     let currentArchive = "";
-    let transportArchive = "";
     const provider = {
       ...boat.provider,
       async interrupt() {
@@ -36,49 +36,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
       async get() {
         return { id: "bx_recovery", name: "recovery", state: "ready" as const, providerState: "running", labels: {} };
       },
-      async exec(request: Parameters<typeof boat.provider.exec>[0]) {
-        if (request.command.includes("fs.readSync(fd,data,"))
-          return {
-            detached: false as const,
-            exitCode: 0,
-            stdout: transportArchive,
-            stderr: "",
-            timedOut: false,
-            truncated: false,
-          };
-        const result = await boat.provider.exec(request);
-        if (!result.detached && result.stdout.includes('"status":"preserved"')) {
-          const publicKey = request.command
-            .match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/)?.[0]
-            .replaceAll("\\n", "\n");
-          if (!publicKey) throw new Error("Missing collector public key");
-          const password = randomBytes(32).toString("hex");
-          const salt = randomBytes(8);
-          const derived = pbkdf2Sync(password, salt, 10000, 48, "sha256");
-          const cipher = createCipheriv("aes-256-cbc", derived.subarray(0, 32), derived.subarray(32));
-          const ciphertext = Buffer.concat([
-            Buffer.from("Salted__"),
-            salt,
-            cipher.update(Buffer.from(currentArchive, "base64")),
-            cipher.final(),
-          ]);
-          transportArchive = ciphertext.toString("base64");
-          const key = publicEncrypt(
-            { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
-            Buffer.from(password),
-          ).toString("base64");
-          return {
-            ...result,
-            stdout: JSON.stringify({
-              status: "preserved",
-              bytes: ciphertext.length,
-              sha256: createHash("sha256").update(ciphertext).digest("hex"),
-              key,
-            }),
-          };
-        }
-        return result;
-      },
+      exec: encryptedRecoveryExec(() => currentArchive, boat.provider.exec),
     };
     const captured = (archive: string) => {
       currentArchive = archive;
@@ -401,8 +359,12 @@ test("refused collector exec preserves conditional guidance when risk cannot be 
 test("a successful clean check stays silent if clearing the receipt must be retried", async () => {
   await withPreservationRow(async ({ db, id, boat, provider }) => {
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    let failed = false;
     const sql = bunLikeSql(db, (text) => {
-      if (text.includes("preservation_note=null")) throw new Error("Synthetic cleanup failure");
+      if (!failed && /^\s*update/i.test(text)) {
+        failed = true;
+        throw new Error("Synthetic cleanup failure");
+      }
     });
     await preserveBeforeStop(sql, provider, id, "bx_policy");
     expect(
@@ -412,5 +374,96 @@ test("a successful clean check stays silent if clearing the receipt must be retr
         ])
       ).rows[0]?.preservation_note,
     ).toBeNull();
+  });
+});
+
+test("a late failed pass cannot overwrite a concurrent successful stop receipt", async () => {
+  await withPreservationRow(async ({ db, id, sql, boat, provider }) => {
+    await db.query("update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1 where id=$1", [id]);
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const late = {
+      ...provider,
+      get: () =>
+        new Promise<Awaited<ReturnType<typeof provider.get>>>((resolve) => {
+          release = () => {
+            void provider.get("bx_policy").then(resolve);
+          };
+          entered?.();
+        }),
+      exec: async () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "sandbox_not_ready",
+          retryable: false,
+          message: "Archiving",
+        });
+      },
+    };
+    const failed = preserveBeforeStop(sql, late, id, "bx_policy", "lifecycle_stop");
+    await ready;
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    await preserveBeforeStop(sql, provider, id, "bx_policy", "user_stop");
+    release?.();
+    await failed;
+    expect(
+      (
+        await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [
+          id,
+        ])
+      ).rows[0],
+    ).toMatchObject({ preservation_note: null });
+  });
+});
+
+test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
+  await withPreservationRow(async ({ db, id, sql, boat, provider }) => {
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    await db.query("update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1 where id=$1", [id]);
+    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    const count = boat.execs.length;
+    await db.query("update sandboxes set stop_requested_at='2026-11-11T09:00:00Z',stop_generation=2 where id=$1", [id]);
+    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    expect(boat.execs.length).toBe(count + 1);
+  });
+});
+
+test("a user JWT cannot forge the successful stop marker", async () => {
+  await withPreservationRow(async ({ db }) => {
+    await db.exec("set role authenticated");
+    try {
+      await expect(db.query("insert into sandboxes(preservation_stop_generation) values(1)")).rejects.toThrow(
+        "permission denied",
+      );
+    } finally {
+      await db.exec("reset role");
+    }
+  });
+});
+
+test("an unavailable receipt lookup defers stop without provider work", async () => {
+  await withPreservationRow(async ({ db, id, provider }) => {
+    const sql = bunLikeSql(db, (text) => {
+      if (/^\s*select/i.test(text)) throw new Error("Synthetic receipt outage");
+    });
+    let reads = 0;
+    expect(
+      await preserveBeforeStop(
+        sql,
+        {
+          ...provider,
+          get: async () => {
+            reads++;
+            return provider.get("bx_policy");
+          },
+        },
+        id,
+        "bx_policy",
+      ),
+    ).toBe("pending");
+    expect(reads).toBe(0);
   });
 });
