@@ -23,6 +23,10 @@ insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,stat
 -- Preserve the existing orchestrator runtime while moving the shared authority boundary.
 create function public.sync_orchestrator_access_parent() returns trigger language plpgsql set search_path=public as $$
 begin
+ if tg_op='DELETE' then
+  delete from public.armada_access_parents where id=old.id and kind='orchestrator';
+  return old;
+ end if;
  insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,authority_epoch)
  values(new.id,'orchestrator',new.org_id,new.owner_id,new.sandbox_id,new.state,new.authority_epoch)
  on conflict(id) do update set sandbox_id=excluded.sandbox_id,state=excluded.state,authority_epoch=excluded.authority_epoch
@@ -30,7 +34,7 @@ begin
  is distinct from (excluded.sandbox_id,excluded.state,excluded.authority_epoch);
  return new;
 end $$;
-create trigger orchestrator_access_parent after insert or update on public.orchestrators
+create trigger orchestrator_access_parent after insert or update or delete on public.orchestrators
  for each row execute function public.sync_orchestrator_access_parent();
 create function public.sync_access_parent_epoch() returns trigger language plpgsql set search_path=public as $$
 begin
