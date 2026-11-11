@@ -87,6 +87,7 @@ export async function readStatus(
   if (
     sandbox.status === "starting" ||
     sandbox.status === "stopping" ||
+    sandbox.stopRequestedAt ||
     isInterruptedLaunch(sandbox) ||
     (sandbox.status === "failed" && sandbox.stoppedAt !== null)
   )
@@ -259,7 +260,7 @@ function report(
   prompt: PromptReport | null,
   expiresAt: Date | null,
 ): StatusReport {
-  const machineDown = status === "stopped" || status === "deleted" || status === "failed";
+  const machineDown = status === "stopped" || status === "deleted" || (status === "failed" && !sandbox.stopRequestedAt);
   return {
     usage: sandbox.usage ?? null,
     taskOutcome: sandbox.taskOutcome ?? null,
@@ -287,8 +288,9 @@ function report(
     expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
     prompt,
     settled:
-      machineDown ||
-      (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping"),
+      !sandbox.stopRequestedAt &&
+      (machineDown ||
+        (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping")),
   };
 }
 

@@ -1314,6 +1314,15 @@ describe("tools", () => {
       );
       expect(boat.stops).toHaveLength(0);
       expect(boat.execs).toHaveLength(commands);
+      await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [
+        launched.data.id,
+      ]);
+      expect((await call(mcp, "status", { id: launched.data.id })).data).toMatchObject({
+        status: state === "failed" ? "failed" : "stopping",
+        settled: false,
+      });
+      expect((await call(mcp, "stop", { id: launched.data.id })).isError).not.toBe(true);
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launched.data.id]);
       pending = false;
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [launched.data.id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
