@@ -29,7 +29,7 @@ export function costBasis(kind: CredentialKind | null | undefined): CostBasis {
 export interface TurnCost {
   promptId: string;
   model: string | null;
-  /** Input tokens not read from the cache; null when the harness did not report them. */
+  /** Native reported input: Codex includes cache reads/writes; Claude excludes them. */
   inputTokens: number | null;
   /** Input tokens read from the cache. */
   cachedTokens: number | null;
@@ -64,7 +64,8 @@ const PER_MILLION = 1_000_000;
 /**
  * The cost of one model's share of a turn. The harnesses count cached input differently (docs/sandbox-usage.md):
  * Claude's input excludes cache reads, Codex's cached input is part of its input. Both are brought to "uncached input
- * + cache reads + cache writes" by harness before pricing. Missing counters are never priced as zero.
+ * + cache reads + cache writes" by harness for pricing only. Displayed counters keep their native semantics
+ * independently of pricing completeness. Missing counters are never priced as zero.
  */
 export function turnCost(turn: TurnTokenUsage, harness: Harness): TurnCost {
   const price = modelPrice(turn.model);
@@ -82,7 +83,7 @@ export function turnCost(turn: TurnTokenUsage, harness: Harness): TurnCost {
   const base = {
     promptId: turn.promptId,
     model: turn.model,
-    inputTokens: input,
+    inputTokens: turn.inputTokens,
     cachedTokens: cached,
     cacheWriteTokens: cacheWrite,
     outputTokens: turn.outputTokens,

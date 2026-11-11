@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type AgentEvent, reportedTurnUsage, sumSandboxUsage, withUsageTotals } from "@armada/core";
+import { type AgentEvent, reportedTurnUsage, sandboxCost, sumSandboxUsage, withUsageTotals } from "@armada/core";
 import claude from "./fixtures/sandbox-usage/boat-claude.json";
 import codex from "./fixtures/sandbox-usage/boat-codex.json";
 import modalClaude from "./fixtures/sandbox-usage/modal-claude-usage.json";
@@ -24,6 +24,13 @@ test.each([{ events: claude }, { events: codex }])(
 test("recorded Modal usage survives replay and totals never treat unreported fields or children as zero", () => {
   const collected = reportedTurnUsage([...modal, ...modal] as AgentEvent[]);
   const usage = { computeSeconds: 12, ...collected };
+  // The recorded turn predates cache-write reporting. Pricing must not erase
+  // input that the native harness did report when an independent bucket is missing.
+  const cost = sandboxCost(usage, "codex", "api_equivalent");
+  expect(cost.tokens).toEqual({ input: 13136, cached: 0, cacheWrite: null, output: 5 });
+  expect(cost.turns[0]).toMatchObject({ inputTokens: 13136, cacheWriteTokens: null, usd: null, unknown: "tokens" });
+  expect(cost.usd).toBeNull();
+
   expect(withUsageTotals(usage)?.tokenTotals).toEqual({
     inputTokens: 13136,
     outputTokens: 5,

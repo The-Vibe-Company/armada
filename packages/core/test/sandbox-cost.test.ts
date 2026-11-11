@@ -44,15 +44,15 @@ describe("cost", () => {
   test("Codex cached input is part of its input: only the rest is priced as uncached", () => {
     // GPT-6.1 Sol: $2 input, $0.10 cached, $10 output per million.
     const cost = turnCost(turn("gpt-6.1-sol", 1_000_000, 600_000, 100_000), "codex");
-    expect(cost).toMatchObject({ inputTokens: 400_000, cachedTokens: 600_000 });
+    expect(cost).toMatchObject({ inputTokens: 1_000_000, cachedTokens: 600_000 });
     expect(cost.usd).toBeCloseTo(0.8 + 0.06 + 1, 10);
   });
 
   test("an unknown model or a missing counter is unknown, never zero, and left out of the total", () => {
     expect(turnCost(turn("claude-haiku-4-5", 10, 0, 10), "claude")).toMatchObject({ usd: null, unknown: "price" });
-    // Cache semantics follow the harness, not the price: an unpriced Codex model still splits its input.
+    // Cache semantics follow the harness, not the price: an unpriced Codex model still preserves its reported input.
     expect(turnCost(turn(null, 100, 60, 1), "codex")).toMatchObject({
-      inputTokens: 40,
+      inputTokens: 100,
       cachedTokens: 60,
       unknown: "price",
     });
@@ -91,7 +91,7 @@ describe("cost", () => {
       "codex",
       "estimated",
     );
-    expect(partial.tokens).toEqual({ input: 80, cached: 20, cacheWrite: 0, output: null });
+    expect(partial.tokens).toEqual({ input: 100, cached: 20, cacheWrite: 0, output: null });
     const missingTurn = sandboxCost({ ...complete, turnCount: 2 }, "codex", "estimated");
     expect(missingTurn.tokens).toEqual({ input: null, cached: null, cacheWrite: null, output: null });
     expect(missingTurn.unpricedTurns).toBe(1);
@@ -115,7 +115,7 @@ describe("cost", () => {
       input: 1_000_000,
       cached: 200_000,
       writes: 300_000,
-      expectedInput: 500_000,
+      expectedInput: 1_000_000,
       usd: 1 + 0.02 + 0.75 + 1,
     },
   ])(
