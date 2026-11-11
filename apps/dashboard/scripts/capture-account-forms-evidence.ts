@@ -42,7 +42,9 @@ try {
         await page.getByRole("button", { name: "Email me a sign-in link" }).click();
         await page.getByLabel("Code", { exact: true }).fill("000000");
         await page.getByRole("button", { name: "Sign in", exact: true }).click();
-        await expect(page.getByRole("alert")).toContainText("That code is wrong or has expired.");
+        await expect(page.getByRole("alert").filter({ hasText: "That code is wrong or has expired." })).toContainText(
+          "That code is wrong or has expired.",
+        );
         if (phase === "after") await expect(page.getByLabel("Code", { exact: true })).toBeFocused();
         await page.evaluate(() => document.fonts.ready);
         await page.screenshot({
