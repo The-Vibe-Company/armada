@@ -15,6 +15,7 @@ import {
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
+  type Sql,
   VaultError,
   type VaultStore,
 } from "@armada/core";
@@ -108,6 +109,41 @@ for (const failure of [
     });
   });
 }
+
+test("Skillpack connection reports only visible metadata and never advertises unsupported authorization", async () => {
+  await withServer(async ({ options }) => {
+    const org = await options.store.createOrg("Skills", STAN);
+    await options.store.upsertCredential("user", STAN, "skillpack", await encryptSecret("personal-skill-key", KEY));
+    await options.store.upsertCredential("user", STAN, "anthropic", await encryptSecret("other-key", KEY));
+    await options.store.upsertCredential("org", org.id, "skillpack", await encryptSecret("org-skill-key", KEY));
+    const read = (userId?: string, body = {}) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/skillpack/connection", {
+          method: "POST",
+          headers: userId
+            ? {
+                authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
+              }
+            : {},
+          body: JSON.stringify(body),
+        }),
+        options,
+      );
+    expect((await read())?.status).toBe(401);
+    const result = (await (await read(STAN))?.json()) as {
+      user: { kind: string }[];
+      orgs: { id: string; credentials: { kind: string }[] }[];
+    };
+    expect(result).toMatchObject({ authorization: { available: false, reason: "delegated_key_flow_unavailable" } });
+    expect(result.user.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
+    expect(result.orgs.map((row: { id: string }) => row.id)).toEqual([org.id]);
+    expect(result.orgs[0]!.credentials.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
+    expect(JSON.stringify(result)).not.toContain("skill-key");
+    expect(JSON.stringify(result)).not.toContain("value_enc");
+    expect(await (await read(ADA))?.json()).toMatchObject({ orgs: [] });
+    expect((await read(ADA, { org: org.id }))?.status).toBe(404);
+  });
+});
 
 describe("armada org and armada creds against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
@@ -1682,5 +1718,182 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
     expect(await response.json()).toEqual({
       error: { code: "conflict", reason: "credential_busy", message: CREDENTIAL_BUSY_MESSAGE },
     });
+  });
+});
+
+for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as const) {
+  test(`ordinary private launch returns closed Skillpack ${scenario} failure without starting a harness`, async () => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("Private launch", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+        await encryptSecret("synthetic-provider-key", KEY),
+        org.id,
+      ]);
+      await db.query(
+        "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','model',$2)",
+        [STAN, await encryptSecret("synthetic-model-key", KEY)],
+      );
+      if (scenario !== "missing") {
+        await db.query(
+          "insert into credentials(scope,owner_id,kind,name,value_enc) values('org',$1,'skillpack','org skills',$2)",
+          [org.id, await encryptSecret("cmp_pat_" + "a".repeat(48), KEY)],
+        );
+        await db.query(
+          "insert into credentials(scope,owner_id,kind,name,value_enc,status) values('user',$1,'skillpack','own skills',$2,$3)",
+          [
+            STAN,
+            scenario === "unreadable-personal"
+              ? new Uint8Array([1, 2, 3])
+              : await encryptSecret("cmp_pat_" + "b".repeat(48), KEY),
+            scenario === "revoked-personal" ? "revoked" : "active",
+          ],
+        );
+      }
+      await db.query(
+        "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'private-launch','org','snapshot',$3::jsonb)",
+        [
+          org.id,
+          STAN,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const fake = fakeBoat();
+      options.providerFor = () => fake.provider;
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            golden: "private-launch",
+            harness: "codex",
+            skills: ["notes@1.0.0"],
+            prompt: "start",
+          }),
+        }),
+        options,
+      );
+      const failure = await response!.json();
+      expect(response!.status).toBeGreaterThanOrEqual(400);
+      expect(failure).toMatchObject({
+        error: {
+          details: {
+            reason:
+              scenario === "missing"
+                ? "skillpack_credential_missing"
+                : scenario === "revoked-personal"
+                  ? "skillpack_credential_refused"
+                  : "skillpack_credential_unreadable",
+            stage: "credential",
+          },
+        },
+      });
+      expect(fake.prompts).toHaveLength(0);
+      expect(JSON.stringify(failure)).not.toContain("cmp_pat_");
+    });
+  });
+}
+
+test("access launch grants scoped authority before the first prompt while retaining an ordinary private sandbox", async () => {
+  await withServer(async ({ db, options, cli }) => {
+    const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
+    const org = await options.store.createOrg("Access", STAN);
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    const golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,'access','org',$2,'modal','image','workspace','main','app',$3::jsonb) returning id`,
+        [
+          org.id,
+          STAN,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      )
+    ).rows[0]!;
+    const account = (
+      await db.query<{ id: string }>(
+        `insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','access account',$2) returning id`,
+        [STAN, await encryptSecret("synthetic-api-account", KEY)],
+      )
+    ).rows[0]!;
+    const fake = fakeBoat();
+    let installedToken = "";
+    let statusAtInstall: unknown;
+    const access = createSandboxArmadaAccess({
+      sql: {
+        query: (q, v) => db.query(q, v),
+        transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+      },
+      encryptionKey: KEY,
+      publicUrl: "https://armada.test",
+    });
+    const provider = {
+      ...fake.provider,
+      id: "modal" as const,
+      get: async (id: string) => ({ ...(await fake.provider.get(id)), physicalGeneration: "1" }),
+      installOrchestratorEpoch: async (
+        request: Parameters<NonNullable<typeof fake.provider.installOrchestratorEpoch>>[0],
+      ) => {
+        statusAtInstall = (
+          await db.query<{ status: string }>("select status from sandboxes where golden_id=$1", [golden.id])
+        ).rows[0]?.status;
+        installedToken = request.token;
+        return { acknowledged: true };
+      },
+      scrubOrchestratorEpoch: async () => ({ acknowledged: true }),
+      quiesceOrchestrator: async () => ({ acknowledged: true }),
+      prompt: async (request: Parameters<typeof fake.provider.prompt>[0]) => {
+        expect(installedToken).not.toBe("");
+        return fake.provider.prompt(request);
+      },
+    };
+    options.providerFor = () => provider;
+    options.providers = { resolve: async () => access.wrap(provider) };
+    options.sandboxArmadaAccess = access;
+    options.orchestrators = {
+      enabledPairs: ["modal:codex"],
+    } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
+    const result = await cli(STAN).run([
+      "launch",
+      "access",
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--credential-id",
+      account.id,
+      "--armada-access",
+      "Remember the child task",
+      "--json",
+    ]);
+    expect(result).toMatchObject({ code: 0 });
+    const launched = JSON.parse(result.out);
+    expect(statusAtInstall).toBe("starting");
+    expect(launched.harness).toBe("codex");
+    expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
+    expect(
+      (
+        await options.data!({ userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "supabase" }).sandboxes.get(
+          launched.id,
+        )
+      )?.visibility,
+    ).toBe("private");
+    expect(fake.prompts).toHaveLength(1);
+    const { OrchestratorAuthority } = await import("@armada/core/server");
+    const sql: Sql = {
+      query: (q, v) => db.query(q, v),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    };
+    const authority = new OrchestratorAuthority(sql, async (tx, input) => {
+      await resolveCredentials(createSqlVaultStore(tx), KEY, input);
+    });
+    expect(
+      await authority.admit(
+        installedToken,
+        { method: "launch", goldenId: golden.id, harness: "codex", credentialId: account.id, credentialVersion: 1 },
+        async (_tx, principal) => principal.ownerId,
+      ),
+    ).toBe(STAN);
   });
 });

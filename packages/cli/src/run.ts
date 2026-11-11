@@ -115,8 +115,9 @@ Usage:
   armada golden list [--provider boat|modal] [--json]
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
+                                           [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
-                [--skill org/slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
+                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
@@ -145,7 +146,7 @@ Usage:
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-  armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+  armada detail|status|recovery|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
@@ -226,7 +227,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         error instanceof AuthError)
     ) {
       io.err(
-        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message } })}\n`,
+        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message, ...(error instanceof ArmadaApiError && error.legacyCode ? { legacyCode: error.legacyCode } : {}) } })}\n`,
       );
       return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
     }
@@ -263,7 +264,39 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
   // Command discovery must work before login or organization selection.
-  if (command === "launch" && original.length === 1 && ["--help", "-h"].includes(original[0] ?? "")) {
+  if (
+    command &&
+    [
+      "golden",
+      "launch",
+      "list",
+      "detail",
+      "recovery",
+      "status",
+      "advice",
+      "bind-credential",
+      "rm",
+      "extend",
+      "report",
+      "send",
+      "steer",
+      "exec",
+      "stop",
+      "wait",
+      "interrupt",
+      "logs",
+      "mcp",
+      "login",
+      "logout",
+      "token",
+      "org",
+      "account",
+      "github",
+      "creds",
+    ].includes(command) &&
+    original.length === 1 &&
+    ["--help", "-h"].includes(original[0] ?? "")
+  ) {
     io.out(HELP);
     return 0;
   }
@@ -783,7 +816,18 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv, ["--size", "--skill"], ["--sized"]);
+  const args = parseArgs(argv, ["--size", "--skill", "--max-active-children"], ["--sized", "--armada-access"]);
+  const maxActiveChildren = single(args, "--max-active-children");
+  if (
+    maxActiveChildren !== undefined &&
+    (!flag(args, "--armada-access") || !/^[1-9][0-9]*$/.test(maxActiveChildren) || Number(maxActiveChildren) > 100)
+  )
+    throw new GoldenError(
+      "invalid_config",
+      "--max-active-children requires --armada-access and a limit from 1 to 100.",
+    );
+  if (flag(args, "--armada-access") && !single(args, "--credential-id"))
+    throw new GoldenError("invalid_config", "--armada-access requires --credential-id.");
   const rawSize = single(args, "--size");
   const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
@@ -820,30 +864,45 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   });
   const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
-    await client.request<LaunchWireResult>(sized ? SIZED_LAUNCH_ROUTE_V1 : "/api/v1/sandbox/launch", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-        ...(connections === undefined ? {} : { connections: connections.split(",") }),
-        credentialId: single(args, "--credential-id"),
-        golden: name,
-        ...(sized ? { sizePolicyVersion: 1 } : {}),
-        ...(size === undefined ? {} : { size }),
-        ...(repo === undefined ? {} : { repo }),
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-        harness,
-        ...resolveModelChoice(harness, {
-          model: single(args, "--model"),
-          reasoningEffort: single(args, "--reasoning-effort"),
+    await client.request<LaunchWireResult>(
+      flag(args, "--armada-access")
+        ? "/api/v1/sandbox/launch-access-v1"
+        : sized
+          ? SIZED_LAUNCH_ROUTE_V1
+          : "/api/v1/sandbox/launch",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+          ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
+          ...(connections === undefined ? {} : { connections: connections.split(",") }),
+          ...(flag(args, "--armada-access")
+            ? {
+                armadaAccessVersion: 1,
+                armadaAccess: {
+                  ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
+                },
+              }
+            : {}),
+          credentialId: single(args, "--credential-id"),
+          golden: name,
+          ...(sized ? { sizePolicyVersion: 1 } : {}),
+          ...(size === undefined ? {} : { size }),
+          ...(repo === undefined ? {} : { repo }),
+          ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+          harness,
+          ...resolveModelChoice(harness, {
+            model: single(args, "--model"),
+            reasoningEffort: single(args, "--reasoning-effort"),
+          }),
+          ...(prompt === undefined ? {} : { prompt }),
+          ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
         }),
-        ...(prompt === undefined ? {} : { prompt }),
-        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      }),
-      signal: AbortSignal.timeout(10 * 60_000),
-    }),
+        signal: AbortSignal.timeout(10 * 60_000),
+      },
+    ),
   );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result, auth.now()));
   if (
@@ -931,7 +990,8 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     cursor = nextCursor;
     const drain = all || follow;
     settled = !drain || (!result.hasMore && (!follow || result.settled));
-    if (!settled)
+    // Pace only live polling, not pages the server already has available.
+    if (!settled && !result.hasMore)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
   return 0;

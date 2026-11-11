@@ -3,8 +3,10 @@ import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
+import { LaunchError } from "./launch-error.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
+import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
 import { validateSkillPins } from "./skillpack.ts";
@@ -92,6 +94,12 @@ function canonical(input: unknown): string {
 }
 function refusalReason(error: unknown): string | undefined {
   for (let current = error, depth = 0; current instanceof Error && depth < 4; current = current.cause, depth++) {
+    if (current instanceof LaunchError && current.skillFailure) return current.skillFailure.reason;
+    // Public installs predate typed private-install diagnostics. Accept only their
+    // closed classifications, never guest output or arbitrary exception messages.
+    const skill = /^Skillpack installation failed: (skillpack_[a-z_]+)\./.exec(current.message)?.[1];
+    if (skill && ([...PRIVATE_SKILL_FAILURES, "skillpack_skill_unavailable"] as readonly string[]).includes(skill))
+      return skill;
     if (current instanceof VaultError) {
       const match = /^Template launch refused: ([a-z_]+)\.$/.exec(current.message);
       if (match) return match[1];
@@ -615,12 +623,18 @@ export function createTemplateService(sql: Sql) {
         promptId: result.promptId ?? null,
         conversationId: result.conversationId ?? null,
         status: result.sandbox.status,
-        manifest: m,
+        // Keep the admitted DB manifest immutable. The durable completed result
+        // adds verified receipts from the launch, not caller-supplied pins.
+        manifest: { ...m, skillReceipts: result.sandbox.skills ?? [] },
       };
-      await sql.query(
-        "update public.template_launch_requests set state='succeeded',result=$2::text::jsonb,updated_at=now() where id=$1",
-        [request.id, JSON.stringify(output)],
-      );
+      // The launch has returned a receipt. Only this deterministic publication is
+      // safe to retry: never fork or prompt again after an uncertain response.
+      const publish = () =>
+        sql.query(
+          "update public.template_launch_requests set state='succeeded',result=$2::text::jsonb,updated_at=now() where id=$1",
+          [request.id, JSON.stringify(output)],
+        );
+      await publish().catch(publish);
       return output;
     } catch (error) {
       // Before adoption no provider mutation is possible. After adoption launchSandbox
@@ -629,11 +643,12 @@ export function createTemplateService(sql: Sql) {
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const state = allocating ? "reconciling" : "failed";
       const safeReason = refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable");
-      await sql.query("update public.template_launch_requests set state=$2,reason=$3,updated_at=now() where id=$1", [
-        request.id,
-        state,
-        safeReason,
-      ]);
+      // A publication may have committed even if both acknowledgements were lost.
+      // Keep its durable success intact; same-key replay reads the saved receipt.
+      await sql.query(
+        "update public.template_launch_requests set state=$2,reason=$3,updated_at=now() where id=$1 and result is null",
+        [request.id, state, safeReason],
+      );
       return { requestId: request.id, state, id: request.sandbox_id, reason: safeReason, manifest: m };
     }
   }

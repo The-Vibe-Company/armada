@@ -16,6 +16,7 @@ import { type ConfiguredControlOptions, handleControlRequest } from "./control.t
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
+import { createDatabaseReadiness } from "./database-readiness.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -36,6 +37,7 @@ import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
+import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
@@ -87,6 +89,11 @@ export async function startServer(
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
+  const sandboxArmadaAccess = createSandboxArmadaAccess({
+    sql,
+    encryptionKey: config.encryptionKey,
+    publicUrl: config.publicUrl,
+  });
   const data = createSqlData(sql);
   const templates = createTemplateService(sql);
   const mcp = createMcpHttpIntegration({
@@ -134,9 +141,11 @@ export async function startServer(
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
         await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
+        await sandboxArmadaAccess.beforePrompt(provider, id);
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
+        await sandboxArmadaAccess.beforeSnapshot(provider, id);
         await mcp.beforeSnapshot(provider, id);
       },
     });
@@ -144,7 +153,7 @@ export async function startServer(
       provider.configureGitHub = ({ sandboxId, configuration }) =>
         configureBoatGitHub(provider, sandboxId, configuration);
     provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
-    return provider;
+    return sandboxArmadaAccess.wrap(provider);
   };
   const providerMetadata = createProviderMetadata({
     sql,
@@ -159,13 +168,18 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
     github: { store, app: githubApp },
-    beforePrompt: mcp.beforePrompt,
+    beforePrompt: async (provider, id, caller) => {
+      await mcp.beforePrompt(provider, id, caller);
+      await sandboxArmadaAccess.beforePrompt(provider, id);
+    },
   });
+  const modalProviderFor: typeof modal.modalProviderFor = async (...args) =>
+    sandboxArmadaAccess.wrap(await modal.modalProviderFor(...args));
   const providers = providerRegistry({
     vault: store,
     encryptionKey: config.encryptionKey,
     providerFor,
-    modalProviderFor: modal.modalProviderFor,
+    modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
   const goldenAdoption = createGoldenAdoption(sql);
@@ -202,6 +216,7 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     data,
     connections: mcp.connections,
+    sandboxArmadaAccess,
     vault: store,
     github: { app: githubApp },
     githubAccount: createGitHubAccountApi({
@@ -262,6 +277,7 @@ export async function startServer(
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
   const handler = createHandler({
+    ready: createDatabaseReadiness(sql),
     launch,
     orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
@@ -286,7 +302,7 @@ export async function startServer(
     goldenAdoption,
     providerFor,
     providerMetadata,
-    modalProviderFor: modal.modalProviderFor,
+    modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [

@@ -766,6 +766,19 @@ describe("tools", () => {
     const listed = await call(mcp, "list");
     expect(listed.data.sandboxes).toMatchObject([{ status: "ready" }]);
 
+    // A lifecycle owner may win after the provider observation. Reads return
+    // its persisted state instead of publishing stale readiness or returning409.
+    await db.query(
+      "update sandboxes set status='running',reconcile_lease_until=now()+interval '2 minutes' where id=$1",
+      [launched.data.id],
+    );
+    expect((await call(mcp, "status", { id: launched.data.id })).data).toMatchObject({
+      status: "running",
+      settled: false,
+    });
+    await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launched.data.id]);
+    expect((await call(mcp, "status", { id: launched.data.id })).data.status).toBe("ready");
+
     await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
     const cleared = await db.query<{ status_reason: string | null }>(
       "select status_reason from sandboxes where id = $1",
@@ -1314,6 +1327,15 @@ describe("tools", () => {
       );
       expect(boat.stops).toHaveLength(0);
       expect(boat.execs).toHaveLength(commands);
+      await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [
+        launched.data.id,
+      ]);
+      expect((await call(mcp, "status", { id: launched.data.id })).data).toMatchObject({
+        status: state === "failed" ? "failed" : "stopping",
+        settled: false,
+      });
+      expect((await call(mcp, "stop", { id: launched.data.id })).isError).not.toBe(true);
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launched.data.id]);
       pending = false;
       await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [launched.data.id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
@@ -1493,8 +1515,20 @@ describe("tools", () => {
         }>("select preservation_note from sandboxes where id=$1", [id])
       ).rows[0];
       expect(captures).toBe(1);
+      // Stop admission/reconciliation owns the machine; reads and retries must
+      // remain available without replaying capture or stop on archiving compute.
+      await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [id]);
+      expect((await call(mcp, "status", { id })).data).toMatchObject({ status: "stopping", settled: false });
+      expect((await call(mcp, "wait", { id, timeout_seconds: 0 })).data.timedOut).toBe(true);
+      expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
+      expect(boat.stops).toHaveLength(1);
+      boat.sandbox("bx_1").info = { ...boat.sandbox("bx_1").info, state: "stopped", providerState: "archived" };
+      await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
+      expect(await lifecycle.reconcileOne()).toBe(true);
+      expect((await call(mcp, "stop", { id })).data.status).toBe("stopped");
       const after = (
         await db.query<{ status: string; preservation_note: string | null }>(
           "select status::text,preservation_note from sandboxes where id=$1",

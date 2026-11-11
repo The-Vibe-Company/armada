@@ -58,6 +58,6 @@ jobs:
           ARMADA_SMOKE: create_real_compute
           ORCHESTRATOR: ${{ inputs.orchestrator }}
         run: |
-          args=()
+          args=(--work-preservation)
           if [[ "$ORCHESTRATOR" == true ]]; then args+=(--orchestrator); fi
           bun scripts/post-deploy-smoke.ts "${args[@]}"

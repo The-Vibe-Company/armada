@@ -239,12 +239,15 @@ for (const outcome of ["error", "unconfirmed"] as const)
         "update sandboxes set activity_until=now()-interval '1 second',reconcile_after=now()-interval '1 second' where id=$1",
         [f.id],
       );
+      // Boat completes its already-started archival independently; reconciliation
+      // must confirm it, not dispatch another stop to force this fixture forward.
+      terminal = true;
       await createSandboxLifecycle(f.sql, async () => provider).reconcileOne();
       const row = await f.scoped.sandboxes.get(f.id);
       expect(row?.status).toBe("failed");
       expect(row?.statusReason).toBe("Original initialization failure");
       expect(row?.stoppedAt).not.toBeNull();
-      expect(attempts).toBe(2);
+      expect(attempts).toBe(1);
     } finally {
       await f.server.close();
     }

@@ -41,6 +41,8 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  /** Runtime readiness of the serving database pool; no credentials in the result. */
+  ready?: () => Promise<boolean>;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
@@ -122,7 +124,14 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       return Response.json(config, { headers: { "cache-control": "no-store" } });
     }
     if (url.pathname === HEALTH_PATH) {
-      return Response.json({ ok: true, version: VERSION }, { headers: { "cache-control": "no-store" } });
+      const ready = options.ready ? await options.ready().catch(() => false) : true;
+      return Response.json(
+        { ok: ready, version: VERSION, ...(!ready ? { reason: "database_unavailable" } : {}) },
+        {
+          status: ready ? 200 : 503,
+          headers: { "cache-control": "no-store", ...(!ready ? { "retry-after": "5" } : {}) },
+        },
+      );
     }
 
     const oauth = await handleOAuthRequest(request, options.oauth);

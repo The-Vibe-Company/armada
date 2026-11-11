@@ -7,6 +7,8 @@
   "deploy": {
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 180,
-    "restartPolicyType": "ALWAYS"
+    "restartPolicyType": "ALWAYS",
+    "overlapSeconds": 0,
+    "drainingSeconds": 30
   }
 }

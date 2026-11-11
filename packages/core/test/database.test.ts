@@ -58,6 +58,7 @@ describe("database", () => {
         "application_secret_uploads",
         "application_secrets",
         "application_vault_audit",
+        "armada_access_parents",
         "credentials",
         "github_authorizations",
         "github_connections",
@@ -253,8 +254,8 @@ describe("database", () => {
 
   test("no column stores a secret in plaintext", async () => {
     await withDb(async (db) => {
-      const columns = await db.query<{ table_name: string; column_name: string; data_type: string }>(`
-        select table_name, column_name, data_type
+      const columns = await db.query<{ table_name: string; column_name: string; data_type: string; udt_name: string }>(`
+        select table_name, column_name, data_type, udt_name
         from information_schema.columns
         where table_schema = 'public'
       `);
@@ -274,6 +275,12 @@ describe("database", () => {
           id === "modal_server_harnesses.credential_version"
         ) {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
+          continue;
+        }
+        if (id === "armada_access_parents.credential_ids") {
+          // Allowlisted account references are UUIDs, never credential values.
+          expect(column.data_type).toBe("ARRAY");
+          expect(column.udt_name).toBe("_uuid");
           continue;
         }
         if (id === "sandboxes.application_secret_tainted") {

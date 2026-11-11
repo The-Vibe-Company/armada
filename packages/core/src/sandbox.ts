@@ -32,6 +32,7 @@ export interface SandboxRecord {
   requestedTtlSeconds?: number | null;
   lastObservedAt?: string | null;
   lifecycleError?: string | null;
+  stopRequestedAt?: string | null;
   lifecycleGeneration?: number;
   id: string;
   /** Its golden's provider: where it runs, for good. */
@@ -203,6 +204,7 @@ export interface SandboxRow {
   requested_ttl_seconds?: number | null;
   last_observed_at?: string | Date | null;
   lifecycle_error?: string | null;
+  stop_requested_at?: Date | string | null;
   lifecycle_generation?: number | string | bigint;
 }
 
@@ -210,7 +212,7 @@ export interface SandboxRow {
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at`;
 
 /** Turn evidence is service-role-only; caller-role stores must not gain these ports. */
 export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
@@ -311,6 +313,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           lifecycleGeneration,
         }
       : {}),
+    stopRequestedAt: row.stop_requested_at ? iso(row.stop_requested_at) : null,
     usage: withUsageTotals(row.usage),
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,

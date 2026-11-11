@@ -111,6 +111,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
@@ -123,6 +124,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
@@ -342,7 +344,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         400,
         error.code,
         error.message,
-        error.reason ? { reason: error.reason, action: error.action } : undefined,
+        error.reason
+          ? { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) }
+          : undefined,
       );
     if (error instanceof InvitationError)
       return Response.json(
@@ -824,6 +828,18 @@ async function dispatch(
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
+    case "skillpack/connection": {
+      // Reuse vault visibility, including live membership and token org scoping.
+      const credentials = await listCredentials(store, userId, org);
+      return {
+        authorization: { available: false, reason: "delegated_key_flow_unavailable" },
+        user: credentials.user.filter((credential) => credential.kind === "skillpack"),
+        orgs: credentials.orgs.map((entry) => ({
+          ...entry,
+          credentials: entry.credentials.filter((credential) => credential.kind === "skillpack"),
+        })),
+      };
+    }
     case "org/create":
       return { org: await createOrg(store, userId, required(body, "name")) };
     case "org/list":
@@ -923,6 +939,10 @@ async function dispatch(
         policy: golden.sizePolicy ?? null,
       };
     }
+    case "sandbox/launch-access-v1":
+      if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
+        throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
+      return launchRoute(options, caller, body);
     case "sandbox/launch-sized-v1":
       if (body.sizePolicyVersion !== 1)
         throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
@@ -1263,6 +1283,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
   )
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
+  const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
+  if (armadaAccess && (!options.sandboxArmadaAccess || !options.orchestrators))
+    throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
+  if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
+    throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
   const name = required(body, "golden");
   const repo = body.repo === undefined ? undefined : required(body, "repo");
   const harness = required(body, "harness");
@@ -1276,6 +1301,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     optional(body, "provider") as "boat" | "modal" | undefined,
   );
   resolveRepositoryDir(golden, optional(body, "repo"));
+  if (
+    armadaAccess &&
+    (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
+  )
+    throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   const provider = await providerForGolden(options, caller, golden);
   const result = await launchSandbox(
     provider,
@@ -1311,9 +1341,25 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
       ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
     },
-    options.launch ?? {},
+    {
+      ...options.launch,
+      ...(armadaAccess
+        ? {
+            privateVisibility: true as const,
+            beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
+              await options.launch?.beforeStart?.(provider, sandbox);
+              await options.sandboxArmadaAccess!.prepare(provider, sandbox, actor, armadaAccess);
+            },
+          }
+        : {}),
+    },
   );
-  return launchJson(result);
+  return {
+    ...launchJson(result),
+    ...(armadaAccess
+      ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
+      : {}),
+  };
 }
 
 async function launchActor(

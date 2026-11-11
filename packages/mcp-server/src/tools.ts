@@ -57,7 +57,14 @@ import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitSettled } from "./turns.ts";
+import {
+  collectSandboxUsage,
+  isInterruptedLaunch,
+  latestPrompt,
+  readStatus,
+  type StatusReport,
+  waitSettled,
+} from "./turns.ts";
 import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -606,6 +613,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     const provider =
       found.status === "deleted" ||
       found.status === "starting" ||
+      found.status === "stopping" ||
+      found.stopRequestedAt ||
       isInterruptedLaunch(found) ||
       (found.status === "failed" && found.stoppedAt !== null)
         ? null
@@ -1704,7 +1713,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       destructive: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id, true);
+      const found = await visible(args.id);
+      // A repeated stop observes the admitted request; it must not compete with
+      // its activity/reconciliation lease or replay provider hooks on archiving compute.
+      if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
+        return { id: found.id, status: found.status };
+      const { provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1736,6 +1750,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           let stoppedAt: Date | undefined;
           let preservationNote: string | undefined;
           try {
+            if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
+            signal.throwIfAborted();
             recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
