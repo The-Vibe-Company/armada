@@ -2805,6 +2805,7 @@ const server = Bun.serve({
     const text = hasBody ? await request.text() : "";
     const body = text ? (JSON.parse(text) as Row) : {};
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
+    if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
