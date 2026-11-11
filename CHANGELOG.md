@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.20.0](https://github.com/The-Vibe-Company/armada/compare/v2.19.0...v2.20.0) (2026-11-11)
+
+
+### Features
+
+* **cli:** create, publish and launch templates ([#950](https://github.com/The-Vibe-Company/armada/issues/950)) ([61e9379](https://github.com/The-Vibe-Company/armada/commit/61e93793ef5fffd8e8f0542f693ada6e897ad88d))
+* **cli:** manage variables and write-only secrets ([#937](https://github.com/The-Vibe-Company/armada/issues/937)) ([05e6366](https://github.com/The-Vibe-Company/armada/commit/05e63660c540edb6b0478d0389c67dbb763428c7))
+* **dashboard:** add and replace the Skillpack key in Build &gt; Skills ([#961](https://github.com/The-Vibe-Company/armada/issues/961)) ([6b2cffa](https://github.com/The-Vibe-Company/armada/commit/6b2cffa3d358cd60748a97219164d4204ddc4fbd))
+* **dashboard:** Build &gt; Templates page and launch from a template ([#951](https://github.com/The-Vibe-Company/armada/issues/951)) ([5ab0acd](https://github.com/The-Vibe-Company/armada/commit/5ab0acd872e24f92be9561266d51c38713a198e3))
+* **dashboard:** Build &gt; Variables page for variables and write-only secrets ([#939](https://github.com/The-Vibe-Company/armada/issues/939)) ([b81d398](https://github.com/The-Vibe-Company/armada/commit/b81d3988e6c73981775d7cd15af30d74b2a6146f))
+* **golden:** install the inert Armada helper with a verified receipt ([#928](https://github.com/The-Vibe-Company/armada/issues/928)) ([d3439cb](https://github.com/The-Vibe-Company/armada/commit/d3439cb29752c323cd4f92ceee6fca70bba31264))
+* **secrets:** gate secret-tainted sandbox preservation and reuse ([#958](https://github.com/The-Vibe-Company/armada/issues/958)) ([fca5f6b](https://github.com/The-Vibe-Company/armada/commit/fca5f6b199c9a891409ed6f29c59d5da9d9b794b))
+* **skillpack:** accept any valid Skillpack key ([#965](https://github.com/The-Vibe-Company/armada/issues/965)) ([251df48](https://github.com/The-Vibe-Company/armada/commit/251df487da7fcd4959fc3025a14a0355c13409ce))
+* **templates:** add launch preset revisions and shared API ([#938](https://github.com/The-Vibe-Company/armada/issues/938)) ([e9737b1](https://github.com/The-Vibe-Company/armada/commit/e9737b116d6a327241fa53a82452aa9512df04ca))
+
+
+### Bug Fixes
+
+* **cli:** include variable values in explicit JSON reads ([#945](https://github.com/The-Vibe-Company/armada/issues/945)) ([44b6d64](https://github.com/The-Vibe-Company/armada/commit/44b6d64e021436c19e9060ea8c02a1258bb4639f))
+* **deploy:** recover from database admission pressure at boot ([#924](https://github.com/The-Vibe-Company/armada/issues/924)) ([0da44a3](https://github.com/The-Vibe-Company/armada/commit/0da44a3e1547a5778c0b1ec88587f416da4ab6fb))
+* **github:** diagnose early shared token rotation ([#953](https://github.com/The-Vibe-Company/armada/issues/953)) ([320d61b](https://github.com/The-Vibe-Company/armada/commit/320d61bec04617535b857e68088c7ff974b628ff))
+* **github:** repair legacy Boat token hydration ([#925](https://github.com/The-Vibe-Company/armada/issues/925)) ([94f41a8](https://github.com/The-Vibe-Company/armada/commit/94f41a82d893fef3ae457272819604ac4c862c8f))
+* **golden:** correct Boat snapshot names and report safe refusals ([#932](https://github.com/The-Vibe-Company/armada/issues/932)) ([2a56383](https://github.com/The-Vibe-Company/armada/commit/2a5638363a7fddfa79056c5b4c0c1b2752c1366f))
+* **ios:** decode 2.19 orchestrator receipts and explain create failures ([#943](https://github.com/The-Vibe-Company/armada/issues/943)) ([67cb7dd](https://github.com/The-Vibe-Company/armada/commit/67cb7dd44e596815f7f93b7f12ee08c530a2b18b))
+* **ios:** never fail to decode when the server adds a state, reason or kind ([#963](https://github.com/The-Vibe-Company/armada/issues/963)) ([f62b645](https://github.com/The-Vibe-Company/armada/commit/f62b645601729d3f397b2c2d8e03f67f27c90b39))
+* **orchestrators:** preserve busy account refusal before allocation ([#959](https://github.com/The-Vibe-Company/armada/issues/959)) ([faa8d04](https://github.com/The-Vibe-Company/armada/commit/faa8d049be26167700b54e56c07130c80ba34339))
+* **orchestrator:** wait for requested skills before reporting ready ([#946](https://github.com/The-Vibe-Company/armada/issues/946)) ([dd44317](https://github.com/The-Vibe-Company/armada/commit/dd44317d9feae557b23497ca40e6d5185cc14b2b))
+* **sandbox:** trace work-preservation attempts and stop ordering ([#929](https://github.com/The-Vibe-Company/armada/issues/929)) ([378cbd0](https://github.com/The-Vibe-Company/armada/commit/378cbd04f1df454f6324c03d30bb00a1b1a8a8e7))
+* **templates:** report unavailable model accounts at launch ([#960](https://github.com/The-Vibe-Company/armada/issues/960)) ([3477e1c](https://github.com/The-Vibe-Company/armada/commit/3477e1cf7003a53befe9a69f47126756df5d200a))
+* **vault:** answer a readable conflict when a revoked name is reused ([#940](https://github.com/The-Vibe-Company/armada/issues/940)) ([b6144c3](https://github.com/The-Vibe-Company/armada/commit/b6144c386ba1a9cc0485f2aee6db78063484f415))
+
 ## [2.19.0](https://github.com/The-Vibe-Company/armada/compare/v2.18.0...v2.19.0) (2026-11-11)
 
 
