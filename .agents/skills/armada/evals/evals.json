@@ -30,6 +30,12 @@
       "prompt": "Can a sandbox spin up two workers and merge their PRs automatically?",
       "expected_output": "Explicit caller auth, ledger/cost bounds; no automatic merge authority.",
       "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "I have a Skillpack key; launch the PRIVATE package team/notes@1.0.0. Can the key make that private?",
+      "expected_output": "Reject premise: qualified org/slug is always anonymous public catalog even with key. Ask for bare workspace slug with exact version. Never disclose key.",
+      "files": []
     }
   ]
 }
