@@ -62,11 +62,11 @@ final class SandboxListModel {
 
     private func handle(_ error: ServiceFailure) {
         if Task.isCancelled { return }
-        switch error {
+        switch error.category {
         case .signedOut:
             onSignedOut()
-        case .unavailable(let reason):
-            phase = .unavailable(reason)
+        case .unavailable:
+            phase = .unavailable(error.message)
         default:
             if items.isEmpty { phase = .failed(error.message) } else { refreshError = error.message }
         }

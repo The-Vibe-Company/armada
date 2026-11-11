@@ -69,19 +69,25 @@ struct ArmadaKitServices: SandboxService {
 
     /// Reads have no revision: a 409 is the sandbox's state, not another person's edit.
     private static func sandboxReadFailure(_ error: any Error) -> ServiceFailure {
-        if case .conflict? = error as? ArmadaError {
-            return .rejected("This sandbox can't be read in its current state. Pull to refresh.")
+        if ArmadaServerFailure.underlying(error) == .conflict {
+            return Self.explained(.rejected("This sandbox can't be read in its current state. Pull to refresh."), by: error)
         }
         return readFailure(error)
     }
 
     private static func sandboxMutationFailure(_ error: any Error, refused: String) -> ServiceFailure {
-        switch SandboxMutationFailure.classify(error) {
+        let failure: ServiceFailure = switch SandboxMutationFailure.classify(error) {
         case .signedOut: .signedOut
         case .noAccess: .noAccess
         case .refused: .rejected(refused)
         case .unconfirmed: .uncertain
         }
+        return explained(failure, by: error)
+    }
+
+    static func explained(_ failure: ServiceFailure, by error: any Error) -> ServiceFailure {
+        guard let server = error as? ArmadaServerFailure else { return failure }
+        return .explained(failure, server.explanation)
     }
 
     // MARK: Gates
@@ -93,6 +99,9 @@ struct ArmadaKitServices: SandboxService {
     // MARK: Failures
 
     private static func readFailure(_ error: any Error) -> ServiceFailure {
+        if let server = error as? ArmadaServerFailure {
+            return .explained(readFailure(server.cause), server.explanation)
+        }
         if let failure = error as? ServiceFailure { return failure }
         if error is CancellationError { return .offline }
         guard let armada = error as? ArmadaError else { return .offline }

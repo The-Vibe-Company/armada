@@ -204,16 +204,18 @@ final class SandboxConversationModel {
                 setStatus(.accepted, for: bubbleID)
                 reconcilePending()
             } catch {
-                switch error {
+                switch error.category {
                 case .signedOut:
                     onSignedOut()
                 case .noAccess:
-                    refuseAccess()
+                    refuseAccess(message: error.message)
                 case .uncertain, .offline:
                     setStatus(.unconfirmed, for: bubbleID)
-                case .rejected(let reason), .unavailable(let reason):
+                    notice = (error.message == ServiceFailure.uncertain.message
+                        ? error.message : error.message + " " + ServiceFailure.uncertain.message, true)
+                case .rejected, .unavailable:
                     removeBubble(bubbleID, restoreDraft: true)
-                    notice = (reason, true)
+                    notice = (error.message, true)
                 }
             }
             _ = await loadState()
@@ -244,13 +246,13 @@ final class SandboxConversationModel {
             do throws(ServiceFailure) {
                 _ = try await service.stopSandbox(id: sandboxID, orgID: orgID)
             } catch {
-                switch error {
+                switch error.category {
                 case .signedOut: onSignedOut()
-                case .noAccess: refuseAccess()
+                case .noAccess: refuseAccess(message: error.message)
                 case .uncertain, .offline:
-                    notice = ("Armada did not confirm the stop. Its latest state is shown; you can stop again.", true)
-                case .rejected(let reason), .unavailable(let reason):
-                    notice = (reason, true)
+                    notice = (error.message + " The stop is unconfirmed. Check its latest state before stopping again.", true)
+                case .rejected, .unavailable:
+                    notice = (error.message, true)
                 }
             }
             _ = await loadState()
@@ -286,7 +288,8 @@ final class SandboxConversationModel {
     }
 
     /// The server refused this conversation: it is no longer shown, nor kept in memory.
-    private func refuseAccess() {
+    private func refuseAccess(message: String) {
+        notice = (message, true)
         feed.forget()
         phase = .noAccess
     }
@@ -294,13 +297,13 @@ final class SandboxConversationModel {
     private func handleReadFailure(_ error: ServiceFailure) {
         // Leaving the screen cancels the read; that is not a failure to show.
         if Task.isCancelled { return }
-        switch error {
+        switch error.category {
         case .signedOut:
             onSignedOut()
         case .noAccess:
-            refuseAccess()
-        case .unavailable(let reason):
-            phase = .unavailable(reason)
+            refuseAccess(message: error.message)
+        case .unavailable:
+            phase = .unavailable(error.message)
         default:
             // Once something is shown, a failed read is a banner, never a blank screen.
             if phase == .loaded || feed.hasLoaded {
