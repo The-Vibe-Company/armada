@@ -88,3 +88,18 @@ struct AccountView: View {
         .presentationDetents([.medium, .large])
     }
 }
+
+struct AccountButton: View {
+    @Binding var showing: Bool
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Button {
+            showing = true
+        } label: {
+            Label(app.organization?.name ?? "Account", systemImage: "person.crop.circle")
+        }
+        .accessibilityLabel("Account and organization")
+        .accessibilityIdentifier("account.open")
+    }
+}
