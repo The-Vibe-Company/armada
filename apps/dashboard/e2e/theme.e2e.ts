@@ -17,7 +17,6 @@ test("the navigation fits a phone", async ({ page }) => {
   await signIn(page, "alice@example.com");
   for (const name of [
     "Sandboxes",
-    "Orchestrators",
     "Environments",
     "Tools",
     "Skills",

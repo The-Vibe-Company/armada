@@ -69,29 +69,3 @@ test("each fleet row carries its small cost figure", async ({ page }) => {
     await page.screenshot({ path: `test-results/sandbox-cost-fleet-phone-${scheme}.png`, animations: "disabled" });
   }
 });
-
-// Alice's orchestrator runs on a sandbox with no recorded usage and launched her running sandbox as its one worker.
-test("an orchestrator shows its own cost and its workers' together", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/orchestrators/00000000-0000-4000-8000-000000000160");
-  const side = page.getByRole("complementary", { name: "Orchestrator details" });
-  const fact = (label: string) => side.locator("dl > div").filter({ has: page.getByText(label, { exact: true }) });
-  await expect(fact("API-equivalent cost").locator("dd")).toHaveText("$0.55");
-  await expect(fact("Its own").locator("dd")).toHaveText("No usage yet");
-  await expect(fact("Its 1 worker").locator("dd")).toHaveText("$0.55");
-  await side.locator("summary", { hasText: "Workers" }).click();
-  await expect(side.locator("li").filter({ has: page.getByRole("link", { name: "00000000" }) })).toContainText("$0.55");
-  for (const scheme of ["light", "dark"] as const) {
-    await page.emulateMedia({ colorScheme: scheme });
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.screenshot({
-      path: `test-results/sandbox-cost-orchestrator-desktop-${scheme}.png`,
-      animations: "disabled",
-    });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await fact("Its own").scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: `test-results/sandbox-cost-orchestrator-phone-${scheme}.png`,
-      animations: "disabled",
-    });
-  }
-});
