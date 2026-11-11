@@ -449,7 +449,7 @@ test.each([
         throw new ProviderError({
           provider: "boat",
           code: "invalid_request",
-          status: httpStatus,
+          ...(httpStatus === undefined ? {} : { status: httpStatus }),
           message: "unsafe-secret-payload",
           providerCode: "unsafe-secret-payload",
           details: { ...(keepSource ? { keepSource: true } : {}), secret: "unsafe-secret-payload" },
