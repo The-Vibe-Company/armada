@@ -139,11 +139,20 @@ export type TemplateLookups = {
     ready: boolean;
   }[];
   connections: readonly { id: string; name: string; scope: TemplateScope; status: string }[] | null;
-  secrets?: readonly { id: string; name: string; scope: TemplateScope; version: number; status: string }[] | null;
+  secrets?:
+    | readonly {
+        id: string;
+        name: string;
+        scope: TemplateScope;
+        version: number;
+        status: string;
+        expiresAt?: string | null;
+      }[]
+    | null;
   variables: readonly { id: string; name: string; scope: TemplateScope; version: number; status: string }[] | null;
 };
 
-export type TemplateProblem = { kind: "environment" | "tool" | "variable"; text: string };
+export type TemplateProblem = { kind: "environment" | "tool" | "variable" | "secret"; text: string };
 
 /**
  * Why a launch from this revision would be refused, as far as the viewer can tell from what is listed. Only a fact
@@ -173,6 +182,17 @@ export function templateProblems(definition: TemplateDefinition, lookups: Templa
           text: `${variable.name} changed since this revision: publish a new revision to use its new value.`,
         });
     }
+  if (lookups.secrets)
+    for (const binding of definition.secrets ?? []) {
+      const secret = lookups.secrets.find((row) => row.id === binding.secretId);
+      if (!secret || secret.status !== "active" || (secret.expiresAt && Date.parse(secret.expiresAt) <= Date.now()))
+        problems.push({
+          kind: "secret",
+          text: `${binding.key} is expired, revoked, removed or inaccessible. Publish a new revision.`,
+        });
+      else if (secret.version !== binding.version)
+        problems.push({ kind: "secret", text: `${binding.key} changed since this revision: publish a new revision.` });
+    }
   return problems.filter(
     (problem, index) =>
       problems.findIndex((other) => other.kind === problem.kind && other.text === problem.text) === index,
@@ -189,7 +209,13 @@ export function templateState(
   if (problems.length === 0) return { bucket: "ready", tone: "success", label: "Ready", problems };
   const first = problems[0]?.kind;
   const label =
-    first === "environment" ? "Environment unavailable" : first === "tool" ? "Tool not ready" : "Variable changed";
+    first === "environment"
+      ? "Environment unavailable"
+      : first === "tool"
+        ? "Tool not ready"
+        : first === "secret"
+          ? "Secret changed"
+          : "Variable changed";
   return { bucket: "action", tone: "warning", label, problems };
 }
 
@@ -304,7 +330,7 @@ export function templateRequest(
   if (secretIds.length > 64) return { ok: false, error: "A template takes at most 64 secrets." };
   for (const id of secretIds) {
     const secret = lookups.secrets?.find((row) => row.id === id);
-    if (!secret || secret.status !== "active")
+    if (!secret || secret.status !== "active" || (secret.expiresAt && Date.parse(secret.expiresAt) <= Date.now()))
       return { ok: false, error: "A chosen secret is unavailable. Refresh and try again." };
     if (scope === "org" && secret.scope !== "org")
       return { ok: false, error: "Organization templates use organization secrets only." };
@@ -358,6 +384,9 @@ const LAUNCH_REASONS: Record<string, string> = {
   environment_binding_changed: "Its environment moved to another Modal workspace. Publish a new revision.",
   environment_snapshot_unavailable: "Its environment's snapshot was retired. Rebuild the environment and try again.",
   environment_admission_unavailable: "Its environment changed while launching. Try again.",
+  secret_unavailable: "A secret is expired, revoked or inaccessible. Publish a revision with an available secret.",
+  secret_version_changed: "A secret changed. Publish a new revision to use its current version.",
+  secret_delivery_unavailable: "This provider cannot deliver secret environment values.",
   variable_unavailable: "A variable it uses was revoked or deleted. Publish a new revision without it.",
   variable_version_changed: "A variable it uses changed. Publish a new revision to use the new value.",
   variable_delivery_unavailable: "This provider cannot deliver variables yet.",

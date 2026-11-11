@@ -91,7 +91,7 @@ export function lookupsFrom(
       vault.state === "ready"
         ? vault.items
             .filter((item) => item.kind === "secret")
-            .map(({ id, name, scope, version, status }) => ({ id, name, scope, version, status }))
+            .map(({ id, name, scope, version, status, expiresAt }) => ({ id, name, scope, version, status, expiresAt }))
         : null,
     variables:
       vault.state === "ready"

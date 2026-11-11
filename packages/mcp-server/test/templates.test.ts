@@ -1083,6 +1083,17 @@ test("secret references authorize delivery without persisting values and revoke 
       orgId: f.people.org,
     });
     expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
+    f.runtime.provider = async () => ({ ...f.provider, configureReadableVariables: undefined });
+    const unsupported = await f.launch(templateId, "unsupported-provider");
+    expect(unsupported.reason).toBe("secret_delivery_unavailable");
+    await expect(
+      f.service.prepare(
+        { ...f.provider, configureReadableVariables: undefined },
+        launched.providerSandboxId as string,
+        { userId: f.people.owner, orgId: f.people.org },
+        request.id,
+      ),
+    ).rejects.toThrow("secret_delivery_unavailable");
     await f.db.query("update application_secrets set version=2 where id=$1", [secretId]);
     await expect(f.create(f.people.owner, "personal", def)).rejects.toThrow("secret_version_changed");
     await expect(

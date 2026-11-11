@@ -327,3 +327,26 @@ test("template form binds metadata-only secrets, preserves aliases and refuses u
   expect(templateRequest(form({ secrets: [secretId] }), { ...sources, secrets: null }, previous).ok).toBe(false);
   expect(parseRevision({ ...revision, definition: previous })?.definition.secrets).toEqual(previous.secrets);
 });
+
+test("secret references expose stale state and actionable closed refusals without values", () => {
+  const secretId = "00000000-0000-4000-8000-000000000081";
+  const def = { ...definition, secrets: [{ key: "APP_TOKEN", secretId, version: 1 }] };
+  for (const secret of [
+    { id: secretId, name: "APP_TOKEN", scope: "org" as const, version: 2, status: "active" },
+    { id: secretId, name: "APP_TOKEN", scope: "org" as const, version: 1, status: "revoked" },
+    {
+      id: secretId,
+      name: "APP_TOKEN",
+      scope: "org" as const,
+      version: 1,
+      status: "active",
+      expiresAt: "2000-01-01T00:00:00Z",
+    },
+  ]) {
+    expect(templateState({ revision: { ...revision, definition: def } }, { ...lookups, secrets: [secret] }).label).toBe(
+      "Secret changed",
+    );
+  }
+  for (const reason of ["secret_unavailable", "secret_version_changed", "secret_delivery_unavailable"])
+    expect(templateFailure(409, `Template launch refused: ${reason}.`)).not.toContain("could not be started");
+});

@@ -610,7 +610,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     try {
       const provider = await runtime.provider(m.golden);
       if ((def.variables.length || def.secrets?.length) && !provider.configureReadableVariables)
-        unavailable("variable_delivery_unavailable");
+        unavailable(def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
       const result = await launchSandbox(
         provider,
         {
@@ -781,7 +781,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (!row) throw new VaultError("forbidden", "Sandbox access denied.");
     const m = row.manifest;
     if (!Object.keys(m.variables).length && !m.definition.secrets?.length) return;
-    if (!provider.configureReadableVariables) unavailable("variable_delivery_unavailable");
+    if (!provider.configureReadableVariables)
+      unavailable(m.definition.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
     await provider.configureReadableVariables({
       sandboxId: providerSandboxId,
       harness: m.definition.harness,

@@ -172,6 +172,23 @@ test("an admin creates an org template from org resources only; it is published 
       secrets: [{ key: "STRIPE_API_KEY", secretId: "00000000-0000-4000-8000-000000000081", version: 1 }],
     },
   });
+  // A revoked selection remains visible and checked until explicitly removed.
+  await fetch(`${MOCK}/__test/vault-revoke`, {
+    method: "POST",
+    body: JSON.stringify({ id: "00000000-0000-4000-8000-000000000081" }),
+  });
+  await page.reload();
+  const shown = await panel(page, "Sentry triage");
+  await expect(shown).toContainText("STRIPE_API_KEY is expired, revoked, removed or inaccessible");
+  await shown.getByRole("button", { name: "New revision" }).click();
+  const edit = page.getByRole("dialog", { name: "New revision of Sentry triage" });
+  await edit.getByRole("button", { name: "Next: tools and variables" }).click();
+  const retained = edit.getByRole("group", { name: /^Secrets/ }).getByRole("checkbox", { name: /STRIPE_API_KEY/ });
+  await expect(retained).toBeChecked();
+  await expect(edit).toContainText("Unavailable — remove to publish");
+  await retained.uncheck();
+  await edit.getByRole("button", { name: "Publish revision 2" }).click();
+  await expect(edit).toBeHidden();
 });
 
 test("a new revision starts from the current one; the old revision stays and the warning clears", async ({ page }) => {

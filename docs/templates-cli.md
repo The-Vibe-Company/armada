@@ -2,7 +2,7 @@
 
 Use `armada template` for API-only template management. `template launch` keeps
 revision selection and durable request keys together without changing ordinary
-golden launches. Templates contain readable configuration, not secret bindings.
+golden launches. Templates contain readable configuration and value-free secret ID/version bindings.
 
 Create a personal preset in your selected organization from a definition file
 (the definition shape is documented in [templates-staging.md](templates-staging.md)):

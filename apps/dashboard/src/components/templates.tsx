@@ -476,9 +476,31 @@ function TemplateForm({
               ? "Secrets could not be read. Refresh to choose them."
               : "No secrets yet. Add one in Secrets."
           }
-          options={(lookups.secrets ?? [])
-            .filter((row) => row.status === "active" && (scope === "personal" || row.scope === "org"))
-            .map((row) => ({ id: row.id, label: row.name, note: row.scope === "org" ? "Org" : "Personal" }))}
+          options={[
+            ...(lookups.secrets ?? [])
+              .filter(
+                (row) =>
+                  (row.status === "active" || editing?.definition.secrets?.some((b) => b.secretId === row.id)) &&
+                  (scope === "personal" || row.scope === "org"),
+              )
+              .map((row) => ({
+                id: row.id,
+                label: row.name,
+                note:
+                  row.status !== "active"
+                    ? "Unavailable — remove to publish"
+                    : row.scope === "org"
+                      ? "Org"
+                      : "Personal",
+              })),
+            ...(editing?.definition.secrets ?? [])
+              .filter(
+                (b, i, all) =>
+                  all.findIndex((v) => v.secretId === b.secretId) === i &&
+                  !lookups.secrets?.some((row) => row.id === b.secretId),
+              )
+              .map((b) => ({ id: b.secretId, label: b.key, note: "Unavailable — remove to publish" })),
+          ]}
           initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
           hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
         />
