@@ -431,11 +431,14 @@ test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
   });
 });
 
-test("a user JWT cannot forge the successful stop marker", async () => {
+test("a user JWT cannot forge stop receipts or write application-secret taint", async () => {
   await withPreservationRow(async ({ db }) => {
     await db.exec("set role authenticated");
     try {
       await expect(db.query("insert into sandboxes(preservation_stop_generation) values(1)")).rejects.toThrow(
+        "permission denied",
+      );
+      await expect(db.query("update sandboxes set application_secret_tainted=true")).rejects.toThrow(
         "permission denied",
       );
     } finally {
@@ -466,4 +469,67 @@ test("an unavailable receipt lookup defers stop without provider work", async ()
     ).toBe("pending");
     expect(reads).toBe(0);
   });
+});
+
+// The real persistence boundary owns this no-archive contract, including restart.
+test("application-secret taint permanently disables collection and recovery, purging older archives", async () => {
+  const { db, people } = await database();
+  try {
+    const id = crypto.randomUUID();
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+    if (!golden) throw Error("Missing golden fixture");
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+       values($1,$2,$3,$4,'boat','bx_tainted','claude','running')`,
+      [id, golden.id, people.org, people.owner],
+    );
+    await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
+      id,
+      new Uint8Array([1]),
+    ]);
+    // Taint after a completed stop must replace the now-purged recovery pointer,
+    // even when the completed stop receipt prevents normal note updates.
+    await db.query(
+      "update sandboxes set stop_requested_at=now(),preservation_stop_generation=stop_generation,preservation_note='unpushed work preserved' where id=$1",
+      [id],
+    );
+    await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
+    await expect(db.query("update sandboxes set application_secret_tainted=false where id=$1", [id])).rejects.toThrow(
+      "irreversible",
+    );
+    await expect(
+      db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [id, new Uint8Array([1])]),
+    ).rejects.toThrow("Work recovery unavailable");
+    const taintNote = (
+      await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
+    ).rows[0]!.preservation_note;
+    expect(taintNote).toContain("resume and recovery are unavailable");
+    // Permit the collector's note write, rather than only exercising a completed
+    // receipt whose fence suppresses it. Both writers must give identical guidance.
+    await db.query("update sandboxes set stop_requested_at=null,preservation_stop_generation=null where id=$1", [id]);
+    const boat = fakeBoat();
+    let providerReads = 0;
+    const provider = {
+      ...boat.provider,
+      async get() {
+        providerReads++;
+        throw Error("must not touch tainted compute");
+      },
+    };
+    for (const source of ["user_stop", "lifecycle_stop", "managed_child_stop"] as const) {
+      await preserveBeforeStop(bunLikeSql(db), provider, id, "bx_tainted", source);
+      const data = createSqlData(bunLikeSql(db))({
+        via: "service",
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "member" }],
+      });
+      expect(await data.sandboxes.readWorkRecovery?.(id)).toBeNull();
+      expect((await data.sandboxes.get(id))?.preservationNote).toBe(taintNote);
+    }
+    expect(providerReads).toBe(0);
+    expect(boat.execs).toHaveLength(0);
+  } finally {
+    await db.close();
+  }
 });
