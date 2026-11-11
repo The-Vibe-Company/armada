@@ -32,6 +32,7 @@ import {
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
   createSqlVaultStore,
+  createTemplateService,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
   type GitHubApp,
@@ -76,6 +77,7 @@ import {
   setCredential,
   setMemberRole,
   snapshotGolden,
+  type TemplateService,
   VaultError,
   type VaultErrorCode,
   type VaultStore,
@@ -118,6 +120,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  templates?: TemplateService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
@@ -230,11 +233,14 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
-    if ((route.startsWith("variables/") || route.startsWith("secrets/")) && url.search)
-      throw new VaultError("invalid", "Application vault parameters must be in the request body.");
+    if (
+      (route.startsWith("templates/") || route.startsWith("variables/") || route.startsWith("secrets/")) &&
+      url.search
+    )
+      throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("variables/") || route.startsWith("secrets/")
+      : route.startsWith("templates/") || route.startsWith("variables/") || route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
     if (route === "account/logout") {
@@ -603,6 +609,32 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("templates/")) {
+    if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+    const stores = options.data?.(caller);
+    return options.templates.command(
+      caller,
+      route.slice(10),
+      body,
+      stores
+        ? {
+            stores: {
+              goldens: stores.goldens,
+              sandboxes: stores.sandboxes,
+              credentials: launchCredentials(
+                options.store,
+                options.encryptionKey,
+                options.github ? { ...options.github, store: options.store } : undefined,
+                options.modelAuth,
+              ),
+              ...(options.connections ? { connections: options.connections } : {}),
+            },
+            provider: (golden) => providerForGolden(options, caller, golden),
+            ...(options.launch ? { options: options.launch } : {}),
+          }
+        : undefined,
+    );
+  }
   if (route.startsWith("variables/") || route.startsWith("secrets/")) {
     if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
     if (!/^(variables|secrets)\/[a-z]+$/.test(route))
@@ -1445,7 +1477,14 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       env.NODE_ENV === "development",
     ),
   });
-  const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
+  const templates = createTemplateService(sql);
+  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
+    createBoatProvider({
+      apiKey,
+      beforePrompt: async (provider, id) => {
+        if (caller) await templates.prepare(provider, id, caller);
+      },
+    });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () =>
     (modal ??= createModalIntegration({
@@ -1454,6 +1493,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       encryptionKey,
       publicUrl: need("ARMADA_PUBLIC_URL"),
       github: { store, app: githubApp },
+      beforePrompt: (provider, id, caller) => templates.prepare(provider, id, caller),
     }));
   const providers = providerRegistry({
     vault: store,
@@ -1474,6 +1514,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
+    templates,
     applicationVault: createApplicationVault(sql, encryptionKey),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),

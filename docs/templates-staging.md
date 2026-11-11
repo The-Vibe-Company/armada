@@ -1,7 +1,138 @@
 # Template slice 4 staging acceptance
 
-Pending implementation for #936. Do not run against production.
+For #936. API/MCP only; no template UI/CLI management, secret bindings, grants,
+routines or application-secret security guarantees. **Do not run against production.**
+The operator must apply `20261111100000_launch_templates.sql` to disposable staging;
+this PR does not apply or deploy it. Its timestamp is above main and the open-PR
+migration filenames checked on 2026-11-11 (#928: 20261111020000,
+#932: 20261111080000). Deploy the matching control server and rebuilt portable/native
+runtime together: older Modal runners refuse the new bootstrap operation.
 
-The coordinator should create a template on the Modal staging golden, launch
-from it, and confirm the selected tools, model and readable variables inside
-the sandbox. Readable variables are configuration, not secrets.
+## Shared operations
+
+Authenticated POST routes under `/api/v1/templates/`: `create`, `list`, `get`,
+`publish`, `delete`, `launch`. They return no-store JSON. The dashboard-origin
+proxy admits all six. The matching MCP tools are `template_create`,
+`template_list`, `template_get`, `template_publish`, `template_delete`,
+`template_launch`; they share the service and strict validation. Query parameters at the control service,
+unknown fields and secret bindings are refused. The public proxy strips query
+parameters before forwarding; they have no effect there. No raw environment override exists.
+
+All inputs require `org` (UUID). Create additionally accepts `name`, `scope`
+(`personal` or `org`) and `definition`. A definition is:
+
+```json
+{
+  "goldenId": "<provider-specific-golden-uuid>",
+  "provider": "modal",
+  "harness": "codex",
+  "model": "<supported-model-id>",
+  "reasoningEffort": "medium",
+  "connections": ["<exact-connection-uuid>"],
+  "variables": [{"key": "APP_REGION", "variableId": "<readable-variable-uuid>", "version": 1}],
+  "skills": ["<public-org/skill@exact-version>"]
+}
+```
+
+Omit unused connections/variables/skills; omit model/effort to freeze the current
+harness defaults. Optional `modelAccount: {id, version}` pins an account; otherwise
+launch resolves the actor's existing user-over-org default and freezes its ID/version.
+No silent fallback from a pinned account occurs. At publication, exact tool grant
+versions/generations and the immutable provider binding are captured server-side.
+Variables require explicit versions; changes require a new revision.
+
+List uses `{org}`. Get uses `{org,id,revision?}` (default current). Publish uses
+`{org,id,expectedRevision,definition}` and always creates a new immutable revision;
+stale publication is 409. Delete uses `{org,id,expectedRevision}` and tombstones the
+header, preserving revisions and request history. No in-place scope promotion exists.
+Launch uses `{org,id,revision?,requestKey,prompt?,ttlSeconds?,size?,repo?}`. Only the
+four documented launch overrides are allowed. `requestKey` is a required 1–128
+character ASCII identifier (`A-Z`, `a-z`, digits, `.`, `_`, `:`, `-`).
+
+Launch returns request state/ID, sandbox ID and its frozen manifest. On success it
+also returns provider/sandbox IDs, prompt/conversation IDs and sandbox status.
+Readable values intentionally appear in manifests: **they are not secrets**.
+Personal metadata is owner-only with current membership; org metadata is visible to
+current members and only admins mutate it. Org templates cannot bind personal
+resources; unspecified model accounts intentionally resolve per launching member.
+An org environment publisher/admin can inspect configuration delivered there; a
+personal variable is not runtime-confidential from that administrator.
+
+## Exact readable-value transport (V1-readable-env)
+
+Values resolve at launch, not golden build. They never enter fork environment,
+repository pull/init commands, command interpolation or checkout files. After
+repository/init, skills and MCP preparation, a final-start admission rechecks
+membership/reference versions, then calls a trusted provider bootstrap:
+
+- **Modal:** authenticated private runner `configureReadableVariables` operation.
+  The runner validates the allowlist/limits and merges into only the selected native
+  driver's future process environment; ordinary exec has its separate environment.
+  The operation is not stored in request replay journals and does not register
+  values as secrets. A different configuration for the same harness/incarnation
+  is refused. New physical incarnations receive the same frozen manifest through
+  the server's authorized before-prompt lifecycle hook.
+- **Boat:** pinned SSH stdin delivers JSON to a fixed bootstrap, not argv or VM
+  exec journals. A root-owned readable JSON file is atomically installed under
+  `/run/armada-readable-variables/<harness>.json`, outside checkouts. The managed
+  native harness wrapper reads it only when starting the selected native workload;
+  unrelated exec does not inherit it. Before-prompt rehydrates it after resume.
+  This file is deliberately readable configuration, not a secret store. Temporary
+  SSH key material is removed locally; authorized-key cleanup is attempted remotely.
+
+Both paths support empty/multiline values, literal shell syntax, at most 64 bindings,
+8 KiB UTF-8/value and 64 KiB aggregate. Reserved/infrastructure names, NUL, invalid
+Unicode and duplicate keys are refused. Values may be printed or transformed by
+an agent and cannot be recalled. This does not enable application-secret delivery.
+
+## Required coordinator checks
+
+1. On the **Modal staging golden**, create two distinguishable readable variables
+   (one empty), select two known connected tools/workspaces, select a model/effort,
+   and create a personal template. Also exercise shared org publication as admin.
+   Use only disposable configuration, never application secrets.
+2. Launch with a prompt asking the intended harness to confirm the two exact tools,
+   model/effort and variable values. Inspect returned manifest/account, sandbox
+   model fields and actual native environment. Confirm empty and multiline values
+   survive without shell expansion. Confirm values are absent during golden build,
+   pull/init and unrelated sandbox exec, but present in harness children. Repeat
+   after idle launch → first send, stop → send/restore, and on Boat staging.
+3. Exercise owner, other member, admin and outsider identities. Personal templates
+   and revisions must be invisible to peers/admins; org members can launch but
+   cannot publish/delete. Remove membership and retry: denied. Direct JWT probes
+   cannot write any of the three tables, anon cannot select, personal revisions
+   stay private, and request/manifests are visible only to their actor.
+4. Publish with matching then stale `expectedRevision`; old revision remains unchanged.
+   Try a personal ref on an org template, stale variable/account, missing/disabled/
+   revoked tool, removed golden or provider remap: explicit value-free refusal
+   before allocation. Revoke a reference during init: no variable hydration or
+   first prompt; confirm compute is stopped. Verify no secret binding is accepted.
+5. **S4-rebuild-admission**, both providers: block an admitted allocation on snapshot
+   A, rebuild the same golden to eligible B, and inspect manifests. In-flight
+   allocation stays on A (or fails unavailable if A was retired); same-key replay
+   cannot allocate B. A new key follows B without template republication. An
+   ineligible/missing environment must not fall back to another ID/provider.
+6. Repeat same key/body concurrently, after lost HTTP response and control restart:
+   at most one allocation. Changing body with the same key is 409. Keys are scoped
+   to actor/org. Simulate unknown provider fork outcome: the request remains
+   `reconciling`; retries return its record and never fork or resend a prompt.
+7. Confirm all six operations through both the authenticated public-origin proxy
+   and MCP, including stale publication, query/unknown-field refusal and no bearer.
+
+## Conservative recovery limits
+
+Request keys and immutable manifests have no expiry/automatic deletion: tombstones
+must not turn retries into new work. The first claim freezes revision/hash, golden
+config/provider/snapshot (including Modal binding), tool generations/versions, resolved
+account ID/version, variable ID/version/copied readable values, actor/membership epoch
+and request key before any fork. The key digest is canonical over the non-secret
+request; prompts are not copied into generic request metadata.
+
+There is **no automatic ambiguous-request recovery or retry worker** in this slice.
+A crash in `claimed`/`allocating` or any possibly allocated/start-failed outcome stays
+recorded and is never automatically dispatched again. `reconciling` is not a success
+or proof of absence. Operators must inspect the request's logical sandbox ID, any
+registered provider ID and provider ownership labels before cleanup. Do not delete
+request rows or invent a new key as a recovery action while the old outcome is
+unknown. Successfully returned results are durably replayed unchanged; no new
+variable value, account, snapshot or prompt is substituted on retry.

@@ -34,6 +34,7 @@ import {
   type SandboxStatus,
   scanGoldenSandbox,
   snapshotGolden,
+  type TemplateService,
   VaultError,
   type Visibility,
 } from "@armada/core/server";
@@ -60,6 +61,7 @@ import { isInterruptedLaunch, latestPrompt, readStatus, type StatusReport, waitS
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  templates?: TemplateService;
   applicationVault?: ApplicationVault;
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
@@ -365,6 +367,102 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         ),
     }),
   };
+  const templateDefinition = z
+    .object({
+      goldenId: z.string().uuid(),
+      provider: z.enum(["boat", "modal"]),
+      harness: z.enum(HARNESSES),
+      model: z.string().optional(),
+      reasoningEffort: z.string().optional(),
+      modelAccount: z.object({ id: z.string().uuid(), version: z.number().int().positive() }).strict().optional(),
+      connections: z.array(z.string().uuid()).max(100).optional(),
+      variables: z
+        .array(
+          z.object({ key: z.string(), variableId: z.string().uuid(), version: z.number().int().positive() }).strict(),
+        )
+        .max(64)
+        .optional(),
+      skills: z.array(z.string()).max(20).optional(),
+    })
+    .strict();
+  const templateInputs = {
+    create: z
+      .object({
+        org: z.string().uuid(),
+        name: z.string(),
+        scope: z.enum(["personal", "org"]),
+        definition: templateDefinition,
+      })
+      .strict(),
+    list: z.object({ org: z.string().uuid() }).strict(),
+    get: z
+      .object({ org: z.string().uuid(), id: z.string().uuid(), revision: z.number().int().positive().optional() })
+      .strict(),
+    publish: z
+      .object({
+        org: z.string().uuid(),
+        id: z.string().uuid(),
+        expectedRevision: z.number().int().positive(),
+        definition: templateDefinition,
+      })
+      .strict(),
+    delete: z
+      .object({ org: z.string().uuid(), id: z.string().uuid(), expectedRevision: z.number().int().positive() })
+      .strict(),
+    launch: z
+      .object({
+        org: z.string().uuid(),
+        id: z.string().uuid(),
+        revision: z.number().int().positive().optional(),
+        requestKey: z.string(),
+        prompt: z.string().optional(),
+        ttlSeconds: z.number().int().positive().optional(),
+        size: z.enum(MACHINE_SIZES).optional(),
+        repo: z.string().optional(),
+      })
+      .strict(),
+  };
+  for (const operation of ["create", "list", "get", "publish", "delete", "launch"] as const) {
+    server.registerTool(
+      `template_${operation}`,
+      {
+        description:
+          operation === "launch"
+            ? "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides."
+            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account and readable variable versions. No secrets.",
+        inputSchema: templateInputs[operation],
+        outputSchema: z.object({}).passthrough(),
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          if (!context.templates) throw new VaultError("unavailable", "Templates unavailable.");
+          const result = await context.templates.command(caller, operation, args, {
+            stores: {
+              goldens: data.goldens,
+              sandboxes: data.sandboxes,
+              credentials: context.launchCredentials,
+              ...(context.connections ? { connections: context.connections } : {}),
+            },
+            provider: context.provider,
+            ...(context.launch ? { options: context.launch } : {}),
+          });
+          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              { type: "text" as const, text: error instanceof VaultError ? error.message : "Templates unavailable." },
+              {
+                type: "text" as const,
+                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
+              },
+            ],
+          };
+        }
+      },
+    );
+  }
+
   const vaultDescriptions = {
     variable_list:
       "List safe variable metadata, without values. Personal entries are owner-only; org entries require membership.",

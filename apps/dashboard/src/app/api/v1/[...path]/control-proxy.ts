@@ -5,6 +5,12 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 const PUBLIC_POST_PATHS = new Set(["auth/refresh", "auth/exchange", "auth/email/start", "auth/email/verify"]);
 const PRIVATE_POST_PATHS = new Set([
+  "templates/create",
+  "templates/list",
+  "templates/get",
+  "templates/publish",
+  "templates/delete",
+  "templates/launch",
   "variables/list",
   "variables/read",
   "variables/set",

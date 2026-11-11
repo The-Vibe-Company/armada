@@ -37,13 +37,16 @@ export async function installNativeCwdWrapper(
 export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: string, managedClaudeMcp = false): string {
   const original = quote(`${path}.armada-original`);
   if (harness === "claude")
-    return [
-      `selected=${quote(cwd ?? "")}`,
-      `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
-      'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
-      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
-      `exec ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
-    ].join("; ");
+    return readableWrapper(
+      harness,
+      [
+        `selected=${quote(cwd ?? "")}`,
+        `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
+        'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
+        `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
+        `exec ${managedClaudeMcp ? `python3 -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
+      ].join("; "),
+    );
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
   const script = [
     `selected=${quote(cwd ?? "")}`,
@@ -66,7 +69,7 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
     "fi",
     `exec ${original} "\${args[@]}"`,
   ].join("\n");
-  return `exec /bin/bash -c ${quote(script)} -- "$@"`;
+  return readableWrapper(harness, `exec /bin/bash -c ${quote(script)} -- "$@"`);
 }
 
 /** The command runs only inside a Boat sandbox, through its existing VM exec primitive. */
@@ -462,3 +465,21 @@ if code < 0:
     os.kill(os.getpid(), -code)
 sys.exit(code)
 `;
+
+/** Values are only loaded by the native workload, never the VM exec environment. */
+function readableWrapper(harness: NativeHarness, command: string): string {
+  const loader = `import os,sys,json,stat
+p="/run/armada-readable-variables/"+sys.argv[1]+".json"
+e=dict(os.environ)
+try:
+ f=os.open(p,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  s=os.fstat(f)
+  assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and not s.st_mode&0o022
+  with os.fdopen(f) as r: e.update(json.load(r))
+ except BaseException:
+  raise
+except FileNotFoundError: pass
+os.execve("/bin/bash",["bash","-c",sys.argv[2],"--"]+sys.argv[3:],e)`;
+  return `exec python3 -I -c ${quote(loader)} ${quote(harness)} ${quote(command)} "$@"`;
+}

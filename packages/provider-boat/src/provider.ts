@@ -26,6 +26,7 @@ import type {
   SteerRequest,
 } from "@armada/core";
 import { buildEventPage, eventPageOptions, MACHINE_SIZE_CATALOG, ProviderError, parseMachineSize } from "@armada/core";
+import { sshReadableVariables } from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
@@ -430,6 +431,18 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
     },
 
+    async configureReadableVariables({ sandboxId, harness, variables }) {
+      await installNativeCwdWrapper(
+        async (request) => {
+          const result = await provider.exec(request);
+          if (result.detached || result.exitCode !== 0 || result.timedOut)
+            throw invalidRequest("Native variable wrapper unavailable.");
+        },
+        sandboxId,
+        harness,
+      );
+      await sshReadableVariables(provider, sandboxId, harness, variables);
+    },
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
       let resumed = false;
       const workflow = AbortSignal.timeout(90_000);

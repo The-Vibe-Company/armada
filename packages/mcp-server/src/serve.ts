@@ -4,6 +4,7 @@ import {
   createApplicationVault,
   createGoldenAdoption,
   createSqlVaultStore,
+  createTemplateService,
   GoldenBuildJobs,
   GoldenSnapshotRetirements,
   githubAppFromEnv,
@@ -101,6 +102,7 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
   });
   await mcp.drainInvalidations();
+  const templates = createTemplateService(sql);
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
@@ -123,6 +125,7 @@ export async function startServer(
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
         await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
+        await templates.prepare(provider, id, caller);
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
@@ -148,7 +151,10 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
     github: { store, app: githubApp },
-    beforePrompt: mcp.beforePrompt,
+    beforePrompt: async (provider, id, caller) => {
+      await mcp.beforePrompt(provider, id, caller);
+      await templates.prepare(provider, id, caller);
+    },
   });
   const providers = providerRegistry({
     vault: store,
@@ -182,6 +188,7 @@ export async function startServer(
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
+    templates,
     applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
@@ -264,6 +271,7 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
+    templates,
     ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,
