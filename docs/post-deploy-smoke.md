@@ -248,8 +248,7 @@ this mode with production credentials. Live staging execution is performed by
 the existing post-deploy workflows, not by a PR or offline test run.
 
 Remaining #969 families (not claimed by this slice): full sandbox resume/expiry/
-list consistency and timings/leftover summaries; orchestrator memory and refused
-create; GitHub refresh; vault; templates; public/private skills and golden pinned
-digest verification. Existing GitHub exec checks and optional orchestrator
-lifecycle remain unchanged. These are verification follow-ups, not new product
-capabilities.
+list consistency and timings/leftover summaries; GitHub refresh; vault; templates;
+public/private skills and golden pinned digest verification. These are
+verification follow-ups, not new product capabilities. Per the owner decision
+on #969, orchestrators are excluded; their removal belongs to a separate ticket.
