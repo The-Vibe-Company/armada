@@ -354,8 +354,17 @@ export function createSqlData(sql: Sql): DataSource {
         }
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
-          set("stop_requested_at", patch.stopRequested ? new Date().toISOString() : null, "::timestamptz");
-          if (patch.stopRequested) sets.push("reconcile_after = now()");
+          // Retries of an in-flight stop share one epoch; send/resume clears it.
+          sets.push(
+            patch.stopRequested
+              ? "stop_requested_at = coalesce(s.stop_requested_at, clock_timestamp())"
+              : "stop_requested_at = null",
+          );
+          if (patch.stopRequested)
+            sets.push(
+              "reconcile_after = now()",
+              "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
+            );
         }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)

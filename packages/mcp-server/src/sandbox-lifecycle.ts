@@ -76,7 +76,8 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           const owned = await sql.query<{ id: string }>(
             `update public.sandboxes
             set reconcile_lease_until=now()+interval '2 minutes',
-              stop_requested_at=coalesce(stop_requested_at,now()),
+              stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
+              stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
               status=case when status in ('starting','failed') then status else 'stopping'::public.sandbox_status end,
               status_reason=case when $4 and status not in ('starting','failed') then 'expired' else status_reason end
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
