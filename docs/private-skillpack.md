@@ -244,7 +244,7 @@ receipt and server diagnostics use the same codes):
 | `skillpack_registry_unavailable` | Check registry/network availability, then create with a new idempotency key. |
 | `skillpack_timeout` | Check guest resources and registry connectivity; inspect before retrying. |
 | `skillpack_receipt_invalid` | Rebuild with a compatible native CLI; inspect project permissions and lockfile without exposing package contents. |
-| `skillpack_transport_failed` | Check SSH connectivity, Node, Bash, `flock`, home permissions and pinned-host access. |
+| `skillpack_transport_failed` | Public install provider-exec transport failed: check provider command availability/liveness. Private SSH uses the precise #914 sub-step reasons below. |
 | `skillpack_credential_unreadable` | Re-store the personal/org key with `armada creds set skillpack --file <private-file>`; check server encryption-key configuration if this persists. |
 | `skillpack_process_failed` | Check guest process limits and CLI execution resources; no registry response was obtained. |
 | `skillpack_install_nonzero` | The native installer exited with an unsupported status; check CLI version/permissions and report the closed install-stage reason. |
@@ -391,6 +391,13 @@ the original live SSH failure; the staging transport sub-step still needs proof.
 Failed-create cleanup emits exactly one additional secret-free
 `orchestrator_create_cleanup_failure` record if it cannot confirm cleanup. Its
 closed `step` is `fence`, `resolve`, `revalidate`, `delete`, `stop` or `unconfirmed`.
+Its `reason` is the existing safe error-class vocabulary (or `cleanup_unconfirmed`
+when no deletion/stop receipt proves completion), never the exception message.
 The original install reason remains the operation errorCode/parent blockedReason;
 cleanup exceptions and provider messages are never forwarded. A pending delete
 is `unconfirmed`, not proof of deletion or grounds to publish a terminal parent.
+
+If Node/flock is absent, those prerequisite checks necessarily run before home-key
+cleanup. Boat can retain that ephemeral public authorization until owner cleanup;
+Modal authorizations expire in 15 minutes. The server still deletes its ephemeral
+private key. Do not interpret a prerequisite refusal as successful key cleanup.

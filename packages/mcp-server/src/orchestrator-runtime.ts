@@ -666,6 +666,7 @@ export class OrchestratorRuntime {
       let privateCreateStopped = false;
       let discardedCreate = false;
       let cleanupFailureStep: OrchestratorCleanupStep | undefined;
+      let cleanupFailureError: unknown;
       if (privateFailure && reservation.operation.kind === "create") {
         // Skills precede authority installation and the first conversation. Stop the
         // failed allocation; never claim a terminal parent while it may still run.
@@ -695,7 +696,8 @@ export class OrchestratorRuntime {
               privateCreateStopped = (await backend.provider.get(identity.providerSandboxId)).state === "stopped";
             }
           }
-        } catch {
+        } catch (cleanupError) {
+          cleanupFailureError = cleanupError;
           // Preserve the installation reason. Unconfirmed cleanup stays blocked.
         }
         if (!privateCreateStopped) cleanupFailureStep = cleanupStep;
@@ -711,7 +713,7 @@ export class OrchestratorRuntime {
               ? error.reason
               : "runtime_uncertain";
       diagnostics.report(state, refused ? error.refusal : error);
-      if (cleanupFailureStep) diagnostics.cleanupFailure(cleanupFailureStep);
+      if (cleanupFailureStep) diagnostics.cleanupFailure(cleanupFailureStep, cleanupFailureError);
       diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.

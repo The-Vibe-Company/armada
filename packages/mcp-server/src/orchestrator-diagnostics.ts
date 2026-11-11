@@ -472,7 +472,7 @@ export class OrchestratorDiagnostics {
     }
   }
   /** Cleanup cannot replace the installation failure or serialize its exception. */
-  cleanupFailure(step: OrchestratorCleanupStep): void {
+  cleanupFailure(step: OrchestratorCleanupStep, error?: unknown): void {
     if (!["fence", "resolve", "revalidate", "delete", "stop", "unconfirmed"].includes(step)) return;
     try {
       void Promise.resolve(
@@ -482,6 +482,7 @@ export class OrchestratorDiagnostics {
             action: "create",
             outcome: "unconfirmed",
             step,
+            reason: error === undefined ? "cleanup_unconfirmed" : baseReason(error),
             ...(this.operationId ? { operationId: this.operationId } : {}),
             ...(this.orchestratorId ? { orchestratorId: this.orchestratorId } : {}),
             ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),

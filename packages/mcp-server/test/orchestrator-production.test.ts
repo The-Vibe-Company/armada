@@ -581,6 +581,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           action: "create",
           outcome: "unconfirmed",
           step: deletePending ? "unconfirmed" : "delete",
+          reason: deletePending ? "cleanup_unconfirmed" : "unexpected_error",
         });
       } else expect(cleanupRecords).toHaveLength(0);
       expect(records[0].operationId).toMatch(/^[a-f0-9-]{36}$/);
