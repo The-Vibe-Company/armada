@@ -234,6 +234,8 @@ function seed(): State {
         provider: "modal",
         harness: "codex",
         variables: [{ key: "APP_REGION", variableId: id(80), version: 2 }],
+        // Pinned over the API at a version the account has since left.
+        modelAccount: { id: id(40), version: 9 },
       }),
       templateRevision(id(92), 1, { goldenId: id(22), provider: "boat", harness: "claude" }),
     ],
@@ -1332,7 +1334,15 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       if (v.version !== binding.version)
         return controlFail(409, "conflict", "Template launch refused: variable_version_changed.");
     }
+    if (d.modelAccount !== undefined) {
+      const pinned = d.modelAccount as Row;
+      const account = state.credentials.find((row) => row.id === pinned.id && row.status === "active");
+      if (!account) return controlFail(409, "conflict", "Template launch refused: model_account_unavailable.");
+      if (account.version !== pinned.version)
+        return controlFail(409, "conflict", "Template launch refused: model_account_version_changed.");
+    }
     return {
+      ...(d.modelAccount === undefined ? {} : { modelAccount: d.modelAccount }),
       goldenId: d.goldenId,
       provider: d.provider,
       goldenBinding: null,

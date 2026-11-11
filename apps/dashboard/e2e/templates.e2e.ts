@@ -144,12 +144,19 @@ test("a new revision starts from the current one; the old revision stays and the
   await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
   await expect(dialog.getByRole("checkbox", { name: /APP_REGION/ })).toBeChecked();
   await dialog.getByRole("button", { name: "Publish revision 2" }).click();
+  // Its pinned model account has moved on: the refusal says how to go on, and nothing is published.
+  await expect(dialog.getByRole("alert")).toContainText("Untick “Keep its pinned model account”");
+  await dialog.getByRole("button", { name: "Back" }).click();
+  await dialog.getByRole("checkbox", { name: /Keep its pinned model account/ }).uncheck();
+  await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
+  await dialog.getByRole("button", { name: "Publish revision 2" }).click();
   await expect(dialog).toBeHidden();
   await expect(row(page, "Modal quick fix")).toContainText("Ready");
   const state = await mockState();
   const revisions = state.templateRevisions.filter((r) => r.templateId === "00000000-0000-4000-8000-000000000091");
   expect(revisions.map((r) => r.revision)).toEqual([1, 2]);
   expect(revisions.map((r) => (r.definition.variables as { version: number }[])[0]?.version)).toEqual([2, 3]);
+  expect(revisions[1]?.definition).not.toHaveProperty("modelAccount");
   const publish = state.templateCalls.find((call) => call.route === "templates/publish");
   expect(publish?.body.expectedRevision).toBe(1);
 });

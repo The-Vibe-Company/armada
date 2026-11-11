@@ -202,6 +202,11 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
               {HARNESS_LABELS[definition.harness]}, {modelLabel(definition.harness, definition.model)},{" "}
               {EFFORT_LABEL[definition.reasoningEffort] ?? definition.reasoningEffort} effort
             </p>
+            <p className="text-xs text-muted-foreground">
+              {definition.modelAccount
+                ? "Runs on a pinned model account, whoever launches it."
+                : "Runs on the launcher's own model account."}
+            </p>
           </PanelSection>
           <PanelSection title="Tools">
             {target.tools.length ? (

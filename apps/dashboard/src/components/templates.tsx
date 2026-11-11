@@ -346,6 +346,22 @@ function TemplateForm({
             ? { initial: { model: editing.definition.model, effort: editing.definition.reasoningEffort } }
             : {})}
         />
+        {editing?.definition.modelAccount && harness === editing.definition.harness && (
+          <label className="flex items-start gap-3 rounded-md border p-3 text-sm" data-keep-account>
+            <input
+              type="checkbox"
+              name="keep_account"
+              defaultChecked
+              className="mt-0.5 size-4 shrink-0 accent-primary"
+            />
+            <span>
+              <span className="block font-medium">Keep its pinned model account</span>
+              <span className="block text-xs text-muted-foreground">
+                Set over the API. Untick to let each launch use the launcher's own account.
+              </span>
+            </span>
+          </label>
+        )}
         {problem && (
           <p role="alert" className="text-sm text-destructive">
             {problem}

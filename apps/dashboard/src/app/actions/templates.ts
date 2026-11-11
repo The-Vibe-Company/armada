@@ -91,19 +91,30 @@ export async function publishTemplate(_previous: ActionResult | null, data: Form
     // The scope never changes: the revision is checked against the template's own.
     const parsed = await request(data, formString(data, "scope"));
     if (!parsed.ok) return fail(parsed.error);
-    // A publication replaces the whole definition: what this form does not show (skill pins, a pinned model
-    // account, set over the API) carries over from the revision it starts from. An account pinned for another
-    // agent cannot run the new one, so it is dropped with the agent change.
+    // A publication replaces the whole definition: skill pins (set over the API, not shown here) carry over from
+    // the revision it starts from. A pinned model account carries over only while the person keeps it ticked; an
+    // account pinned for another agent cannot run the new one, so it goes with the agent change.
     const { revision: previous } = await templates.get({ org, id: current.id, revision: current.expectedRevision });
     const kept = previous.definition;
+    const keepAccount =
+      kept.modelAccount &&
+      kept.harness === parsed.value.definition.harness &&
+      formString(data, "keep_account") === "on";
     const definition = {
       ...parsed.value.definition,
       ...(kept.skills.length ? { skills: kept.skills } : {}),
-      ...(kept.modelAccount && kept.harness === parsed.value.definition.harness
-        ? { modelAccount: kept.modelAccount }
-        : {}),
+      ...(keepAccount ? { modelAccount: kept.modelAccount } : {}),
     };
-    const { item } = await templates.publish({ org, ...current, definition });
+    let item: Awaited<ReturnType<Templates["publish"]>>["item"];
+    try {
+      ({ item } = await templates.publish({ org, ...current, definition }));
+    } catch (error) {
+      if (keepAccount && error instanceof ControlError && /: model_account_[a-z_]+\.$/.test(error.message))
+        return fail(
+          "Its pinned model account changed or was removed. Untick “Keep its pinned model account” to publish without it: each launch then uses the launcher's own account.",
+        );
+      throw error;
+    }
     return done(`${item.name}: revision ${item.currentRevision} is published.`);
   }, data);
 }
