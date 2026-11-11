@@ -116,7 +116,7 @@ test("production selection pins golden/account/resources and avoids model lookup
     expect(forks).toHaveLength(1);
     expect(forks[0]?.size).toBe("small");
     expect(forks[0]?.labels?.golden).toBe("shared");
-    expect(targets[0]?.visibility).toBe("org");
+    expect(targets[0]).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
     const sandbox = await core.createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
       provider: "boat",

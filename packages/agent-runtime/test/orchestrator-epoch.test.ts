@@ -88,9 +88,40 @@ test("private epoch ACK is generation/monotonic fenced; stale scrub preserves ne
     expect(connection?.type === "http" && connection.headers?.Authorization).toBe(`Bearer ${token2}`);
     expect((await call(runner, "installOrchestratorEpoch", install("3"))).status).toBe(409);
     expect((await call(runner, "scrubOrchestratorEpoch", { tokenHash: hash(token2) })).status).toBe(409);
+    const external = {
+      revision: "user-connections-1",
+      servers: { armada_external: { type: "http" as const, url: "https://tools.invalid/mcp" } },
+    };
+    expect((await call(runner, "configureMcp", { configuration: external })).status).toBe(409);
     expect((await call(runner, "checkpoint")).status).toBe(409);
     finish();
     await call(runner, "getPrompt", { promptId: receipt.promptId });
+    expect((await call(runner, "configureMcp", { configuration: external })).status).toBe(200);
+    const resumed = await call(runner, "prompt", {
+      input: { sandboxId: "parent", harness: "claude", text: "next", conversationId: receipt.conversationId },
+    });
+    expect(resumed.status).toBe(200);
+    expect(contexts[1]?.sessionId).toBe("native-fixture");
+    expect(contexts[1]?.mcp?.servers.armada_external).toEqual(external.servers.armada_external);
+    expect(contexts[1]?.mcp?.servers.armada_orchestrator).toEqual(connection);
+    finish();
+    await call(runner, "getPrompt", {
+      promptId: ((await resumed.json()) as { result: { promptId: string } }).result.promptId,
+    });
+    expect(
+      (await call(runner, "configureMcp", { configuration: { revision: "remove-user-connections", servers: {} } }))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await call(runner, "configureMcp", {
+          configuration: {
+            revision: "replace-internal",
+            servers: { armada_orchestrator: { type: "http", url: "https://evil.invalid" } },
+          },
+        })
+      ).status,
+    ).toBe(409);
     expect((await call(runner, "scrubOrchestratorEpoch", { tokenHash: hash(token2) })).status).toBe(200);
     expect((await call(runner, "installOrchestratorEpoch", install("2", token2))).status).toBe(409);
     const saved = JSON.stringify(journal.db.query("SELECT * FROM metadata").all());
