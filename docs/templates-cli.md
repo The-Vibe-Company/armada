@@ -40,3 +40,5 @@ golden from this CLI, launch it using a stable request key, then confirm the
 intended tools/workspaces, model/effort and readable variables in the native
 agent. Exercise matching and stale revision publication. No production deployment
 or migration is part of this CLI change.
+
+Secret references: repeat `--secret KEY:UUID:VERSION` in create/publish, or use the definition file’s `secrets` array. Never pass a secret value to template commands.

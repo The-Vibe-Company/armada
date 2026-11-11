@@ -1617,7 +1617,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       env.NODE_ENV === "development",
     ),
   });
-  const templates = createTemplateService(sql);
+  const templates = createTemplateService(sql, encryptionKey);
   const lifecycle = () =>
     createMcpLifecycle({
       sql,

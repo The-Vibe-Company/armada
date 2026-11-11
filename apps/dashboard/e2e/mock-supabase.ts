@@ -1380,6 +1380,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       reasoningEffort: d.reasoningEffort ?? "high",
       connections: d.connections ?? [],
       variables: d.variables ?? [],
+      ...(Array.isArray(d.secrets) && d.secrets.length ? { secrets: d.secrets } : {}),
       skills: d.skills ?? [],
     };
   };

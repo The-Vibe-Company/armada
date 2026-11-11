@@ -101,7 +101,7 @@ export async function startServer(
     publicUrl: config.publicUrl,
   });
   const data = createSqlData(sql);
-  const templates = createTemplateService(sql);
+  const templates = createTemplateService(sql, config.encryptionKey);
   const mcp = createMcpHttpIntegration({
     prepareReadableVariables: templates.prepare,
     deferBackground: true,

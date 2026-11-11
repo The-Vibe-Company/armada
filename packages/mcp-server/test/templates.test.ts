@@ -10,6 +10,7 @@ import {
   createSqlMcpRegistry,
   createSqlVaultStore,
   createTemplateService,
+  encryptSecret,
   type LaunchTemplate,
   launchSandbox,
   PrivateSkillError,
@@ -37,7 +38,7 @@ async function fixture() {
     },
     transaction: (work) => db.transaction((tx) => work(tx)),
   };
-  const service = createTemplateService(sql);
+  const service = createTemplateService(sql, ENCRYPTION_KEY);
   const vault = createApplicationVault(sql, undefined);
   const actor = (userId = people.owner) => ({
     userId,
@@ -974,14 +975,15 @@ test("template admission freezes merged defaults and explicit overrides; opt-out
 });
 
 // Publication owns reference authorization; no raw secret fixture is needed at this boundary.
-test("secret bindings are immutable value-free references and cannot silently launch without delivery", async () => {
+test("secret references authorize delivery without persisting values and revoke later turns", async () => {
   const f = await fixture();
   try {
-    // Deliberately opaque ciphertext, not an encrypted secret or a plaintext fixture.
+    const canary = crypto.randomUUID() + crypto.randomUUID();
+    // Generate in memory; assert booleans so a failing assertion never prints the value.
     const secretId = (
       await f.db.query<{ id: string }>(
         "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-        [f.people.org, f.people.owner, crypto.getRandomValues(new Uint8Array(40))],
+        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
       )
     ).rows[0]!.id;
     const binding = { key: "APP_TOKEN", secretId, version: 1 };
@@ -1060,11 +1062,32 @@ test("secret bindings are immutable value-free references and cannot silently la
         secrets: [{ ...binding, key: "APP_REGION" }],
       }),
     ).rejects.toMatchObject({ code: "invalid" });
-    await expect(f.launch(templateId)).rejects.toThrow("secret_delivery_unavailable");
-    expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(0);
-    expect(f.boat.forks).toHaveLength(0);
+    const launched = await f.launch(templateId);
+    expect(launched.state).toBe("succeeded");
+    expect(JSON.stringify(launched).includes(canary)).toBe(false);
+    expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
+    const request = (
+      await f.db.query<{ id: string; manifest: unknown }>("select id,manifest from template_launch_requests")
+    ).rows[0]!;
+    expect(JSON.stringify(request.manifest).includes(canary)).toBe(false);
+    f.configured.length = 0;
+    await f.service.prepare(
+      f.provider,
+      launched.providerSandboxId as string,
+      { userId: f.people.owner, orgId: f.people.org },
+      request.id,
+    );
+    expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
     await f.db.query("update application_secrets set version=2 where id=$1", [secretId]);
     await expect(f.create(f.people.owner, "personal", def)).rejects.toThrow("secret_version_changed");
+    await expect(
+      f.service.prepare(
+        f.provider,
+        launched.providerSandboxId as string,
+        { userId: f.people.owner, orgId: f.people.org },
+        request.id,
+      ),
+    ).rejects.toThrow("secret_version_changed");
     await f.db.query("update application_secrets set scope='org' where id=$1", [secretId]);
     const updated = { ...def, secrets: [{ ...binding, version: 2 }] };
     await f.create(f.people.admin, "org", updated);

@@ -87,6 +87,12 @@ export function lookupsFrom(
       connections.state === "ready"
         ? connections.connections.map(({ id, name, scope, status }) => ({ id, name, scope, status }))
         : null,
+    secrets:
+      vault.state === "ready"
+        ? vault.items
+            .filter((item) => item.kind === "secret")
+            .map(({ id, name, scope, version, status }) => ({ id, name, scope, version, status }))
+        : null,
     variables:
       vault.state === "ready"
         ? vault.items

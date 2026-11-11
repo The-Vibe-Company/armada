@@ -92,7 +92,7 @@ describe("template DTOs", () => {
     });
     expect(parseTemplate({ ...header, status: "deleted" })).toBeNull();
     expect(parseTemplate({ ...header, currentRevision: 0 })).toBeNull();
-    const parsed = parseRevision({ ...revision, definition: { ...definition, secrets: ["x"] } });
+    const parsed = parseRevision({ ...revision, definition: { ...definition, secrets: [] } });
     expect(parsed?.definition).toEqual({
       goldenId: SHARED,
       provider: "boat",
@@ -312,4 +312,18 @@ describe("template launch", () => {
       { route: "/api/v1/templates/launch", body: { org: ORG, id: TEMPLATE, revision: 2, requestKey: "dashboard:k" } },
     ]);
   });
+});
+
+test("template form binds metadata-only secrets, preserves aliases and refuses unreadable selections", () => {
+  const secretId = "00000000-0000-4000-8000-000000000081";
+  const sources = {
+    ...lookups,
+    secrets: [{ id: secretId, name: "APP_TOKEN", scope: "org" as const, version: 2, status: "active" }],
+  };
+  const previous = { ...definition, secrets: [{ key: "DEPLOY_TOKEN", secretId, version: 1 }] };
+  const result = templateRequest(form({ secrets: [secretId] }), sources, previous);
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.definition.secrets).toEqual([{ key: "DEPLOY_TOKEN", secretId, version: 2 }]);
+  expect(templateRequest(form({ secrets: [secretId] }), { ...sources, secrets: null }, previous).ok).toBe(false);
+  expect(parseRevision({ ...revision, definition: previous })?.definition.secrets).toEqual(previous.secrets);
 });

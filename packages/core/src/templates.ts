@@ -44,7 +44,7 @@ export const TEMPLATE_REFUSAL_HELP = {
     "Template connection grant changed during admission. Check the connection before retrying.",
   secret_unavailable: "Secret is missing, expired, revoked or inaccessible. Check its reference.",
   secret_version_changed: "Secret version changed. Publish a revision with its current version.",
-  secret_delivery_unavailable: "Secret bindings are saved, but template secret delivery is not available yet.",
+  secret_delivery_unavailable: "Secret environment delivery is unavailable for this provider.",
   variable_unavailable: "Readable variable is missing or inaccessible. Check its reference.",
   variable_version_changed: "Readable variable version changed. Publish a revision with its current version.",
   variable_delivery_unavailable:

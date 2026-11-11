@@ -8,7 +8,7 @@ import type { Bucket, ResourceState } from "./resource-list.ts";
  * The Templates page (#949, slice 6b of #906): launch presets as the control API's `templates/*` routes return them.
  * A template is a header (name, scope, current revision) and immutable numbered revisions, each freezing four
  * choices: an environment (a golden on one provider), tools (connection ids), the agent with its model and effort,
- * and readable variables (id and version). Secret bindings do not exist yet; nothing here sends or reads one.
+ * and readable variables (id and version). Secret bindings contain IDs and versions only, never values.
  */
 export type TemplateScope = "personal" | "org";
 
@@ -33,6 +33,7 @@ export type TemplateDefinition = {
   reasoningEffort: string;
   connections: string[];
   variables: TemplateVariableBinding[];
+  secrets?: { key: string; secretId: string; version: number }[];
   skills: string[];
   /** A pinned model account (set over the API); absent, each launch resolves the launcher's own. */
   modelAccount?: { id: string; version: number };
@@ -99,6 +100,12 @@ export function parseRevision(value: unknown): TemplateRevision | null {
       return null;
     variables.push({ key: binding.key, variableId: binding.variableId, version: binding.version });
   }
+  const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
+  if (d.secrets !== undefined && !Array.isArray(d.secrets)) return null;
+  for (const b of (d.secrets ?? []) as unknown[]) {
+    if (!isRecord(b) || typeof b.key !== "string" || !isId(b.secretId) || !isCount(b.version)) return null;
+    secrets.push({ key: b.key, secretId: b.secretId, version: b.version });
+  }
   const skills = Array.isArray(d.skills) ? d.skills.filter((skill): skill is string => typeof skill === "string") : [];
   const account = isRecord(d.modelAccount) ? d.modelAccount : null;
   const modelAccount =
@@ -114,6 +121,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
       reasoningEffort: d.reasoningEffort,
       connections: [...d.connections],
       variables,
+      ...(secrets.length ? { secrets } : {}),
       skills,
       ...(modelAccount ? { modelAccount } : {}),
     },
@@ -131,6 +139,7 @@ export type TemplateLookups = {
     ready: boolean;
   }[];
   connections: readonly { id: string; name: string; scope: TemplateScope; status: string }[] | null;
+  secrets?: readonly { id: string; name: string; scope: TemplateScope; version: number; status: string }[] | null;
   variables: readonly { id: string; name: string; scope: TemplateScope; version: number; status: string }[] | null;
 };
 
@@ -221,6 +230,7 @@ export type TemplateFormFields = {
   harness: string;
   connections: readonly string[];
   variables: readonly string[];
+  secrets?: readonly string[];
 } & ModelFields;
 
 export type TemplateRequest = { name: string; scope: TemplateScope; definition: Record<string, unknown> };
@@ -236,7 +246,7 @@ export function templateRequest(
   fields: TemplateFormFields,
   lookups: TemplateLookups,
   /** The revision a new one starts from: its unreadable selections block, its variable keys are kept. */
-  previous?: Pick<TemplateDefinition, "connections" | "variables">,
+  previous?: Pick<TemplateDefinition, "connections" | "variables" | "secrets">,
 ): Parsed<TemplateRequest> {
   const lost = previous ? unreadableSelections(previous, lookups) : null;
   if (lost) return { ok: false, error: lost };
@@ -289,6 +299,22 @@ export function templateRequest(
       variables.push({ key, variableId: variable.id, version: variable.version });
     }
   }
+  const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
+  const secretIds = [...new Set(fields.secrets ?? [])];
+  if (secretIds.length > 64) return { ok: false, error: "A template takes at most 64 secrets." };
+  for (const id of secretIds) {
+    const secret = lookups.secrets?.find((row) => row.id === id);
+    if (!secret || secret.status !== "active")
+      return { ok: false, error: "A chosen secret is unavailable. Refresh and try again." };
+    if (scope === "org" && secret.scope !== "org")
+      return { ok: false, error: "Organization templates use organization secrets only." };
+    const kept = previous?.secrets?.filter((b) => b.secretId === id).map((b) => b.key);
+    for (const key of kept?.length ? kept : [secret.name]) {
+      if (variables.some((b) => b.key === key) || secrets.some((b) => b.key === key))
+        return { ok: false, error: "Chosen variables and secrets must use different environment names." };
+      secrets.push({ key, secretId: id, version: secret.version });
+    }
+  }
   if (variables.length > 64) return { ok: false, error: "A template takes at most 64 variables." };
 
   return {
@@ -304,6 +330,7 @@ export function templateRequest(
         reasoningEffort: model.args.reasoningEffort,
         ...(connections.length ? { connections } : {}),
         ...(variables.length ? { variables } : {}),
+        ...(secrets.length ? { secrets } : {}),
       },
     },
   };
@@ -314,11 +341,12 @@ export function templateRequest(
  * variables the current revision uses would be dropped without the person seeing them. Null when nothing is lost.
  */
 export function unreadableSelections(
-  previous: Pick<TemplateDefinition, "connections" | "variables">,
-  lookups: Pick<TemplateLookups, "connections" | "variables">,
+  previous: Pick<TemplateDefinition, "connections" | "variables" | "secrets">,
+  lookups: Pick<TemplateLookups, "connections" | "variables" | "secrets">,
 ): string | null {
   if (previous.connections.length > 0 && !lookups.connections)
     return "Tools could not be read, so this revision's tools would be lost. Refresh and try again.";
+  if (previous.secrets?.length && !lookups.secrets) return "Secrets could not be read. Refresh before publishing.";
   if (previous.variables.length > 0 && !lookups.variables)
     return "Variables could not be read, so this revision's variables would be lost. Refresh and try again.";
   return null;

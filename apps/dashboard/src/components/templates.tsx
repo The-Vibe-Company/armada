@@ -105,8 +105,8 @@ export function NoSecretsNote({ className }: { className?: string }) {
     >
       <LockKeyholeIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
       <span>
-        <span className="font-medium text-foreground">Secrets are not available in templates yet.</span> A template
-        delivers readable variables only; anyone who can launch it can see their values.
+        <span className="font-medium text-foreground">Secret values are never shown here.</span> A template delivers
+        chosen secrets to the agent environment; anyone who can launch it can use those values.
       </span>
     </p>
   );
@@ -465,6 +465,22 @@ function TemplateForm({
             })}
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
           hint="Each value is copied into the sandbox at launch, under its own name unless the revision named it otherwise. Publishing uses its current version."
+        />
+        <PickList
+          legend="Secrets"
+          name="secrets"
+          icon={<LockKeyholeIcon />}
+          mono
+          empty={
+            lookups.secrets == null
+              ? "Secrets could not be read. Refresh to choose them."
+              : "No secrets yet. Add one in Secrets."
+          }
+          options={(lookups.secrets ?? [])
+            .filter((row) => row.status === "active" && (scope === "personal" || row.scope === "org"))
+            .map((row) => ({ id: row.id, label: row.name, note: row.scope === "org" ? "Org" : "Personal" }))}
+          initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
+          hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
         />
         <NoSecretsNote />
         {lost && (
