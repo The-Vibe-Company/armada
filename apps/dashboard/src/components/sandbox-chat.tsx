@@ -313,7 +313,7 @@ function Notices({ status, reason, poll }: { status: SandboxStatus; reason: stri
 }
 
 /**
- * The messages, oldest first (shared with the orchestrator chat). The view follows new messages only while it is at the bottom; scrolled up into the
+ * The messages, oldest first. The view follows new messages only while it is at the bottom; scrolled up into the
  * history it stays put and offers a way back to the latest.
  */
 export function Transcript({
