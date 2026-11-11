@@ -14,9 +14,19 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+
 import { LinkPendingIcon } from "@/components/link-pending";
-import { Button } from "@/components/ui/button";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
 /** Relationships stay visible on desktop and in the phone navigation menu. */
@@ -75,60 +85,76 @@ const GROUPS = [
   },
 ] as const;
 
-export function NavLinks({ className }: { className?: string }) {
+export function NavMobileTrigger() {
   const pathname = usePathname();
-  const [expanded, setExpanded] = useState(false);
+  const { openMobile } = useSidebar();
   const current = GROUPS.flatMap((group) => [...group.links]).find(
     (link) => pathname === link.href || pathname.startsWith(`${link.href}/`),
   );
   return (
-    <nav aria-label="Main" className={className}>
-      <Button
-        variant="ghost"
-        className="mb-1 w-full justify-between md:hidden"
-        aria-expanded={expanded}
-        aria-controls="main-navigation-links"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span>
-          Navigation <span className="text-muted-foreground">/ {current?.label ?? "Dashboard"}</span>
-        </span>
-        <ChevronDownIcon className={cn("size-4", expanded && "rotate-180")} />
-      </Button>
-      <div id="main-navigation-links" className={cn(expanded ? "block" : "hidden", "md:block")}>
+    <SidebarTrigger
+      variant="ghost"
+      size="default"
+      className="mb-1 h-9 w-full justify-between md:hidden"
+      aria-expanded={openMobile}
+      aria-controls="main-navigation-links"
+    >
+      <span>
+        Navigation <span className="text-muted-foreground">/ {current?.label ?? "Dashboard"}</span>
+      </span>
+      <ChevronDownIcon className={cn("size-4", openMobile && "rotate-180")} />
+    </SidebarTrigger>
+  );
+}
+
+export function NavLinks({ className }: { className?: string }) {
+  const pathname = usePathname();
+  const { setOpenMobile } = useSidebar();
+  return (
+    <SidebarContent className={cn("gap-0", className)}>
+      <nav id="main-navigation-links" aria-label="Main">
         {GROUPS.map((group) => (
-          <section key={group.label} aria-label={group.label} className="pt-4 first:pt-0">
-            <h2 className="px-2 text-xs font-medium text-foreground">{group.label}</h2>
+          <SidebarGroup key={group.label} className="p-0 pt-4 first:pt-0" role="region" aria-label={group.label}>
+            <SidebarGroupLabel asChild className="h-auto px-2 text-xs font-medium text-foreground">
+              <h2>{group.label}</h2>
+            </SidebarGroupLabel>
             <p className="px-2 pt-1 pb-2 text-xs leading-relaxed text-muted-foreground">{group.description}</p>
-            <div className="grid grid-cols-2 gap-1 md:grid-cols-1 md:gap-0.5">
-              {group.links.map((link) => {
-                const { href, label, hint, icon: Icon } = link;
-                const active = pathname === href || pathname.startsWith(`${href}/`);
-                return (
-                  <Link
-                    key={href}
-                    href={href}
-                    title={hint}
-                    onClick={() => setExpanded(false)}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex min-w-0 items-center gap-2.5 rounded-md px-2 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:flex-row md:gap-2.5 md:px-2 md:py-1.5 md:text-sm",
-                      active
-                        ? "bg-background text-foreground shadow-xs ring-1 ring-border md:bg-background"
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    <LinkPendingIcon>
-                      <Icon />
-                    </LinkPendingIcon>
-                    <span className="truncate">{label}</span>
-                  </Link>
-                );
-              })}
-            </div>
-          </section>
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0.5">
+                {group.links.map(({ href, label, hint, icon: Icon }) => {
+                  const active = pathname === href || pathname.startsWith(`${href}/`);
+                  return (
+                    <SidebarMenuItem key={href}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={active}
+                        className={cn(
+                          "h-auto min-h-9 gap-2.5 px-2 py-2 text-sm font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:min-h-0 md:py-1.5",
+                          active
+                            ? "bg-background text-foreground shadow-xs ring-1 ring-border data-[active=true]:bg-background"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        <Link
+                          href={href}
+                          title={hint}
+                          onClick={() => setOpenMobile(false)}
+                          aria-current={active ? "page" : undefined}
+                        >
+                          <LinkPendingIcon>
+                            <Icon />
+                          </LinkPendingIcon>
+                          <span className="truncate">{label}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
         ))}
-      </div>
-    </nav>
+      </nav>
+    </SidebarContent>
   );
 }

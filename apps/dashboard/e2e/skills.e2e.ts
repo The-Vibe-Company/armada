@@ -37,9 +37,9 @@ for (const [device, width, height] of [
     await page.setViewportSize({ width, height });
     await signIn(page, "alice@example.com", "/skills");
     const nav = page.getByRole("navigation", { name: "Main" });
-    if (mobile) await nav.getByRole("button", { name: /Navigation/ }).click();
+    if (mobile) await page.getByRole("button", { name: /Navigation/ }).click();
     await expect(nav.getByRole("link", { name: /Skills/ })).toHaveAttribute("aria-current", "page");
-    if (mobile) await nav.getByRole("button", { name: /Navigation/ }).click();
+    if (mobile) await page.keyboard.press("Escape");
     await expect(row(page, "user")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Acme key");

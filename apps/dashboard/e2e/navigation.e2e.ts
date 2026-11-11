@@ -10,7 +10,7 @@ for (const phone of [false, true]) {
     await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
     await signIn(page, "alice@example.com", "/environments");
     const nav = page.getByRole("navigation", { name: "Main", exact: true });
-    const toggle = nav.getByRole("button", { name: /Navigation/ });
+    const toggle = page.getByRole("button", { name: /Navigation/ });
     if (phone) {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(nav.getByRole("link", { name: "Environments" })).toBeHidden();
@@ -28,6 +28,12 @@ for (const phone of [false, true]) {
     const environment = nav.getByRole("link", { name: "Environments", exact: true });
     await expect(environment).toHaveAttribute("aria-current", "page");
     await page.screenshot({ path: `test-results/navigation-after-${phone ? "phone" : "desktop"}.png` });
+    if (phone) {
+      await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(toggle).toBeFocused();
+      await toggle.click();
+    }
     const templates = nav.getByRole("link", { name: "Templates", exact: true });
     await templates.focus();
     await page.keyboard.press("Enter");

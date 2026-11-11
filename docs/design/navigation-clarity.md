@@ -23,7 +23,7 @@ Account                   Save a combination
                             Organizations
                             Settings
 ```
-Each heading has one short relationship sentence. Phone navigation uses the same groups and full names, behind a Navigation toggle so conversations retain their height.
+Each heading has one short relationship sentence. Phone navigation uses the same groups and full names, in the shadcn Sidebar mobile sheet, opened by a Navigation toggle so conversations retain their height.
 
 **B — flat menu + contextual explanations.**
 ```text
@@ -44,7 +44,7 @@ Account
 Compact, but falsely implies ingredients only exist inside templates; ad-hoc launches are supported. Not recommended.
 
 ### Design
-Retain the existing Geist typography, graphite surfaces and semantic focus blue. Alignment stays left; grouping and copy do the work, not decorative badges or a tutorial. Existing theme tokens are authoritative. Reviewed shadcn Sidebar (group/label/menu composition), Breadcrumb, Badge, HoverCard and Empty docs. No new UI dependency: this repository currently uses its own NavLinks shell rather than a generated Sidebar component. Breadcrumbs/chips/counters/empty states belong in later slices, not this navigation change.
+Retain the existing Geist typography, graphite surfaces and semantic focus blue. Alignment stays left; grouping and copy do the work, not decorative badges or a tutorial. Existing theme tokens are authoritative. Reviewed shadcn Sidebar (group/label/menu composition), Breadcrumb, Badge, HoverCard and Empty docs. The local shadcn Sidebar uses SidebarProvider, SidebarHeader/Footer/Content, relationship SidebarGroups and slotted SidebarMenuButtons. Its standard Sheet handles phone focus trapping, Escape and backdrop dismissal; existing Radix dependencies are reused. Breadcrumbs/chips/counters/empty states belong in later slices, not this navigation change.
 
 ### Scope / coordination
 No changes to #970 visual pass, #1005 Sandboxes, #1007 skill pickers or #1006 Routines pages. No route moves, APIs, queries, permissions or launch behavior changes. Cross-links and empty states deferred to the next slices.
