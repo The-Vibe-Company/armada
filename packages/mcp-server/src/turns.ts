@@ -361,7 +361,7 @@ export async function collectSandboxUsage(
 ): Promise<void> {
   if (!store.recordUsage) return;
   try {
-    const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES);
+    const events = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => []);
     const collected = reportedTurnUsage(events);
     const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
     const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
@@ -373,7 +373,7 @@ export async function collectSandboxUsage(
       }
       if (targetPromptId && !prompts.has(targetPromptId)) prompts.set(targetPromptId, undefined);
       // A native read is bounded independently of provider event history.
-      for (const [promptId, conversationId] of [...prompts].slice(-200)) {
+      for (const [promptId, conversationId] of [...prompts].slice(-20)) {
         try {
           const native = await provider.collectTurnUsage({
             sandboxId: sandbox.providerSandboxId,
