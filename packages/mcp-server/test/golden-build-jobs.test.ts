@@ -432,9 +432,13 @@ test.each([false, true])(
   },
 );
 
-test.each([false, true])(
-  "snapshot refusal cleans up only confirmed non-mutating failures (keepSource=%s)",
-  async (keepSource) => {
+test.each([
+  { keepSource: false, status: 400 },
+  { keepSource: true, status: 400 },
+  { keepSource: false, status: undefined },
+])(
+  "snapshot refusal cleans up only confirmed non-mutating failures (%j)",
+  async ({ keepSource, status: httpStatus }) => {
     const s = await fixture();
     const logs: string[] = [];
     const logging = spyOn(console, "error").mockImplementation((line) => logs.push(String(line)));
@@ -445,7 +449,7 @@ test.each([false, true])(
         throw new ProviderError({
           provider: "boat",
           code: "invalid_request",
-          status: 400,
+          status: httpStatus,
           message: "unsafe-secret-payload",
           providerCode: "unsafe-secret-payload",
           details: { ...(keepSource ? { keepSource: true } : {}), secret: "unsafe-secret-payload" },
@@ -466,7 +470,7 @@ test.each([false, true])(
       expect(status).toMatchObject({
         state: keepSource ? "recovery_required" : "failed",
         phase: "snapshot",
-        failureReason: keepSource ? null : "provider_snapshot_rejected",
+        failureReason: keepSource || httpStatus !== 400 ? null : "provider_snapshot_rejected",
         result: null,
       });
       expect(s.boat.stops).toHaveLength(1);
@@ -480,3 +484,42 @@ test.each([false, true])(
     }
   },
 );
+
+test("an accepted renamed save with missing provenance retains capacity for recovery", async () => {
+  const s = await fixture();
+  try {
+    s.boat.provider.snapshot = async () => ({ name: "renamed-save", status: "saving" });
+    // The provider accepted the save, but the remapped handle is not yet readable.
+    s.boat.provider.getSnapshot = async () => {
+      throw new ProviderError({
+        provider: "boat",
+        code: "not_found",
+        status: 404,
+        message: "not visible yet",
+        retryable: false,
+      });
+    };
+    const job = await s.builds.admit(
+      s.boat.provider,
+      {
+        userId: s.people.admin,
+        orgId: s.people.org,
+        role: "admin",
+      },
+      { name: "renamed", visibility: "org", repos: ["acme/web"] },
+      crypto.randomUUID(),
+    );
+    await s.builds.runOne();
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "recovery_required",
+      phase: "snapshot",
+      failureReason: null,
+      result: null,
+    });
+    expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(1);
+    expect((await s.db.query("select 1 from goldens where name='renamed'")).rows).toEqual([]);
+    expect(s.deleted).toEqual([]);
+  } finally {
+    await s.close();
+  }
+});

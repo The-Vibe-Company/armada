@@ -45,7 +45,14 @@ updates config + snapshot, finalizes binding and marks job succeeded **in one
 transaction**. The prior snapshot stays retained. The full filesystem/binary/
 git-object scan is unchanged, fail-closed at Boat's documented 600-second maximum.
 
-Failures expose errorCode build_failed. Confirmed builder stop (or denial before
+Failures expose errorCode build_failed. A confirmed HTTP 400 from an unaccepted
+Boat snapshot save exposes the closed `provider_snapshot_rejected` reason with
+owner retry guidance; local validation errors do not claim a provider rejection.
+Accepted saves with unreadable provenance retain capacity as recovery_required.
+Modal snapshot failures retain their conservative uncertain-outcome handling.
+See [Boat snapshot rejection](diagnostics/boat-snapshot-rejection.md).
+
+Confirmed builder stop (or denial before
 any builder request) permits releasing only this attempt's pending reservation,
 retaining the existing binding and last-good config/snapshot. Existing ambiguous
 persistence artifact-reference checks remain in force.
@@ -68,7 +75,10 @@ hosts may await the tracked worker task to drain; terminated processes lose leas
 
 ## Deployment
 
-Apply the new migration before worker deployment. RLS is enabled; only service_role
+Apply migrations in filename order, including
+`20261111080000_golden_snapshot_failure_reason.sql` (after the prior failure-reason
+constraint migrations), before deploying the server that writes
+`provider_snapshot_rejected`. RLS is enabled; only service_role
 has table grants. Arbitrary setup/config payloads use existing AES-GCM encryption.
 User JWTs cannot read ciphertext or mutate jobs. Allow the additive status route
 through the dashboard proxy.

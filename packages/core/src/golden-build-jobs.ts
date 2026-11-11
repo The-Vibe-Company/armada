@@ -516,6 +516,7 @@ export class GoldenBuildJobs {
                 : safeToRelease &&
                     error instanceof ProviderError &&
                     error.code === "invalid_request" &&
+                    error.status === 400 &&
                     current.phase === "snapshot"
                   ? "provider_snapshot_rejected"
                   : null,

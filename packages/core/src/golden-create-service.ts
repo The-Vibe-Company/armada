@@ -143,6 +143,7 @@ export class GoldenCreateService {
     let uncertainSnapshot = false;
     let persistAttempted = false;
     let snapshotAttempted = false;
+    let saveAccepted = false;
     let knownUnpublished = false;
     let uncertainPublication = false;
     let requestedSnapshot: string | undefined;
@@ -201,6 +202,7 @@ export class GoldenCreateService {
       snapshotAttempted = true;
       uncertainSnapshot = providerId === "modal";
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
+      saveAccepted = true;
       const snapshot = started.name;
       // The provider's reference is authoritative, not necessarily the requested label.
       // A remap needs source correlation before we may publish or reclaim that artifact.
@@ -277,11 +279,11 @@ export class GoldenCreateService {
       }
       return { snapshot, warnings };
     } catch (error) {
-      // An explicit refusal cannot have started a save. Unknown/time-out outcomes still
-      // retain capacity until an operator can reconcile the artifact.
-      if (phase === "snapshot" && !ownedSnapshot && isNonMutatingProviderRefusal(error)) {
+      // Only Boat's save-call refusal proves no artifact was accepted. A later
+      // provenance/read failure must retain capacity even before ownership is known.
+      // Modal keeps its conservative unknown-outcome/source-retention contract.
+      if (providerId === "boat" && phase === "snapshot" && !saveAccepted && isNonMutatingProviderRefusal(error)) {
         snapshotAttempted = false;
-        uncertainSnapshot = false;
       }
       refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
       console.error(

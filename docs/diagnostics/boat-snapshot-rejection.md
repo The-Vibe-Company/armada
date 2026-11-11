@@ -20,7 +20,9 @@ code, provider, HTTP status and closed detail class. Never copy upstream message
 providerCode or details: those can carry secrets. Detail classes are diagnostic
 hints, not authoritative billing diagnoses.
 
-Explicit non-mutating refusals now stop the builder and release the reservation.
+Boat save-call non-mutating refusals before acceptance stop the builder and release
+the reservation. A provenance/read error after an accepted save does not prove
+that no artifact exists. Modal snapshot failures retain their source and uncertainty.
 Ambiguous outcomes or retained-resource evidence still require reconciliation;
 do not clear capacity just because a save returned an error. Existing recovery
 rows are not changed by this PR. An operator must inspect the original staging
