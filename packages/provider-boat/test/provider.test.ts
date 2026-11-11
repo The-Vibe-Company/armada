@@ -908,6 +908,29 @@ test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Bo
   ]);
 });
 
+for (const phase of ["before_interrupt", "after_interrupt"] as const) {
+  for (const malformed of [{ id: "review" }, { running: true }, { id: "review", running: "false" }]) {
+    test(`quiescence refuses unknown conversation activity (${phase}, ${JSON.stringify(malformed)})`, async () => {
+      const active = { body: { ok: true, conversations: [{ id: "review", running: true }] } };
+      const invalid = { body: { ok: true, conversations: [malformed] } };
+      const settled = { body: { ok: true, conversations: [{ id: "review", running: false }] } };
+      const boat =
+        phase === "before_interrupt"
+          ? fakeBoat(invalid, { body: { ok: true } }, settled)
+          : fakeBoat(active, { body: { ok: true } }, invalid);
+      if (!boat.provider.quiesce) throw Error("Missing Boat quiescence support");
+      await expect(boat.provider.quiesce({ sandboxId: ID, conversationId: "review" })).rejects.toMatchObject({
+        provider: "boat",
+        code: "unknown",
+        retryable: false,
+      });
+      expect(boat.requests.map(({ method }) => method)).toEqual(
+        phase === "before_interrupt" ? ["GET"] : ["GET", "POST", "GET"],
+      );
+    });
+  }
+}
+
 // The SDK boundary owns refusal classification/retry safety. Capture must finish
 // before stop, and a 409 refusal is safe to retry unlike an ambiguous 502.
 test("capture retries before physical stop", async () => {

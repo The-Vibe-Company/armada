@@ -440,6 +440,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
     async conversations(sandboxId: string) {
       const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
+      // Unknown activity cannot prove that it is safe to capture work or stop.
+      if (
+        response.conversations.some(
+          (conversation) =>
+            typeof conversation?.id !== "string" || !conversation.id || typeof conversation.running !== "boolean",
+        )
+      )
+        throw unexpectedAnswer("conversation activity");
       return response.conversations.map(({ id, running, lastHarness, lastModel }) => ({
         id,
         running,
