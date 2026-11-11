@@ -174,7 +174,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
           </PopoverTrigger>
           <PopoverContent
             align="end"
-            className="w-[min(26rem,calc(100vw-3rem))] overflow-hidden p-0"
+            className="max-h-[var(--radix-popover-content-available-height)] w-[min(26rem,calc(100vw-3rem))] overflow-y-auto overscroll-contain p-0"
             aria-label="Choose additional skills"
             onOpenAutoFocus={(event) => {
               event.preventDefault();
@@ -312,7 +312,9 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
                     <p className="font-medium">{chosen.name}</p>
                     <Visibility source={chosen.visibility} />
                   </div>
-                  <p className="text-xs leading-5 text-muted-foreground">{chosen.description}</p>
+                  <p className="line-clamp-4 break-words text-xs leading-5 text-muted-foreground">
+                    {chosen.description}
+                  </p>
                   <p className="break-all font-mono text-xs text-muted-foreground">{chosen.reference}</p>
                 </div>
                 <div className="space-y-2">
