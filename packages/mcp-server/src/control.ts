@@ -667,30 +667,9 @@ async function dispatch(
   }
   if (route.startsWith("templates/")) {
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-    const stores = options.data?.(caller);
-    return options.templates.command(
-      caller,
-      route.slice(10),
-      body,
-      stores
-        ? {
-            stores: {
-              goldens: stores.goldens,
-              sandboxes: stores.sandboxes,
-              credentials: launchCredentials(
-                options.store,
-                options.encryptionKey,
-                options.github ? { ...options.github, store: options.store } : undefined,
-                options.modelAuth,
-              ),
-              ...(options.connections ? { connections: options.connections } : {}),
-            },
-            provider: (golden) => providerForGolden(options, caller, golden),
-            ...(options.launch ? { options: options.launch } : {}),
-          }
-        : undefined,
-    );
+    return options.templates.command(caller, route.slice(10), body, templateRuntime(options, caller));
   }
+
   if (route.startsWith("variables/") || route.startsWith("secrets/")) {
     if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
     if (!/^(variables|secrets)\/[a-z]+$/.test(route))
@@ -1426,6 +1405,27 @@ async function launchActor(
   const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
   if (!member) throw new VaultError("not_found", "You are not a member of an org.");
   return { userId: caller.userId, orgId: member.orgId, role: member.role };
+}
+
+/** One launch path for interactive templates and unattended owner-scoped routines. */
+export function templateRuntime(options: ControlOptions, caller: Caller) {
+  const stores = options.data?.(caller);
+  if (!stores) return undefined;
+  return {
+    stores: {
+      goldens: stores.goldens,
+      sandboxes: stores.sandboxes,
+      credentials: launchCredentials(
+        options.store,
+        options.encryptionKey,
+        options.github ? { ...options.github, store: options.store } : undefined,
+        options.modelAuth,
+      ),
+      ...(options.connections ? { connections: options.connections } : {}),
+    },
+    provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
+    ...(options.launch ? { options: options.launch } : {}),
+  };
 }
 
 async function providerForGolden(options: ControlOptions, caller: Caller, golden: GoldenRecord): Promise<Provider> {

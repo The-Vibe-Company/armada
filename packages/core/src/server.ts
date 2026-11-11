@@ -51,6 +51,12 @@ export {
   PrivateSkillError,
 } from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
+export {
+  createRoutineScheduler,
+  type RoutineLaunchAdmission,
+  type RoutineSchedulerRuntime,
+  type RoutineTaskState,
+} from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export * from "./skillpack.ts";
