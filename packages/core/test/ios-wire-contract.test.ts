@@ -147,6 +147,7 @@ const agentEvents: AgentEvent[] = [
     kind: "prompt" as const,
     text: "Hello",
     status,
+    reason: "runtime_uncertain",
   })),
   ...values.textMode.map((textMode, index) => ({
     id: id("evt-message", index),
@@ -179,6 +180,7 @@ const orchestratorEvents: OrchestratorEvent[] = [
     kind: "wait" as const,
     lease: pick(waits, index),
     status,
+    reason: "runtime_uncertain",
   })),
   { ...base(400), kind: "connections", connections: [{ id: "conn-0000", name: "GitHub" }] },
   { ...base(500), kind: "child", sandboxId: "sbx-0000", operationId: "op-0000" },
@@ -219,7 +221,7 @@ const responses = {
   } satisfies OrchestratorList,
   orchestratorDetail: {
     version: 1,
-    orchestrator: orchestrator(0),
+    orchestrator: { ...orchestrator(0), blockedReason: "runtime_uncertain" },
     operations,
     waits,
     delegation: {

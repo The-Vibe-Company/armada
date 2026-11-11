@@ -219,7 +219,7 @@
         "lastActivityAt": "2026-11-11T00:00:00.000Z",
         "idleDeadline": null,
         "skillRevision": "0000000000000000000000000000000000000000",
-        "blockedReason": null
+        "blockedReason": "runtime_uncertain"
       },
       "operations": [
         {
@@ -547,7 +547,8 @@
             "promptId": "prompt-0000",
             "kind": "prompt",
             "text": "Hello",
-            "status": "queued"
+            "status": "queued",
+            "reason": "runtime_uncertain"
           }
         },
         {
@@ -563,7 +564,8 @@
             "promptId": "prompt-0000",
             "kind": "prompt",
             "text": "Hello",
-            "status": "running"
+            "status": "running",
+            "reason": "runtime_uncertain"
           }
         },
         {
@@ -579,7 +581,8 @@
             "promptId": "prompt-0000",
             "kind": "prompt",
             "text": "Hello",
-            "status": "finished"
+            "status": "finished",
+            "reason": "runtime_uncertain"
           }
         },
         {
@@ -595,7 +598,8 @@
             "promptId": "prompt-0000",
             "kind": "prompt",
             "text": "Hello",
-            "status": "failed"
+            "status": "failed",
+            "reason": "runtime_uncertain"
           }
         },
         {
@@ -611,7 +615,8 @@
             "promptId": "prompt-0000",
             "kind": "prompt",
             "text": "Hello",
-            "status": "interrupted"
+            "status": "interrupted",
+            "reason": "runtime_uncertain"
           }
         },
         {
@@ -1223,7 +1228,8 @@
             "expiresAt": "2026-11-11T00:00:00.000Z",
             "deadline": "2026-11-11T00:00:00.000Z"
           },
-          "status": "active"
+          "status": "active",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "oev-0301",
@@ -1240,7 +1246,8 @@
             "expiresAt": "2026-11-11T00:00:00.000Z",
             "deadline": "2026-11-11T00:00:00.000Z"
           },
-          "status": "released"
+          "status": "released",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "oev-0302",
@@ -1257,7 +1264,8 @@
             "expiresAt": "2026-11-11T00:00:00.000Z",
             "deadline": "2026-11-11T00:00:00.000Z"
           },
-          "status": "expired"
+          "status": "expired",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "oev-0400",
@@ -1444,7 +1452,8 @@
           "promptId": "prompt-0000",
           "kind": "prompt",
           "text": "Hello",
-          "status": "queued"
+          "status": "queued",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "evt-prompt-0001",
@@ -1453,7 +1462,8 @@
           "promptId": "prompt-0000",
           "kind": "prompt",
           "text": "Hello",
-          "status": "running"
+          "status": "running",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "evt-prompt-0002",
@@ -1462,7 +1472,8 @@
           "promptId": "prompt-0000",
           "kind": "prompt",
           "text": "Hello",
-          "status": "finished"
+          "status": "finished",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "evt-prompt-0003",
@@ -1471,7 +1482,8 @@
           "promptId": "prompt-0000",
           "kind": "prompt",
           "text": "Hello",
-          "status": "failed"
+          "status": "failed",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "evt-prompt-0004",
@@ -1480,7 +1492,8 @@
           "promptId": "prompt-0000",
           "kind": "prompt",
           "text": "Hello",
-          "status": "interrupted"
+          "status": "interrupted",
+          "reason": "runtime_uncertain"
         },
         {
           "id": "evt-message-0000",
