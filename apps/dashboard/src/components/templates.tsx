@@ -341,7 +341,8 @@ function TemplateForm({
           onChange={setHarness}
           options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
         />
-        {lookups.accounts?.state === "ready" &&
+        {!editing &&
+          lookups.accounts?.state === "ready" &&
           ["none", "unusable"].includes(
             launchDefault(lookups.accounts.accounts, harness, lookups.accounts.now).state,
           ) && (

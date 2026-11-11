@@ -441,8 +441,6 @@ export function createTemplateService(sql: Sql) {
         // infrastructure and authorization failures intact rather than hiding them as account problems.
         if (error instanceof VaultError && error.code === "missing_credential")
           unavailable("model_account_unavailable");
-        if (error instanceof VaultError && error.code === "credential_refused")
-          unavailable("model_account_incompatible");
         throw error;
       });
     if (!credentials.binding) unavailable("model_account_unavailable");
