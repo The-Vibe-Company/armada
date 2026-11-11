@@ -69,7 +69,8 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         physicalExit = info.physicalExitConfirmed === true;
         if (
           !physicalExit &&
-          !["stopping", "stopped", "deleted"].includes(info.state) &&
+          !["stopped", "deleted"].includes(info.state) &&
+          !(provider.id === "boat" && info.state === "stopping") &&
           (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
         ) {
           signal?.throwIfAborted();
