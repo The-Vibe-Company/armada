@@ -131,7 +131,7 @@ Extend an accessible running or idle sandbox as its owner or an org admin. The n
 
 ### Claude Fable 5.2
 
-Claude Code also offers **Claude Fable 5.2** (`claude-fable-5-2`) at `low`, `medium`, `high`, `xhigh` or `max` effort. Defaults stay unchanged. Use the full ID, not the moving `fable` alias. Anthropic offers it to API-key and eligible subscription/OAuth accounts, subject to entitlement, organization restrictions and usage credits; [availability details](https://www.anthropic.com/claude-fable-and-mythos-5-2#availability).
+Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is known not to honour that selection and rejects it with a readable `model_selection_mismatch` explanation. Modal forwards custom model IDs to Claude Code, but Fable execution has not been re-verified with an entitled account. Defaults remain unchanged; no substitution is permitted. See [provider evidence and production checks](docs/fable-provider-check.md).
 
 ## Bring your MCP servers
 

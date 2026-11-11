@@ -38,7 +38,6 @@ export const MODEL_CATALOG: Readonly<Record<Harness, HarnessModels>> = {
     reasoningEfforts: CLAUDE_EFFORTS,
     models: [
       { id: "claude-opus-5-5", label: "Claude Opus 5.5", reasoningEfforts: CLAUDE_EFFORTS },
-      { id: "claude-fable-5-2", label: "Claude Fable 5.2", reasoningEfforts: CLAUDE_EFFORTS },
       { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoningEfforts: CLAUDE_EFFORTS },
     ],
   },
