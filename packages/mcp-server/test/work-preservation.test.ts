@@ -487,6 +487,12 @@ test("application-secret taint permanently disables collection and recovery, pur
       id,
       new Uint8Array([1]),
     ]);
+    // Taint after a completed stop must replace the now-purged recovery pointer,
+    // even when the completed stop receipt prevents normal note updates.
+    await db.query(
+      "update sandboxes set stop_requested_at=now(),preservation_stop_generation=stop_generation,preservation_note='unpushed work preserved' where id=$1",
+      [id],
+    );
     await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
     await expect(db.query("update sandboxes set application_secret_tainted=false where id=$1", [id])).rejects.toThrow(

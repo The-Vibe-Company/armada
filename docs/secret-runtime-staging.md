@@ -81,8 +81,11 @@ The first gate adds `20261111120000_application_secret_taint.sql`. The service-o
 `application_secret_tainted` flag is irreversible. Setting it removes existing
 online recovery rows; a database trigger refuses subsequent recovery writes.
 Preservation checks the durable marker before contacting compute. Recovery reads
-join the sandbox marker, and the existing physical-resume hooks refuse retained
-secret-tainted disks. There is no hydration endpoint and no client can set taint.
+join the sandbox marker, and ordinary sandbox physical-resume hooks refuse retained
+secret-tainted disks. Provider-internal recovery is not yet covered: Modal stop
+can still create a filesystem recovery image, and managed Boat parent recovery
+can bypass ordinary resume hooks. These paths require explicit taint-aware
+provider fencing before hydration is permitted. There is no hydration endpoint and no client can set taint.
 
 This is **not yet a concurrency-safe secret admission protocol**: a collector or
 resume already in flight must be fenced by the later shared lifecycle lease

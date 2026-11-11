@@ -12,6 +12,7 @@ begin
   end if;
   if new.application_secret_tainted then
     delete from public.sandbox_work_recovery where sandbox_id=new.id;
+    new.preservation_note := 'Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.';
   end if;
   return new;
 end;
