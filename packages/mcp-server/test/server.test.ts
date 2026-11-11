@@ -1641,21 +1641,13 @@ describe("tools", () => {
 });
 
 test("cached retired MCP tool calls return removal guidance without dispatching the runtime", async () => {
-  let called = false;
-  const runtime = {
-    list: async () => {
-      called = true;
-      throw new Error("retired runtime must not dispatch");
-    },
-  } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
-  const s = await start({ orchestrators: runtime });
+  const s = await start();
   const mcp = await s.client(await s.token(s.people.owner));
   const result = await mcp.callTool({ name: "orchestrator_list", arguments: { args: { orgId: s.people.org } } });
   expect(result.isError).toBe(true);
   expect(JSON.stringify(result.content)).toContain("removed");
   expect(JSON.stringify(result.content)).toContain("--armada-access");
   expect(JSON.stringify(result.content)).toContain("#1002");
-  expect(called).toBe(false);
   expect((await mcp.listTools()).tools.some((tool) => tool.name.startsWith("orchestrator_"))).toBe(false);
   expect((await call(mcp, "list")).isError).not.toBe(true);
 });

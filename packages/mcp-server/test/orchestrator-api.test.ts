@@ -68,25 +68,15 @@ test("shared boundary rejects malformed optional configuration and unknown mutat
 });
 
 test("requested production pairs stay unavailable and explain their independent native blockers", async () => {
-  const { configFromEnv } = await import("../src/config.ts");
+  const { orchestratorPairsFromEnv } = await import("../src/orchestrator-activation.ts");
   const { callOrchestrator } = await import("../src/orchestrator-api.ts");
-  const { ENCRYPTION_KEY } = await import("./support.ts");
-  const config = configFromEnv({
-    ARMADA_DATABASE_URL: "postgres://test.invalid/db",
-    SUPABASE_URL: "https://supabase.invalid",
-    SUPABASE_ANON_KEY: "anon",
-    ARMADA_AUTH_SECRET: "a-test-auth-secret-of-enough-length",
-    ARMADA_PUBLIC_URL: "https://armada.invalid",
-    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
-    ARMADA_ORCHESTRATOR_PAIRS: " boat:claude,boat:codex,modal:codex,boat:codex ",
-    ARMADA_ORCHESTRATOR_SKILL_REVISION: "a".repeat(40),
-  });
+  const pairs = orchestratorPairsFromEnv(" boat:claude,boat:codex,modal:codex,boat:codex ");
   const caller: Caller = { userId: "owner", orgs: [], via: "supabase" };
   const response = await orchestratorHttp(
     new Request("https://armada.invalid/api/v1/orchestrators/capabilities"),
     caller,
     undefined,
-    config.orchestratorPairs,
+    pairs,
   );
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
@@ -158,9 +148,7 @@ test("requested production pairs stay unavailable and explain their independent 
   };
   expect(await response.json()).toEqual(expected);
   // MCP consumes this same dispatcher; no provider or owner identity is needed for diagnostics.
-  expect(await callOrchestrator(undefined, caller, "capabilities", {}, undefined, config.orchestratorPairs)).toEqual(
-    expected,
-  );
+  expect(await callOrchestrator(undefined, caller, "capabilities", {}, undefined, pairs)).toEqual(expected);
   const mutation = await orchestratorHttp(
     new Request("https://armada.invalid/api/v1/orchestrators", {
       method: "POST",
@@ -168,7 +156,7 @@ test("requested production pairs stay unavailable and explain their independent 
     }),
     caller,
     undefined,
-    config.orchestratorPairs,
+    pairs,
   );
   expect(mutation.status).toBe(503);
 });

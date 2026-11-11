@@ -51,36 +51,19 @@ describe("config", () => {
     expect(configFromEnv({ ...ENV, PORT: "3000" }).port).toBe(3000);
   });
 
-  test("orchestrator deployment intent defaults off and refuses unknown pairs without echoing input", () => {
-    expect(configFromEnv(ENV).orchestratorPairs).toEqual([]);
+  test("sandbox access is default-off, ignores retired env and only enables supported pairs", () => {
+    expect(configFromEnv(ENV).sandboxAccessPairs).toEqual([]);
     expect(
-      configFromEnv({ ...ENV, ARMADA_ORCHESTRATOR_PAIRS: "modal:codex" }).orchestratorSkillRevision,
-    ).toBeUndefined();
-    for (const revision of ["main", "secret-invalid-revision"]) {
-      expect(() =>
-        configFromEnv({
-          ...ENV,
-          ARMADA_ORCHESTRATOR_PAIRS: "modal:codex",
-          ARMADA_ORCHESTRATOR_SKILL_REVISION: revision,
-        }),
-      ).toThrow("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
-    }
+      configFromEnv({ ...ENV, ARMADA_ORCHESTRATOR_PAIRS: "modal:codex", ARMADA_ORCHESTRATOR_SKILL_REVISION: "ignored" })
+        .sandboxAccessPairs,
+    ).toEqual([]);
     expect(
-      configFromEnv({
-        ...ENV,
-        ARMADA_ORCHESTRATOR_PAIRS: "modal:codex",
-        ARMADA_ORCHESTRATOR_SKILL_REVISION: "a".repeat(40),
-      }).orchestratorSkillRevision,
-    ).toBe("a".repeat(40));
-    for (const pairs of ["true", "boat:claud", "boat:claude,", "secret-invalid-pair"]) {
-      try {
-        configFromEnv({ ...ENV, ARMADA_ORCHESTRATOR_PAIRS: pairs });
-        throw new Error("Unexpected acceptance");
-      } catch (error) {
-        expect(String(error)).toContain("ARMADA_ORCHESTRATOR_PAIRS must list");
-        expect(String(error)).not.toContain(pairs);
-      }
-    }
+      configFromEnv({ ...ENV, ARMADA_SANDBOX_ACCESS_PAIRS: "boat:codex,modal:codex,boat:codex" }).sandboxAccessPairs,
+    ).toEqual(["boat:codex", "modal:codex"]);
+    for (const pair of ["true", "boat:claude", "modal:claude", "secret-invalid-pair"])
+      expect(() => configFromEnv({ ...ENV, ARMADA_SANDBOX_ACCESS_PAIRS: pair })).toThrow(
+        "ARMADA_SANDBOX_ACCESS_PAIRS must list boat:codex or modal:codex.",
+      );
   });
 
   test("dashboard OAuth origin is independently configured and only permits loopback HTTP in development", () => {

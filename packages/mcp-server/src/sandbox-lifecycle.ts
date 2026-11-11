@@ -44,7 +44,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         where s.id=(select candidate.id from public.sandboxes candidate
           join public.members m on m.org_id=candidate.org_id and m.user_id=candidate.owner_id
           where candidate.status not in ('stopped','deleted')
-          and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
+          and not exists(select 1 from public.armada_access_parents parent where parent.kind='orchestrator' and parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           and candidate.reconcile_after<=now()
           and (candidate.activity_until is null or candidate.activity_until<now())

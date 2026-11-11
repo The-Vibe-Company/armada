@@ -1932,9 +1932,7 @@ test("access launch grants scoped authority before the first prompt while retain
     options.providerFor = () => provider;
     options.providers = { resolve: async () => access.wrap(provider) };
     options.sandboxArmadaAccess = access;
-    options.orchestrators = {
-      enabledPairs: ["modal:codex"],
-    } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
+    options.sandboxAccessPairs = ["modal:codex"];
     const result = await cli(STAN).run([
       "launch",
       "access",

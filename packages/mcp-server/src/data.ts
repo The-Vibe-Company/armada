@@ -86,7 +86,7 @@ const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, 
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+const SANDBOX_MEMBER = `not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)
   and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m
   where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
@@ -313,7 +313,7 @@ export function createSqlData(sql: Sql): DataSource {
         const row = (
           await sql.query<{ status: string; managed: boolean }>(
             `select s.status::text as status,
-             (exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+             (exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)
               or exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id)) as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
            and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
@@ -372,7 +372,7 @@ export function createSqlData(sql: Sql): DataSource {
           )
           where ${SANDBOX_VISIBLE} and s.id=$3::uuid
             -- Managed parents use their durable journal as the sole usage writer.
-            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+            and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)`,
           [...scope, id, JSON.stringify(usage)],
         );
       },
@@ -477,7 +477,7 @@ export function createSqlData(sql: Sql): DataSource {
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
-            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+            and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)
             and not exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id)`;
         const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
         if (ownsActivity) {

@@ -32,7 +32,7 @@ interface ResourceRow extends SandboxRow {
   reconcile_lease_until: string | Date | null;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const VISIBLE = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)
+const VISIBLE = `not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id) and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)
   and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
 function validNow(now: Date): string {
   if (!Number.isFinite(now.getTime())) throw new LaunchError("invalid_request", "Invalid observation time.");

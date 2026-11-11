@@ -37,15 +37,13 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
-import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
+import type { SandboxAccessPair } from "./sandbox-access-activation.ts";
 
 export interface HandlerOptions {
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
-  orchestratorPairs?: readonly OrchestratorPair[];
-  orchestrators?: OrchestratorRuntime;
+  sandboxAccessPairs?: readonly SandboxAccessPair[];
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -189,8 +187,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
-        ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
-        ...(options.orchestratorPairs ? { orchestratorPairs: options.orchestratorPairs } : {}),
+        ...(options.sandboxAccessPairs ? { sandboxAccessPairs: options.sandboxAccessPairs } : {}),
       },
       VERSION,
     );

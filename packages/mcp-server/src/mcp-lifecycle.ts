@@ -295,7 +295,7 @@ export function createMcpLifecycle(options: {
         const sandbox = (
           await tx.query<{ id: string; owner_id: string; application_secret_tainted: boolean }>(
             `select id,owner_id,application_secret_tainted from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
-          and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
+          and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
             [provider.id, providerSandboxId, caller.orgId, caller.userId],
           )
         ).rows[0];
@@ -340,7 +340,7 @@ export function createMcpLifecycle(options: {
         role: "admin" | "member";
         template_request_id: string | null;
       }>(
-        `select s.id,s.org_id,s.owner_id,m.role,${options.prepareReadableVariables ? "(select r.id from public.template_launch_requests r where r.sandbox_id=s.id and r.manifest->'variables'<>'{}'::jsonb)" : "null::uuid"} as template_request_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+        `select s.id,s.org_id,s.owner_id,m.role,${options.prepareReadableVariables ? "(select r.id from public.template_launch_requests r where r.sandbox_id=s.id and r.manifest->'variables'<>'{}'::jsonb)" : "null::uuid"} as template_request_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)`,
         [provider.id, providerSandboxId, caller.userId, caller.orgId],
       );
       const row = r.rows[0];

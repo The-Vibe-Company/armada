@@ -289,7 +289,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
       const result = await sql.query<SandboxRow>(
         `select ${COLUMNS} from public.sandboxes
          where created_at < $1::timestamptz and status <> 'deleted'
-         and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id)
+         and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=sandboxes.id)
          order by created_at asc`,
         [cutoff],
       );

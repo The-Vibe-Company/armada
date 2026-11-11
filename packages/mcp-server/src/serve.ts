@@ -1,5 +1,4 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -35,14 +34,10 @@ import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
-import type { createOrchestratorServices } from "./orchestrator-composition.ts";
-import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
-import { createProductionOrchestrators } from "./orchestrator-production.ts";
-import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
-import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
+import { createSandboxAccessServices } from "./sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -58,21 +53,6 @@ export { bunSql };
 export async function startServer(
   env: Record<string, string | undefined>,
   options: {
-    /** Trusted embedding override; otherwise the explicit server pair setting composes Modal Codex. */
-    orchestrators?: (context: {
-      sql: Sql;
-      providers: ProviderRegistry;
-      credentials: NamedOrchestratorCredentials;
-      encryptionKey: string | undefined;
-      connections: NonNullable<ConfiguredControlOptions["connections"]>;
-      managedConnections: NonNullable<ConfiguredControlOptions["connections"]>;
-      publicUrl: string;
-      scopedMcpUrl: string;
-    }) =>
-      | Promise<
-          Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle"> | OrchestratorServiceBundle
-        >
-      | OrchestratorServiceBundle;
     routes?: readonly Route[];
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
@@ -206,7 +186,7 @@ export async function startServer(
   });
   const control: ConfiguredControlOptions = {
     launch,
-    orchestratorPairs: config.orchestratorPairs,
+    sandboxAccessPairs: config.sandboxAccessPairs,
     publicUrl: config.publicUrl,
     modelAuth,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
@@ -262,36 +242,19 @@ export async function startServer(
     { store, app: githubApp },
     Reflect.get(control, "modelAuth"),
   ]) as NamedOrchestratorCredentials;
-  const orchestratorContext = {
+  const sandboxAccess = createSandboxAccessServices({
     extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds,
     sql,
     providers,
     credentials,
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
-    managedConnections: mcp.managedConnections,
-    publicUrl: config.publicUrl,
-    scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
-  };
-  const orchestrators = options.orchestrators
-    ? await options.orchestrators(orchestratorContext)
-    : createProductionOrchestrators({
-        ...orchestratorContext,
-        encryptionKey: config.encryptionKey,
-        requestedPairs: config.orchestratorPairs,
-        skillRevision: config.orchestratorSkillRevision,
-        diagnosticLog: orchestratorDiagnosticLog({
-          info: options.log ?? console.info,
-          warn: console.warn,
-          error: options.logError ?? console.error,
-        }),
-      });
-  if (orchestrators) control.orchestrators = orchestrators.runtime;
+    requestedPairs: config.sandboxAccessPairs,
+  });
   const handler = createHandler({
     ready: createDatabaseReadiness(sql),
     launch,
-    orchestratorPairs: config.orchestratorPairs,
-    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
+    sandboxAccessPairs: config.sandboxAccessPairs,
     modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
@@ -319,15 +282,7 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
-      ...(orchestrators && "scopedToolsRoute" in orchestrators
-        ? [
-            orchestrators.scopedToolsRoute,
-            orchestrators.ownerLifecycleRoute({
-              authStore,
-              supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-            }),
-          ]
-        : []),
+      ...(sandboxAccess ? [sandboxAccess.scopedToolsRoute] : []),
       modal.route,
       mcp.route,
       (request) => handleControlRequest(request, control),
@@ -390,14 +345,7 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    orchestrators
-      ? [
-          orchestrators.runtime.createWorker,
-          ...("lifecycle" in orchestrators
-            ? [orchestrators.lifecycle]
-            : [orchestrators.lifecycleWorker, orchestrators.childWorker, orchestrators.eventWorker]),
-        ]
-      : [],
+    sandboxAccess ? [sandboxAccess.childWorker] : [],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

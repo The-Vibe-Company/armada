@@ -222,7 +222,7 @@ export function createModelUsageApi(
            left join lateral (
              select s.id from public.sandboxes s join public.goldens g on g.id=s.golden_id
              where s.credential_id=c.id and s.credential_version=c.version and s.deleted_at is null
-             and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+             and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)
              and s.org_id=g.org_id
              and ($2::uuid is null or s.id=$2::uuid)
              and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$3::uuid)
