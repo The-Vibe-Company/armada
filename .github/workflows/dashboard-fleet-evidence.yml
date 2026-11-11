@@ -63,12 +63,15 @@ jobs:
         run: |
           set -euo pipefail
           original=$(mktemp -d)
-          cp -a src "$original/candidate"
+          mkdir -p "$original/candidate"
+          cp -a src test "$original/candidate/"
           app_pid=""
           mock_pid=""
           restore_source() {
-            if [[ -d src ]]; then mv src "$original/previous-$(date +%s%N)"; fi
-            cp -a "$original/candidate" src
+            for directory in src test; do
+              if [[ -d "$directory" ]]; then mv "$directory" "$original/previous-$directory-$(date +%s%N)"; fi
+              cp -a "$original/candidate/$directory" "$directory"
+            done
           }
           cleanup() {
             restore_source
@@ -77,15 +80,17 @@ jobs:
           }
           trap cleanup EXIT
           mkdir -p test-results/fleet-evidence
-          printf 'PR head: %s\nBaseline dashboard source: %s\nDownload/extract and open index.html. Before uses the baseline dashboard src tree; after restores the candidate tree. Both use current mock/dependencies.\n' "$HEAD_SHA" "$BASE_SHA" > test-results/fleet-evidence/README.txt
+          printf 'PR head: %s\nBaseline dashboard source: %s\nDownload/extract and open index.html. Before uses baseline dashboard src/test trees; after restores candidate trees. Both use current mock/dependencies.\n' "$HEAD_SHA" "$BASE_SHA" > test-results/fleet-evidence/README.txt
           bun e2e/mock-supabase.ts > test-results/fleet-evidence/mock.log 2>&1 &
           mock_pid=$!
           for phase in before after; do
             restore_source
             if [[ "$phase" == before ]]; then
-              mv src "$original/head-source"
-              git -c safe.directory="$GITHUB_WORKSPACE" archive "$BASE_SHA" apps/dashboard/src | tar -x -C "$original"
+              mv src "$original/head-src"
+              mv test "$original/head-test"
+              git -C "$GITHUB_WORKSPACE" -c safe.directory="$GITHUB_WORKSPACE" archive "$BASE_SHA" apps/dashboard/src apps/dashboard/test | tar -x -C "$original"
               cp -a "$original/apps/dashboard/src" src
+              cp -a "$original/apps/dashboard/test" test
             fi
             bunx next build
             NODE_OPTIONS=--require=./e2e/github-fetch.cjs node node_modules/next/dist/bin/next start -p 3100 -H 127.0.0.1 > "test-results/fleet-evidence/$phase-server.log" 2>&1 &

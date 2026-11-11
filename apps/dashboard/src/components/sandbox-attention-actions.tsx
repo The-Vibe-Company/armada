@@ -2,7 +2,8 @@
 
 import type { SandboxStatus } from "@armada/core";
 import { CheckIcon, PlayIcon, RotateCcwIcon, Undo2Icon } from "lucide-react";
-import { useActionState } from "react";
+import { useRouter } from "next/navigation";
+import { useActionState, useEffect, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 import { acknowledgeAttention, restoreAttention } from "@/app/actions/sandbox-attention";
 import { sendToSandbox } from "@/app/actions/sandboxes";
@@ -87,4 +88,17 @@ function AcknowledgeButton({ dismissed }: { dismissed: boolean }) {
       {dismissed ? "Restore attention" : "Acknowledge"}
     </Button>
   );
+}
+
+/** Keep the old visible-page minute refresh: deadlines/attention can change without a machine-status transition. */
+export function SandboxAttentionRefresh() {
+  const router = useRouter();
+  const [, startTransition] = useTransition();
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") startTransition(() => router.refresh());
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [router]);
+  return null;
 }

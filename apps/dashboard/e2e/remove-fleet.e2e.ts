@@ -107,9 +107,9 @@ test("old Fleet acknowledgement cookies migrate once without restoring stale ack
   await failed.getByRole("button", { name: "Acknowledge", exact: true }).click();
   await expect(failed.getByText("Acknowledged", { exact: true })).toBeVisible();
   const saved = (await page.context().cookies()).find((cookie) => cookie.name === "armada-fleet-ack");
-  expect(saved).toBeDefined();
+  if (!saved) throw new Error("Acknowledgement cookie was not saved");
   await page.context().clearCookies({ name: "armada-fleet-ack" });
-  await page.context().addCookies([{ ...saved!, path: "/fleet" }]);
+  await page.context().addCookies([{ ...saved, path: "/fleet" }]);
   await page.goto("/fleet?view=all");
   await expect(page).toHaveURL(/\/sandboxes$/);
   const migrated = (await page.context().cookies()).filter((cookie) => cookie.name === "armada-fleet-ack");
@@ -120,4 +120,21 @@ test("old Fleet acknowledgement cookies migrate once without restoring stale ack
   await page.goto("/fleet");
   await attention(page, BUSY.failed);
   await expect(failed.getByText("Acknowledged", { exact: true })).toHaveCount(0);
+});
+
+test("attention refreshes while status stays running, so an approaching deadline is not missed", async ({ page }) => {
+  await page.clock.install();
+  await signIn(page, "alice@example.com", `/sandboxes/${BUSY.working}`);
+  await expect(page.getByRole("heading", { name: BUSY_LABELS.working, exact: true })).toBeVisible();
+  await expect(page.locator("[data-sandbox-attention]")).toHaveCount(0);
+  const response = await fetch(`${MOCK}/__test/sandbox-lifecycle`, {
+    method: "POST",
+    body: JSON.stringify({
+      id: BUSY.working,
+      fields: { expires_at: new Date(Date.now() + 20 * 60_000).toISOString() },
+    }),
+  });
+  expect(response.ok).toBe(true);
+  await page.clock.fastForward(60_000);
+  await expect(page.locator('[data-sandbox-attention="expiring"]')).toBeVisible();
 });
