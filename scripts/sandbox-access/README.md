@@ -63,7 +63,11 @@ child-targeted native read with explicit **401** status and the exact closed
 `invalid_epoch_authority` code establishes a no-auth native denial. A foreign-child
 403 `scoped_authority_denied` is **not** absence proof: a valid differently scoped
 grant receives that same refusal. If the model declines to call, says a tool is unavailable, emits no tool evidence, or produces only a
-generic error, native absence/denial is **UNVERIFIED**, even with an old-grant file.
+generic error, the native check is **UNVERIFIED**, even with an old-grant file.
+It also leaves the native-turn allocation audit incomplete, so the final run is
+**FAILED** with `cleanup_not_confirmed` even if all *known* machines were stopped.
+The same applies to a resumed turn without its expected completed read: absence
+of a recognized launch event is not proof that nothing allocated.
 The controller also executes a fixed anonymous gateway request **inside that control**, requiring
 401 `invalid_epoch_authority`. No owner token is sent to a guest. This tests the
 unauthenticated fence, not native authority absence (an opted-in sandbox would
@@ -112,7 +116,9 @@ guarantee cleanup; the report never labels unknown outcomes as success.
 
 Any native turn without a complete allocation audit, or an ambiguous/unpublished
 delegated launch receipt, leaves cleanup **unconfirmed**: an empty owner list and
-a stopped parent do not prove that an in-flight child never allocated.
+a stopped parent do not prove that an in-flight child never allocated. The
+resumed/control audit is only cleared by its expected completed scoped read or
+exact native 401 denial, respectively—not merely an empty recognized-tool list.
 No launch/send is blindly retried after an ambiguous response. Discovery may
 only stop independently verified new owner resources on the selected golden whose
 first prompt exactly matches this run's child-init or owner-launch task. A native

@@ -227,6 +227,22 @@ class Safety(unittest.TestCase):
                 self.assertNotIn("owner-secret", output.getvalue())
                 self.assertNotIn("armada_epoch_", output.getvalue())
                 self.assertNotIn(instances[-1].answer, output.getvalue())
+            for unsupported in (False, True):
+                class MissingResumeRead(Fixture):
+                    def _request(self, route, body, *args):
+                        value = super()._request(route, body, *args)
+                        if route == "logs/read" and body["id"] == parent:
+                            value["events"][1]["tools"] = [{"id": "unknown", "name": "unsupported-native-shape"}] if unsupported else []
+                        return value
+                with self.subTest("missing or unsupported resumed native evidence", unsupported=unsupported):
+                    output = io.StringIO()
+                    with mock.patch.object(check, "Run", MissingResumeRead), contextlib.redirect_stdout(output):
+                        self.assertEqual(check.main(ARGS, ENV), 1)
+                    summary = json.loads(output.getvalue().splitlines()[-1])
+                    self.assertFalse(summary["cleanupConfirmed"])
+                    self.assertEqual(summary["reason"], "cleanup_not_confirmed")
+                    self.assertEqual(instances[-1].stopped, {parent, child})
+
             class NoNativeControlProof(Fixture):
                 def _request(self, route, body, *args):
                     if route == "logs/read" and body["id"] == control:
@@ -238,9 +254,11 @@ class Safety(unittest.TestCase):
                 with mock.patch.object(check, "Run", NoNativeControlProof), contextlib.redirect_stdout(output):
                     self.assertEqual(check.main(ARGS + ["--old-grant-file", str(path)], ENV), 1)
                 summary = json.loads(output.getvalue().splitlines()[-1])
-                self.assertEqual(summary["status"], "UNVERIFIED")
+                self.assertEqual(summary["status"], "FAILED")
+                self.assertEqual(summary["reason"], "cleanup_not_confirmed")
                 self.assertIn("control_native_authority_unverified", summary["unverified"])
-                self.assertTrue(summary["cleanupConfirmed"])
+                self.assertFalse(summary["cleanupConfirmed"])
+                self.assertEqual(instances[-1].stopped, {parent, child, control})
 
             class ForeignScopeDenial(Fixture):
                 def _request(self, route, body, *args):
@@ -254,9 +272,11 @@ class Safety(unittest.TestCase):
                 with mock.patch.object(check, "Run", ForeignScopeDenial), contextlib.redirect_stdout(output):
                     self.assertEqual(check.main(ARGS + ["--old-grant-file", str(path)], ENV), 1)
                 summary = json.loads(output.getvalue().splitlines()[-1])
-                self.assertEqual(summary["status"], "UNVERIFIED")
+                self.assertEqual(summary["status"], "FAILED")
+                self.assertEqual(summary["reason"], "cleanup_not_confirmed")
                 self.assertIn("control_native_authority_unverified", summary["unverified"])
-                self.assertTrue(summary["cleanupConfirmed"])
+                self.assertFalse(summary["cleanupConfirmed"])
+                self.assertEqual(instances[-1].stopped, {parent, child, control})
 
             foreign = str(__import__("uuid").UUID(int=13))
             class ForeignReceipt(Fixture):

@@ -403,13 +403,13 @@ class Run:
         resumed_tools = scoped_tools(events, resumed["promptId"])
         if any(call["method"] == "launch" for call in resumed_tools):
             raise Failure("unexpected_delegated_allocation")
-        self.delegated_uncertain = False
         reads = [call for call in resumed_tools if call["method"] == "read"
                  and call.get("input") == {"sandboxId": self.child}]
         if (not assistant_has(events, self.memory, resumed["promptId"])
                 or not assistant_has(events, self.child, resumed["promptId"])
                 or not any(self.successful(call).get("id") == self.child for call in reads)):
             raise Failure("memory_or_renewed_authority_unconfirmed")
+        self.delegated_uncertain = False
         if old:
             self.call("orchestrator-tools/read", {"sandboxId": self.child}, token=old, expected=403, code="scoped_authority_denied")
             self.checks.append("old_grant_positive_then_stopped_and_resumed_denial")
@@ -419,13 +419,15 @@ class Run:
         self.verify_resource(self.control, owner)
         self.settled(self.control, control["promptId"])
         control_calls = scoped_tools(self.logs(self.control), control["promptId"])
-        self.delegated_uncertain = any(call["method"] == "launch" for call in control_calls)
+        if any(call["method"] == "launch" for call in control_calls):
+            raise Failure("unexpected_delegated_allocation")
         if any(call.get("result", {}).get("isError") is False for call in control_calls):
             raise Failure("control_has_delegated_authority")
         if not any(call["method"] == "read" and call.get("input") == {"sandboxId": self.child}
                    and native_denial(call) for call in control_calls):
             self.unverified.append("control_native_authority_unverified")
         else:
+            self.delegated_uncertain = False
             self.checks.append("control_native_scoped_read_denied")
         # Fixed guest-side anonymous probe: never ask the model to report PASS.
         source = ("import urllib.request,urllib.error,json\n"
