@@ -1956,11 +1956,12 @@ function describe(error: unknown): { code: string; message: string } {
   }
   if (error instanceof VaultError)
     return {
-      code: error.code.startsWith("credential_binding_")
-        ? error.code
-        : error.code === "unavailable"
-          ? "dependency_unavailable"
-          : "missing_credential",
+      code:
+        error.code === "credential_busy" || error.code.startsWith("credential_binding_")
+          ? error.code
+          : error.code === "unavailable"
+            ? "dependency_unavailable"
+            : "missing_credential",
       message: error.message,
     };
   if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };

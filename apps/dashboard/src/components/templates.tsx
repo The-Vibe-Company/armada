@@ -57,6 +57,7 @@ import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
@@ -196,7 +197,15 @@ function TemplateForm({
   const [scope, setScope] = useState<TemplateScope>(editing?.scope ?? "personal");
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
   const [harness, setHarness] = useState<Harness>(editing?.definition.harness ?? "claude");
+  const [keepAccount, setKeepAccount] = useState(true);
   const [problem, setProblem] = useState<string | null>(null);
+  const keepingPinnedAccount = Boolean(
+    keepAccount && editing?.definition.modelAccount && harness === editing.definition.harness,
+  );
+  const accountSelection =
+    lookups.accounts?.state === "ready"
+      ? launchDefault(lookups.accounts.accounts, harness, lookups.accounts.now).state
+      : null;
   const root = useRef<HTMLFormElement>(null);
   useEffect(() => {
     if (state?.ok) onDone(state.message);
@@ -340,6 +349,19 @@ function TemplateForm({
           onChange={setHarness}
           options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
         />
+        {!keepingPinnedAccount && accountSelection && accountSelection !== "resolved" && (
+          <p role="status" className="text-sm text-amber-700 dark:text-amber-300">
+            {accountSelection === "ambiguous"
+              ? `Several ${HARNESS_LABELS[harness]} accounts are available. Set a default in `
+              : `No usable ${HARNESS_LABELS[harness]} account is available to you in this organization. Add or reconnect one in `}
+            <Link className="underline" href={HARNESS_PATH}>
+              Build &gt; Harness
+            </Link>
+            {accountSelection === "ambiguous" ? "." : " or choose another agent."} You can save this template, but
+            launching it requires {accountSelection === "ambiguous" ? "an unambiguous account selection" : "an account"}
+            .
+          </p>
+        )}
         <ModelFields
           key={harness}
           idPrefix={id}
@@ -354,7 +376,8 @@ function TemplateForm({
             <input
               type="checkbox"
               name="keep_account"
-              defaultChecked
+              checked={keepAccount}
+              onChange={(event) => setKeepAccount(event.target.checked)}
               className="mt-0.5 size-4 shrink-0 accent-primary"
             />
             <span>

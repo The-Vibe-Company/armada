@@ -17,6 +17,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { type GoldenRow, listGoldens } from "@/lib/data/goldens";
+import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
@@ -96,12 +97,13 @@ export default async function TemplatesPage({ searchParams }: Props) {
     );
   }
 
-  const [goldens, connections, vault] = await Promise.all([
+  const [goldens, connections, vault, accounts] = await Promise.all([
     createClient().then(listGoldens),
     listSelectedConnections(),
     listSelectedVault(),
+    listSelectedAccounts(),
   ]);
-  const lookups = lookupsFrom(goldens, connections, vault);
+  const lookups = { ...lookupsFrom(goldens, connections, vault), accounts: launchAccounts(accounts, Date.now()) };
   const isAdmin = selected.role === "admin";
   const org = { id: selected.org.id, name: selected.org.name };
   const viewer = { userId: list.userId, admin: isAdmin };

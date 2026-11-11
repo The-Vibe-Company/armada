@@ -62,6 +62,7 @@ export interface Orchestrator {
   skillRevision: string;
   skillReceipt?: OrchestratorSkillReceipt | null;
   blockedReason: string | null;
+  failureMessage?: string | null;
 }
 
 /** Required on message/steer/stop/resume and wait mutations; create uses only Idempotency-Key. */
@@ -91,6 +92,8 @@ export interface OrchestratorOperation {
   revision: number;
   /** Safe stable code, never a raw SDK exception. */
   errorCode: string | null;
+  /** Readable safe action for a closed failure code, when available. */
+  errorMessage?: string | null;
 }
 export interface OrchestratorWait extends OrchestratorFence {
   kind: "ci" | "child" | "external" | "task";

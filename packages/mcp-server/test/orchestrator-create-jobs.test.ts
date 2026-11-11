@@ -119,6 +119,7 @@ async function fixture(skillpackKey?: () => Promise<string | null>) {
     gate,
     entered,
     diagnostics,
+    credentials,
     replace: () => {
       replaceGeneration = true;
     },
@@ -238,6 +239,10 @@ test("revoked membership fails only tagged queued intent, emits a correlated fai
       (await f.sql.query("select state,error_code from orchestrator_operations where id=$1", [queued.operation.id]))
         .rows,
     ).toEqual([{ state: "failed", error_code: "create_authority_revoked" }]);
+    expect(
+      (await f.sql.query("select state,sandbox_id from orchestrators where id=$1", [queued.identity.id])).rows,
+    ).toEqual([{ state: "stopped", sandbox_id: null }]);
+
     expect(f.diagnostics.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         stage: "create_reconciliation",
@@ -364,6 +369,76 @@ test.each(["refused", "succeeded"])("requested skill readiness stays creating un
   } finally {
     f.gate.resolve();
     release.resolve();
+    await f.runtime.createWorker.drain();
+    await f.db.close();
+  }
+});
+
+test("busy account refusal is terminal before allocation and retains the reason in detail, replay and events", async () => {
+  const f = await fixture();
+  try {
+    f.credentials.admit = async () => {
+      throw new core.VaultError("credential_busy", core.CREDENTIAL_BUSY_MESSAGE);
+    };
+    const admitted = await f.runtime.create(f.caller, f.configuration, "busy-account");
+    f.gate.resolve();
+    await f.runtime.createWorker.drain();
+    const detail = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
+    expect(detail.orchestrator).toMatchObject({
+      state: "stopped",
+      continuity: "not_started",
+      sandboxId: null,
+      blockedReason: "credential_busy",
+      failureMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    // Build 5 synthesizes Codable for precisely these six parent state values.
+    const build5States = ["creating", "ready", "stopping", "stopped", "resuming", "blocked"];
+    const listed = await f.runtime.list(f.caller, f.p.org);
+    expect(listed.items.some((row) => row.id === admitted.orchestratorId)).toBe(true);
+    for (const row of [...listed.items, detail.orchestrator])
+      expect(build5States).toContain(JSON.parse(JSON.stringify(row)).state);
+    expect(detail.operations[0]).toMatchObject({
+      state: "failed",
+      errorCode: "credential_busy",
+      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    expect(await f.runtime.create(f.caller, f.configuration, "busy-account")).toMatchObject({
+      state: "failed",
+      errorCode: "credential_busy",
+      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+    });
+    const events = await f.db.query<{ event: unknown }>(
+      "select event from orchestrator_runtime_events where orchestrator_id=$1",
+      [admitted.orchestratorId],
+    );
+    expect(events.rows.map((r) => r.event)).toContainEqual({
+      kind: "operation",
+      operation: {
+        ...admitted,
+        state: "failed",
+        errorCode: "credential_busy",
+        errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+      },
+    });
+    await expect(
+      f.runtime.mutate(f.caller, {
+        orgId: f.p.org,
+        id: admitted.orchestratorId,
+        action: "stop",
+        key: "stop-failed",
+        expectedRevision: detail.orchestrator.revision,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const afterStop = await f.runtime.detail(f.caller, f.p.org, admitted.orchestratorId);
+    expect(afterStop.orchestrator).toMatchObject({
+      state: "stopped",
+      blockedReason: "credential_busy",
+      revision: detail.orchestrator.revision,
+    });
+    expect(afterStop.operations).toHaveLength(1);
+    expect(f.provider.forks).toHaveLength(0);
+  } finally {
+    f.gate.resolve();
     await f.runtime.createWorker.drain();
     await f.db.close();
   }

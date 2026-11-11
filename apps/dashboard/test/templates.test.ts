@@ -235,6 +235,14 @@ describe("template launch", () => {
     expect(templateFailure(409, "Template launch refused: variable_version_changed.")).toContain(
       "Publish a new revision",
     );
+    for (const [reason, action] of [
+      ["model_account_ambiguous", "Set a default in Build > Harness"],
+      ["model_account_refused", "Reconnect it in Build > Harness"],
+    ]) {
+      const message = templateFailure(409, `Template launch refused: ${reason}.`);
+      expect(message).toContain(action);
+      expect(message).not.toContain("newer revision");
+    }
     expect(templateFailure(409, "Template revision changed.")).toContain("newer revision");
     expect(templateFailure(409, "Request key already used with a different request.")).toContain(
       "still being confirmed",

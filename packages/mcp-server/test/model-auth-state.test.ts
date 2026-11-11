@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
+  CREDENTIAL_BUSY_MESSAGE,
   createSqlGoldenStore,
   createSqlSandboxStore,
   createSqlVaultStore,
@@ -7,6 +8,7 @@ import {
   type GoldenActor,
   launchSandbox,
   ProviderError,
+  VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import {
@@ -87,14 +89,16 @@ test("real native state publication seals rotation without replacing binding, fe
     await auth.releaseUnallocated(account.id, 1, SANDBOX);
     expect(await auth.managed(SANDBOX)).toBe(false);
     await auth.claim(actor, account.id, 1, SANDBOX);
-    await expect(auth.claim(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "conflict" });
+    await expect(auth.claim(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
     const duplicate = (
       await db.query<{ id: string }>(
         "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'codex_auth','Same native file',$2) returning id",
         [OWNER, await encryptSecret(native(0), KEY)],
       )
     ).rows[0]!;
-    await expect(auth.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({ code: "conflict" });
+    await expect(auth.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+      code: "credential_busy",
+    });
 
     await db.query(
       "insert into goldens(id,org_id,owner_id,name,visibility,config) values($1,$2,$3,'native','org',$4::jsonb)",
@@ -112,6 +116,18 @@ test("real native state publication seals rotation without replacing binding, fe
     );
     const provider = fakeBoat().provider;
     provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    const admission = spyOn(auth, "assertSandbox").mockRejectedValueOnce(
+      new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE),
+    );
+    await expect(auth.beforeResume(provider, "native", actor)).rejects.toMatchObject({
+      code: "conflict",
+      retryable: false,
+    });
+    admission.mockRestore();
+    await expect(auth.assertOwned(actor, account.id, 1, OTHER)).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("launch a new sandbox"),
+    });
     await auth.capture(provider, "native", actor);
     expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(1), revision: 1 });
     expect((await db.query("select version from credentials where id=$1", [account.id])).rows).toEqual([
@@ -248,7 +264,7 @@ test("real native state publication seals rotation without replacing binding, fe
     authJson = native(3);
     expect(await auth.capture(provider, "native", actor)).toContain("synthetic-refresh-3");
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
-    await expect(auth.claim(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "conflict" });
+    await expect(auth.claim(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [SANDBOX]);
     physicalStopped = true; // independent provider observation, not the SQL label
     await auth.claim(actor, account.id, 2, OTHER);
@@ -598,7 +614,7 @@ test.each([
       // not permission to rebind it or disable its ordinary shell inspection.
       await ownership.assertSandbox(actor, legacy, false, true);
     } else {
-      await expect(launch).rejects.toMatchObject({ code: "conflict" });
+      await expect(launch).rejects.toMatchObject({ code: "credential_busy" });
       expect(forks).toBe(0);
       if (!scenario.enrolled) {
         expect(
@@ -624,7 +640,7 @@ test.each([
               )
             ).rows[0]!;
             await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
-              code: "conflict",
+              code: "credential_busy",
             });
             // A rotated token is not in the original imported credential. No
             // event/exec output may escape without a trustworthy registry.
@@ -654,7 +670,7 @@ test.each([
               await encryptSecret(native(70, "different-replacement"), ENCRYPTION_KEY),
             ]);
             await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
-              code: "conflict",
+              code: "credential_busy",
             });
             // Restoring the fixture advances version again; the old home remains
             // unowned and is still fenced below, never implicitly adopted.

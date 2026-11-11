@@ -113,6 +113,7 @@ const REASONS = [
 type LiteralReason = (typeof REASONS)[number];
 
 const CODES = new Set([
+  "credential_busy",
   "not_found",
   "conflict",
   "unavailable",
