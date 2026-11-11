@@ -27,4 +27,3 @@ def capture_v1(harness,session,fresh,digest):
     entry=load(ticket+'.json');entry.update(harness=harness,session=session,fresh=fresh)
     save(ticket+'.json',entry);save(previous,{'ticket':ticket});os.unlink(ROOT+'/pending.json')
     return ticket
-
