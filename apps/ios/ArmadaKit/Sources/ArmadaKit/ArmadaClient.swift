@@ -233,6 +233,14 @@ public actor ArmadaClient {
             throw ArmadaError.http(400)
         case 409: throw ArmadaError.conflict
         case 500...599: throw ArmadaError.unavailable
+        case 402...499 where response.statusCode != 404 && response.statusCode != 429
+            && (route == "orchestrators" || route.hasPrefix("orchestrators/")):
+            // Keep the server's closed reason (422 `credential_refused`) so it can be explained.
+            if let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code,
+               OrchestratorExplanation.isClosedCode(code) {
+                throw ArmadaError.refused(code: code)
+            }
+            throw ArmadaError.http(response.statusCode)
         default: throw ArmadaError.http(response.statusCode)
         }
         do { return try JSONDecoder().decode(Response.self, from: data) }
