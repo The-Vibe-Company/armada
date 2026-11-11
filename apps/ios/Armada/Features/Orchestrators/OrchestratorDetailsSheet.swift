@@ -110,7 +110,7 @@ struct OrchestratorDetailsSheet: View {
                     if index > 0 { SheetSeparator() }
                     SheetValueRow(
                         title: operation.kind.label,
-                        value: operation.state == .uncertain ? "Not confirmed yet" : "Pending"
+                        value: operation.state.isUncertain ? "Not confirmed yet" : "Pending"
                     )
                     if let code = operation.errorCode {
                         Text(ArmadaKit.OrchestratorExplanation.text(for: code))

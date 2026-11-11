@@ -230,7 +230,8 @@ enum OperationState: Hashable, Sendable {
         }
     }
 
-    var isOpen: Bool { self == .pending || self == .uncertain }
+    var isOpen: Bool { self != .succeeded && self != .failed }
+    var isUncertain: Bool { isOpen && self != .pending }
 
     var rawValue: String {
         switch self {
