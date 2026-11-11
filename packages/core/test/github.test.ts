@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +41,33 @@ describe("GitHub access at launch", () => {
       refresh_token_expires_in: 15_811_200,
     });
 
-    const access = await resolveGitHubAccess(world.deps, USER);
+    const log = spyOn(console, "info").mockImplementation(() => {});
+    let access: Awaited<ReturnType<typeof resolveGitHubAccess>>;
+    try {
+      access = await resolveGitHubAccess({ ...world.deps, caller: "launch" }, USER);
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+        {
+          event: "github_token_refresh_started",
+          caller: "launch",
+          ownerId: USER,
+          reason: "cache_missing",
+          minimumLifetimeMs: 3_600_000,
+          previousRemainingLifetimeMs: null,
+        },
+        {
+          event: "github_token_rotated",
+          caller: "launch",
+          ownerId: USER,
+          reason: "cache_missing",
+          minimumLifetimeMs: 3_600_000,
+          previousRemainingLifetimeMs: null,
+          accessExpiresAt: "2026-11-08T20:00:00.000Z",
+          observedRemainingLifetimeMs: 28_800_000,
+        },
+      ]);
+    } finally {
+      log.mockRestore();
+    }
 
     expect(access).toEqual({
       status: "connected",

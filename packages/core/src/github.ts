@@ -313,7 +313,14 @@ export const GITHUB_REVOKED =
 
 export interface GitHubResolveDeps {
   /** Server-owned call site, never request input. */
-  caller?: "launch" | "golden_create" | "managed_runtime" | "legacy_refresh" | "legacy_prompt" | "account_status" | "modal_restore";
+  caller?:
+    | "launch"
+    | "golden_create"
+    | "managed_runtime"
+    | "legacy_refresh"
+    | "legacy_prompt"
+    | "account_status"
+    | "modal_restore";
   /** Trusted caller policy: launches require one hour; on-demand brokers need only the refresh margin. */
   minimumLifetimeMs?: number;
   store: GitHubConnectionStore;
@@ -406,7 +413,9 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       ownerId: userId,
       reason,
       minimumLifetimeMs,
-      previousRemainingLifetimeMs: connection.accessExpiresAt ? connection.accessExpiresAt.getTime() - now.getTime() : null,
+      previousRemainingLifetimeMs: connection.accessExpiresAt
+        ? connection.accessExpiresAt.getTime() - now.getTime()
+        : null,
     };
     console.info(JSON.stringify({ event: "github_token_refresh_started", ...audit }));
     let tokens: GitHubTokenSet;
@@ -420,12 +429,14 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       return { status: "revoked", message: GITHUB_REVOKED };
     }
     // Record the remote rotation even if local publication loses to a reconnect.
-    console.info(JSON.stringify({
-      event: "github_token_rotated",
-      ...audit,
-      accessExpiresAt: tokens.accessExpiresAt.toISOString(),
-      observedRemainingLifetimeMs: tokens.accessExpiresAt.getTime() - (deps.now ?? (() => new Date()))().getTime(),
-    }));
+    console.info(
+      JSON.stringify({
+        event: "github_token_rotated",
+        ...audit,
+        accessExpiresAt: tokens.accessExpiresAt.toISOString(),
+        observedRemainingLifetimeMs: tokens.accessExpiresAt.getTime() - (deps.now ?? (() => new Date()))().getTime(),
+      }),
+    );
     const next = {
       refreshTokenEnc: await encryptSecret(tokens.refreshToken, deps.encryptionKey),
       refreshExpiresAt: tokens.refreshExpiresAt,

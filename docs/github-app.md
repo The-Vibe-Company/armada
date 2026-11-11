@@ -95,3 +95,51 @@ timeout or crash after the durable fence was written can leave the token
 permanently unchanged, and reconnect is then the recovery path. No automatic
 retry reuses consumed refresh material. See the connection-residence and
 overlap budget in [Production readiness](production-readiness.md#connection-residence-during-github-operations).
+
+## Early rotation investigation (#952)
+
+The resolver does **not** assume eight hours: it stores GitHub's returned
+`expires_in` as an absolute access expiry. Eight hours (28,800 seconds) is the
+normal configured lifetime, not a guarantee that an injected token will remain
+usable for eight hours after launch. Launch admission requires **more than one
+hour remaining**, not a newly minted token. Other callers use the five-minute
+refresh margin; legacy explicit repair/next-prompt hydration uses zero.
+
+All resolver callers share one owner connection: launch, golden creation,
+account-status reads (dashboard/mobile/CLI through the account API), managed
+runtime brokering, Modal restore, and legacy repair/prompt preparation. Any can
+refresh a missing cache, an explicitly rejected access token, or a cache below
+its caller's lifetime threshold. Dashboard OAuth reconnect drops the cached
+access token; the next resolver then rotates. The account API callback instead
+persists its returned access token. Refresh fencing prevents replay, not
+rotation by a later authorized caller.
+
+For the Nov 11 09:02–09:24Z incident, the reported 401s establish loss of access,
+not which caller rotated or the lifetime returned by GitHub. There were no
+resolver rotation audit events before this change. Attribution and the actual
+production `expires_in` remain unverified pending sanitized historical logs;
+do not infer a twenty-minute issued lifetime from sandbox age.
+
+New structured events (no credentials, codes, state or upstream error bodies):
+- `github_token_refresh_started`: owner, server-owned caller, reason
+  (`cache_missing`, `insufficient_lifetime`, `access_rejected`), old remaining
+  lifetime and required minimum. Emitted only after the durable fence is won.
+- `github_token_rotated`: same context plus returned expiry and observed
+  remaining lifetime, after GitHub succeeds, **before** local publication;
+  a reconnect can still win publication. This captures even a too-short token.
+- `github_connection_replaced`: successful dashboard/account OAuth save,
+  caller, account/owner identity, observed remaining lifetime and whether the
+  access token was cached.
+
+For historical attribution request sanitized 09:00–09:25Z OAuth callback,
+account-status, launch/golden/restore and `github/refresh` request logs plus
+connection update/cache-expiry metadata. For future incidents grep the three
+events above by owner (dashboard reconnect uses GitHub account id).
+
+Interim rule: static token injection has no guaranteed usable lifetime in a
+shared connection. Save and push work frequently; on a legacy Boat sandbox use
+`armada github refresh <sandbox>` to hydrate the current owner token (it does
+not force rotation of a healthy cache). Reconnect only for a revoked/uncertain
+grant, not as routine repair. Automatic credential-helper refresh (#908)
+is the durable path for workers that must survive expiry or another client's
+rotation; do not weaken the refresh fence or promise static tokens survive it.

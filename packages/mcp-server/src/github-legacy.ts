@@ -11,7 +11,10 @@ export async function refreshLegacyGitHub(
 ): Promise<{ login: string } | null> {
   if (provider.id !== "boat" || provider.configureGitHub)
     throw new VaultError("unavailable", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-  const access = await resolveGitHubAccess({ ...github, caller: unavailable === "skip" ? "legacy_prompt" : "legacy_refresh", minimumLifetimeMs: 0 }, ownerId);
+  const access = await resolveGitHubAccess(
+    { ...github, caller: unavailable === "skip" ? "legacy_prompt" : "legacy_refresh", minimumLifetimeMs: 0 },
+    ownerId,
+  );
   if (access.status === "not_connected") return null;
   if (access.status !== "connected" || !access.expiresAt) {
     // GitHub is optional for local/model work. Explicit repair still reports why it failed.

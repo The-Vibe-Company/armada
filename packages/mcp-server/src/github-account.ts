@@ -216,6 +216,17 @@ export function createGitHubAccountApi(options: {
             ],
           );
         });
+        console.info(
+          JSON.stringify({
+            event: "github_connection_replaced",
+            caller: "account_callback",
+            reason: "oauth_connect",
+            ownerId: flow.user_id,
+            accessExpiresAt: tokens.accessExpiresAt.toISOString(),
+            observedRemainingLifetimeMs: tokens.accessExpiresAt.getTime() - now().getTime(),
+            accessTokenCached: true,
+          }),
+        );
         return callbackResult(true);
       } catch {
         try {

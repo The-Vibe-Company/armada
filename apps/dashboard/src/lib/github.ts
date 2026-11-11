@@ -333,6 +333,18 @@ export async function completeGitHubConnection(
       refreshExpiresAt: tokens.refreshExpiresAt,
       installations,
     });
+    if (saved)
+      console.info(
+        JSON.stringify({
+          event: "github_connection_replaced",
+          caller: "dashboard_callback",
+          reason: "oauth_connect",
+          githubId: user.id,
+          accessExpiresAt: tokens.accessExpiresAt.toISOString(),
+          observedRemainingLifetimeMs: tokens.accessExpiresAt.getTime() - Date.now(),
+          accessTokenCached: false,
+        }),
+      );
     return saved ? "connected" : "not_saved";
   } catch (error) {
     if (error instanceof EncryptionKeyError) return "encryption";
