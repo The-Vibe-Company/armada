@@ -80,13 +80,14 @@ describe("cost", () => {
   });
 
   test("missing fields or whole turns keep token totals unknown, including combined costs", () => {
+    const completeTurn = { ...turn("gpt-6.1-sol", 100, 20, 5), cacheWriteTokens: 0 };
     const complete = {
       computeSeconds: 1,
       turnCount: 1,
-      turns: [{ ...turn("gpt-6.1-sol", 100, 20, 5), cacheWriteTokens: 0 }],
+      turns: [completeTurn],
     };
     const partial = sandboxCost(
-      { ...complete, turns: [{ ...complete.turns[0], outputTokens: null }] },
+      { ...complete, turns: [{ ...completeTurn, outputTokens: null }] },
       "codex",
       "estimated",
     );
@@ -124,7 +125,7 @@ describe("cost", () => {
       expect(cost.inputTokens).toBe(expectedInput);
       expect(cost.cacheWriteTokens).toBe(writes);
       expect(cost.usd).toBeCloseTo(usd, 10);
-      expect(turnCost({ ...turn(model, input, cached, 100_000), cacheWriteTokens: undefined }, harness).usd).toBeNull();
+      expect(turnCost({ ...turn(model, input, cached, 100_000), cacheWriteTokens: null }, harness).usd).toBeNull();
     },
   );
 
