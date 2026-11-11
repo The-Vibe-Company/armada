@@ -15,9 +15,8 @@ It is not an orchestrator, workflow engine, or privileged service identity.
 ## Configuration and identity
 
 A routine has an ID, immutable org/owner/scope (`personal` or `org`), name,
-`templateId`, pinned positive `revision`, prompt, integer `intervalHours` (1–720),
-`ttlSeconds` (300–86400), and `maxRunsPerDay` (1–24). Defaults: 24 hours,
-3600-second TTL, 24 daily runs. Prompt is nonblank, at most 32,000 characters;
+`templateId`, pinned positive `templateRevision`, prompt, integer `intervalHours` (1–720),
+`ttlSeconds` (300–86400), and `maxRunsPerDay` (1–24). Creation defaults are 24 hours, 3600-second TTL and 24 daily runs. Prompt is nonblank, at most 32,000 characters;
 never a place to store secrets. Configuration is initially paused. Deleted is
 terminal. Follow-latest is deliberately not supported: editing a template must
 not silently change an unattended job. Updating a routine's revision is explicit.
@@ -83,11 +82,13 @@ automatic PR management, orchestration, or catch-up storms.
 ## Configuration API (this PR)
 
 Authenticated control API POST routes under `/api/v1/routines/`:
-`create`, `list`, `get`, `update`, `delete`. The session determines owner and org;
-clients cannot supply either. IDs are UUIDs. Create accepts name, scope,
-templateId, revision, prompt, intervalHours, ttlSeconds and maxRunsPerDay.
-Get/delete use `{id}`; update uses `{id, ...configuration changes}`; list uses
-an empty body. Owner and scope cannot be changed. Enable/resume and unknown
+`create`, `list`, `get`, `update`, `delete`. The session determines owner; `org` is an explicit org UUID and must be in the
+caller’s current memberships. Clients cannot supply owner. IDs are UUIDs. Create accepts name, scope,
+templateId, templateRevision, prompt, intervalHours, ttlSeconds and maxRunsPerDay
+plus org (creation may omit the three limits to use defaults). Get uses `{org, id}`; delete uses `{org, id, expectedVersion}`.
+Update replaces all mutable configuration fields and requires org, id and
+expectedVersion; list uses `{org}`. Mutations increment version and stale
+versions are refused to prevent lost updates. Owner and scope cannot be changed. Enable/resume and unknown
 fields are rejected. Updates validate the complete resulting configuration.
 User JWTs have SELECT-only RLS access; all writes pass server authorization.
 

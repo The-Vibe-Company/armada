@@ -27,6 +27,7 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  routines: "RoutineRow",
   launch_templates: "LaunchTemplateRow",
   launch_template_revisions: "LaunchTemplateRevisionRow",
   template_launch_requests: "TemplateLaunchRequestRow",
