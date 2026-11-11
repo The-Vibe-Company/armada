@@ -27,17 +27,26 @@ async function openAdd(page: Page) {
   return dialog;
 }
 
-for (const mobile of [false, true]) {
-  test(`Build > Skills shows both keys and adds one in a dialog that fits (${mobile ? "phone" : "laptop"})`, async ({
-    page,
-  }) => {
-    await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 720 });
+for (const [device, width, height] of [
+  ["laptop", 1280, 720],
+  ["tablet", 768, 1024],
+  ["phone", 390, 844],
+] as const) {
+  test(`Build > Skills shows both keys and adds one in a dialog that fits (${device})`, async ({ page }) => {
+    const mobile = device === "phone";
+    await page.setViewportSize({ width, height });
     await signIn(page, "alice@example.com", "/skills");
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect(nav.getByRole("link", { name: /Skills/ })).toHaveAttribute("aria-current", "page");
     await expect(row(page, "user")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Acme key");
+    // Every row's action stays on screen at any width.
+    await expect(row(page, "org").getByRole("button", { name: "Add the organization's Skillpack key" })).toBeInViewport(
+      {
+        ratio: 1,
+      },
+    );
 
     const dialog = await openAdd(page);
     // The scope rule is said before the key is pasted.
@@ -45,7 +54,7 @@ for (const mobile of [false, true]) {
     await expect(dialog.locator("[data-skillpack-scope-note]")).toContainText("refused");
     await expect(dialog.getByRole("radio", { name: /Personal/ })).toBeChecked();
     if (!mobile) await expect(dialog.getByRole("button", { name: "Store key" })).toBeInViewport({ ratio: 1 });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobile ? 390 : 1280);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Add key", exact: true })).toBeFocused();
   });
@@ -86,6 +95,7 @@ test("a key is stored write-only: never in an answer, the page or the form after
   await expect(dialog.locator("[data-skillpack-replaces]")).toContainText("replaces the personal key");
   await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("");
   await page.keyboard.press("Escape");
+  await expect(row(page, "user").getByRole("button", { name: "Replace your Skillpack key" })).toBeFocused();
 
   // The organization's key, by its admin.
   await row(page, "org").getByRole("button", { name: "Add the organization's Skillpack key" }).click();
@@ -101,6 +111,7 @@ test("a key is stored write-only: never in an answer, the page or the form after
   await confirm.getByRole("button", { name: "Remove key" }).click();
   await expect(confirm).toBeHidden();
   await expect(row(page, "user")).toHaveAttribute("data-skillpack-state", "not-set");
+  await expect(row(page, "user").getByRole("button", { name: "Add your Skillpack key" })).toBeFocused();
   expect((await calls()).map((call) => [call.route, call.body.scope])).toEqual([
     ["creds/set", "user"],
     ["creds/set", "org"],

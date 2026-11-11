@@ -1,7 +1,7 @@
 "use client";
 
 import { KeyRoundIcon, ShieldCheckIcon, UserIcon, UsersIcon } from "lucide-react";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useState } from "react";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { removeSkillpackKey, saveSkillpackKey } from "@/app/actions/skillpack-key";
 import { SubmitButton } from "@/components/action-form";
 import { ChoiceCard } from "@/components/connections";
@@ -52,7 +52,10 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
   const [scope, setScope] = useState<SkillpackScope>("user");
   const [generation, setGeneration] = useState(0);
   const toast = useToast();
-  const openFor = (next: SkillpackScope) => {
+  // A row's Add or Replace opens the dialog without its trigger: closing goes back to that button, not the header's.
+  const opener = useRef<HTMLElement | null>(null);
+  const openFor = (next: SkillpackScope, from: HTMLElement | null = null) => {
+    opener.current = from;
     setScope(next);
     setGeneration((value) => value + 1);
     setOpen(true);
@@ -79,6 +82,11 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
             else setOpen(false);
           }}
           className="sm:max-w-lg"
+          onCloseAutoFocus={(event) => {
+            if (!opener.current?.isConnected) return;
+            event.preventDefault();
+            opener.current.focus();
+          }}
           triggerAttrs={{ "data-add-skillpack-key": "" }}
         >
           <KeyForm
@@ -94,7 +102,7 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
       </PageHeader>
 
       <div className="space-y-3">
-        <ul aria-label="Skillpack keys" className="divide-y overflow-hidden rounded-xl border bg-card">
+        <ul aria-label="Skillpack keys" className="@container divide-y overflow-hidden rounded-xl border bg-card">
           {SCOPES.map((item) => (
             <KeyRow
               key={item}
@@ -103,7 +111,7 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
               orgName={orgName}
               stored={keys[item]}
               canManage={item === "user" || isAdmin}
-              onSet={() => openFor(item)}
+              onSet={(from) => openFor(item, from)}
             />
           ))}
         </ul>
@@ -130,7 +138,7 @@ function KeyRow({
   orgName: string;
   stored: SkillpackKey | null;
   canManage: boolean;
-  onSet: () => void;
+  onSet: (from: HTMLElement) => void;
 }) {
   const name = scope === "user" ? "Your key" : `${orgName} key`;
   const state = !stored
@@ -140,7 +148,7 @@ function KeyRow({
       : { tone: "warning" as const, label: "Expired or revoked" };
   return (
     <li
-      className="grid gap-x-4 gap-y-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_10rem_11rem_11rem] sm:items-center"
+      className="grid gap-x-4 gap-y-2 px-4 py-3 @3xl:grid-cols-[minmax(0,1fr)_10rem_minmax(0,11rem)_11rem] @3xl:items-center"
       data-skillpack-key={scope}
       data-skillpack-state={stored ? (stored.usable ? "active" : "unusable") : "not-set"}
     >
@@ -172,15 +180,16 @@ function KeyRow({
           </p>
         </div>
       </div>
-      <StateCell tone={state.tone} label={state.label} className="max-sm:ps-11" />
-      <p className="text-sm text-muted-foreground max-sm:hidden">{skillpackAudience(scope, orgName)}</p>
-      <div className="flex flex-wrap items-center gap-2 max-sm:ps-11 sm:justify-end">
+      <StateCell tone={state.tone} label={state.label} className="ps-11 @3xl:ps-0" />
+      <p className="hidden truncate text-sm text-muted-foreground @3xl:block">{skillpackAudience(scope, orgName)}</p>
+      <div className="flex flex-wrap items-center gap-2 ps-11 @3xl:justify-end @3xl:ps-0">
         {canManage ? (
           <>
             <Button
               size="sm"
               variant={stored ? "outline" : "default"}
-              onClick={onSet}
+              onClick={(event) => onSet(event.currentTarget)}
+              data-skillpack-set
               aria-label={`${stored ? "Replace" : "Add"} ${scope === "user" ? "your" : "the organization's"} Skillpack key`}
             >
               {stored ? "Replace" : "Add"}
@@ -291,24 +300,32 @@ function Choice({ legend, children }: { legend: string; children: ReactNode }) {
   );
 }
 
+/**
+ * Remove, confirmed. The form lives inside the dialog's content, which unmounts on close, so a refusal is not shown
+ * again on the next opening. Focus returns to Remove, or once the key is gone to the row's Add button.
+ */
 function RemoveKey({ scope, orgId }: { scope: SkillpackScope; orgId: string }) {
   const [open, setOpen] = useState(false);
-  const toast = useToast();
-  const [state, formAction] = useActionState(async (previous: ActionResult | null, data: FormData) => {
-    const result = await removeSkillpackKey(previous, data);
-    if (result.ok) {
-      toast({ tone: "success", title: result.message });
-      setOpen(false);
-    }
-    return result;
-  }, null);
+  const button = useRef<HTMLButtonElement>(null);
   const whose = scope === "user" ? "your" : "the organization's";
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <Button size="sm" variant="ghost" onClick={() => setOpen(true)} aria-label={`Remove ${whose} Skillpack key`}>
+      <Button
+        ref={button}
+        size="sm"
+        variant="ghost"
+        onClick={() => setOpen(true)}
+        aria-label={`Remove ${whose} Skillpack key`}
+      >
         Remove
       </Button>
-      <AlertDialogContent>
+      <AlertDialogContent
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (button.current?.isConnected) return button.current.focus();
+          document.querySelector<HTMLElement>(`[data-skillpack-key="${scope}"] [data-skillpack-set]`)?.focus();
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>Remove {whose} Skillpack key?</AlertDialogTitle>
           <AlertDialogDescription>
@@ -318,20 +335,37 @@ function RemoveKey({ scope, orgId }: { scope: SkillpackScope; orgId: string }) {
             Revoke the key in Skillpack too if you no longer need it.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {state && !state.ok && (
-          <p role="alert" className="text-sm text-destructive">
-            {state.error}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <form action={formAction}>
-            <input type="hidden" name="org" value={orgId} />
-            <input type="hidden" name="scope" value={scope} />
-            <SubmitButton variant="destructive">Remove key</SubmitButton>
-          </form>
-        </AlertDialogFooter>
+        <RemoveForm scope={scope} orgId={orgId} onRemoved={() => setOpen(false)} />
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+function RemoveForm({ scope, orgId, onRemoved }: { scope: SkillpackScope; orgId: string; onRemoved: () => void }) {
+  const toast = useToast();
+  const [state, formAction] = useActionState(async (previous: ActionResult | null, data: FormData) => {
+    const result = await removeSkillpackKey(previous, data);
+    if (result.ok) {
+      toast({ tone: "success", title: result.message });
+      onRemoved();
+    }
+    return result;
+  }, null);
+  return (
+    <>
+      {state && !state.ok && (
+        <p role="alert" className="text-sm text-destructive">
+          {state.error}
+        </p>
+      )}
+      <AlertDialogFooter>
+        <AlertDialogCancel>Cancel</AlertDialogCancel>
+        <form action={formAction}>
+          <input type="hidden" name="org" value={orgId} />
+          <input type="hidden" name="scope" value={scope} />
+          <SubmitButton variant="destructive">Remove key</SubmitButton>
+        </form>
+      </AlertDialogFooter>
+    </>
   );
 }
