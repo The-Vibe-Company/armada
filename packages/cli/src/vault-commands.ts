@@ -160,14 +160,7 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
 
 export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
-  const args = parseArgs(rest, [
-    "--id",
-    "--expected-version",
-    "--base-url",
-    "--api-version",
-    "--endpoint-auth",
-    "--sandbox-id",
-  ]);
+  const args = parseArgs(rest, ["--id", "--expected-version", "--base-url", "--api-version", "--endpoint-auth"]);
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
   if (
@@ -176,35 +169,6 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
   )
     throw usage("Endpoint options are only supported by creds set openai or anthropic.");
   switch (sub) {
-    case "holders":
-    case "release": {
-      const [id] = expect(
-        args.positionals,
-        1,
-        "armada creds holders|release <account-UUID> --expected-version <revision> [--org <UUID>] [--sandbox-id <holder-UUID>]",
-      );
-      const revision = single(args, "--expected-version");
-      if (!revision || !/^[1-9][0-9]*$/.test(revision) || !Number.isSafeInteger(Number(revision)))
-        throw usage("Holder inspection and release require --expected-version <positive integer>.");
-      const target = { id, version: Number(revision), scope, org };
-      if (sub === "holders") {
-        const result = await control(io.auth, "creds/accounts/holder", target);
-        io.auth.out(`${JSON.stringify(result)}\n`);
-      } else {
-        const sandboxId = single(args, "--sandbox-id");
-        if (!sandboxId)
-          throw usage(
-            "Release requires --sandbox-id <holder-UUID> from creds holders; recorded holders are permanently deleted.",
-          );
-        await control(io.auth, "creds/accounts/release", {
-          ...target,
-          sandboxId,
-          ...(single(args, "--file") ? { value: await readValue(args, io) } : {}),
-        });
-        io.auth.out("Subscription holder released. Inspect holders again before launching.\n");
-      }
-      return 0;
-    }
     case "login":
     case "import": {
       const [harness] = expect(

@@ -199,9 +199,6 @@ export async function removeAccount(_previous: ActionResult | null, data: FormDa
 /** Inspect or release a failed subscription launch; authorization stays on the server. */
 export async function subscriptionHolder(data: FormData): Promise<{
   sandboxId: string | null;
-  status?: string;
-  storedVersion?: number | null;
-  reason?: string;
   releasable?: boolean;
   requiresReconnect?: boolean;
   orphan?: boolean;
@@ -218,9 +215,6 @@ export async function subscriptionHolder(data: FormData): Promise<{
     });
     return {
       sandboxId: typeof result.sandboxId === "string" ? result.sandboxId : null,
-      status: typeof result.status === "string" ? result.status : "unrecorded",
-      storedVersion: typeof result.storedVersion === "number" ? result.storedVersion : null,
-      reason: typeof result.reason === "string" ? result.reason : "",
       releasable: result.releasable === true,
       requiresReconnect: result.requiresReconnect === true,
       orphan: result.orphan === true,

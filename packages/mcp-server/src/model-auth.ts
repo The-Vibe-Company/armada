@@ -52,19 +52,6 @@ export function createModelAuthOwnership(
     if (!row) throw new VaultError("not_found", "Native credential is no longer authorized.");
     return row.value_enc;
   }
-  async function authorizeRecovery(tx: Sql, actor: GoldenActor, id: string) {
-    const permitted = await tx.query(
-      `select c.id from public.credentials c where c.id=$1::uuid and
-       ((c.scope='user' and c.owner_id=$2::uuid) or (c.scope='org' and c.owner_id=$3::uuid
-       and exists(select 1 from public.members m where m.org_id=c.owner_id and m.user_id=$2::uuid and m.role='admin')))`,
-      [id, actor.userId, actor.orgId],
-    );
-    if (!permitted.rows.length)
-      throw new VaultError(
-        "forbidden",
-        "Only the account owner or organization administrator can inspect or release holders.",
-      );
-  }
   async function releaseFailed(
     actor: GoldenActor,
     id: string,
@@ -77,7 +64,6 @@ export function createModelAuthOwnership(
     if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
     await sql.transaction(async (tx) => {
       await authorize(tx, actor, id, version);
-      if (!automaticNeverStarted) await authorizeRecovery(tx, actor, id);
       const ownership = await tx.query<{ account_version: number }>(
         "select account_version from public.model_auth_ownership where account_id=$1::uuid and sandbox_id=$2::uuid for update",
         [id, sandboxId],
@@ -199,9 +185,7 @@ export function createModelAuthOwnership(
       if (!sql.transaction) throw new VaultError("unavailable", "Native inspection requires transactions.");
       return sql.transaction(async (tx) => {
         await authorize(tx, actor, id, version);
-        await authorizeRecovery(tx, actor, id);
         const result = await tx.query<{
-          status: string | null;
           sandboxId: string;
           version: number | null;
           storedVersion: number | null;
@@ -211,7 +195,7 @@ export function createModelAuthOwnership(
           releasable: boolean;
           orphan: boolean;
         }>(
-          `select s.status::text as status,o.sandbox_id as "sandboxId",o.account_version as version,o.account_version as "storedVersion",
+          `select o.sandbox_id as "sandboxId",o.account_version as version,o.account_version as "storedVersion",
            $2::integer as "currentVersion",s.id is null as orphan,o.account_version is null as "unknownVersion",
            o.account_version is null or not ($2>o.account_version or (s.id is not null and coalesce(state.auth_revision=0,false)
              and state.source_generation='launch:never-started')) as "requiresReconnect",
@@ -231,22 +215,10 @@ export function createModelAuthOwnership(
            ) o left join public.model_auth_state state
            on state.account_id=$1::uuid and state.account_version=o.account_version
            left join public.sandboxes s on s.id=o.sandbox_id
-           where (s.id is null or (s.owner_id=$3::uuid and s.org_id=$4::uuid)) order by o.account_version nulls first,s.id`,
+           where (s.id is null or (s.owner_id=$3::uuid and s.org_id=$4::uuid)) order by o.account_version nulls first,s.id limit 1`,
           [id, version, actor.userId, actor.orgId],
         );
-        const holders = result.rows.map((row) => ({
-          ...row,
-          reason: row.orphan
-            ? "Unregistered launch: provider identity is unavailable. Physical stop or absence cannot be confirmed; product release is refused."
-            : row.unknownVersion
-              ? "Legacy binding has no revision. Import fresh auth while releasing it."
-              : row.requiresReconnect
-                ? "Reconnect with fresh auth before release; this holder may have rotated its session."
-                : !row.releasable
-                  ? "Holder is not terminal or has an unfinished sandbox operation. Stop it first."
-                  : "Release will verify physical deletion before freeing this binding.",
-        }));
-        return holders[0] ? { ...holders[0], holders } : null;
+        return result.rows[0] ?? null;
       });
     },
     async markNeverStarted(actor: GoldenActor, id: string, version: number, sandboxId: string) {

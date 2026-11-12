@@ -342,7 +342,6 @@ export function AccountRow({
   now: number;
 }) {
   const [result, setResult] = useState<ActionResult | null>(null);
-  const [holderDetail, setHolderDetail] = useState("");
   const [holder, setHolder] = useState<string | null>(null);
   const [releasable, setReleasable] = useState(false);
   const [requiresReconnect, setRequiresReconnect] = useState(false);
@@ -426,9 +425,6 @@ export function AccountRow({
                         data.set("version", String(account.version));
                         const next = await subscriptionHolder(data);
                         setHolder(next.sandboxId);
-                        setHolderDetail(
-                          `${next.status ?? "unknown"} · binding revision ${next.storedVersion ?? "unknown"}. ${next.reason ?? ""}`,
-                        );
                         setReleasable(next.releasable === true);
                         setRequiresReconnect(next.requiresReconnect === true);
                         setOrphanHolder(next.orphan === true);
@@ -450,7 +446,6 @@ export function AccountRow({
                   </Button>
                   {holder && (
                     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                      <p className="w-full">{holderDetail}</p>
                       {orphanHolder ? (
                         <span className="min-w-0 break-all">Unrecorded launch: {holder}</span>
                       ) : (
@@ -509,12 +504,6 @@ export function AccountRow({
                             data.set("id", account.id);
                             data.set("version", String(account.version));
                             data.set("sandboxId", holder);
-                            if (
-                              !window.confirm(
-                                `Release subscription holder ${holder}? This permanently deletes its recorded sandbox after provider verification.`,
-                              )
-                            )
-                              return;
                             const released = await releaseSubscription(data);
                             setResult(released);
                             if (released.ok) {

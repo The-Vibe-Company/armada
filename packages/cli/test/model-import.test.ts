@@ -55,35 +55,3 @@ test("native import requires a version when replacing an existing account before
   ).rejects.toThrow("expected-version");
   expect(reads).toBe(0);
 });
-
-test("holder inspection and explicit release use the account revision and confirmed sandbox without reading secrets", async () => {
-  const requests: Request[] = [];
-  const output: string[] = [];
-  const auth = productionAuthIo(
-    { out: (text) => output.push(text), err: () => {} },
-    { ARMADA_URL: "https://armada.example", ARMADA_TOKEN: "synthetic-armada-token" },
-  );
-  auth.fetch = (async (input, init) => {
-    requests.push(new Request(String(input), init));
-    return Response.json({ sandboxId: "holder", status: "failed", storedVersion: 1, reason: "Reconnect first" });
-  }) as typeof fetch;
-  const io = {
-    auth,
-    readFile: async () => {
-      throw Error("unexpected secret read");
-    },
-    readStdin: async () => {
-      throw Error("unexpected secret read");
-    },
-  };
-  await credsCommand(["holders", "account", "--expected-version", "2"], io);
-  expect(output.join("")).toContain("Reconnect first");
-  await expect(credsCommand(["release", "account", "--expected-version", "2"], io)).rejects.toThrow("--sandbox-id");
-  expect(requests).toHaveLength(1);
-  await credsCommand(["release", "account", "--expected-version", "2", "--sandbox-id", "holder"], io);
-  expect(requests.map((r) => new URL(r.url).pathname)).toEqual([
-    "/api/v1/creds/accounts/holder",
-    "/api/v1/creds/accounts/release",
-  ]);
-  expect(await requests[1]!.json()).toEqual({ id: "account", scope: "user", version: 2, sandboxId: "holder" });
-});
