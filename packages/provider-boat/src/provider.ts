@@ -32,6 +32,8 @@ import {
   MACHINE_SIZE_CATALOG,
   ProviderError,
   parseMachineSize,
+  providerRateLimitDetails,
+  providerRateLimitMessage,
   redact,
   validateReadableVariables,
 } from "@armada/core";
@@ -249,9 +251,20 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       try {
         const known = failure;
         const window = known.details?.window;
+        const limit =
+          known.code === "rate_limited" && known.status === 429
+            ? providerRateLimitDetails({
+                ...known.details,
+                provider: "boat",
+                retryAfterSeconds: known.retryAfterSeconds,
+              })
+            : undefined;
         console.error(
           JSON.stringify({
             event: "boat_allocation_failed",
+            ...(limit
+              ? { message: redact(providerRateLimitMessage(limit), secrets), nextStartAt: limit.nextStartAt ?? null }
+              : {}),
             code: known?.code ?? "unknown",
             status: known?.status ?? null,
             providerCode: tag(known?.providerCode),
