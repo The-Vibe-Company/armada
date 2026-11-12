@@ -202,3 +202,53 @@ For pre-enrollment history with no credential version, **Reconnect and release**
 combines the fresh auth.json import and confirmed holder deletion in one guarded
 request. Armada never invents a historical revision or treats a rename as a
 reconnection; a pending/failed deletion leaves the current credential unchanged.
+
+### Required deployed coordinator checks (not performed by this PR author)
+
+Local evidence is synthetic-provider SQL/transport coverage and Chromium product
+flows, not evidence of real Boat/Modal deletion. No real provider, staging
+subscription, or production recovery was exercised here. The coordinator must
+record the deployed commit, provider, logical/physical sandbox IDs, account
+revision, observations and outcomes below, without credentials or auth payloads.
+Use disposable staging resources and a staging-only account, never production
+keys or the production **Work** account for fault injection.
+
+Run this lifecycle matrix separately on **Boat and Modal**:
+
+1. **Pre-dispatch failure:** arrange a disposable golden's launch initialization
+   to fail after allocation but before any native prompt. Verify the original
+   failure is retained, observe deletion/authoritative absence using that
+   provider's control plane, then launch again with the same account. Successful
+   next admission, not just an empty ownership row, is the pass condition.
+2. **Deletion pending/unavailable:** use a staging-only fault proxy or test
+   deployment to delay/refuse the provider deletion/termination operation while
+   allowing allocation and initialization. Trigger the same failure. Verify
+   ownership remains, the holder is discoverable and another launch is refused.
+   Restore deletion access and retry **Release subscription**. Boat's asynchronous
+   deletion receipt alone must not release ownership; require a confirmed deleted
+   result or authoritative not-found. Modal must confirm termination/deletion,
+   including its retained recovery artifacts. Retry launch only after that proof.
+3. **Existing trapped history:** reproduce a failed/deleted holder and an
+   unrecorded allocation using the pre-fix staging build or a controlled staging
+   fixture, then deploy the candidate. Recover through the product procedure
+   above and verify a subsequent launch works. For unrecorded allocations, do
+   not report physical deletion: no physical ID is known. Explicit fresh account
+   replacement fences the old version; verify a delayed old launch cannot pass
+   bootstrap/prompt admission after replacement. Unversioned recorded history
+   requires the combined import-and-release action and physical deletion proof.
+4. **Admission race:** overlap a later send/resume with initial-failure cleanup.
+   Admitted work must not be deleted or stopped by stale cleanup. A later
+   ambiguous dispatch must permanently invalidate the original never-started
+   proof, even after its activity lease ends. Verify pending/failed recovery
+   leaves the current credential unchanged and never returns auth material.
+
+**Separate slice-2 acceptance (PR #1186):** after deploying the server-owned
+refresh implementation and matching native runtime, run three Codex sandboxes
+on one ChatGPT account concurrently on each provider. While all three remain
+alive, exercise an actual access-token refresh through the server broker and
+verify all three answer follow-up prompts. Record the server auth revision and
+successful prompt IDs, never token values. Also verify three concurrent Claude
+model-only setup-token sandboxes on each provider; those tokens do not carry a
+shared rotating refresh token. These are required deployed checks, not results
+established by this slice-1 PR. Explicit account re-pointing/default fallback is
+slice 3; neither it nor full issue acceptance is claimed complete here.
