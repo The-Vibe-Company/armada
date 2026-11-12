@@ -90,7 +90,12 @@ export function createRuntimeCommands(
       return { epoch: scope.epoch, requestId: request.requestId };
     });
   }
-  async function next(token: string, epoch: string) {
+  /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
+  async function withNext<T>(
+    token: string,
+    epoch: string,
+    use: (value: { epoch: string; command: RunnerRequest | null }) => Promise<T>,
+  ) {
     return authority.withSession(token, epoch, async (tx, scope) => {
       const row = (
         await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -98,11 +103,14 @@ export function createRuntimeCommands(
           [scope.sandboxId, scope.epoch],
         )
       ).rows[0];
-      return {
+      return use({
         epoch: scope.epoch,
         command: row ? (JSON.parse(await decryptSecret(row.request_enc, key)) as RunnerRequest) : null,
-      };
+      });
     });
+  }
+  async function next(token: string, epoch: string) {
+    return withNext(token, epoch, async (value) => value);
   }
   async function complete(token: string, epoch: string, value: unknown) {
     if (
@@ -184,5 +192,5 @@ export function createRuntimeCommands(
       );
     }
   };
-  return { enqueue, next, complete, result, route };
+  return { enqueue, next, withNext, complete, result, route };
 }
