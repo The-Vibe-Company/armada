@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError } from "@/lib/control";
 import { listGoldens } from "@/lib/data/goldens";
+import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { templateLookups, viewerTemplates } from "@/lib/data/templates";
@@ -67,6 +68,11 @@ async function guarded(run: (context: Context) => Promise<ActionResult>, data: F
 
 /** The form's choices against what the viewer can see now, with exact skills validated before publication. */
 async function request(data: FormData, scope: string, previous?: TemplateDefinition) {
+  const credential = formString(data, "credential");
+  const [lookups, accounts] = await Promise.all([
+    templateLookups(),
+    credential ? listSelectedAccounts() : Promise.resolve(null),
+  ]);
   return templateRequest(
     {
       name: formString(data, "name"),
@@ -80,8 +86,9 @@ async function request(data: FormData, scope: string, previous?: TemplateDefinit
       variables: data.getAll("variables").map(String),
       skills: data.getAll("skills").map(String),
       secrets: data.getAll("secrets").map(String),
+      credential,
     },
-    await templateLookups(),
+    { ...lookups, ...(accounts ? { accounts: launchAccounts(accounts, Date.now()) } : {}) },
     previous,
   );
 }
