@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
 import { createSqlGoldenStore } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlData } from "../src/data.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 for (const provider of ["boat", "modal"] as const) {
   test(`scoped ${provider} master writes preserve compatibility pairs without repair and refuse blind replacement`, async () => {
-    const db = await openDatabase();
+    const db = await migratedDatabase();
     try {
-      await applyMigrations(db);
       const owner = crypto.randomUUID(),
         foreignAdmin = crypto.randomUUID(),
         org = crypto.randomUUID();
@@ -79,9 +78,8 @@ for (const provider of ["boat", "modal"] as const) {
 }
 
 test("scoped setters recheck current membership and admin role after the caller context was created", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     const owner = crypto.randomUUID(),
       backupAdmin = crypto.randomUUID(),
       org = crypto.randomUUID();
