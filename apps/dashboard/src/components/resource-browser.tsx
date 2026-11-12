@@ -222,7 +222,6 @@ export function ResourceBrowser({
 
   useEffect(() => {
     if (!detailPanel) return;
-    syncResourceHistory(true);
     const sync = () => {
       syncResourceHistory();
       const key = new URL(window.location.href).searchParams.get(ITEM_PARAM);

@@ -165,6 +165,44 @@ for (const scenario of [
   });
 }
 
+test("Back before a reloaded detail hydrates still restores the row and carries recovery state", async ({ page }) => {
+  await fetch(`${MOCK}/__test/golden-gate`, { method: "POST", body: JSON.stringify({ hold: true }) });
+  await signIn(page, "alice@example.com", "/environments");
+  const row = goldenRow(page, "shared-golden");
+  const panel = await goldenPanel(page, "shared-golden");
+  await panel.getByText("Edit and rebuild").click();
+  const form = panel.locator('form[data-golden-form="update"]');
+  await form.getByLabel("Branch").first().fill("history-hydration");
+  await form.getByRole("button", { name: "Rebuild golden" }).click();
+  await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
+  const buildKey = "build.rebuild.00000000-0000-4000-8000-000000000020";
+  const tracking = new URL(page.url()).searchParams.get(buildKey);
+  expect(tracking).toBeTruthy();
+  // Hold the reloaded document's scripts so native Back fires its popstate
+  // before any listener exists: the boundary a slow machine reaches by chance.
+  let requested = () => {};
+  const parsed = new Promise<void>((resolve) => {
+    requested = resolve;
+  });
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/_next/static/chunks/**", async (route) => {
+    requested();
+    await held;
+    await route.continue();
+  });
+  await page.reload({ waitUntil: "commit" });
+  await parsed;
+  await page.evaluate(() => window.history.back());
+  await expect(page).not.toHaveURL(/[?&]item=/);
+  release();
+  await expect(row.locator("[data-select-item]")).toBeFocused();
+  await expect(panel).toBeHidden();
+  expect(new URL(page.url()).searchParams.get(buildKey)).toBe(tracking);
+});
+
 test("Forward through an older detail does not erase a newer list-side build", async ({ page }) => {
   await fetch(`${MOCK}/__test/golden-gate`, { method: "POST", body: JSON.stringify({ hold: true }) });
   await signIn(page, "alice@example.com", "/environments");
