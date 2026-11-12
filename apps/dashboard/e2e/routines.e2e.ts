@@ -36,9 +36,18 @@ for (const mobile of [false, true]) {
   }) => {
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 });
     await signIn(page, "alice@example.com", "/routines");
+    const navigation = page.getByRole("button", { name: /Navigation/ });
+    if (mobile) {
+      await expect(navigation).toHaveAttribute("aria-expanded", "false");
+      await navigation.click();
+    }
     await expect(
       page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /Routines/ }),
     ).toHaveAttribute("aria-current", "page");
+    if (mobile) {
+      await page.keyboard.press("Escape");
+      await expect(navigation).toBeFocused();
+    }
     await expect(row(page, "Morning review")).toContainText(/Enabled/);
     await expect(row(page, "Release notes")).toContainText(/Paused/);
     await expect(row(page, "Bob private check")).toHaveCount(0);
