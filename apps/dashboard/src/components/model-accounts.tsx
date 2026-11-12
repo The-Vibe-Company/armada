@@ -72,7 +72,6 @@ import {
   type AuthCapabilities,
   accountProblem,
   accountState,
-  addChoices,
   creditText,
   formatDuration,
   formatMoney,
@@ -81,7 +80,6 @@ import {
   type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
-  otherBilling,
   relativeTime,
   terminalLogin,
   type UsageView,
@@ -952,18 +950,14 @@ function CustomEndpointFields({ idPrefix, kind }: { idPrefix: string; kind: "ope
 
 /* ---------------------------------------------------------------- add an account */
 
-/**
- * Adds a subscription (#805): the dialog leads with the subscription sign-in of each harness, and an API key is the
- * secondary way in ("Use an API key instead"), for the same harness. Until the server offers a native sign-in, the
- * account is added from a value the person produces on their own machine and pastes here.
- */
+/** Adds subscriptions and API keys in one short form, with equal-weight connection choices. */
 export function AddAccountDialog({
   orgId,
   orgName,
   isAdmin,
   capabilities,
   initialKind = "claude_oauth",
-  triggerLabel = "Add a subscription",
+  triggerLabel = "Add a model account",
   triggerVariant = "default",
 }: {
   orgId: string;
@@ -1031,7 +1025,7 @@ export function AddAccountDialog({
         </DialogTrigger>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>{subscription ? "Add a subscription" : "Add an API key"}</DialogTitle>
+            <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
               {subscription
                 ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
@@ -1043,33 +1037,23 @@ export function AddAccountDialog({
             <input type="hidden" name="kind" value={kind} />
             <input type="hidden" name="scope" value={scope} />
             <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">{subscription ? "Subscription" : "API key"}</legend>
+              <legend className="text-sm font-medium">Connection</legend>
               <RadioGroup
                 value={kind}
                 onValueChange={(value) => setKind(value as AccountKind)}
-                aria-label={subscription ? "Subscription" : "API key"}
+                aria-label="Connection"
                 className="sm:grid-cols-2"
               >
-                {addChoices(info.billing).map((value) => (
+                {(["claude_oauth", "codex_auth", "anthropic", "openai"] as const).map((value) => (
                   <ChoiceCard
                     key={value}
                     value={value}
-                    icon={subscription ? <StarIcon /> : <KeyRoundIcon />}
+                    icon={KIND_INFO[value].billing === "subscription" ? <StarIcon /> : <KeyRoundIcon />}
                     title={KIND_INFO[value].label}
-                    hint={`${KIND_INFO[value].harnessLabel}${subscription ? "" : ", billed per token"}`}
+                    hint={`${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "subscription" ? "" : ", billed per token"}`}
                   />
                 ))}
               </RadioGroup>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                className="h-auto px-0 text-muted-foreground"
-                data-billing-switch
-                onClick={() => setKind(otherBilling(kind))}
-              >
-                {subscription ? "Use an API key instead" : "Use a subscription instead"}
-              </Button>
             </fieldset>
 
             {isAdmin && (
@@ -1097,7 +1081,7 @@ export function AddAccountDialog({
                 required
                 maxLength={MAX_ACCOUNT_NAME}
                 autoComplete="off"
-                placeholder={subscription ? "Work, Personal…" : "Team key"}
+                placeholder="Choose a name"
               />
             </div>
 
