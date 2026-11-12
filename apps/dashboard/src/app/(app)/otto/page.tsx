@@ -23,6 +23,7 @@ import {
   resourceName,
   taskKey,
   taskObservedAt,
+  taskTitle,
   unknownLabel,
 } from "@/lib/otto";
 import { relativeAge } from "@/lib/relative-time";
@@ -198,7 +199,7 @@ function taskRow(node: OttoTreeNode, snapshot: OttoSnapshot, now: number): Resou
     task.state === "open" ? { tone: "info" as const, label: "Open" } : { tone: "neutral" as const, label: "Unknown" };
   return {
     key: taskKey(task),
-    name: `#${task.issueNumber} ${task.title}`,
+    name: `#${task.issueNumber} ${taskTitle(task) ?? "(title not observed)"}`,
     search: `${task.issueNumber} ${task.title} task issue`,
     mark: <CircleDotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />,
     tags: <RowTag>Task</RowTag>,
@@ -283,7 +284,7 @@ function resourceRow(
   return {
     key: resourceKey(resource),
     name: resourceName(resource),
-    search: `${resource.kind} ${resource.externalId} ${resourceName(resource)} ${head?.ref ?? ""} ${owner.label}`,
+    search: `${resource.kind} ${resource.externalId} ${resourceName(resource)} ${head?.ref ?? ""} ${owner.label} ${resource.taskIssue ?? ""}`,
     mark: (
       <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
         {child && <CornerDownRightIcon aria-hidden className="size-3.5" />}
@@ -291,7 +292,16 @@ function resourceRow(
       </span>
     ),
     tags: <RowTag>{resource.kind === "pr" ? "Pull request" : "Sandbox"}</RowTag>,
-    meta: `${resource.kind === "pr" ? (head?.ref ?? "Branch unknown") : `Launched on ${launchBranch ?? "an unknown branch"}`} · ${observed ? `observed ${observed}` : "never observed"}`,
+    meta: (
+      <>
+        {/* The task column is hidden on narrow lists: the relationship is then said here, in words. */}
+        <span className="@3xl:hidden">{task} · </span>
+        {resource.kind === "pr"
+          ? (head?.ref ?? "Branch unknown")
+          : `Launched on ${launchBranch ?? "an unknown branch"}`}
+        {` · ${observed ? `observed ${observed}` : "never observed"}`}
+      </>
+    ),
     state: (
       <StateCell
         tone={owner.tone}

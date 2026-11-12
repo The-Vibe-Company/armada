@@ -10,6 +10,7 @@ import {
   readOtto,
   reasonText,
   taskObservedAt,
+  taskTitle,
   unknownLabel,
 } from "../src/lib/otto.ts";
 
@@ -60,7 +61,7 @@ test("the tree orders tasks by issue and never attaches a resource to a task the
   expect(taskObservedAt({ task: first.task, resources: [] }, null)).toBeNull();
 });
 
-test("ownership reads as the server reports it; an unknown owner carries its observation time", () => {
+test("ownership reads as the server reports it; an owner it cannot establish is unknown", () => {
   expect(ownerLook(pr(1, 1), "me")).toEqual({ tone: "neutral", label: "Owner unknown" });
   expect(ownerLook(pr(1, 1, { owner: { state: "owned", userId: "me" } }), "me").label).toBe("Owned by you");
   expect(ownerLook(pr(1, 1, { owner: { state: "owned", userId: "x" } }), "me").label).toBe("Owned by a member");
@@ -68,6 +69,8 @@ test("ownership reads as the server reports it; an unknown owner carries its obs
     tone: "warning",
     label: "Orphan",
   });
+  expect(taskTitle({ issueNumber: 7, title: "Issue #7" })).toBeNull();
+  expect(taskTitle({ issueNumber: 7, title: "Real title" })).toBe("Real title");
   expect(reasonText("something_new")).toBe("Reported reason: something_new");
   const { confirmed, candidates, day } = orphansOfDay([
     { resource: pr(1, 1), state: "unknown", reason: "r", day: "2026-11-12" },
@@ -126,6 +129,8 @@ test("a server without Otto for this organization, a refused session or a malfor
   const read = (reply: Reply) =>
     readOtto({ serverUrl: "https://armada.example", token: "token", orgId: ORG, fetch: server(() => reply).fetcher });
   expect((await read({ status: 404, body: { error: "not_found" } })).state).toBe("not-observed");
+  // A server without Otto: its control API refuses a GET on the unmounted path.
+  expect((await read({ status: 405, body: { error: { message: "Use POST." } } })).state).toBe("not-observed");
   expect((await read({ status: 401, body: { error: "unauthorized" } })).state).toBe("unauthorized");
   expect((await read({ status: 503, body: { error: "observation_unavailable" } })).state).toBe("unavailable");
   expect((await read({ body: page([{ kind: "pr" }]) })).state).toBe("malformed");

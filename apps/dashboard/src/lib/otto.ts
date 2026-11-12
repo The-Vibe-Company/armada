@@ -34,6 +34,7 @@ export type OttoRead =
 const PAGE_LIMIT = 100;
 /** Bounded reading: at most this many pages per list, then the page says the list was cut. */
 export const MAX_PAGES = 5;
+/** One deadline for the whole read: every view and page together, so a slow server cannot hold a render long. */
 const TIMEOUT_MS = 10_000;
 
 type Page = {
@@ -67,6 +68,7 @@ export async function readOtto(options: {
   } catch {
     return { state: "unreachable" };
   }
+  const signal = AbortSignal.timeout(TIMEOUT_MS);
   const get: Get = async (view, params) => {
     const url = new URL(`/api/v1/otto/${view}`, origin);
     url.searchParams.set("org_id", options.orgId);
@@ -78,13 +80,15 @@ export async function readOtto(options: {
         headers: { authorization: `Bearer ${options.token}` },
         redirect: "error",
         cache: "no-store",
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal,
       });
       body = await response.json().catch(() => null);
+      signal.throwIfAborted();
     } catch {
       throw new ReadFailure("unreachable");
     }
-    if (response.status === 404) throw new ReadFailure("not-observed");
+    // Without Otto the server mounts no Otto route: the control API answers a GET with 405, an unknown path with 404.
+    if (response.status === 404 || response.status === 405) throw new ReadFailure("not-observed");
     if (response.status === 401) throw new ReadFailure("unauthorized");
     if (!response.ok) throw new ReadFailure("unavailable");
     const page = parsePage(body);
@@ -227,6 +231,11 @@ function parseOrphan(value: unknown): OttoOrphan | undefined {
 /** The row key of a resource on the page and in `?item=`. */
 export const resourceKey = (resource: Pick<OttoResource, "kind" | "externalId">) =>
   `${resource.kind}:${resource.externalId}`;
+/** The server names a task whose issue it never observed `Issue #N`: that is not a title, so it is not shown as one. */
+export function taskTitle(task: Pick<OttoTask, "issueNumber" | "title">): string | null {
+  const title = task.title.trim();
+  return title && title !== `Issue #${task.issueNumber}` ? title : null;
+}
 export const taskKey = (task: Pick<OttoTask, "issueNumber">) => `task:${task.issueNumber}`;
 
 export type OttoTreeNode = { task: OttoTask; resources: OttoResource[] };
@@ -269,7 +278,7 @@ export function countLabel(value: number | null | undefined): string {
 
 export type OwnerLook = { tone: "success" | "warning" | "neutral"; label: string };
 
-/** A row's short owner state; an unknown owner's observation time is beside it, in {@link unknownLabel}. */
+/** A row's short owner state; the row's second line and its panel say when the resource was last observed. */
 export function ownerLook(resource: OttoResource, viewerId: string): OwnerLook {
   if (resource.owner.state === "orphan") return { tone: "warning", label: "Orphan" };
   if (resource.owner.state === "owned")
