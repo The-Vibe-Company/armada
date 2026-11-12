@@ -1,8 +1,10 @@
 name: Apple Quality
 
 on:
+  # Required checks must report even when a PR changes no iOS files.
   pull_request:
-    paths: ['apps/ios/**', '.github/workflows/apple-quality.yml']
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
     paths: ['apps/ios/**', '.github/workflows/apple-quality.yml']
@@ -12,8 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: apple-quality-${{ github.ref }}
-  cancel-in-progress: true
+  group: apple-quality-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   ios:
