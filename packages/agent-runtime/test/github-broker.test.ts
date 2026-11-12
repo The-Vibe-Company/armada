@@ -223,7 +223,7 @@ test("managed REST binds acquisition to one canonical endpoint before executing 
       return { status: await child.exited, output: await new Response(child.stdout).text() };
     };
     for (const args of [
-      ["--repo", "acme/repo", "pr", "view"],
+      ["--repo", "acme/repo", "pr", "view", "1"],
       ["-R", "acme/repo", "issue", "view", "1"],
       ["--repo=acme/repo", "repo", "view"],
     ]) {
