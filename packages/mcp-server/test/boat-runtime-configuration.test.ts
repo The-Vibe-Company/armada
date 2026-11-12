@@ -52,7 +52,7 @@ function fixture() {
   return { actor, sandbox, manifest, credentials, key, architecture: "x64" as const };
 }
 
-test.each(["key", "endpoint", "native", "native-fresh"] as const)(
+test.each(["key", "endpoint", "native", "native-fresh", "shared"] as const)(
   "private Codex configuration projects %s without host/unselected harness authority",
   async (mode) => {
     const f = fixture();
@@ -68,9 +68,9 @@ test.each(["key", "endpoint", "native", "native-fresh"] as const)(
         baseUrl: "https://model.example/responses",
         apiVersion: "2026-01-01",
       });
-    if (mode.startsWith("native")) {
+    if (mode.startsWith("native") || mode === "shared") {
       f.credentials.codexAuthJson = true;
-      f.credentials.env = { [CODEX_AUTH_ENV]: originalAuth };
+      f.credentials.env = mode === "shared" ? { ARMADA_SERVER_CODEX: "1" } : { [CODEX_AUTH_ENV]: originalAuth };
     }
     if (mode === "key") {
       f.sandbox.repositoryDir = null;
@@ -88,11 +88,25 @@ test.each(["key", "endpoint", "native", "native-fresh"] as const)(
           )
             throw Error("wrong auth projection scope");
           if (mode === "native-fresh") return undefined;
-          return { authJson: latestAuth, revision: 7, secrets: [originalAuth], sourceGeneration: "runtime:previous" };
+          return {
+            authJson: latestAuth,
+            revision: 7,
+            secrets: [originalAuth],
+            sourceGeneration: mode === "shared" ? "server:ready" : "runtime:previous",
+          };
         },
       },
     };
-    const plan = await boatRuntimeConfiguration({ ...f, architecture, modelAuth });
+    const broker = {
+      async access() {
+        throw Error("projection must not fetch model access");
+      },
+    };
+    const plan = await boatRuntimeConfiguration({
+      ...f,
+      architecture,
+      modelAuth: { ...modelAuth, ...(mode === "shared" ? { broker } : {}) },
+    });
     expect(plan.artifact).toEqual({ sha256: "a".repeat(64), bytes: 10 });
     expect(plan.configuration).toMatchObject({
       selectedHarness: "codex",
@@ -110,6 +124,14 @@ test.each(["key", "endpoint", "native", "native-fresh"] as const)(
       expect(plan.configuration.codexAuthJson).toBe(mode === "native-fresh" ? originalAuth : latestAuth);
       expect(plan.configuration.nativeAuthRevision).toBe(mode === "native-fresh" ? 0 : 7);
       expect(plan.configuration.nativeAuthSecrets).toEqual(mode === "native-fresh" ? [] : [originalAuth]);
+    } else if (mode === "shared") {
+      expect(plan.configuration.runtimeSubscription).toBe(true);
+      expect(plan.configuration.codexAuthJson).toBeUndefined();
+      expect(plan.configuration.nativeAuthRevision).toBeUndefined();
+      expect(plan.configuration.nativeAuthSecrets).toBeUndefined();
+      expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBeUndefined();
+      expect("subscription" in plan.configuration).toBe(false);
+      expect(JSON.stringify(plan)).not.toContain(JSON.parse(latestAuth).tokens.refresh_token);
     } else {
       expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBe(f.key);
       expect(plan.configuration.codexAuthJson).toBeUndefined();
@@ -138,7 +160,7 @@ test.each([
   "unselected-key",
   "auth-unmanaged",
   "server-unenrolled",
-  "shared-unfenced",
+  "shared-unconfigured",
   "source-error",
 ] as const)("configuration fails closed for %s and does not reflect private input", async (reason) => {
   const f = fixture();
@@ -155,7 +177,7 @@ test.each([
     reason === "auth-unmanaged" ||
     reason === "server-unenrolled" ||
     reason === "source-error" ||
-    reason === "shared-unfenced"
+    reason === "shared-unconfigured"
   ) {
     f.credentials.codexAuthJson = true;
     f.credentials.env =
@@ -168,7 +190,7 @@ test.each([
           };
   }
   const input: Parameters<typeof boatRuntimeConfiguration>[0] = { ...f };
-  if (reason === "server-unenrolled" || reason === "source-error" || reason === "shared-unfenced")
+  if (reason === "server-unenrolled" || reason === "source-error" || reason === "shared-unconfigured")
     input.modelAuth = {
       state: {
         async read() {
@@ -179,7 +201,7 @@ test.each([
             authJson,
             revision: 0,
             secrets: [],
-            sourceGeneration: reason === "shared-unfenced" ? "server:ready" : "runtime:previous",
+            sourceGeneration: reason === "shared-unconfigured" ? "server:ready" : "runtime:previous",
           };
         },
       },

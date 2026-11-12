@@ -22,7 +22,10 @@ export async function boatRuntimeConfiguration(input: {
   credentials: HarnessCredentials;
   manifest: unknown;
   architecture: "x64" | "arm64";
-  modelAuth?: { state: Pick<ModelAuthOwnership["state"], "read"> };
+  modelAuth?: {
+    state: Pick<ModelAuthOwnership["state"], "read">;
+    broker?: Pick<NonNullable<ModelAuthOwnership["broker"]>, "access"> | undefined;
+  };
 }) {
   try {
     const actor = { ...input.actor };
@@ -74,6 +77,7 @@ export async function boatRuntimeConfiguration(input: {
       throw Error();
     const codexEnv: Record<string, string> = { HOME: "/home/user", PATH: "/usr/local/bin:/usr/bin:/bin" };
     let auth: {
+      runtimeSubscription?: true;
       codexAuthJson?: string;
       nativeAuthRevision?: number;
       nativeAuthSecrets?: string[];
@@ -84,16 +88,20 @@ export async function boatRuntimeConfiguration(input: {
     const serverAuth = credentials.env.ARMADA_SERVER_CODEX;
     if (credentials.codexAuthJson) {
       if (key || endpoint || !modelAuth) throw Error();
-      // Read canonical ownership even when no broker is configured: server-owned
-      // state must never be downgraded to a raw refresh-token file.
-      if (serverAuth || !rawAuth) throw Error();
       const native = await modelAuth.state.read(actor, binding.credentialId, binding.credentialVersion, sandbox.id);
-      if (native?.sourceGeneration.startsWith("server:")) throw Error();
-      auth = {
-        codexAuthJson: native?.authJson ?? rawAuth,
-        nativeAuthRevision: native?.revision ?? 0,
-        nativeAuthSecrets: [...(native?.secrets ?? [])],
-      };
+      if (native?.sourceGeneration.startsWith("server:")) {
+        if (!modelAuth.broker) throw Error();
+        // Access-only material is fetched by the current runtime token/epoch,
+        // never via a stable capability or a refresh-token auth.json export.
+        auth = { runtimeSubscription: true };
+      } else {
+        if (serverAuth || !rawAuth) throw Error();
+        auth = {
+          codexAuthJson: native?.authJson ?? rawAuth,
+          nativeAuthRevision: native?.revision ?? 0,
+          nativeAuthSecrets: [...(native?.secrets ?? [])],
+        };
+      }
     } else {
       if (!key || rawAuth || serverAuth) throw Error();
       codexEnv.OPENAI_API_KEY = key;
