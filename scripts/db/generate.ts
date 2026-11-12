@@ -27,6 +27,10 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  otto_tasks: "OttoTaskRow",
+  otto_resources: "OttoResourceRow",
+  otto_facts: "OttoFactRow",
+  otto_github_pages: "OttoGitHubPageRow",
   personal_skill_defaults: "PersonalSkillDefaultsRow",
   org_skill_defaults: "OrgSkillDefaultsRow",
   golden_skill_defaults: "GoldenSkillDefaultsRow",

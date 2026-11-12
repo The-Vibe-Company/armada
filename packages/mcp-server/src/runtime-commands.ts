@@ -10,6 +10,17 @@ export class RuntimeCommandConflict extends Error {
     super("runtime_command_conflict");
   }
 }
+export class RuntimeCommandPending extends Error {
+  constructor() {
+    super("runtime_command_pending");
+  }
+}
+interface RuntimeCommandReply {
+  epoch: string;
+  requestId: string;
+  status: number;
+  body: Record<string, unknown>;
+}
 interface Clock {
   now(): number;
   wait(ms: number, signal: AbortSignal): Promise<void>;
@@ -142,7 +153,7 @@ export function createRuntimeCommands(
       return { epoch: scope.epoch, requestId: value.requestId };
     });
   }
-  async function result(ownerId: string, sandboxId: string, id: string) {
+  async function result(ownerId: string, sandboxId: string, id: string, expectedEpoch?: string) {
     if (!requestId(id)) throw new RuntimeCommandConflict();
     return authority.withOwner(sandboxId, ownerId, async (tx, scope) => {
       const row = (
@@ -152,10 +163,41 @@ export function createRuntimeCommands(
         )
       ).rows[0];
       if (!row) return { state: "missing" as const };
+      if (expectedEpoch !== undefined && (scope.epoch !== expectedEpoch || row.epoch !== expectedEpoch))
+        return { state: "superseded" as const };
       if (row.result_enc)
-        return { state: "finished" as const, reply: JSON.parse(await decryptSecret(row.result_enc, key)) as unknown };
+        return {
+          state: "finished" as const,
+          reply: JSON.parse(await decryptSecret(row.result_enc, key)) as RuntimeCommandReply,
+        };
       return { state: row.epoch === scope.epoch ? ("pending" as const) : ("superseded" as const) };
     });
+  }
+  /** Await one durable identity; timeout/abort never cancel or replay admitted work.
+   * The caller retains requestId and can reconcile with result (or call again
+   * with the exact same request). No transaction is held across the wait.
+   */
+  async function call(
+    ownerId: string,
+    request: RunnerRequest,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<RuntimeCommandReply> {
+    const timeout = options.timeoutMs ?? 120_000;
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new RuntimeCommandConflict();
+    const signal = options.signal ?? new AbortController().signal;
+    signal.throwIfAborted();
+    const deadline = time.now() + timeout;
+    const admitted = await enqueue(ownerId, request);
+    while (true) {
+      signal.throwIfAborted();
+      const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
+      signal.throwIfAborted();
+      if (response.state === "finished") return response.reply;
+      if (response.state !== "pending") throw new RuntimeCommandConflict();
+      const remaining = deadline - time.now();
+      if (remaining <= 0) throw new RuntimeCommandPending();
+      await time.wait(Math.min(250, remaining), signal);
+    }
   }
   const route: Route = async (request) => {
     const path = new URL(request.url).pathname;
@@ -192,5 +234,5 @@ export function createRuntimeCommands(
       );
     }
   };
-  return { enqueue, next, withNext, complete, result, route };
+  return { enqueue, next, withNext, complete, result, call, route };
 }

@@ -210,6 +210,15 @@ export {
 } from "./models.ts";
 export { OPENCODE_ENDPOINT_ENV, type OpenCodeEndpoint, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 export * from "./orchestrator.ts";
+export type {
+  OttoCompleteness,
+  OttoFact,
+  OttoOrphan,
+  OttoPage,
+  OttoResource,
+  OttoTask,
+  OttoTruth,
+} from "./otto/index.ts";
 export {
   dedupeEvents,
   type PromptOutcome,
