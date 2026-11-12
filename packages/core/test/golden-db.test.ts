@@ -3,7 +3,6 @@ import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import {
   configFromFlags,
-  createGolden,
   createSqlGoldenStore,
   type GoldenActor,
   goldenForLaunch,
@@ -25,13 +24,18 @@ describe("golden database", () => {
       const store = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
       const boat = readyProvider();
 
-      await asUser(db, people.admin, () =>
-        createGolden(boat, store, actor(people, "admin"), {
+      await asUser(db, people.admin, async () => {
+        const golden = await store.insert({
+          orgId: people.org,
+          ownerId: people.admin,
+          provider: "boat",
+          modal: null,
           name: "shared",
           visibility: "org",
           config: configFromFlags([WEB], ["pnpm i"]),
-        }),
-      );
+        });
+        await store.setSandbox(golden.id, "bx_admin");
+      });
       await asUser(db, people.admin, () =>
         snapshotGolden(boat, store, actor(people, "admin"), "shared", { sleep: async () => {}, snapshotPolls: 2 }),
       );
@@ -39,13 +43,18 @@ describe("golden database", () => {
       expect(launched.visibility).toBe("org");
       expect(launched.providerSnapshotId).toHaveLength(63);
 
-      await asUser(db, people.owner, () =>
-        createGolden(boat, store, actor(people, "owner"), {
+      await asUser(db, people.owner, async () => {
+        const golden = await store.insert({
+          orgId: people.org,
+          ownerId: people.owner,
+          provider: "boat",
+          modal: null,
           name: "kept",
           visibility: "private",
           config: configFromFlags([WEB, API], ["pnpm i"]),
-        }),
-      );
+        });
+        await store.setSandbox(golden.id, "bx_owner");
+      });
       await asUser(db, people.owner, () =>
         snapshotGolden(boat, store, actor(people, "owner"), "kept", { sleep: async () => {}, snapshotPolls: 2 }),
       );

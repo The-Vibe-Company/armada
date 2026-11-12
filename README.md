@@ -200,9 +200,10 @@ stderr and return a nonzero exit code.
 
 Command discovery works before signing in: use `armada COMMAND --help` (or
 `-h`) for sandbox, golden, authentication, organization, credential and MCP
-commands. These show the shared command reference without reading a session or
-contacting a server. Template, variable, secret and skill commands keep their
-dedicated help. Help is only intercepted when it is the sole argument after
+commands. These work without reading a session or contacting a server.
+Logs has a focused reader reference: `armada logs --help` explains cursor resume,
+tail constraints and the JSON pipe format. Other commands retain the shared
+reference; template, variable, secret and skill commands keep their dedicated help. Help is only intercepted when it is the sole argument after
 the command; for example, `armada exec ID -- --help` remains remote command text.
 
 ### Sandbox errors and scripts
@@ -235,3 +236,10 @@ accepted. If status/detail cannot be read during a transition, inspect
 lifecycle. `recovery --help` also works before login.
 
 Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.
+
+### Variables and secrets help
+
+Use `armada vars -h` or `armada secrets rotate -h` to see the same reference as
+`--help`, before login or value input. The short alias does not reinterpret an
+option value such as `--file -h`, or literal arguments after `--`, as a help request.
+Secret values remain stdin/file-only and are never printed by help.

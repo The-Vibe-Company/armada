@@ -60,6 +60,8 @@ public struct ConversationSnapshot<Event: Identifiable & Equatable & Sendable>: 
 public final class ConversationCache<Event: Identifiable & Equatable & Sendable> {
     private var entries: [String: ConversationSnapshot<Event>] = [:]
     private var order: [String] = []
+    private var presentations: [String: any Sendable] = [:]
+    private var versions: [String: UUID] = [:]
     public let capacity: Int
 
     public init(capacity: Int = 8) {
@@ -73,21 +75,49 @@ public final class ConversationCache<Event: Identifiable & Equatable & Sendable>
     }
 
     public func store(_ snapshot: ConversationSnapshot<Event>, for key: String) {
+        if entries[key]?.events != snapshot.events {
+            presentations[key] = nil
+            versions[key] = UUID()
+        }
         entries[key] = snapshot
         touch(key)
         while order.count > capacity {
-            entries[order.removeFirst()] = nil
+            remove(order[0])
         }
     }
 
     public func remove(_ key: String) {
         entries[key] = nil
+        presentations[key] = nil
+        versions[key] = nil
         order.removeAll { $0 == key }
     }
 
     public func removeAll() {
         entries = [:]
+        presentations = [:]
+        versions = [:]
         order = []
+    }
+
+    /// Reuses a derived presentation only for the exact event window still held by this cache.
+    /// Cursor-only progress does not rebuild it. Payloads share the snapshot's LRU and privacy
+    /// lifetime; an evicted/forgotten entry cannot be recreated by late asynchronous rendering.
+    public func rendered<Content: Sendable>(
+        for key: String,
+        events: [Event],
+        build: @MainActor ([Event]) async -> Content
+    ) async -> Content {
+        if entries[key]?.events == events, let existing = presentations[key] as? Content {
+            touch(key)
+            return existing
+        }
+        let version = versions[key]
+        let value = await build(events)
+        if !Task.isCancelled, let version, versions[key] == version, entries[key]?.events == events {
+            presentations[key] = value
+        }
+        return value
     }
 
     public var keys: [String] { order }
