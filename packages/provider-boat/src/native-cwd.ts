@@ -236,7 +236,32 @@ if managed:
         sys.exit("native_auth_writer_busy")
     if not admission():
         sys.exit("native_auth_state_sync_pending")
-native_secrets = set()
+subscription = None
+subscription_path = os.path.join(os.path.expanduser("~"), ".armada", "model-access.json")
+if os.path.lexists(subscription_path):
+    fd = os.open(subscription_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 8192: raise ValueError("Unsafe subscription configuration")
+        subscription = json.loads(os.read(fd,8193))
+    finally: os.close(fd)
+    if managed: raise ValueError("Conflicting subscription auth modes")
+native_secrets = set([subscription["capability"]]) if subscription else set()
+subscription_revision = None
+def subscription_access(refresh=False):
+    global subscription_revision
+    import urllib.request, urllib.parse
+    if not subscription or urllib.parse.urlsplit(subscription["url"]).scheme != "https": raise ValueError("Subscription unavailable")
+    payload = {"previousRevision":subscription_revision} if refresh and subscription_revision is not None else {}
+    request = urllib.request.Request(subscription["url"],data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Authorization":"Bearer "+subscription["capability"]},method="POST")
+    with urllib.request.urlopen(request,timeout=25) as response: raw=response.read(65537)
+    if len(raw)>65536: raise ValueError("Subscription response oversized")
+    value=json.loads(raw)
+    if not isinstance(value.get("accessToken"),str) or not isinstance(value.get("chatgptAccountId"),str) or not isinstance(value.get("revision"),int): raise ValueError("Subscription response invalid")
+    native_secrets.add(value["accessToken"])
+    subscription_revision=value["revision"]
+    return {key:value.get(key) for key in ("accessToken","chatgptAccountId","chatgptPlanType")}
+
 def native_registry():
     if not managed:
         return
@@ -276,7 +301,7 @@ def native_safe(value):
 native_registry()
 native_stopping = threading.Event()
 child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL if managed else subprocess.PIPE, start_new_session=managed,
+                         stderr=subprocess.DEVNULL if managed or subscription else subprocess.PIPE, start_new_session=managed,
                          pass_fds=(writer_fd,) if managed else ())
 if managed:
     # The native group retains flock even if this bridge is SIGKILLed. Record its
@@ -322,7 +347,7 @@ native_replied = False
 starting_turns = {}
 starting_lock = threading.Lock()
 def output(line):
-    if managed:
+    if managed or subscription:
         try:
             native_registry()
             try:
@@ -350,6 +375,15 @@ def receive():
             message = json.loads(line)
         except (ValueError, UnicodeDecodeError):
             message = None
+        if subscription and isinstance(message,dict) and message.get("method")=="account/chatgptAuthTokens/refresh" and "id" in message:
+            try:
+                access=subscription_access(True)
+                previous=message.get("params",{}).get("previousAccountId")
+                if previous and previous!=access["chatgptAccountId"]: raise ValueError("Subscription identity changed")
+                reply={"id":message["id"],"result":access}
+            except Exception: reply={"id":message["id"],"error":{"code":-32603,"message":"Subscription renewal unavailable."}}
+            child.stdin.write((json.dumps(reply)+"\\n").encode());child.stdin.flush()
+            continue
         if isinstance(message,dict) and "method" not in message and isinstance(message.get("id"),str):
             pending = pending_reload.pop(message.get("id"),None)
             if pending is not None:
@@ -438,6 +472,13 @@ def relay():
                 if cwd:
                     message["params"]["cwd"] = cwd
                 try:
+                    if subscription and message["method"] in ("thread/start","thread/resume"):
+                        access=subscription_access()
+                        login_id="armada-model-login-"+uuid.uuid4().hex
+                        event,result=threading.Event(),[]
+                        pending_reload[login_id]=(event,result)
+                        child.stdin.write((json.dumps({"id":login_id,"method":"account/login/start","params":{"type":"chatgptAuthTokens",**access}})+"\\n").encode());child.stdin.flush()
+                        if not event.wait(20) or result != [True]: raise ValueError("Subscription login failed")
                     current_mcp = fresh_mcp(message["params"])
                     if current_mcp is not None:
                         # Never introduce managed session overrides: they mask disk reload.

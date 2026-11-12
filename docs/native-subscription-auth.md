@@ -45,13 +45,17 @@ Authenticated POST /api/v1/creds/accounts/auth-capabilities returns, additively:
       "nativeSubscriptionExec": true
     }
 
+The example above describes legacy native ownership. Configured server-owned
+renewal deployments advertise `nativeSubscriptionParallelSandboxes: true`; see
+the shared-session section below.
+
 The nativeCLI map contains base commands only, without --name placeholders.
 #618 appends its one shell-quoted account name. It offers terminal consent for
 personal accounts only; CLI org import/login explicitly accepts --org under
 fresh admin authorization. There is no Claude terminal-login entry: paste/private
 import is supported, not a fake hosted Connect button.
 
-## Private native state lifecycle
+## Legacy private native state lifecycle
 
 - One refresh-bearing account binding has one durable sandbox owner, claimed
   before provider allocation/hydration. Scheduling expiry never reassigns a live
@@ -150,3 +154,50 @@ old writer and explicitly replace/version that **same** account row rather than
 importing a second name to bypass its ownership. Independent upstream accounts
 remain parallel. Identity admission is serialized and bounded; an oversized
 registry fails closed for maintenance instead of skipping checks.
+
+## Shared server-owned Codex sessions (#1176)
+
+New subscription enrollment on the configured server uses external-token Codex
+app-server authentication. One account can serve multiple Boat and Modal
+sandboxes. The refresh token stays encrypted on the server; sandbox bootstrap
+contains a private, sandbox-and-account-pinned access capability, not auth.json
+or `ARMADA_CODEX_AUTH_JSON`. Native app-server receives only an access token and
+account identity, and asks Armada for renewal through its private
+`account/chatgptAuthTokens/refresh` RPC.
+
+The server commits renewal intent before contacting the upstream, then publishes
+sealed replacement tokens with an auth-revision compare-and-swap. Concurrent
+requests reuse the replacement revision, including across server replicas. A
+lost upstream response cannot safely be retried with the old rotating token:
+renewal remains uncertain and the owner must reconnect/import a fresh account
+revision. Failed allocations do not exclusively reserve server-owned accounts.
+
+Legacy refresh-bearing native homes keep their existing fences. To move an
+existing account into shared mode, stop its old sandboxes and import a fresh
+revision of the **same account**. Armada verifies historical physical writers
+are stopped before enrollment. An unrecorded/ambiguous old allocation remains
+blocked until reconciled. Copying the old auth file under another name is not a
+migration; duplicate sessions and same-owner historical identities are refused.
+Model-only Claude setup-token accounts already allow concurrent sandboxes and do
+not participate in rotating-session ownership.
+
+Both the portable Modal runner and Boat's native stdio bridge must contain the
+external-token integration. Build the runtime with
+`bun scripts/prepare-runtime.ts` (CI builds the native artifact). Boat installs
+the current bridge at shared-auth hydration; it fails the launch if installation
+or private configuration fails. Do not enable a server-only admission change
+with an older runner distribution. Existing API-key launches are unchanged.
+
+The private access endpoint checks the current sandbox pin, logical lifetime,
+credential version/status and owner membership before returning material. Its
+capability is stable for the logical sandbox/account binding, so all such grants
+can be reconstructed for redaction; expiry and revocation are authoritative in
+SQL, not guest claims. Capabilities and current/superseded access tokens are
+redacted before public output. No upstream body or refresh failure detail is
+logged or returned.
+
+Later hardening: physical-incarnation-specific access capabilities, per-grant
+revocation independent of account/sandbox revocation, bounded historical token
+registry compaction, and richer reconnect diagnostics. Staging acceptance still
+requires three live sandboxes to answer concurrently through an actual refresh;
+unit/transport tests use synthetic vendor material only.

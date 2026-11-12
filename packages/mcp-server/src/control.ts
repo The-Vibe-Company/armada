@@ -754,7 +754,8 @@ async function dispatch(
       body,
     );
   }
-  if (route === "creds/accounts/auth-capabilities") return modelAuthCapabilities;
+  if (route === "creds/accounts/auth-capabilities")
+    return { ...modelAuthCapabilities, nativeSubscriptionParallelSandboxes: Boolean(options.modelAuth?.broker) };
   if (route === "launch/options") return launchOptions;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");

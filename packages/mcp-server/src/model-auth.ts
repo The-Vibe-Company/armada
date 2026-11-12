@@ -14,6 +14,7 @@ import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
 import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore, type NativeState, nativeState } from "./model-auth-state.ts";
+import { createSubscriptionBroker } from "./subscription-broker.ts";
 
 /**
  * Durable exclusive native-session ownership. Never expires or reassigns a
@@ -26,8 +27,12 @@ export function createModelAuthOwnership(
   captureNative: typeof sshPrivateAuthState = sshPrivateAuthState,
   now: () => number = Date.now,
   historicalProvider?: (tx: Sql, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>,
+  subscription?: { origin: string; fetch?: typeof fetch },
 ) {
   const state = createNativeStateStore(sql, encryptionKey);
+  const broker = subscription
+    ? createSubscriptionBroker(sql, encryptionKey, subscription.origin, subscription.fetch, historicalProvider)
+    : undefined;
   async function modalGeneration(tx: Sql, providerId: string, actor: GoldenActor, lock = false): Promise<string> {
     const result = await tx.query<{ generation: string }>(
       `select record->>'generation' as generation from public.modal_machines where id=$1 and org_id=$2::uuid and owner_id=$3::uuid${lock ? " for update" : ""}`,
@@ -52,6 +57,18 @@ export function createModelAuthOwnership(
   }
   return {
     state,
+    broker,
+    async shared(sandboxId: string): Promise<boolean> {
+      return (
+        !!broker &&
+        (
+          await sql.query(
+            `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.id=$1::uuid and a.source_generation like 'server:%'`,
+            [sandboxId],
+          )
+        ).rows.length > 0
+      );
+    },
     async managed(sandboxId: string): Promise<boolean> {
       return (
         (
@@ -131,6 +148,8 @@ export function createModelAuthOwnership(
         );
       if (!row || row.kind !== "codex_auth" || !row.credential_id || row.credential_version === null) return [];
       const actor: GoldenActor = { userId: row.owner_id, orgId: row.org_id, role: "member" };
+      if (broker && (await broker.enrolled(row.credential_id, row.credential_version)))
+        return broker.secrets(row.credential_id, row.credential_version);
       const stoppedSecrets = (saved: { secrets: string[]; sourceGeneration: string } | undefined) => {
         if (provider.id === "boat" && !allowStoppedSample && !saved?.sourceGeneration.startsWith("boat:quiesced:"))
           throw new ProviderError({
@@ -287,13 +306,36 @@ export function createModelAuthOwnership(
         throw error;
       }
       if (provider.id !== "boat" || secrets.length === 0) return;
+      if (
+        broker &&
+        (
+          await sql.query(
+            `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.provider=$1 and s.provider_sandbox_id=$2 and a.source_generation like 'server:%'`,
+            [provider.id, providerId],
+          )
+        ).rows.length
+      )
+        return;
       await sshNativeAuthAdmission(provider, providerId, false);
       await this.capture(provider, providerId, caller, true);
     },
     async beforePrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
       await this.beforeResume(provider, providerId, caller);
       const secrets = await this.capture(provider, providerId, caller);
-      if (provider.id === "boat" && secrets.length > 0) await sshNativeAuthAdmission(provider, providerId, true);
+      if (
+        provider.id === "boat" &&
+        secrets.length > 0 &&
+        !(
+          broker &&
+          (
+            await sql.query(
+              `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.provider=$1 and s.provider_sandbox_id=$2 and a.source_generation like 'server:%'`,
+              [provider.id, providerId],
+            )
+          ).rows.length
+        )
+      )
+        await sshNativeAuthAdmission(provider, providerId, true);
     },
     async publishFromModal(scope: Scope, claims: IngestGrantClaims, authJson: string, expectedRevision: number) {
       const result = await sql.query<{
@@ -428,6 +470,7 @@ export function createModelAuthOwnership(
     },
     /** Must run after resolution, BEFORE provider fork/credential hydration. */
     async claim(actor: GoldenActor, id: string, version: number, sandboxId: string, transaction?: Sql): Promise<void> {
+      if (broker && !transaction) return broker.enroll(actor, id, version);
       if (!sql.transaction && !transaction)
         throw new VaultError("unavailable", "Native credential ownership requires transactions.");
       const claim = async (tx: Sql) => {
@@ -601,6 +644,12 @@ export function createModelAuthOwnership(
           "Legacy Codex renewal has no trustworthy account binding. Stop it and launch a new sandbox with an explicit account.",
         );
       if (!row.credential_id || row.credential_version === null || row.kind !== "codex_auth") return;
+      if (broker && (await broker.enrolled(row.credential_id, row.credential_version))) {
+        await sql.transaction!(async (tx) => {
+          await authorize(tx, actor, row.credential_id!, row.credential_version!);
+        });
+        return;
+      }
       const known = await sql.query(
         "select 1 from public.model_auth_ownership where account_id=$1::uuid and (not $3::boolean or account_version=$2)",
         [row.credential_id, row.credential_version, _userExec],

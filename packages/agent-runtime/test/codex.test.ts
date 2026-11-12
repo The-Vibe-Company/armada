@@ -346,3 +346,43 @@ nativeTest.each([true, false])(
     }
   },
 );
+
+nativeTest("external subscription refresh completes an already-running Codex turn over private RPC", async () => {
+  const requests: boolean[] = [];
+  const events: DriverEvent[] = [];
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_EXTERNAL_AUTH: "1" },
+    subscriptionAccess: async (refresh) => {
+      requests.push(refresh);
+      return {
+        accessToken: refresh ? "synthetic-refreshed-access" : "synthetic-initial-access",
+        chatgptAccountId: "synthetic-account",
+        chatgptPlanType: null,
+      };
+    },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "continue through renewal" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => events.push(event),
+    });
+    expect(await turn.done).toBe("finished");
+    expect(requests).toEqual([false, true]);
+    expect(events).toContainEqual({
+      kind: "message",
+      text: "renewed turn completed",
+      partial: false,
+      tools: [],
+      messageId: "renewed",
+      textMode: "snapshot",
+    });
+    expect(JSON.stringify(events)).not.toContain("synthetic-refreshed-access");
+    expect(JSON.stringify(events)).not.toContain("account/chatgptAuthTokens/refresh");
+  } finally {
+    await driver.close();
+  }
+});

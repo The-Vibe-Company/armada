@@ -23,6 +23,7 @@ import {
 } from "@armada/core/server";
 import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import { configureBoatSubscription } from "./subscription-boat.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
 const SECRET_KINDS: readonly CredentialKind[] = ["claude_oauth", "anthropic", "openai", "codex_auth"];
@@ -75,6 +76,15 @@ export function launchCredentials(
     async admit(actor, credentials, sandboxId) {
       if (!credentials.codexAuthJson) return;
       if (!ownership) return; // Embedders without managed auth retain their legacy native path.
+      if (ownership.broker && credentials.binding) {
+        await ownership.claim(
+          actor,
+          credentials.binding.credentialId,
+          credentials.binding.credentialVersion,
+          sandboxId,
+        );
+        return;
+      }
       try {
         const source = JSON.parse(credentials.env.ARMADA_CODEX_AUTH_JSON ?? "{}");
         if (typeof source.tokens?.refresh_token !== "string") return;
@@ -98,6 +108,19 @@ export function launchCredentials(
         "binding" in credentials
           ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
           : undefined;
+      if (
+        ownership?.broker &&
+        binding &&
+        (await ownership.broker.enrolled(binding.credentialId, binding.credentialVersion))
+      ) {
+        if (provider.id === "boat")
+          await configureBoatSubscription(
+            provider,
+            providerSandboxId,
+            ownership.broker.configuration(actor, binding.credentialId, binding.credentialVersion, sandboxId),
+          );
+        return true;
+      }
       if (!ownership || !binding || !(await ownership.managed(sandboxId))) return false;
       const saved = await ownership.bootstrap(actor, binding.credentialId, binding.credentialVersion, sandboxId);
       if (!saved?.authJson) throw new Error("Native hydration state is unavailable.");
@@ -117,7 +140,8 @@ export function launchCredentials(
       if (!ownership) return [];
       await ownership.assertSandbox(actor, sandboxId, false, true);
       const managed = await ownership.managed(sandboxId);
-      if (phase === "before") await ownership.state.invalidateRedaction(actor, sandboxId);
+      if (phase === "before" && !(await ownership.shared(sandboxId)))
+        await ownership.state.invalidateRedaction(actor, sandboxId);
       const values = await ownership.capture(
         provider,
         providerSandboxId,
@@ -159,7 +183,12 @@ export function launchCredentials(
             actor.userId,
           )
         : undefined;
-      return toHarnessCredentials(resolved, access);
+      const result = toHarnessCredentials(resolved, access);
+      if (ownership?.broker && result.codexAuthJson) {
+        delete result.env.ARMADA_CODEX_AUTH_JSON;
+        result.env.ARMADA_SERVER_CODEX = "1";
+      }
+      return result;
     },
   };
 }

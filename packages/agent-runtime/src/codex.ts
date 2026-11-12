@@ -25,6 +25,10 @@ export class CodexDriver implements Driver {
       env: Record<string, string>;
       refreshSecrets?: () => void;
       exclusiveAuth?: boolean;
+      subscriptionAccess?: (
+        refresh: boolean,
+        previousAccessToken?: string,
+      ) => Promise<{ accessToken: string; chatgptAccountId: string; chatgptPlanType: string | null }>;
     },
   ) {}
   configureReadableVariables(variables: Record<string, string>): void {
@@ -56,6 +60,12 @@ export class CodexDriver implements Driver {
   }
   private open(c: DriverContext, resumeOnly: boolean): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
+    let previousAccessToken: string | undefined;
+    const subscriptionAccess = async (refresh: boolean) => {
+      const result = await this.options.subscriptionAccess!(refresh, previousAccessToken);
+      previousAccessToken = result.accessToken;
+      return result;
+    };
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
       throw Error("invalid_effort");
@@ -121,6 +131,20 @@ export class CodexDriver implements Driver {
             if (m.error) p.reject(Error("codex_rpc_error"));
             else p.resolve(m.result);
           }
+          return;
+        }
+        if (m.id !== undefined && m.method === "account/chatgptAuthTokens/refresh" && this.options.subscriptionAccess) {
+          void subscriptionAccess(true)
+            .then((result) => {
+              if (m.params?.previousAccountId && m.params.previousAccountId !== result.chatgptAccountId)
+                throw Error("subscription_identity_changed");
+              child.stdin.write(`${JSON.stringify({ id: m.id, result })}\n`);
+            })
+            .catch(() =>
+              child.stdin.write(
+                `${JSON.stringify({ id: m.id, error: { code: -32603, message: "Subscription renewal unavailable." } })}\n`,
+              ),
+            );
           return;
         }
         if (m.id !== undefined) {
@@ -272,6 +296,14 @@ export class CodexDriver implements Driver {
         capabilities: { experimentalApi: true },
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+      if (this.options.subscriptionAccess) {
+        const access = await subscriptionAccess(false);
+        const result = await rpc<LoginAccountResponse>("account/login/start", {
+          type: "chatgptAuthTokens",
+          ...access,
+        } satisfies LoginAccountParams);
+        if (result.type !== "chatgptAuthTokens") throw new HarnessError("authentication_failed");
+      }
       // Official API-key login uses the private JSONL channel, never argv or an auth-file read.
       if (this.options.env.OPENAI_API_KEY) {
         const login: LoginAccountParams = { type: "apiKey", apiKey: this.options.env.OPENAI_API_KEY };

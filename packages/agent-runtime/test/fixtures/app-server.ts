@@ -31,8 +31,37 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
   const reply = (result: unknown) => send({ id: m.id, result });
   const notify = (method: string, params: unknown) => send({ method, params });
+  if (m.id === "fixture-auth-refresh" && process.env.ARMADA_EXTERNAL_AUTH) {
+    if (
+      m.result?.accessToken !== "synthetic-refreshed-access" ||
+      m.result?.chatgptAccountId !== "synthetic-account" ||
+      "refreshToken" in m.result
+    )
+      throw Error("invalid external renewal");
+    notify("item/completed", {
+      threadId: thread,
+      item: { type: "agentMessage", id: "renewed", text: "renewed turn completed" },
+    });
+    notify("turn/completed", {
+      threadId: thread,
+      turn: { id: `turn-${turn}`, status: "completed", items: [], error: null },
+    });
+    return;
+  }
   if (m.method === "initialize") reply({ userAgent: "fixture" });
   else if (m.method === "account/login/start") {
+    if (process.env.ARMADA_EXTERNAL_AUTH) {
+      if (
+        m.params.type !== "chatgptAuthTokens" ||
+        m.params.accessToken !== "synthetic-initial-access" ||
+        m.params.chatgptAccountId !== "synthetic-account" ||
+        "refreshToken" in m.params
+      )
+        throw Error("invalid external login");
+      loggedIn = true;
+      reply({ type: "chatgptAuthTokens" });
+      return;
+    }
     if (m.params.type !== "apiKey" || m.params.apiKey !== process.env.OPENAI_API_KEY)
       throw Error("invalid API-key login");
     loggedIn = true;
@@ -108,6 +137,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     turn++;
     if (params.threadId !== thread || params.approvalPolicy !== "never") throw Error("incorrect turn parameters");
     reply({ turn: { id: `turn-${turn}`, status: "inProgress" } });
+    if (process.env.ARMADA_EXTERNAL_AUTH) {
+      if (!loggedIn) throw Error("missing external login");
+      send({
+        id: "fixture-auth-refresh",
+        method: "account/chatgptAuthTokens/refresh",
+        params: { reason: "unauthorized", previousAccountId: "synthetic-account" },
+      });
+      return;
+    }
     if (params.input[0]?.type === "text" && params.input[0].text === "message-semantics") {
       for (const id of ["answer-a", "answer-b"]) {
         notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: id, delta: "Hello" });

@@ -18,6 +18,7 @@ export interface HarnessEnvironment {
   claudeEnv: Record<string, string>;
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
+  subscription?: { url: string; capability: string };
   nativeAuthRevision?: number;
   nativeAuthSecrets?: string[];
   mcp?: McpConfiguration;
@@ -145,6 +146,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
         codexExecutable: "/usr/local/bin/codex",
         claudeEnv: withTrustedHarnessPath(harness.claudeEnv),
         codexEnv: withTrustedHarnessPath(harness.codexEnv),
+        ...(harness.subscription ? { subscription: harness.subscription } : {}),
         ...("codexAuthJson" in harness && harness.codexAuthJson !== undefined
           ? { codexAuthJson: harness.codexAuthJson }
           : {}),
