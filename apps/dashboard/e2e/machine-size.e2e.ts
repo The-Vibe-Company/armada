@@ -124,7 +124,8 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
   });
   expect(state.goldenCalls).toHaveLength(0);
   // The Boat golden of the same name keeps its own defaults.
-  await expect((await golden(page, "boat")).locator("[data-size-summary]")).toHaveText("Golden: Medium · api: Large");
+  const boat = await golden(page, "boat");
+  await expect(boat.locator("[data-size-summary]")).toHaveText("Golden: Medium · api: Large");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "test-results/machine-size-defaults-mobile.png",
@@ -133,6 +134,8 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
   });
   await page.setViewportSize({ width: 1280, height: 720 });
 
+  await page.keyboard.press("Escape");
+  await expect(boat).toBeHidden();
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   await expect(page.getByRole("dialog").locator("[data-size-source]")).toContainText(
     "Large, the default for docs. 4 physical cores (8 vCPU) · 16 GiB, capped.",
