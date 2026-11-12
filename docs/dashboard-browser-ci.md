@@ -7,7 +7,7 @@ CI and its budget guard are unchanged.
 
 The candidate uses 24 isolated jobs, one mock/app/browser worker in each. Playwright
 fully-parallel sharding distributes individual tests rather than making the largest
-spec one indivisible shard. A collection check selects **263 tests in 42 files**;
+spec one indivisible shard. A collection check selects **262 tests in 42 files**;
 new tests are discovered automatically. Each shard uses zero retries and unchanged
 test assertions. The pinned Noble container supplies system libraries; Chromium
 comes from the installed lockfile version, not the container's old browser revision.
@@ -72,3 +72,26 @@ the updated candidate again before adding a required aggregate.
 
 Any additional failure gets its own documented reason and evidence before it
 can be kept out of the gate.
+
+
+## Second PR measurement: slow polling case stays outside the candidate
+
+[Run 43307372588](https://github.com/The-Vibe-Company/armada/actions/runs/43307372588)
+passed all 24 browser jobs after the mobile-test exclusion. However,
+[shard 18](https://github.com/The-Vibe-Company/armada/actions/runs/43307372588/job/131494114797)
+took **127 seconds**, so promotion is still not allowed. Its unchanged
+**sandbox-cost.e2e.ts — delayed usage refreshes a ready session's card and
+retries a stale refresh without looping** took 24 seconds alongside ten other
+tests. It deliberately observes multiple real polling/refresh boundaries.
+
+A local attempt to give this case a dedicated isolated job still exceeded its
+unchanged 30-second test timeout at line 160 (the delayed-usage mock request).
+The full earlier zero-retry baseline passed it; this is not a claim it always
+fails. With both measured job-budget pressure and timeout instability, it stays
+outside the candidate by exact title, as #1269 permits for slow/flaky cases.
+
+The original full suite, polling intervals, assertion strengths and test timeout
+are unchanged. No retry was used to turn the failed isolation attempt green.
+The 24 candidate shards now retain **262 tests in 42 files**. No extra job or
+required gate is added. Measure the updated PR and merge-group runs again before
+promotion; the earlier all-green but over-budget run is insufficient evidence.
