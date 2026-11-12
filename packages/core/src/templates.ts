@@ -11,6 +11,8 @@ export interface TemplateDefinition {
   /** Stable connection identities; live connected grant versions resolve only at launch admission. */
   connections: string[];
   variables: { key: string; variableId: string; version: number }[];
+  /** Value-free references; optional for revisions published before secret bindings. */
+  secrets?: { key: string; secretId: string; version: number }[];
   skills: string[];
 }
 export interface LaunchTemplate {
@@ -40,6 +42,11 @@ export const TEMPLATE_REFUSAL_HELP = {
     "Template connection is unknown, disabled, disconnected or inaccessible. Check the exact connection ID.",
   connection_version_changed:
     "Template connection grant changed during admission. Check the connection before retrying.",
+  environment_limits_exceeded:
+    "Template environment exceeds transport limits: 64 entries, 8 KiB per value and 64 KiB total. Reduce the bound variables or secrets.",
+  secret_unavailable: "Secret is missing, expired, revoked or inaccessible. Check its reference.",
+  secret_version_changed: "Secret version changed. Publish a revision with its current version.",
+  secret_delivery_unavailable: "Secret environment delivery is unavailable for this provider.",
   variable_unavailable: "Readable variable is missing or inaccessible. Check its reference.",
   variable_version_changed: "Readable variable version changed. Publish a revision with its current version.",
   variable_delivery_unavailable:

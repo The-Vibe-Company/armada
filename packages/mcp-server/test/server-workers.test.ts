@@ -36,8 +36,14 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
   let reconciled = 0;
   const provider = createBoatProvider({
     apiKey: "test-key",
-    fetch: (async (_input: Request | string | URL, _init?: RequestInit) =>
-      Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) })) as typeof fetch,
+    fetch: (async (input: Request | string | URL, _init?: RequestInit) =>
+      Response.json({
+        ok: true,
+        sandbox: sandbox({
+          id: new URL(input instanceof Request ? input.url : String(input)).pathname.split("/").at(-1),
+          state: "archived",
+        }),
+      })) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
   const workers = startServerWorkers(
@@ -101,14 +107,17 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
   const response = deferred<Response>();
   const entered = deferred<void>();
   let requests = 0;
+  let firstProviderId = "";
   const provider = createBoatProvider({
     apiKey: "test-key",
-    fetch: (async (_input: Request | string | URL, _init?: RequestInit) => {
+    fetch: (async (input: Request | string | URL, _init?: RequestInit) => {
+      const providerId = new URL(input instanceof Request ? input.url : String(input)).pathname.split("/").at(-1) ?? "";
       if (++requests === 1) {
+        firstProviderId = providerId;
         entered.resolve();
         return response.promise;
       }
-      return Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) });
+      return Response.json({ ok: true, sandbox: sandbox({ id: providerId, state: "archived" }) });
     }) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
@@ -136,12 +145,12 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
     });
     await Promise.resolve();
     expect(drained).toBe(false);
-    response.resolve(Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) }));
+    response.resolve(Response.json({ ok: true, sandbox: sandbox({ id: firstProviderId, state: "archived" }) }));
     await done;
     expect((await read(ids[0]!))?.status).toBe("running");
     expect(requests).toBe(2);
   } finally {
-    response.resolve(Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) }));
+    response.resolve(Response.json({ ok: true, sandbox: sandbox({ id: firstProviderId, state: "archived" }) }));
     await lifecycle.drain();
     await db.close();
   }
