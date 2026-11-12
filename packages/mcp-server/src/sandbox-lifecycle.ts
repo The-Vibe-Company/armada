@@ -28,6 +28,9 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
     },
     async reconcileOne(signal?: AbortSignal): Promise<boolean> {
       signal?.throwIfAborted();
+      // The production lane is serial, but timed-out SDK calls can outlive a tick.
+      // Keep their raw work bounded; a slot opens only when it actually settles.
+      if (pending.size >= 4) return false;
       const token = crypto.randomUUID();
       const row = (
         await sql.query<{
@@ -149,6 +152,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         reconcile_lease=case when $6 then reconcile_lease else null end,
         reconcile_lease_until=case when $6 then reconcile_lease_until else null end
         where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+          and reconcile_lease_until>clock_timestamp()
           and (activity_until is null or activity_until<now())`,
         [
           row.id,

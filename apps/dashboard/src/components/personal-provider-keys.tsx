@@ -2,6 +2,7 @@ import { encryptionKey } from "@armada/core";
 import { KeyRoundIcon } from "lucide-react";
 import { removeCredential, saveCredential } from "@/app/actions/credentials";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { ConfirmedAction } from "@/components/confirmed-action";
 import { ToneBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -84,12 +85,18 @@ function CredentialSection({
                       Set <time dateTime={row.created_at}>{new Date(row.created_at).toISOString().slice(0, 10)}</time>
                     </ToneBadge>
                     {canManage && (
-                      <ActionForm action={removeCredential} className="flex flex-col items-end gap-1">
+                      <ConfirmedAction
+                        action={removeCredential}
+                        trigger="Remove"
+                        triggerLabel={`Remove ${info.label}`}
+                        title={`Remove ${info.label}?`}
+                        description={`This removes your saved ${info.label}. You will need to save it again to build or launch private goldens with this provider. Organization providers are not affected.`}
+                        confirm="Remove key"
+                        pendingLabel="Removing…"
+                        successFocusId={`kind-${owner}`}
+                      >
                         <input type="hidden" name="id" value={row.id} />
-                        <SubmitButton variant="ghost" size="sm" aria-label={`Remove ${info.label}`}>
-                          Remove
-                        </SubmitButton>
-                      </ActionForm>
+                      </ConfirmedAction>
                     )}
                   </div>
                 ) : (
