@@ -1,11 +1,26 @@
 # Native subscription authentication and renewal (#604)
 
+## Current owner policy (#1176, 2026-11-12)
+
+Subscription accounts are reusable like API keys, with no Armada exclusivity,
+use-history lease, holder or reconcile/release step. #1248 owns lock removal.
+Legacy behavior documented below describes compatibility code, not a requirement
+to retain those restrictions or impose a fleet-migration gate. The owner allows
+only the already-open PRs and their stack to finish; further feature work is cancelled.
+
 ## Scope and prerequisites
 
-#604 owns local native consent/import, private refresh-state transport, exclusive
-ownership, encrypted auth revisions, hydration and redaction. Per-account quota
-telemetry is separately owned by #624. Native credential redaction of provider
-events and nested tool output belongs to #604.
+Configured servers use shared, server-owned Codex sessions (#1176): launch
+admission goes directly to the subscription broker, not the exclusive legacy
+owner. See [Shared server-owned Codex sessions](#shared-server-owned-codex-sessions-1176).
+API keys and model-only Claude setup tokens do not use rotating-session ownership.
+
+Local native consent/import, encrypted auth revisions, hydration and redaction
+remain supported. Legacy ownership and private native-state transport are retained
+for historical refresh-bearing homes, explicit legacy binding/recovery and
+compatibility embedders without a broker. Their removal follows #1248 and the
+owner policy above; this PR adds no further migration requirement. Per-account
+quota telemetry is separately owned by #624.
 
 Requires #603's named account IDs, binding versions and sandbox pins. Apply
 20261110120200_named_model_credentials.sql, then
@@ -40,14 +55,14 @@ Authenticated POST /api/v1/creds/accounts/auth-capabilities returns, additively:
     {
       "hostedOAuth": false,
       "nativeCLI": {"codex_auth": "armada creds login codex"},
-      "nativeSubscriptionParallelSandboxes": false,
+      "nativeSubscriptionParallelSandboxes": true,
       "nativeSubscriptionResume": true,
       "nativeSubscriptionExec": true
     }
 
-The example above describes legacy native ownership. Configured server-owned
-renewal deployments advertise `nativeSubscriptionParallelSandboxes: true`; see
-the shared-session section below.
+The example describes configured server-owned renewal. Compatibility embedders
+without a subscription broker advertise `nativeSubscriptionParallelSandboxes:
+false`; that legacy mode is not the shared-launch path.
 
 The nativeCLI map contains base commands only, without --name placeholders.
 #618 appends its one shell-quoted account name. It offers terminal consent for
@@ -57,9 +72,11 @@ import is supported, not a fake hosted Connect button.
 
 ## Legacy private native state lifecycle
 
-- One refresh-bearing account binding has one durable sandbox owner, claimed
-  before provider allocation/hydration. Scheduling expiry never reassigns a live
-  refresh token. Additional owners fail explicitly with credential_busy.
+- A legacy refresh-bearing home retains its durable sandbox owner. Explicit
+  legacy binding claims that owner before native hydration; this is not the
+  configured shared-session launch admission. Compatibility embedders without a
+  broker also retain this legacy admission. Scheduling expiry never reassigns a
+  live legacy refresh token. Additional legacy owners fail with credential_busy.
   API keys and model-only Claude tokens do not enter this gate; distinct named
   renewable accounts remain independent and can run in parallel. Managed Modal
   native conversations serialize through publication, not just native child exit.
@@ -114,10 +131,8 @@ import is supported, not a fake hosted Connect button.
 - Unknown legacy bindings are not silently assigned a current default. Explicit
   owner-binding recovery belongs to #603; native history is retained.
 
-No inference translation, cross-provider proxy, automatic account switching or
-central third-party OAuth client is implemented. A registered Sign in with
-ChatGPT self-hosted-VM integration needs approved eligibility and must preserve
-the VM's host identity. Native personal CLI use is not central-hosting eligibility.
+Shared mode replaces this legacy renewal path with server-owned refresh and
+native external-token RPC. It does not introduce a model-inference proxy.
 
 ## Evidence and sources
 
@@ -136,7 +151,7 @@ Pinned runtime: Claude SDK 0.3.322 / Claude Code 2.1.322; Codex 0.167.0.
   internal/provider/logins.go: consulted, no source copied.
 
 
-## Pre-renewal rollout workspaces
+## Legacy pre-renewal rollout workspaces
 
 A Codex workspace without an explicit account binding, or a pinned subscription
 workspace created before native renewal enrollment, has no trustworthy durable registry for tokens it may already have rotated.
