@@ -256,6 +256,53 @@ test.each(["boat", "modal"] as const)(
     expect(JSON.stringify(writes)).not.toContain("synthetic-private");
     expect(removed).toBe(true);
     if (id === "boat") {
+      // Exercise the actual private wire program: missing native auth is safe
+      // only with a private, exact sandbox broker capability receipt.
+      for (const proof of ["matching", "wrong", "missing", "unsafe"] as const) {
+        const config = "/home/user/.armada/model-access.json";
+        const files = new Map<string, string>();
+        if (proof !== "missing")
+          files.set(
+            config,
+            JSON.stringify({ capability: proof === "wrong" ? "other-capability" : "synthetic-capability" }),
+          );
+        const metadata = (file: string) => ({
+          uid: 1000,
+          nlink: 1,
+          size: Buffer.byteLength(files.get(file) ?? ""),
+          mode: proof === "unsafe" && file === config ? 0o644 : 0o600,
+          isSymbolicLink: () => false,
+          isDirectory: () => !files.has(file),
+          isFile: () => files.has(file),
+        });
+        const output: string[] = [];
+        const guest = {
+          env: { ARMADA_GIT_TOKEN: "synthetic-capability" },
+          stdout: { write: (text: string) => output.push(text) },
+          exitCode: 0,
+        };
+        new Script(program!).runInNewContext({
+          Buffer,
+          process: guest,
+          require: () => ({
+            constants: { O_RDONLY: 0, O_NOFOLLOW: 1 },
+            lstatSync: metadata,
+            fstatSync: metadata,
+            openSync: (file: string) => {
+              if (!files.has(file)) throw Object.assign(new Error("absent"), { code: "ENOENT" });
+              return file;
+            },
+            readSync: (file: string, bytes: Buffer) => Buffer.from(files.get(file) ?? "").copy(bytes),
+            closeSync: () => {},
+          }),
+        });
+        expect(output.join("")).toBe(proof === "matching" ? "null" : "");
+        expect(guest.exitCode).toBe(proof === "matching" ? 0 : 1);
+      }
+      await sshPrivateAuthState(selected, "native", deps, false, "synthetic-capability");
+      expect(calls.at(-1)?.stdin).toStartWith("synthetic-capability\n");
+      expect(JSON.stringify(calls.map((call) => call.args))).not.toContain("synthetic-capability");
+      expect(JSON.stringify(writes)).not.toContain("synthetic-capability");
       await sshNativeAuthAdmission(selected, "native", false, deps);
       const admission = calls
         .at(-1)

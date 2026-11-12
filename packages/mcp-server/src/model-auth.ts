@@ -121,8 +121,64 @@ export function createModelAuthOwnership(
         );
       if (!row || row.kind !== "codex_auth" || !row.credential_id || row.credential_version === null) return [];
       const actor: GoldenActor = { userId: row.owner_id, orgId: row.org_id, role: "member" };
-      if (broker && (await broker.enrolled(row.credential_id, row.credential_version)))
+      if (broker && (await broker.enrolled(row.credential_id, row.credential_version))) {
+        if (provider.id === "boat") {
+          const physical = await provider.get(providerId);
+          if (physical.id !== providerId)
+            throw new VaultError("conflict", "Private native observation returned another sandbox.");
+          if (physical.state === "stopped")
+            throw new ProviderError({
+              provider: "boat",
+              code: "unavailable",
+              retryable: true,
+              message: "Stopped native auth cannot be observed privately; output is withheld.",
+            });
+          const capability = broker.configuration(actor, row.credential_id, row.credential_version, row.id).capability;
+          let observed: string;
+          try {
+            observed = await captureNative(provider, providerId, {}, quiesced, capability);
+          } catch {
+            throw new ProviderError({
+              provider: "boat",
+              code: "unavailable",
+              retryable: true,
+              message: "Private native auth observation is unavailable; output is withheld.",
+            });
+          }
+          const authorize = async (tx: Sql) => {
+            const pinned = await tx.query(
+              `select s.id from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
+               and s.credential_id=$4::uuid and s.credential_version=$5 and s.lifecycle_generation=$6
+               and s.provider='boat' and s.provider_sandbox_id=$7 and s.deleted_at is null
+               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$8::uuid)
+               and (coalesce(s.visibility,(select g.visibility from public.goldens g where g.id=s.golden_id))='org'
+                    or s.owner_id=$8::uuid) for update of s`,
+              [
+                row.id,
+                row.owner_id,
+                row.org_id,
+                row.credential_id,
+                row.credential_version,
+                row.lifecycle_generation,
+                providerId,
+                caller.userId,
+              ],
+            );
+            if (!pinned.rows.length) throw new VaultError("conflict", "Private native observation source changed.");
+          };
+          if (observed === "null") {
+            if (!sql.transaction) throw new VaultError("unavailable", "Private redaction requires transactions.");
+            await sql.transaction(authorize);
+          } else
+            await state.observeRedaction({
+              accountId: row.credential_id,
+              version: row.credential_version,
+              authJson: observed,
+              authorize,
+            });
+        }
         return broker.secrets(row.credential_id, row.credential_version);
+      }
       const stoppedSecrets = (saved: { secrets: string[]; sourceGeneration: string } | undefined) => {
         if (provider.id === "boat" && !allowStoppedSample && !saved?.sourceGeneration.startsWith("boat:quiesced:"))
           throw new ProviderError({
@@ -334,10 +390,6 @@ export function createModelAuthOwnership(
         throw new VaultError("not_found", "No native publication binding.");
       const row = result.rows[0],
         actor: GoldenActor = { userId: scope.userId, orgId: scope.orgId, role: "member" };
-      // Once adopted, only the broker publishes renewal state. An old runner's
-      // checkpoint may be acknowledged/scrubbed but cannot overwrite shared auth.
-      if (broker && (await broker.enrolled(row.credential_id, row.credential_version)))
-        return { authRevision: expectedRevision, committed: true, discarded: true };
       // Removed owners may finish ONLY the already-dispatched native checkpoint.
       // This cannot hydrate or claim a model account and is not a general member bypass.
       const authorizeCleanup = async (tx: Sql) => {
@@ -376,27 +428,31 @@ export function createModelAuthOwnership(
         (row.expires_at !== null &&
           new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now())
       ) {
-        if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
-        await sql.transaction(async (tx) => {
-          const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
-            scope.orgId,
-            scope.userId,
-          ]);
-          if (!member.rows.length) {
-            await authorizeCleanup(tx);
-            return;
-          }
-          const permitted = await tx.query(
-            `select s.id from public.sandboxes s
+        await state.observeRedaction({
+          accountId: row.credential_id,
+          version: row.credential_version,
+          authJson,
+          authorize: async (tx) => {
+            const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
+              scope.orgId,
+              scope.userId,
+            ]);
+            if (!member.rows.length) {
+              await authorizeCleanup(tx);
+              return;
+            }
+            const permitted = await tx.query(
+              `select s.id from public.sandboxes s
              join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
              join public.modal_machines native on native.scope=$1 and native.id=s.provider_sandbox_id
                and native.org_id=s.org_id and native.owner_id=s.owner_id and native.record->>'generation'=$2
              where s.id=$3::uuid and s.credential_id=$4::uuid and s.credential_version=$5 and s.deleted_at is null
              for update of s,native for share of m`,
-            [scopeKey(scope), claims.generation, row.id, row.credential_id, row.credential_version],
-          );
-          if (!permitted.rows.length || claims.expiresAt <= now())
-            throw new VaultError("forbidden", "Native cleanup source is no longer authorized.");
+              [scopeKey(scope), claims.generation, row.id, row.credential_id, row.credential_version],
+            );
+            if (!permitted.rows.length || claims.expiresAt <= now())
+              throw new VaultError("forbidden", "Native cleanup source is no longer authorized.");
+          },
         });
         // The revoked/replaced binding cannot accept usable auth state. ACK only
         // permits private checkpoint scrubbing; the runtime has registered these

@@ -357,6 +357,7 @@ test("Modal private publication binds current app, native generation and account
     await shared.broker!.enroll(actor, account.id, 1);
     resume();
     expect(await late).toBe(2);
+    expect(await shared.broker!.secrets(account.id, 1)).toContain("synthetic-refresh-3");
     // A stale legacy exec preflight cannot relabel the shared renewal state either.
     await auth.state.invalidateRedaction(actor, SANDBOX);
 
@@ -365,7 +366,7 @@ test("Modal private publication binds current app, native generation and account
       accessToken: "synthetic-access-2",
       revision: 2,
     });
-    expect(await shared.publishFromModal(scope, current, native(3), 2)).toEqual({
+    expect(await shared.publishFromModal(scope, current, native(4), 2)).toEqual({
       authRevision: 2,
       committed: true,
       discarded: true,
@@ -374,16 +375,156 @@ test("Modal private publication binds current app, native generation and account
       accessToken: "synthetic-access-2",
       revision: 2,
     });
+    expect(await shared.broker!.secrets(account.id, 1)).toContain("synthetic-refresh-4");
+    await expect(shared.publishFromModal(scope, claims, native(5), 2)).rejects.toMatchObject({ code: "forbidden" });
+    expect(await shared.broker!.secrets(account.id, 1)).not.toContain("synthetic-refresh-5");
+    const observed = {
+      ...fakeBoat().provider,
+      id: "modal" as const,
+      get: async (id: string) => ({ id, name: id, state: "running" as const, providerState: "active", labels: {} }),
+    };
+    expect(
+      await shared.redactEvents(observed, "native", actor, [
+        {
+          id: "late-native-output",
+          at: 1,
+          kind: "message",
+          partial: false,
+          tools: [],
+          text: "synthetic-access-3 synthetic-refresh-3 synthetic-access-4 synthetic-refresh-4",
+        },
+      ]),
+    ).toMatchObject([{ text: "*** *** *** ***" }]);
     await db.query("update credentials set value_enc=$2 where id=$1", [
       account.id,
       await encryptSecret(native(9), KEY),
     ]);
-    expect(await auth.publishFromModal(scope, current, native(3), 2)).toEqual({
+    expect(await auth.publishFromModal(scope, current, native(6), 2)).toEqual({
       authRevision: 2,
       committed: true,
       discarded: true,
     });
     expect((await db.query("select auth_revision from model_auth_state")).rows).toEqual([{ auth_revision: 2 }]);
+    expect(await shared.broker!.secrets(account.id, 1)).toContain("synthetic-refresh-6");
+    const lateCapture = createModelAuthOwnership(
+      db,
+      KEY,
+      async () => native(7),
+      () => time,
+    );
+    expect(await lateCapture.capture(observed, "native", actor)).toContain("synthetic-refresh-7");
+    const preserved = (
+      await db.query<{ state_enc: Uint8Array; auth_revision: number; source_generation: string }>(
+        "select state_enc,auth_revision,source_generation from model_auth_state where account_id=$1 and account_version=1",
+        [account.id],
+      )
+    ).rows[0]!;
+    expect(preserved).toMatchObject({ auth_revision: 2, source_generation: "server:ready" });
+    expect(JSON.parse(await decryptSecret(new Uint8Array(preserved.state_enc), KEY)).authJson).toBe(native(2));
+
+    expect(
+      await shared.redactEvents(observed, "native", actor, [
+        {
+          id: "retired-native-output",
+          at: 2,
+          kind: "message",
+          partial: false,
+          tools: [],
+          text: "synthetic-refresh-6 synthetic-refresh-7",
+        },
+      ]),
+    ).toMatchObject([{ text: "*** ***" }]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("shared Boat output samples late native disk secrets and refuses uncertain or stopped observations", async () => {
+  const { db, people } = await database();
+  try {
+    const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+    const account = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+        [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const boat = fakeBoat();
+    const physical = await boat.provider.fork({ from: "shared", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version)
+       select $1,$2,$3,g.id,'codex','ready',$4,$4,'org',$5,1 from goldens g where g.org_id=$2 and g.name='shared'`,
+      [id, actor.orgId, actor.userId, physical.id, account.id],
+    );
+    let sample = native(2),
+      samples = 0,
+      unavailable = false,
+      expectedCapability = "";
+    let duringSample: (() => Promise<void>) | undefined;
+    const shared = createModelAuthOwnership(
+      db,
+      ENCRYPTION_KEY,
+      async (_provider, target, _deps, _quiesced, capability) => {
+        samples++;
+        expect(target).toBe(physical.id);
+        expect(capability).toBe(expectedCapability);
+        await duringSample?.();
+        if (unavailable) throw Error("Synthetic private sample failure");
+        return sample;
+      },
+      undefined,
+      { origin: "https://armada.example" },
+    );
+    const broker = shared.broker!;
+    expectedCapability = broker.configuration(actor, account.id, 1, id).capability;
+    await broker.enroll(actor, account.id, 1);
+    const events = (text: string) =>
+      shared.redactEvents(boat.provider, physical.id, actor, [
+        {
+          id: "disk-token-output",
+          at: 1,
+          kind: "message",
+          partial: false,
+          tools: [],
+          text,
+        },
+      ]);
+    expect(await events("synthetic-access-2 synthetic-refresh-2")).toMatchObject([{ text: "*** ***" }]);
+    expect(await broker.secrets(account.id, 1)).toContain("synthetic-refresh-2");
+    expect(await broker.access(actor, account.id, 1)).toMatchObject({ accessToken: "synthetic-access-0", revision: 0 });
+    await db.query("update credentials set value_enc=$2 where id=$1", [
+      account.id,
+      await encryptSecret(native(9), ENCRYPTION_KEY),
+    ]);
+    sample = native(3);
+    expect(await events("synthetic-refresh-3")).toMatchObject([{ text: "***" }]);
+    sample = native(4);
+    duringSample = async () => {
+      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+    };
+    await expect(events("synthetic-refresh-4")).rejects.toMatchObject({ code: "conflict" });
+    expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
+    duringSample = undefined;
+    unavailable = true;
+    await expect(events("unobserved-disk-output")).rejects.toThrow();
+    unavailable = false;
+    sample = "null"; // Private transport verified this is an access-only broker home.
+    expect(await events("synthetic-refresh-3")).toMatchObject([{ text: "***" }]);
+    await boat.provider.stop({ sandboxId: physical.id });
+    const beforeStoppedRead = samples;
+    await expect(events("unobserved-stopped-output")).rejects.toMatchObject({ code: "unavailable" });
+    expect(samples).toBe(beforeStoppedRead);
+    const preserved = (
+      await db.query<{ state_enc: Uint8Array; auth_revision: number; source_generation: string }>(
+        "select state_enc,auth_revision,source_generation from model_auth_state where account_id=$1 and account_version=1",
+        [account.id],
+      )
+    ).rows[0]!;
+    expect(preserved).toMatchObject({ auth_revision: 0, source_generation: "server:ready" });
+    expect(JSON.parse(await decryptSecret(new Uint8Array(preserved.state_enc), ENCRYPTION_KEY)).authJson).toBe(
+      native(0),
+    );
   } finally {
     await db.close();
   }

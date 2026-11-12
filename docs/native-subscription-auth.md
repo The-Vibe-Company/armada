@@ -7,7 +7,7 @@ same account simultaneously. A failed, deleted, stopped or unregistered earlier
 sandbox does not reserve an account. There is no holder, release or reconcile
 step before launching or prompting.
 
-Codex uses the server-owned renewal broker from #1186. Each sandbox receives an
+New Codex launches use the server-owned renewal broker from #1186 and receive an
 access-only capability; rotating refresh tokens stay sealed on the server.
 Refresh intent and revision compare-and-swap coalesce concurrent renewals across
 server replicas. A lost upstream refresh response remains an authentication
@@ -54,3 +54,30 @@ local results.
 A native plan limit remains a prompt failure, not a launch failure or expired
 login. Only applicable vendor reset evidence is surfaced; raw vendor errors
 and private quota/profile payloads remain private.
+
+## Legacy-runtime boundary and public output
+
+Changing sealed state to broker-owned does not rewrite a native process that is
+already running on older code. This PR does not claim an atomic fleet-wide
+upgrade of those processes, especially allocations whose provider ID was never
+recorded. It does not restore a history-based launch refusal or a user cleanup
+step to try to establish that proof. A running legacy process may still rotate
+its previously delivered login; automatic live-process cutover is not delivered
+by this account-lock deletion.
+
+Authenticated late legacy observations append only to the sealed redaction
+registry; they cannot overwrite broker auth, revision or refresh intent. A
+broker refresh preserves observations arriving while its upstream call is in
+flight. Known running Boat homes are sampled privately before public output;
+a missing auth file is accepted only with a secure exact-capability broker
+configuration proof. Unsafe or unavailable observations withhold output rather
+than expose an unregistered token. Stopped shared Boat logs/events are also
+withheld, including access-only homes, until resumed for private observation:
+this change does not persist a post-stop source proof. This is an output safety
+limitation, not account exclusivity; it does not reserve the account or prevent
+another sandbox launching.
+
+Deployment validation must additionally exercise an older refresh-bearing
+runtime with a prompt in flight during adoption on Boat and Modal. Verify the
+runtime upgrade and subsequent refresh behavior explicitly; do not infer a
+successful live-process cutover from synthetic account-admission tests.

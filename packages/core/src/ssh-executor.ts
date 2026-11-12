@@ -164,6 +164,7 @@ export async function sshPrivateAuthState(
   sandboxId: string,
   deps: SshExecDeps = {},
   quiesced = false,
+  expectedSharedCapability?: string,
 ): Promise<string> {
   const path =
     provider.id === "boat"
@@ -177,26 +178,40 @@ umask 077
 ${quiesced ? "flock -x -w 30 /home/user/.codex/.armada-native-writer.lock " : ""}node <<'ARMADA_PRIVATE_AUTH'
 const fs = require('node:fs');
 const path = ${JSON.stringify(path)};
-let fd;
-try {
-  const parts = path.split('/').filter(Boolean);
-  for (let n=1;n<parts.length;n++) {
-    const stat=fs.lstatSync('/'+parts.slice(0,n).join('/'));
-    if(stat.isSymbolicLink() || !stat.isDirectory()) throw Error('unsafe');
+function readPrivate(file) {
+ let fd;
+ try {
+  const parts=file.split('/').filter(Boolean);
+  for(let n=1;n<parts.length;n++) {
+   const stat=fs.lstatSync('/'+parts.slice(0,n).join('/'));
+   if(stat.isSymbolicLink() || !stat.isDirectory()) throw Error('unsafe');
   }
-  fd=fs.openSync(path,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
   const stat=fs.fstatSync(fd);
   if(!stat.isFile() || stat.uid!==fs.lstatSync('/home/user').uid || stat.nlink!==1 || stat.size>65536 || (stat.mode&0o077)) throw Error('unsafe');
-  const bytes=Buffer.alloc(65537);
-  const length=fs.readSync(fd,bytes,0,bytes.length,0);
+  const bytes=Buffer.alloc(65537),length=fs.readSync(fd,bytes,0,bytes.length,0);
   if(length>65536) throw Error('oversized');
-  const text=bytes.subarray(0,length).toString('utf8'), value=JSON.parse(text);
+  return bytes.subarray(0,length).toString('utf8');
+ } finally { if(fd!==undefined) fs.closeSync(fd); }
+}
+try {
+ let text;
+ try { text=readPrivate(path); }
+ catch(error) {
+  const expected=process.env.ARMADA_GIT_TOKEN;
+  if(${provider.id === "boat" ? "true" : "false"} && expected && error.code==='ENOENT' &&
+     JSON.parse(readPrivate('/home/user/.armada/model-access.json')).capability===expected)
+   process.stdout.write('null');
+  else throw error;
+ }
+ if(text!==undefined) {
+  const value=JSON.parse(text);
   if(!value.tokens || typeof value.tokens.refresh_token!=='string' ||
      typeof value.tokens.access_token!=='string' || typeof value.tokens.account_id!=='string') throw Error('invalid');
   process.stdout.write(text);
+ }
 } catch { process.exitCode=1; }
 finally {
-  if(fd!==undefined) fs.closeSync(fd);
   const pub=process.env.ARMADA_SSH_PUBLIC_KEY;
   if(pub) for(const home of ['/home/user','/root']) {
     try {
@@ -210,7 +225,7 @@ finally {
 ARMADA_PRIVATE_AUTH
 `;
   try {
-    return await sshExchange(provider, { sandboxId, token: "", script }, deps, true);
+    return await sshExchange(provider, { sandboxId, token: expectedSharedCapability ?? "", script }, deps, true);
   } catch {
     throw Error("Private native auth exchange failed.");
   }

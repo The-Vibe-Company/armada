@@ -3,6 +3,7 @@ import {
   createSqlGoldenStore,
   createSqlSandboxStore,
   createSqlVaultStore,
+  decryptSecret,
   encryptSecret,
   type GoldenActor,
   launchSandbox,
@@ -134,6 +135,22 @@ test("three subscription launches prompt despite trapped history and share one r
     await started;
     const second = replica.route(request(1, 0));
     const third = broker.route(request(2, 0));
+    // A late authenticated guest observation updates only the sealed registry
+    // while the vendor response is pending, not the broker's auth revision.
+    await db.transaction(async (tx) => {
+      const row = (
+        await tx.query<{ state_enc: Uint8Array }>(
+          "select state_enc from model_auth_state where account_id=$1 and account_version=1 for update",
+          [account.id],
+        )
+      ).rows[0]!;
+      const observed = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), ENCRYPTION_KEY));
+      observed.secrets.push("late-native-observation");
+      await tx.query("update model_auth_state set state_enc=$2 where account_id=$1 and account_version=1", [
+        account.id,
+        await encryptSecret(JSON.stringify(observed), ENCRYPTION_KEY),
+      ]);
+    });
     release();
     for (const response of await Promise.all([first, second, third])) {
       expect(response?.status).toBe(200);
@@ -142,6 +159,7 @@ test("three subscription launches prompt despite trapped history and share one r
       expect(body).not.toContain("refresh-");
     }
     expect(requests).toBe(1);
+    expect(await broker.secrets(account.id, 1)).toContain("late-native-observation");
     expect(await broker.secrets(account.id, 1)).toContain("access-after");
     expect(await broker.secrets(account.id, 1)).toContain(
       broker.configuration(actor, account.id, 1, ids[0]!).capability,

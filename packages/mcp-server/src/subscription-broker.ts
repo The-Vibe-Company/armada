@@ -157,6 +157,12 @@ export function createSubscriptionBroker(
         next.secrets = [...new Set([...selected.row.state.secrets, ...next.secrets])];
         return await sql.transaction!(async (tx) => {
           await account(tx, actor, id, version);
+          // Authenticated late native observations may append redaction leaves
+          // while the upstream refresh is in flight without changing its revision.
+          const latest = await saved(tx, id, version);
+          next.secrets = [...new Set([...latest.state.secrets, ...next.secrets])];
+          if (Buffer.byteLength(JSON.stringify(next)) > 4 * 1024 * 1024)
+            throw new VaultError("unavailable", "Native secret redaction budget exceeded.");
           const updated = await tx.query(
             "update public.model_auth_state set state_enc=$4::bytea,auth_revision=auth_revision+1,source_generation=$5,updated_at=now() where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing' returning auth_revision",
             [id, version, selected.row.auth_revision, await encryptSecret(JSON.stringify(next), key), READY],
