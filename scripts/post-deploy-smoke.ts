@@ -760,6 +760,27 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             },
           ),
         );
+        if (item.provider === "modal")
+          await step(phase ? `${phase}_usage` : second ? "usage_second" : "usage", () =>
+            poll(
+              () =>
+                sandbox<{
+                  usage?: {
+                    turns?: { promptId: string; inputTokens: number | null; outputTokens: number | null }[];
+                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null };
+                  };
+                }>("status", { id: sandboxId }),
+              (result) => {
+                const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
+                return (
+                  typeof row?.inputTokens === "number" &&
+                  typeof row.outputTokens === "number" &&
+                  typeof result.usage?.tokenTotals?.inputTokens === "number" &&
+                  typeof result.usage?.tokenTotals?.outputTokens === "number"
+                );
+              },
+            ),
+          );
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {
             const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
