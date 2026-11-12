@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import {
   cleanupSandboxes,
   createSqlGoldenStore,
@@ -17,9 +17,8 @@ const TOKEN = "sk-ant-oat01-database-test-token";
 
 describe("launch database", () => {
   test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const people = await fixture(db);
       const goldens = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
       const sandboxes = createSqlSandboxStore(db);

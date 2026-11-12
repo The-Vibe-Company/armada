@@ -172,7 +172,10 @@ test("a member sees the org's accounts but only manages their own", async ({ pag
   await signIn(page, "bob@example.com", "/harness");
   const org = page.locator('[data-account="Anthropic API key"]');
   await expect(org).toContainText("Acme");
-  await expect(org.getByRole("button")).toHaveCount(0);
+  await expect(org.getByRole("button", { name: /More actions|Make default|Reconnect/ })).toHaveCount(0);
+  await expect(org.getByText("Managed by the org's admins.", { exact: true })).toBeVisible();
+  // Read-only checks still require the member's own bound sandbox at the server.
+  await expect(org.getByRole("button", { name: "Test connection, Anthropic API key" })).toBeVisible();
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   // Only an admin adds an org account: a member has no scope choice.
   await expect(page.getByRole("dialog").getByRole("radio", { name: /Acme/ })).toHaveCount(0);

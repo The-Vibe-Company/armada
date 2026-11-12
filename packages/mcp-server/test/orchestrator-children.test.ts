@@ -1300,7 +1300,12 @@ test("delegated native child preserves actual ownership admission and fails busy
   const { db, sql, p, parent, authority, token, selection } = await fixture("ready", "codex_auth");
   try {
     const ownership = createModelAuthOwnership(sql, ENCRYPTION_KEY);
-    await ownership.claim({ userId: p.owner, orgId: p.org, role: "member" }, selection.credentialId, 1, parent.id);
+    await ownership.claimLegacy(
+      { userId: p.owner, orgId: p.org, role: "member" },
+      selection.credentialId,
+      1,
+      parent.id,
+    );
     await sql.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [
       parent.id,
       selection.credentialId,

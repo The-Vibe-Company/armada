@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import {
   connectGolden,
   createSqlGoldenStore,
@@ -21,9 +21,8 @@ test.each([
   "lost-readback",
   "known-failed",
 ] as const)("Modal manual save verifies and publishes the actual immutable reference (%s)", async (mode) => {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   try {
-    await applyMigrations(db);
     const actor: GoldenActor = { orgId: crypto.randomUUID(), userId: crypto.randomUUID(), role: "admin" };
     await db.query("insert into auth.users(id) values($1)", [actor.userId]);
     await db.query("insert into orgs(id,name) values($1,'snapshots')", [actor.orgId]);

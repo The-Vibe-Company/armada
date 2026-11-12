@@ -198,11 +198,16 @@ Usage:
                                            Codex endpoints require Modal and the Responses API, not chat completions
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
                                            Claude gateways require Modal and support Claude models only; key from stdin/file
+                                           Endpoint prices: --price-model ID --price-input USD --price-output USD
+                                           [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
+                                           Replacing a connection replaces its prices too; re-enter all rates to keep them
   armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
   armada template --help                   Create, publish, list, get, delete and launch immutable templates
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
+  armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
+                                           One tiny billable check of the bound custom connection in a running Modal sandbox
   armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]

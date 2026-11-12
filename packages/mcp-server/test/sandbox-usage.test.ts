@@ -63,17 +63,27 @@ test.each([
   {
     total: 10,
     detail: { cacheCreationEphemeral5mInputTokens: 8, cacheCreationEphemeral1hInputTokens: 3 },
-    expected: { fiveMinute: null, oneHour: null },
+    expected: { fiveMinute: null, oneHour: null, conflicted: true },
   },
   {
     total: 10,
     detail: { cacheCreationEphemeral5mInputTokens: -1, cacheCreationEphemeral1hInputTokens: 0 },
+    expected: { fiveMinute: null, oneHour: null, conflicted: true },
+  },
+  {
+    total: 10,
+    detail: { cacheCreationEphemeral5mInputTokens: null, cacheCreationEphemeral1hInputTokens: null },
     expected: { fiveMinute: null, oneHour: null },
   },
   {
     total: null,
+    detail: { cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 2 },
+    expected: { fiveMinute: 0, oneHour: 2 },
+  },
+  {
+    total: null,
     detail: { cacheCreationEphemeral5mInputTokens: 2, cacheCreationEphemeral1hInputTokens: 0 },
-    expected: { fiveMinute: null, oneHour: null },
+    expected: { fiveMinute: 2, oneHour: 0 },
   },
 ])(
   "Claude cache-write lifetimes preserve known subsets without inventing missing tokens (%j)",
@@ -287,7 +297,7 @@ test("native collection persists retry-safe rows and preserves measurements when
     await collectSandboxUsage(provider, store, fallback);
     const incomplete = (await store.get(id))?.usage;
     expect(incomplete?.turnCount).toBe(2);
-    expect(incomplete?.tokenTotals?.inputTokens).toBeNull();
+    expect(incomplete?.tokenTotals).toMatchObject({ inputTokens: 42, incomplete: true });
     const later = { ...row, promptId: "unmeasured", inputTokens: 100 };
     await store.recordUsage!(id, { turnCount: 2, turns: [later] });
     // A stale status writer cannot erase a concurrently discovered prompt or lower its counters.

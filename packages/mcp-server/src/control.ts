@@ -20,9 +20,12 @@ import {
 import type { Harness } from "@armada/core";
 import {
   API_FAILURE_STATUS,
+  CLAUDE_ENDPOINT_ENV,
+  CODEX_ENDPOINT_ENV,
   GitHubHydrationError,
   goldenForSettings,
   isHarness,
+  isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
@@ -88,6 +91,7 @@ import {
   resolveRepositoryDir,
   resolveSkillpackCredential,
   type SkillDefaultsService,
+  sandboxActivity,
   scanGoldenSandbox,
   setCredential,
   setMemberRole,
@@ -834,6 +838,63 @@ async function dispatch(
     if (!options.providerMetadata)
       throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
     return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
+  }
+  if (route === "sandbox/test-model-connection") {
+    if (Object.keys(body).some((key) => !["id", "model", "org"].includes(key)))
+      throw new VaultError("invalid", "Connection checks accept only id, model and org.");
+    const id = required(body, "id");
+    if (!UUID.test(id)) throw new VaultError("invalid", "id must be an Armada sandbox UUID.");
+    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    const scoped = await selectedCaller(options, caller, optional(body, "org"));
+    const data = options.data(scoped);
+    const found = await data.sandboxes.get(id);
+    if (!found) throw new VaultError("not_found", "Sandbox not found.");
+    if (found.ownerId !== caller.userId)
+      throw new VaultError("forbidden", "Only the sandbox owner may test its model connection.");
+    if (
+      found.provider !== "modal" ||
+      !["ready", "running"].includes(found.status) ||
+      found.stopRequestedAt ||
+      !found.credentialId ||
+      !found.credentialVersion
+    )
+      throw new VaultError(
+        "conflict",
+        "Connection checks require a running, bound Modal sandbox; no resume is performed.",
+      );
+    const harness = found.harness;
+    if (harness !== "claude" && harness !== "codex")
+      throw new VaultError("invalid", "Connection checks currently support Claude and Codex only.");
+    const model = resolveModelChoice(harness, { model: required(body, "model") }).model;
+    const credentials = launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth);
+    const actor: GoldenActor = { userId: found.ownerId, orgId: found.orgId, role: "member" };
+    const bound = await credentials.resolve(actor, found.harness, found.credentialId, found.credentialVersion);
+    if (!bound.env[found.harness === "codex" ? CODEX_ENDPOINT_ENV : CLAUDE_ENDPOINT_ENV])
+      throw new VaultError("invalid", "This check supports custom endpoint connections only.");
+    await credentials.assertTurn?.(actor, found.id, false);
+    const provider = await options.providers.resolve(found, scoped);
+    if (!provider.testModelConnection)
+      throw new VaultError("unavailable", "Runtime connection checks are unavailable.");
+    const machine = await provider.get(found.providerSandboxId);
+    if (!["ready", "running"].includes(machine.state))
+      throw new VaultError("conflict", "Sandbox must already be running.");
+    const test = await sandboxActivity(
+      data.sandboxes,
+      found,
+      {},
+      async () => {
+        const result = await provider.testModelConnection!({
+          sandboxId: found.providerSandboxId,
+          harness: found.harness,
+          model,
+        });
+        if (!isModelConnectionTestResult(result))
+          throw new VaultError("unavailable", "Invalid connection-test receipt.");
+        return { result, patch: {} };
+      },
+      { deadlineMs: 30000, failurePatch: () => ({}) },
+    );
+    return { id: found.id, test };
   }
   const toolName = (
     {

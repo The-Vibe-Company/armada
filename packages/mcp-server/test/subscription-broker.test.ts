@@ -128,7 +128,7 @@ test("uncertain upstream refresh is never replayed and legacy duplicate writers 
       )
     ).rows[0]!;
     const legacy = createModelAuthOwnership(db, ENCRYPTION_KEY);
-    await legacy.claim(actor, original.id, 1, crypto.randomUUID());
+    await legacy.claimLegacy(actor, original.id, 1, crypto.randomUUID());
     const duplicate = (
       await db.query<{ id: string }>(
         "insert into credentials(scope,owner_id,kind,value_enc,name) values('user',$1,'codex_auth',$2,'Duplicate') returning id",
@@ -266,13 +266,13 @@ test.each([false, true])(
           `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,stopped_at,provider_sandbox_id,boat_id,credential_id,credential_version) select $1,$2,$3,id,'codex','stopped',now(),$4,$4,$5,$6 from goldens where name='shared' and org_id=$2`,
           [id, people.org, people.owner, `physical-${id}`, account.id, version],
         );
-      await legacy.claim(actor, account.id, 1, original);
+      await legacy.claimLegacy(actor, account.id, 1, original);
       await record(original, 1);
       await db.query("update credentials set value_enc=$2 where id=$1", [
         account.id,
         await encryptSecret(raw(2), ENCRYPTION_KEY),
       ]);
-      await legacy.claim(actor, account.id, 2, ambiguous);
+      await legacy.claimLegacy(actor, account.id, 2, ambiguous);
       if (recorded) await record(ambiguous, 2);
       await db.query("update credentials set value_enc=$2 where id=$1", [
         account.id,

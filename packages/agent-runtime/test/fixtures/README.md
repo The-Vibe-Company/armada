@@ -15,3 +15,12 @@
   tests initialization, streaming input, merged-result UUID correlation,
   partials, interruption and independent query cleanup; no authenticated
   Claude conformance is claimed.
+- `codex-resume-recorded.json`: sanitized accounting-only sequence from a real
+  API-key authenticated Codex 0.167.0 app-server on this development sandbox,
+  2026-11-12. Fresh prompt, process restart, `thread/resume`, second prompt.
+  Dispatch markers are capture-client observations. All text, paths and real
+  identities omitted; counters unchanged. The historical total is notified only
+  after resumed `turn/start` dispatch, followed by the new cumulative total.
+  `recorded-resume.ts` replays that resume segment at the JSONL driver boundary.
+  This is native evidence, **not a Modal capture**; the staging run below only
+  exposes smoke receipts, not native JSONL.

@@ -300,6 +300,27 @@ describe("on the database client production uses", () => {
 });
 
 describe("tools", () => {
+  test("advertised usage schemas accept incomplete subtotals on status and list", async () => {
+    const { token, client, people } = await start();
+    const mcp = await client(await token(people.member));
+    // The SDK validates callTool receipts against the schemas cached by listTools.
+    await mcp.listTools();
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+    const status = await call(mcp, "status", { id: launched.data.id });
+    expect(status.isError).not.toBe(true);
+    expect(status.data).toMatchObject({ usage: { tokenTotals: { incomplete: true } } });
+    const listed = await call(mcp, "list");
+    expect(listed.isError).not.toBe(true);
+    expect(listed.data).toMatchObject({
+      sandboxes: expect.arrayContaining([
+        expect.objectContaining({
+          id: launched.data.id,
+          usage: expect.objectContaining({ tokenTotals: expect.objectContaining({ incomplete: true }) }),
+        }),
+      ]),
+    });
+  });
+
   test("the tools an orchestrator and the dashboard use are listed, with schemas", async () => {
     const { token, client, people } = await start();
     const mcp = await client(await token(people.member));

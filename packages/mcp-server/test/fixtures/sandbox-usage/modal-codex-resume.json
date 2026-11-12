@@ -1,0 +1,138 @@
+[
+  {
+    "kind": "other",
+    "type": "mcpServer/startupStatus/updated",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "thread/settings/updated",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "thread/status/changed",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "turn/started",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "mcpServer/startupStatus/updated",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "item/started",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "item/completed",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "item/started",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "thread/readState/changed",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "thread/status/changed",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "turn/completed",
+    "promptId": "8367aae5"
+  },
+  {
+    "kind": "other",
+    "type": "armada/turnUsage",
+    "promptId": "8367aae5",
+    "data": {
+      "model": "gpt-6.1-sol",
+      "inputTokens": 13212,
+      "cachedTokens": 0,
+      "outputTokens": 5,
+      "reasoningTokens": 0,
+      "cacheWriteTokens": 13209
+    }
+  },
+  {
+    "kind": "other",
+    "type": "thread/goal/cleared",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "thread/settings/updated",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "thread/status/changed",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "turn/started",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "item/started",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "item/completed",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "mcpServer/startupStatus/updated",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "item/started",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "thread/readState/changed",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "thread/status/changed",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "turn/completed",
+    "promptId": "b2c27dd7"
+  },
+  {
+    "kind": "other",
+    "type": "armada/turnUsage",
+    "promptId": "b2c27dd7",
+    "data": {
+      "model": "gpt-6.1-sol",
+      "inputTokens": null,
+      "cachedTokens": null,
+      "outputTokens": null,
+      "reasoningTokens": null,
+      "cacheWriteTokens": null
+    }
+  }
+]

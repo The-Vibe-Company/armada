@@ -382,7 +382,6 @@ export function createSqlData(sql: Sql): DataSource {
                     case when ttl_conflicted or
                         (ttl_total is not null and coalesce(ttl_five,0)+coalesce(ttl_hour,0)>ttl_total)
                       then jsonb_build_object('fiveMinute',null,'oneHour',null,'conflicted',true)
-                      when ttl_total is null then jsonb_build_object('fiveMinute',null,'oneHour',null)
                       else jsonb_build_object('fiveMinute',ttl_five,'oneHour',ttl_hour) end)
                     else '{}'::jsonb end as value
               from lifetime_snapshots

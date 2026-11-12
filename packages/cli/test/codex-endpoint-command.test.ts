@@ -239,3 +239,129 @@ test.each(
   expect(reads).toBe(0);
   expect(h.requests).toHaveLength(0);
 });
+
+test.each([
+  { result: { ok: true, status: 200, error: null, code: null }, exit: 0, message: "Connection accepted" },
+  {
+    result: { ok: false, status: 200, error: "invalid_response", code: null },
+    exit: 1,
+    message: "HTTP 200 invalid_response",
+  },
+  {
+    result: { ok: false, status: null, error: "connection_failed", code: null },
+    exit: 1,
+    message: "connection failed or timed out",
+  },
+])(
+  "connection test CLI prints closed diagnostics and reflects failure in exit status (%j)",
+  async ({ result, exit, message }) => {
+    const h = setup();
+    h.auth.fetch = (async (input, init) => {
+      const request = new Request(String(input), init);
+      expect(new URL(request.url).pathname).toBe("/api/v1/sandbox/test-model-connection");
+      expect(await request.json()).toEqual({ id: "sandbox", model: "deployment" });
+      return Response.json({ id: "sandbox", test: result });
+    }) as typeof fetch;
+    expect(
+      await run(
+        ["creds", "test", "sandbox", "--model", "deployment"],
+        { out: h.auth.out, err: h.auth.err },
+        { auth: h.auth },
+      ),
+    ).toBe(exit);
+    expect(h.output.join("")).toContain(message);
+  },
+);
+
+test("connection test CLI refuses malformed diagnostic fields rather than echoing them", async () => {
+  const h = setup();
+  const secret = randomUUID();
+  h.auth.fetch = (async () =>
+    Response.json({
+      test: { ok: false, status: 401, error: "provider_rejected", code: secret },
+    })) as unknown as typeof fetch;
+  expect(
+    await run(
+      ["creds", "test", "sandbox", "--model", "deployment", "--json"],
+      { out: h.auth.out, err: h.auth.err },
+      { auth: h.auth },
+    ),
+  ).not.toBe(0);
+  expect(h.output.join("")).not.toContain(secret);
+});
+
+test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s connection replacement", async (kind) => {
+  const h = setup();
+  const apiKey = randomUUID();
+  expect(
+    await run(
+      [
+        "creds",
+        "set",
+        kind,
+        "--id",
+        "account",
+        "--expected-version",
+        "3",
+        "--base-url",
+        "https://gateway.example/v1",
+        "--price-model",
+        "owner-deployment",
+        "--price-input",
+        "0",
+        "--price-output",
+        "12.345678901234",
+        "--price-cached-input",
+        "0.25",
+        "--json",
+      ],
+      { out: h.auth.out, err: h.auth.err },
+      { auth: h.auth, readStdin: async () => apiKey },
+    ),
+  ).toBe(0);
+  const request = h.requests[0];
+  if (!request) throw Error("missing request");
+  const body = (await request.json()) as { id: string; expectedVersion: number; value: string };
+  expect(body.id).toBe("account");
+  expect(body.expectedVersion).toBe(3);
+  const value = JSON.parse(body.value);
+  expect(value.prices).toEqual({
+    "owner-deployment": { input: "0", output: "12.345678901234", cacheRead: "0.25", cacheWrite: null, reasoning: null },
+  });
+  expect(value.apiKey).toBe(apiKey);
+  expect(h.output.join("")).toBe('{"ok":true}\n');
+});
+
+test.each(
+  [
+    ["list", "--price-model", "deployment"],
+    ["set", "openai", "--name", "Price", "--price-model", "deployment", "--price-input", "1", "--price-output", "2"],
+    ...[
+      ["--price-model", "deployment"],
+      ["--price-model", "deployment", "--price-input", "-1", "--price-output", "2"],
+      ["--price-model", "deployment", "--price-input", "1", "--price-output", "NaN"],
+      ["--price-model", "deployment", "--price-input", "1e3", "--price-output", "2"],
+      ["--price-model", "deployment", "--price-input", "1", "--price-output", "2", "--price-cached-input", ""],
+      ["--price-model", "__proto__", "--price-input", "1", "--price-output", "2"],
+      ["--price-model", "deployment", "--price-model", "other", "--price-input", "1", "--price-output", "2"],
+    ].map((flags) => ["set", "openai", "--name", "Price", "--base-url", "https://gateway.example/v1", ...flags]),
+  ].map((args) => ({ args })),
+)("invalid prices are refused before secret input/API: %j", async ({ args }) => {
+  const h = setup();
+  let reads = 0;
+  expect(
+    await run(
+      ["creds", ...args],
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readStdin: async () => {
+          reads++;
+          return randomUUID();
+        },
+      },
+    ),
+  ).not.toBe(0);
+  expect(reads).toBe(0);
+  expect(h.requests).toHaveLength(0);
+});
