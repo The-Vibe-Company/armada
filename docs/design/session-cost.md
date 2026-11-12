@@ -2,19 +2,18 @@
 
 Design-only first PR for #1160; later implementation PRs use `Refs #1163`.
 No runtime changes, migrations, deployment, or staging credentials in this PR.
+Implementation slices start on fresh `origin/main`; none are included here.
 
-## Owner discussion — implementation on hold
+## Binding decisions and immediate scope
 
-Everything below is a proposal pending owner discussion; no slice may start yet.
-1. **When is incomplete cost unknown rather than an estimate?** Recommend unknown
-   for missing counters, ambiguous tiers/TTL or model attribution; show measured
-   tokens and a separately labelled partial subtotal, not a guessed full total.
-2. **Which prices win, and can history change?** Recommend connection prices over
-   a pinned public table, custom endpoints without prices unknown, and frozen
-   per-turn snapshots; no automatic historical repricing or org-wide overrides yet.
-3. **What is the first implementation boundary?** Recommend one narrow server
-   price/store/read slice using existing collection, then capture fixes, then
-   rollups; consume #1162's connection contract rather than building it here.
+Owner decisions in #1163 override earlier proposals. Start session cost now on
+Modal, in parallel with #1161; do not wait for Boat parity. All agent features
+and usage flow through the Armada runtime, never a host agent API. Runtime tokens
+are per turn; the server prices them. A missing figure is unknown, never estimated.
+Keep Modal's existing transport for this work: dial-out migration is the last
+programme step. #1161 owns compiled bootstrap/enrolment/epochs and Boat rollout;
+#1162 owns connections. Neither is an implementation prerequisite for public-model
+pricing on Modal. OpenCode ACP and Docker are later sibling steps, not this lane.
 
 ## Current state (2026-11-12)
 
@@ -89,20 +88,23 @@ edits never reprice history. Legacy usage without a snapshot stays unpriced, wit
 no invented historical price. Aggregates are recomputed from frozen amounts.
 A partial subtotal is labelled partial with unknown-turn count, never a complete
 session total. Subscription basis is **API-equivalent**, not money paid; API-key
-basis is estimated. API, MCP, CLI, dashboard and iOS consume one server DTO.
+basis is published-price cost, not an invoice. Missing figures are unknown, never
+estimated. API, MCP, CLI, dashboard and iOS consume one server DTO.
 
 ## Small independently mergeable slices and staging evidence
 
 Each PR documents exact supported CLI/API shapes and hand arithmetic for its SHA;
 the coordinator alone runs staging checks after normal deployment.
 
-1. **Price/store/read path:** vendor refresh + server calculator + additive storage
+1. **Modal price/store/read path (start now):** vendor refresh + server calculator + storage
    and API DTO; switch dashboard/CLI to it, preserve visibility rules and metadata-
    only redaction. Coordinator: launch one Claude and one Codex prompt via existing
-   `armada launch <golden> --agent <claude|codex> "Reply OK"`, then
+   `armada launch <modal-golden> --provider modal --agent <claude|codex> "Reply OK"`, then
    `armada wait <id>` and `armada status <id> --json`; compare each bucket × frozen
    rate by hand in the PR, inspect the same sandbox in dashboard and API status.
    Expect identical stored USD/basis (or explicit unknown for capture gaps).
+   Complete the staging lifecycle smoke (send, steer, interrupt, stop/resume,
+   delete) before advancing; preserve priced observations across resume/replay.
 2. **Capture accuracy:** actual model, resumed baseline, cache TTL/write and
    reasoning completeness; no provider rewrite. Coordinator: send a second prompt,
    stop/resume, send again, then steer a turn; inspect status twice. Expect stable
