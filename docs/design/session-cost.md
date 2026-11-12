@@ -3,6 +3,19 @@
 Design-only first PR for #1160; later implementation PRs use `Refs #1163`.
 No runtime changes, migrations, deployment, or staging credentials in this PR.
 
+## Owner discussion — implementation on hold
+
+Everything below is a proposal pending owner discussion; no slice may start yet.
+1. **When is incomplete cost unknown rather than an estimate?** Recommend unknown
+   for missing counters, ambiguous tiers/TTL or model attribution; show measured
+   tokens and a separately labelled partial subtotal, not a guessed full total.
+2. **Which prices win, and can history change?** Recommend connection prices over
+   a pinned public table, custom endpoints without prices unknown, and frozen
+   per-turn snapshots; no automatic historical repricing or org-wide overrides yet.
+3. **What is the first implementation boundary?** Recommend one narrow server
+   price/store/read slice using existing collection, then capture fixes, then
+   rollups; consume #1162's connection contract rather than building it here.
+
 ## Current state (2026-11-12)
 
 - `packages/core/src/sandbox-usage.ts` extracts per-prompt/model counters;
