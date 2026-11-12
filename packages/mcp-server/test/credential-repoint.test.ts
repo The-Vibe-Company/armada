@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { createSqlVaultStore, decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
 import { createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { configureClaudeEndpoint } from "../../agent-runtime/src/claude-endpoint.ts";
 import type { Caller } from "../src/caller.ts";
 import { createCredentialRepoint } from "../src/credential-repoint.ts";
 import { createSqlData } from "../src/data.ts";
@@ -14,6 +15,8 @@ import { database, ENCRYPTION_KEY, fakeBoat, SECRETS } from "./support.ts";
 async function fixture(
   options: {
     native?: boolean;
+    harness?: "claude" | "codex";
+    boat?: boolean;
     active?: boolean;
     stopUncertain?: boolean;
     failAfterBoot?: boolean;
@@ -24,6 +27,7 @@ async function fixture(
   } = {},
 ) {
   const { db, people } = await database();
+  const harness = options.harness ?? "codex";
   const caller: Caller = { userId: people.owner, orgs: [{ orgId: people.org, role: "member" }], via: "supabase" };
   const scope: Scope = {
     orgId: people.org,
@@ -39,20 +43,27 @@ async function fixture(
     id = crypto.randomUUID(),
     physical = "retained-workspace";
   await db.query(
-    `insert into goldens(id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,$3,'repoint','private','modal',$4,$5,$6,$7::jsonb)`,
+    `insert into goldens(id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,$3,'repoint','private',$8::public.sandbox_provider,$4,$5,$6,$7::jsonb)`,
     [
       golden,
       people.org,
       people.owner,
-      scope.binding.workspace,
-      scope.binding.environment,
-      scope.binding.appId,
+      options.boat ? null : scope.binding.workspace,
+      options.boat ? null : scope.binding.environment,
+      options.boat ? null : scope.binding.appId,
       JSON.stringify({ repos: [], init: [] }),
+      options.boat ? "boat" : "modal",
     ],
   );
+  if (harness === "claude")
+    await db.query(
+      "insert into credentials(scope,owner_id,kind,name,value_enc) values('org',$1,'anthropic','Previous Claude',$2)",
+      [people.org, await encryptSecret("previous-claude-api-secret", ENCRYPTION_KEY)],
+    );
   const old = (
-    await db.query<{ id: string }>("select id from credentials where scope='org' and owner_id=$1 and kind='openai'", [
+    await db.query<{ id: string }>("select id from credentials where scope='org' and owner_id=$1 and kind=$2", [
       people.org,
+      harness === "claude" ? "anthropic" : "openai",
     ])
   ).rows[0]!;
   const secret = options.native
@@ -67,13 +78,17 @@ async function fixture(
   const target = (
     await db.query<{ id: string }>(
       "insert into credentials(scope,owner_id,kind,name,value_enc,is_default) values('user',$1,$2,'Replacement',$3,true) returning id",
-      [people.owner, options.native ? "codex_auth" : "openai", await encryptSecret(secret, ENCRYPTION_KEY)],
+      [
+        people.owner,
+        options.native ? "codex_auth" : harness === "claude" ? "anthropic" : "openai",
+        await encryptSecret(secret, ENCRYPTION_KEY),
+      ],
     )
   ).rows[0]!;
   await db.query(
     `insert into sandboxes(id,org_id,owner_id,golden_id,provider,provider_sandbox_id,harness,status,conversation_ids,credential_id,credential_version,effective_ttl_seconds,task_prompt_id)
-    values($1,$2,$3,$4,'modal',$5,'codex','ready',array['existing-conversation'],$6,1,3600,'previous-terminal')`,
-    [id, people.org, people.owner, golden, physical, old.id],
+    values($1,$2,$3,$4,$7::public.sandbox_provider,$5,$8::public.harness,'ready',array['existing-conversation'],$6,1,3600,'previous-terminal')`,
+    [id, people.org, people.owner, golden, physical, old.id, options.boat ? "boat" : "modal", harness],
   );
   const machine: Machine = {
     info: {
@@ -93,8 +108,8 @@ async function fixture(
   };
   await createSqlModalStore(db, scope).reserve("repoint-fixture", machine);
   await db.query(
-    "insert into modal_server_harnesses(scope,machine_id,harness,github_enabled,credential_id,credential_version) values($1,$2,'codex',false,$3,1)",
-    [scopeKey(scope), physical, old.id],
+    "insert into modal_server_harnesses(scope,machine_id,harness,github_enabled,credential_id,credential_version) values($1,$2,$4::public.harness,false,$3,1)",
+    [scopeKey(scope), physical, old.id, harness],
   );
   const auth = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, async () => ({
     provider,
@@ -114,6 +129,7 @@ async function fixture(
     boots = 0,
     failOnce = options.failAfterBoot === true,
     used: string | undefined = SECRETS.orgOpenai;
+  let delivered: Record<string, string> = {};
   const readMachine = async () => {
     const row = (
       await db.query<{ record: Machine }>("select record from modal_machines where scope=$1 and id=$2", [
@@ -125,7 +141,7 @@ async function fixture(
   };
   const provider: Provider = {
     ...fakeBoat().provider,
-    id: "modal",
+    id: options.boat ? "boat" : "modal",
     async get() {
       return { ...current.info, physicalGeneration: String(current.generation) };
     },
@@ -141,7 +157,6 @@ async function fixture(
       current = await readMachine();
       current = {
         ...current,
-        ...(options.diskLost ? { recoveryImageId: undefined } : {}),
         phase: "stopped",
         info: {
           ...current.info,
@@ -150,6 +165,7 @@ async function fixture(
           ...(options.diskLost ? { stopNote: "checkpoint_failed_disk_not_retained" } : {}),
         },
       };
+      if (options.diskLost) delete current.recoveryImageId;
       await db.query("update modal_machines set record=$3::jsonb where scope=$1 and id=$2", [
         scopeKey(scope),
         physical,
@@ -171,9 +187,11 @@ async function fixture(
       const config = await environment(current, {});
       expect(config.execEnv).not.toHaveProperty("OPENAI_API_KEY");
       expect(config.credentialRepoint).toBeString();
+      configureClaudeEndpoint(config.claudeEnv);
+      delivered = harness === "claude" ? config.claudeEnv : config.codexEnv;
       used = config.codexAuthJson
         ? JSON.parse(config.codexAuthJson).tokens.access_token
-        : config.codexEnv.OPENAI_API_KEY;
+        : (delivered.OPENAI_API_KEY ?? delivered.ANTHROPIC_AUTH_TOKEN ?? delivered.ANTHROPIC_API_KEY);
       current = { ...current, phase: "active", info: { ...current.info, state: "ready", providerState: "active" } };
       await db.query("update modal_machines set record=$3::jsonb where scope=$1 and id=$2", [
         scopeKey(scope),
@@ -231,6 +249,9 @@ async function fixture(
     provider,
     auth,
     context,
+    get delivered() {
+      return delivered;
+    },
     get used() {
       return used;
     },
@@ -515,3 +536,78 @@ for (const failure of ["preservation", "retained disk"] as const)
       await f.db.close();
     }
   });
+
+for (const harness of ["claude", "codex"] as const)
+  test(`Boat account changes refuse a custom ${harness} connection before lifecycle admission`, async () => {
+    const f = await fixture({ boat: true, harness });
+    try {
+      await f.db.query("update credentials set value_enc=$2 where id=$1", [
+        f.target.id,
+        await encryptSecret(
+          JSON.stringify({
+            endpoint: {
+              version: 1,
+              baseUrl: "https://gateway.example/v1",
+              ...(harness === "claude" ? { auth: "bearer" } : {}),
+            },
+            apiKey: "private-gateway-secret",
+          }),
+          ENCRYPTION_KEY,
+        ),
+      ]);
+      const before = (await f.db.query("select * from sandboxes where id=$1", [f.id])).rows;
+      await expect(f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id })).rejects.toMatchObject({
+        code: "invalid",
+      });
+      const after = (await f.db.query("select * from sandboxes where id=$1", [f.id])).rows;
+      expect(after).toEqual(before);
+      expect(f.stops).toBe(0);
+      expect(f.boots).toBe(0);
+      expect(
+        (await f.db.query("select sandbox_id from sandbox_model_credentials where sandbox_id=$1", [f.id])).rows,
+      ).toEqual([]);
+    } finally {
+      await f.db.close();
+    }
+  });
+
+test("Modal account re-point delivers the selected Claude gateway auth mode, then returns to an ordinary account", async () => {
+  const f = await fixture({ harness: "claude" });
+  try {
+    for (const auth of ["bearer", "api-key"] as const) {
+      const id = (
+        await f.db.query<{ id: string }>(
+          "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'anthropic',$2,$3) returning id",
+          [
+            f.people.owner,
+            `Gateway ${auth}`,
+            await encryptSecret(
+              JSON.stringify({
+                endpoint: { version: 1, baseUrl: "https://gateway.example/anthropic", auth },
+                apiKey: `private-${auth}-credential`,
+              }),
+              ENCRYPTION_KEY,
+            ),
+          ],
+        )
+      ).rows[0]!.id;
+      await f.service.repoint(f.caller, { id: f.id, credentialId: id });
+      expect(f.delivered).toMatchObject({
+        ANTHROPIC_BASE_URL: "https://gateway.example/anthropic",
+        [auth === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"]: `private-${auth}-credential`,
+      });
+      expect(f.delivered).not.toHaveProperty(auth === "bearer" ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN");
+      expect(f.delivered).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+      expect(f.delivered).not.toHaveProperty("ARMADA_CLAUDE_ENDPOINT");
+    }
+    await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    expect(f.delivered.ANTHROPIC_API_KEY).toBe(f.secret);
+    expect(f.delivered).not.toHaveProperty("ANTHROPIC_BASE_URL");
+    expect(f.delivered).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+    expect((await createSqlData(f.db)(f.caller).sandboxes.get(f.id))?.conversationIds).toEqual([
+      "existing-conversation",
+    ]);
+  } finally {
+    await f.db.close();
+  }
+}, 30000);

@@ -23,9 +23,10 @@ test("a new binding registers old auth before restore and never mistakes incompl
       id: "retained",
       at: 1,
       kind: "message",
-      role: "assistant",
+      responseKind: "assistant",
       text: `old transcript ${old}`,
       partial: false,
+      tools: [],
     });
     expect(JSON.stringify(journal.db.query("select body from events").all())).toContain(old);
     expect(

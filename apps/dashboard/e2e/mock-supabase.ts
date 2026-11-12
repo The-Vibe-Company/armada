@@ -1584,7 +1584,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
     get: ["org", "id", "revision"],
     publish: ["org", "id", "expectedRevision", "definition"],
     delete: ["org", "id", "expectedRevision"],
-    launch: ["org", "id", "revision", "requestKey", "prompt", "ttlSeconds", "size", "repo"],
+    launch: ["org", "id", "revision", "requestKey", "prompt", "ttlSeconds", "size", "repo", "modelAccount"],
   };
   const invalid = () => controlFail(400, "invalid", "Invalid template request.");
   const fields = allowed[operation];

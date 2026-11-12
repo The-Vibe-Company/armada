@@ -1,5 +1,7 @@
 import {
   CAPTURE_MODEL_ENVIRONMENT,
+  CLAUDE_ENDPOINT_ENV,
+  CODEX_ENDPOINT_ENV,
   createSqlVaultStore,
   decryptSecret,
   encryptSecret,
@@ -129,6 +131,12 @@ export function createCredentialRepoint(
       nativeState(material.env.ARMADA_CODEX_AUTH_JSON ?? "");
     const actor = { userId: caller.userId, orgId: found.orgId, role: "member" as const };
     const provider = await providers.resolve(found, { userId: caller.userId });
+    // Re-pointing has exactly the launch provider policy; no provider side effect
+    // or durable admission may precede this eligibility check.
+    if (material.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
+      throw new VaultError("invalid", "Custom Claude gateways currently require Modal.");
+    if (material.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal")
+      throw new VaultError("invalid", "Custom Codex endpoints currently require Modal.");
     const store = data(caller).sandboxes,
       token = crypto.randomUUID();
     await store.update(found.id, {
@@ -190,7 +198,7 @@ export function createCredentialRepoint(
             await store.update(found.id, {
               stopRequested: true,
               renewActivity: true,
-              expectedGeneration: found.lifecycleGeneration,
+              ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
               activityToken: token,
             });
             if (

@@ -572,7 +572,7 @@ try:
   st=os.fstat(r.fileno())
   assert stat.S_ISREG(st.st_mode) and st.st_uid==os.getuid() and not st.st_mode&0o077 and st.st_size<=131072
   c=json.load(r)
- for k in ("OPENAI_API_KEY","OPENAI_BASE_URL","ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN","ARMADA_CODEX_AUTH_JSON","ARMADA_CODEX_ENDPOINT","ARMADA_SERVER_CODEX"): e.pop(k,None)
+ for k in ("OPENAI_API_KEY","OPENAI_BASE_URL","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_BASE_URL","CLAUDE_CODE_OAUTH_TOKEN","ARMADA_CODEX_AUTH_JSON","ARMADA_CODEX_ENDPOINT","ARMADA_CLAUDE_ENDPOINT","ARMADA_SERVER_CODEX"): e.pop(k,None)
  if c.get("harness")==sys.argv[1]:
   with open("/home/user/.armada/credential-revision") as fence: assert fence.read().strip()==c.get("revision")
   if sys.argv[1]=="codex":

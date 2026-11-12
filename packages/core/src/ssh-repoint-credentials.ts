@@ -43,7 +43,7 @@ assert not os.path.islink("/home/user")
 f=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
 try:
  os.fchmod(f,0o600); os.fchown(f,h.st_uid,h.st_gid)
- os.write(f,json.dumps([os.environ[k] for k in ("OPENAI_API_KEY","ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN","ARMADA_CODEX_AUTH_JSON") if os.environ.get(k)]).encode())
+ os.write(f,json.dumps([os.environ[k] for k in ("OPENAI_API_KEY","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ARMADA_CODEX_AUTH_JSON") if os.environ.get(k)]).encode())
 finally: os.close(f)'`;
 
 const INSTALL = `set +x

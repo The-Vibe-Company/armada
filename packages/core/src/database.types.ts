@@ -3076,6 +3076,44 @@ export type Database = {
           },
         ];
       };
+      runtime_enrolments: {
+        Row: {
+          sandbox_id: string;
+          lifecycle_generation: number;
+          epoch: number;
+          enrolment_hash: string | null;
+          enrolment_expires_at: string | null;
+          configuration_enc: string | null;
+          runtime_hash: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          lifecycle_generation: number;
+          epoch?: number;
+          enrolment_hash?: string | null;
+          enrolment_expires_at?: string | null;
+          configuration_enc?: string | null;
+          runtime_hash?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          lifecycle_generation?: number;
+          epoch?: number;
+          enrolment_hash?: string | null;
+          enrolment_expires_at?: string | null;
+          configuration_enc?: string | null;
+          runtime_hash?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_enrolments_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_model_credentials: {
         Row: {
           sandbox_id: string;
@@ -3584,6 +3622,7 @@ export type ResourceObservation = Database["public"]["Tables"]["resource_observa
 export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];
 export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
+export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
 export type SandboxModelCredentialRow = Database["public"]["Tables"]["sandbox_model_credentials"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

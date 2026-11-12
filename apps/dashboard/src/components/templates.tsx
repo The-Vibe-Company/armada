@@ -61,7 +61,7 @@ import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
-import { HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
+import { accountProblem, accountsFor, HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
@@ -729,6 +729,19 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
     return () => form.removeEventListener("keydown", shortcut);
   }, []);
   const ttl = ttlOptions(target.definition.provider);
+  const accountList = target.accounts;
+  const eligible =
+    accountList?.state === "ready"
+      ? accountsFor(accountList.accounts, target.definition.harness).filter(
+          (account) => accountProblem(account, accountList.now) === null,
+        )
+      : [];
+  const defaultAccount =
+    accountList?.state === "ready"
+      ? launchDefault(accountList.accounts, target.definition.harness, accountList.now)
+      : null;
+  const preset =
+    defaultAccount?.state === "resolved" ? `${defaultAccount.account.id}:${defaultAccount.account.version}` : "";
 
   return (
     <form ref={root} action={formAction} className="flex min-h-0 flex-1 flex-col" data-template-launch={target.name}>
@@ -738,6 +751,38 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
       <input type="hidden" name="request_key" value={requestKey} />
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
         <Preset target={target} />
+        {target.definition.modelAccount ? (
+          <p className="text-sm text-muted-foreground">
+            This revision pins{" "}
+            {accountList?.state === "ready"
+              ? (accountList.accounts.find((account) => account.id === target.definition.modelAccount?.id)?.name ??
+                "its account")
+              : "its account"}
+            ; publish a new revision to change it.
+          </p>
+        ) : eligible.length > 0 ? (
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-account`}>Account</Label>
+            <NativeSelect id={`${id}-account`} name="model_account" defaultValue={preset} required>
+              {!preset && (
+                <option value="" disabled>
+                  Choose an account
+                </option>
+              )}
+              {eligible.map((account) => (
+                <option key={account.id} value={`${account.id}:${account.version}`}>
+                  {account.name} · {account.scope === "org" ? "Organization" : "Personal"}
+                </option>
+              ))}
+            </NativeSelect>
+            <p className="text-xs text-muted-foreground">
+              Choose another account if a subscription is busy.{" "}
+              <Link className="underline" href={HARNESS_PATH}>
+                Manage model accounts
+              </Link>
+            </p>
+          </div>
+        ) : null}
         <div className="space-y-2">
           <Label htmlFor={`${id}-prompt`}>Task</Label>
           <Textarea
@@ -776,6 +821,16 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
         {state && !state.ok && (
           <p role="alert" className={cn("text-sm", state.pending ? "text-warning" : "text-destructive")}>
             {state.error}{" "}
+            {state.busyAccount && (
+              <span>
+                Account: {state.busyAccount.name}.{" "}
+                {state.busyAccount.sandboxId && (
+                  <Link className="underline underline-offset-4" href={`/sandboxes/${state.busyAccount.sandboxId}`}>
+                    Open its sandbox
+                  </Link>
+                )}
+              </span>
+            )}
             {state.pending && (
               <Link className="underline underline-offset-4" href="/sandboxes">
                 Open Sandboxes
