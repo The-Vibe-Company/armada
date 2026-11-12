@@ -9,7 +9,7 @@ const raw = await response.text();
 const data = JSON.parse(raw);
 const models: Record<string, { rates: TokenRates; unsupported: boolean }> = {};
 const rate = (value: unknown): string | null => {
-  if (value === undefined) return null;
+  if (value === undefined || value === null) return null;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !validRate(String(value)))
     throw new Error("Invalid models.dev rate");
   return String(value);
@@ -23,6 +23,7 @@ for (const provider of ["anthropic", "openai"]) {
     if (model.id !== id) throw new Error("Mismatched model ID");
     if (!model.cost) continue;
     const cost = model.cost;
+    if (typeof cost !== "object" || Array.isArray(cost)) throw new Error("Invalid models.dev cost");
     const input = rate(cost.input),
       output = rate(cost.output);
     models[`${provider}/${id}`] = {
