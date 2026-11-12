@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
+import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
@@ -38,15 +39,21 @@ async function main() {
     : undefined;
   delete config.codexEnv[CODEX_ENDPOINT_ENV];
   if (codexEndpoint) config.codexEnv.ARMADA_CUSTOM_CODEX_ENDPOINT = "1";
+  configureClaudeEndpoint(config.claudeEnv);
   const execEnv = validateExecEnvironment(config.execEnv, config.credentialFreeBuilder);
   if (
     config.credentialFreeBuilder &&
     (codexEndpoint ||
       config.codexAuthJson ||
       [config.claudeEnv, config.codexEnv].some((env) =>
-        ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"].some((key) =>
-          Boolean(env[key]),
-        ),
+        [
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "GH_TOKEN",
+          "GITHUB_TOKEN",
+        ].some((key) => Boolean(env[key])),
       ))
   )
     throw Error("builder_credentials_forbidden");
@@ -61,7 +68,7 @@ async function main() {
   const modelSecrets = [
     config.grant.token,
     ...[config.claudeEnv, config.codexEnv].flatMap((env) =>
-      ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+      ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
         .map((key) => env[key])
         .filter((v): v is string => typeof v === "string"),
     ),
