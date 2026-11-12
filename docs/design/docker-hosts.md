@@ -1,8 +1,13 @@
 # Own Docker hosts (#1165)
 
-Design only; no Docker provider or host command ships in this PR.
-Part of #1160; first audience is a single owner-trusted team, not hostile tenants.
-Build execution slices only after #1161 makes the Armada runtime the sole Boat path.
+Design only; no Docker provider or host command ships. Part of #1160; audience: one owner-trusted team, not hostile tenants.
+Implementation is ON HOLD pending owner discussion; this PR stays draft. Later execution also requires #1161 runtime parity.
+
+## Owner discussion: open choices (not implementation approval)
+
+1. **Host installation and transport?** Recommend a host-native daemon with outbound HTTPS long-poll jobs, reusing runtime protocol v1; accept Docker-admin trust rather than a socket-mounted management container?
+2. **Isolation baseline?** Recommend plain non-privileged Docker for the owner team, with optional tested runsc; is that sufficient, or must gVisor be mandatory before the first host launches?
+3. **Retention and offline guarantees?** Recommend host-pinned images/disks, no automatic failover, daemon-enforced TTL with honest unknown state if the daemon dies, and explicit purge on uninstall; are these limits acceptable before stronger recovery?
 
 ## Current state (main at 4902861f; recount against the implementation base)
 
@@ -24,7 +29,6 @@ Build execution slices only after #1161 makes the Armada runtime the sole Boat p
   This measures syntax (including SQL strings), not distinct decisions.
 
 ## Target and trust
-
 One host-native daemon (binary, not a sandbox container) uses the local Unix Docker socket.
 Neither Docker API nor runner/SSH ports are published; agent containers never mount that socket.
 The daemon is host-admin-equivalent; the owner trusts it with sandbox data and credentials.
@@ -47,7 +51,6 @@ Host records expose name, ID, last heartbeat, version, capacity and online/drain
 Membership/RLS and existing private-resource access still gate all user operations.
 
 ## Outbound job and event path
-
 Use authenticated outbound HTTPS long-poll claim/result/heartbeat endpoints on Armada.
 No new inbound listener on the host; reconnect with bounded backoff.
 A durable server job binds operation ID, host, sandbox, physical generation, deadline and input digest.
@@ -70,7 +73,6 @@ Use #1162's model connections and #1163's harness-reported usage/cost path; do n
 Unavailable usage stays unknown, never zero. OpenCode belongs to #1164.
 
 ## Images and lifecycle
-
 - Pin golden and sandbox to immutable host ID; image identity is host + image ID, tag is a label.
   No cross-host migration, automatic rescheduling or registry is needed initially.
 - Create a credential-free builder; reuse checkout/scan policy through a private stdin job
@@ -142,6 +144,5 @@ No provider columns/tables are renamed wholesale; migrations, if needed, are add
 Boat native runner deletion belongs to #1161; model, cost and OpenCode work stays with siblings.
 
 ## Later
-
 Hostile multi-tenancy/microVMs, automatic host failover, shared registries/image transfer,
 Windows/macOS hosts, public preview tunnels, live process migration and orchestrator continuity.
