@@ -17,17 +17,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
-  expensive-inputs:
-    name: Classify expensive checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
+  migration-versions:
+    name: Migration versions
     outputs:
       golden: ${{ steps.paths.outputs.golden }}
       binary: ${{ steps.paths.outputs.binary }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
       - id: paths
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -44,18 +45,12 @@ jobs:
             if grep -Eq '^(packages/|supabase/migrations/|scripts/(build\.ts|npm\.ts|npm-smoke\.sh|prepare-runtime\.ts|golden-os-image\.ts|fixtures/)|LICENSE$|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
               changed=true
             fi
-            printf 'golden=%s\nbinary=%s\n' "$changed" "$changed" >> "$GITHUB_OUTPUT"
+            golden=false
+            if grep -Eq '^(packages/(agent-runtime/|provider-modal/src/|core/src/|core/test/golden-os\.test\.ts$|mcp-server/src/github-boat\.ts$|mcp-server/test/github-boat-os\.test\.ts$|provider-modal/test/ssh-os\.test\.ts$)|scripts/(prepare-runtime\.ts$|golden-os-image\.ts$|fixtures/golden-os/)|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
+              golden=true
+            fi
+            printf 'golden=%s\nbinary=%s\n' "$golden" "$changed" >> "$GITHUB_OUTPUT"
           fi
-
-  migration-versions:
-    name: Migration versions
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-bun
       - name: Check migration versions against the current base
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
@@ -101,11 +96,11 @@ jobs:
         run: bun scripts/ci/unit-shards.ts --check
 
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/12)
+    name: Unit tests (${{ matrix.shard }}/7)
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -148,18 +143,16 @@ jobs:
   # Keep the ruleset's required name; never turn skipped/cancelled children green.
   verify:
     name: Lint, typecheck and test
-    needs: [ci-budget, expensive-inputs, migration-versions, static-checks, unit-tests, golden-concurrency, golden-os, binary]
+    needs: [migration-versions, static-checks, unit-tests, golden-concurrency, binary]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - name: Require every verification job to succeed
         env:
-          STATIC_RESULT: ${{ needs.static-checks.result }}
-          UNIT_RESULT: ${{ needs.unit-tests.result }}
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          test "$STATIC_RESULT" = success
-          test "$UNIT_RESULT" = success
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
       - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
@@ -205,18 +198,10 @@ jobs:
         env:
           ARMADA_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:5432/armada_adoption_test
 
-  # Admission is not conformance: the full recipe is explicitly non-required.
-  golden-os:
-    name: Golden OS recipe (actual provider image)
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: echo "Full recipe results are reported by Informational Golden OS recipe; this gate does not wait for them."
-
   golden-os-full:
     name: Informational Golden OS recipe (actual provider image)
-    needs: expensive-inputs
-    if: github.event_name != 'merge_group' && needs.expensive-inputs.outputs.golden == 'true'
+    needs: migration-versions
+    if: github.event_name != 'merge_group' && needs.migration-versions.outputs.golden == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -226,7 +211,7 @@ jobs:
       - run: bun scripts/prepare-runtime.ts
       - run: bun scripts/golden-os-image.ts
       - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
+      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/src/github-boat\.ts$|mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 
@@ -244,19 +229,19 @@ jobs:
             runner: ubuntu-24.04-arm
           - target: darwin-arm64
             runner: macos-latest
-    needs: expensive-inputs
-    runs-on: ${{ needs.expensive-inputs.outputs.binary == 'true' && matrix.runner || 'ubuntu-latest' }}
+    needs: migration-versions
+    runs-on: ${{ needs.migration-versions.outputs.binary == 'true' && matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         uses: ./.github/actions/setup-bun
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         run: bun install --frozen-lockfile
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         run: bun run build --target ${{ matrix.target }}
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         name: armada --version
         run: |
           expected=$(jq -r .version packages/core/package.json)
@@ -264,14 +249,14 @@ jobs:
           echo "armada --version: $actual"
           test "$actual" = "$expected"
       # The npm packages of this binary, packed, installed with npm and Bun, then run.
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         name: npm pack and install
         run: |
           bun scripts/npm.ts --binaries dist --target ${{ matrix.target }}
           mkdir -p dist/tarballs
           for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
           scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
-      - if: needs.expensive-inputs.outputs.binary == 'true'
+      - if: needs.migration-versions.outputs.binary == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: armada-${{ matrix.target }}
@@ -289,7 +274,7 @@ jobs:
         include:
           - target: darwin-x64
             runner: macos-15-intel
-    needs: expensive-inputs
+    needs: migration-versions
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
@@ -317,11 +302,3 @@ jobs:
             dist/armada-${{ matrix.target }}
             dist/armada-server-${{ matrix.target }}
           if-no-files-found: error
-
-  # Compatibility name: enforcement lives in verify, avoiding a second runner queue.
-  ci-budget:
-    name: CI budget (120s)
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: echo "120s enforcement runs in the required Lint, typecheck and test check."
