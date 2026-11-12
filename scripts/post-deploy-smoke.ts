@@ -37,6 +37,7 @@ type Code =
   | "invalid_request"
   | "conflict"
   | "unavailable"
+  | "unsupported"
   | "poll_limit_exceeded"
   | "turn_failed"
   | "exec_failed"
@@ -62,6 +63,7 @@ const API_CODES = new Set<Code>([
   "invalid",
   "conflict",
   "unavailable",
+  "unsupported",
 ]);
 class SmokeFailure extends Error {
   constructor(
@@ -860,7 +862,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             try {
               await request("github/refresh", { org: item.org, id: sandboxId });
             } catch (error) {
-              if (error instanceof SmokeFailure && error.code === "unavailable" && error.status === 503) return;
+              if (error instanceof SmokeFailure && error.code === "unsupported" && error.status === 400) return;
               throw error;
             }
             fail("invalid_receipt");

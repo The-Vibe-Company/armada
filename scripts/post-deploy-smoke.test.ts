@@ -1524,7 +1524,7 @@ test("GitHub refresh reuses the lifecycle worker, proves launch/access continuit
         if (call.path === "github/refresh")
           return provider === "boat"
             ? json({ id: call.body.id, status: "connected", login: "owner" })
-            : json({ error: { code: "unavailable" } }, 503);
+            : json({ error: { code: "unsupported" } }, 400);
       });
       expect(await fake.run([{ ...selected, provider, harness }], ["--github-refresh"])).toBe(true);
       expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
