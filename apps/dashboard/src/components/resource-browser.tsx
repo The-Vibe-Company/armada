@@ -23,9 +23,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
+  clearResourceReturnFocus,
   ownsResourceDetail,
   pushResourceDetail,
   replaceResourceUrl,
+  resourceReturnFocus,
   syncResourceHistory,
 } from "@/lib/resource-history";
 import { type Blocker, FILTER_FROM, ITEM_PARAM, matchesQuery } from "@/lib/resource-list";
@@ -148,6 +150,34 @@ export function ResourceBrowser({
       (row && row.getClientRects().length > 0 ? row : (fallback ?? rootRef.current))?.focus();
     });
   }, [selected]);
+
+  // Native Back can replace this component after Radix has restored the old
+  // tree's focus. The destination entry owns the target, not the closing tree.
+  const returnedRow = useRef<HTMLElement | null>(null);
+  const restoreHistoryFocus = useCallback(() => {
+    if (!detailPanel || selected !== null) return;
+    const key = resourceReturnFocus();
+    const row = key && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(key)}"]`);
+    if (!row || row.getClientRects().length === 0) return;
+    if (returnedRow.current !== row || document.activeElement === document.body) row.focus();
+    returnedRow.current = row;
+  }, [detailPanel, selected]);
+  // Re-run for a new destination tree; the post-commit frame also follows the
+  // old FocusScope cleanup. Never keep forcing focus after user interaction.
+  useLayoutEffect(restoreHistoryFocus);
+  useEffect(() => {
+    const frame = requestAnimationFrame(restoreHistoryFocus);
+    return () => cancelAnimationFrame(frame);
+  });
+  useEffect(() => {
+    if (!detailPanel) return;
+    document.addEventListener("pointerdown", clearResourceReturnFocus, true);
+    document.addEventListener("keydown", clearResourceReturnFocus, true);
+    return () => {
+      document.removeEventListener("pointerdown", clearResourceReturnFocus, true);
+      document.removeEventListener("keydown", clearResourceReturnFocus, true);
+    };
+  }, [detailPanel]);
 
   const select = useCallback(
     (key: string | null) => {
