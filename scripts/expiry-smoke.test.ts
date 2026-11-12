@@ -8,6 +8,7 @@ type Fault =
   | "reason"
   | "early"
   | "failed"
+  | "failed_unconfirmed"
   | "deadline"
   | "changed"
   | "physical"
@@ -63,9 +64,14 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
                     id: "owned-worker",
                     provider: fault === "list_identity" ? "wrong" : provider,
                     harness: "codex",
-                    status: stopped ? "stopped" : "ready",
+                    status:
+                      ["failed", "failed_unconfirmed"].includes(fault) && manualStop
+                        ? "failed"
+                        : stopped
+                          ? "stopped"
+                          : "ready",
                     effectiveTtlSeconds: fault === "ttl" ? 3600 : 180,
-                    stoppedAt: stopped ? new Date(clock).toISOString() : null,
+                    stoppedAt: stopped && fault !== "failed_unconfirmed" ? new Date(clock).toISOString() : null,
                     expiresAt: new Date(expiry).toISOString(),
                   },
                 ],
@@ -88,7 +94,7 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
         const early = fault === "early" && statusCalls > 2;
         const stopped = manualStop || naturallyStopped || early;
         const status =
-          !manualStop && fault === "failed" && statusCalls > 2
+          ["failed", "failed_unconfirmed"].includes(fault) && statusCalls > 2
             ? "failed"
             : stopped
               ? "stopped"
@@ -98,7 +104,14 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
         return Response.json({
           id: "owned-worker",
           status,
-          providerState: stopped && fault !== "physical" ? (provider === "boat" ? "archived" : "stopped") : "active",
+          providerState:
+            status === "failed"
+              ? null
+              : stopped && fault !== "physical"
+                ? provider === "boat"
+                  ? "archived"
+                  : "stopped"
+                : "active",
           statusReason: fault === "reason" ? "other" : "expired",
           expiresAt: new Date(expiry + (fault === "changed" && statusCalls > 2 ? 1000 : 0)).toISOString(),
         });
@@ -155,6 +168,7 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     "reason",
     "early",
     "failed",
+    "failed_unconfirmed",
     "deadline",
     "changed",
     "physical",
@@ -170,8 +184,10 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     expect(fake.calls.length).toBeLessThan(500);
     expect(fake.reports.some((line) => line.pass === false)).toBe(true);
     const cleanup = fake.reports.find((line) => line.step === "expiry_cleanup_summary");
-    expect(cleanup?.pass).toBe(!["physical", "cleanup_failed"].includes(fault));
-    expect(cleanup?.leftoverSandboxIds).toEqual(["physical", "cleanup_failed"].includes(fault) ? ["owned-worker"] : []);
+    expect(cleanup?.pass).toBe(!["physical", "cleanup_failed", "failed_unconfirmed"].includes(fault));
+    expect(cleanup?.leftoverSandboxIds).toEqual(
+      ["physical", "cleanup_failed", "failed_unconfirmed"].includes(fault) ? ["owned-worker"] : [],
+    );
     expect(JSON.stringify(fake.reports)).not.toContain("secret");
   }
 });

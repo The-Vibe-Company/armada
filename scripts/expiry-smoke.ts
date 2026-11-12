@@ -38,11 +38,11 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   const api = <T>(action: string, body: object) => io.request<T>(`sandbox/${action}`, { org: item.org, ...body });
   const physicalStop = (status: Status) =>
     status.status === "stopped" && status.providerState === (item.provider === "boat" ? "archived" : "stopped");
-  async function observe(done: (status: Status) => boolean, polls: number): Promise<Status> {
+  async function observe(done: (status: Status) => boolean | Promise<boolean>, polls: number): Promise<Status> {
     for (let i = 0; i < polls; i++) {
       const status = await api<Status>("status", { id });
       if (status?.id !== id) throw new ExpirySmokeFailure("invalid_receipt");
-      if (done(status)) return status;
+      if (await done(status)) return status;
       if (i + 1 < polls) await io.sleep(1000);
     }
     throw new ExpirySmokeFailure("poll_limit_exceeded");
@@ -152,7 +152,18 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
             await api("stop", { id });
           } catch {}
           await io.step("expiry_cleanup_stop", async () => {
-            await observe(physicalStop, 120);
+            await observe(async (status) => {
+              if (physicalStop(status)) return true;
+              if (status.status !== "failed") return false;
+              // The shipped terminal-failure status projection hides provider state.
+              // Its durable stoppedAt is published only after physical exit confirmation.
+              const row = await metadata();
+              return (
+                row.status === "failed" &&
+                typeof row.stoppedAt === "string" &&
+                Number.isFinite(Date.parse(row.stoppedAt))
+              );
+            }, 120);
             stopped = true;
           });
         } catch {

@@ -487,7 +487,10 @@ the expiry reason cannot count as proof.
 
 A failing known worker gets one explicit cleanup-stop attempt plus read-only
 reconciliation (never mutation replay). That cleanup cannot convert the expiry
-verdict to success. `expiry_cleanup_summary` reports leftover IDs or ambiguous
+verdict to success. Failed workers retain logical failed status after cleanup;
+their finite durable stoppedAt receipt confirms physical exit because the
+terminal-failure status projection intentionally hides provider state. A failed
+row without that receipt remains unconfirmed. `expiry_cleanup_summary` reports leftover IDs or ambiguous
 launches with org/golden/start time. Lost create responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
 requires operator reconciliation.
