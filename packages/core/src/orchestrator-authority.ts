@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Harness } from "./contract.ts";
 import type { Sql } from "./golden-store.ts";
+import { isHarness } from "./harnesses.ts";
 import type { OrchestratorScope } from "./orchestrator.ts";
 
 /** Not a Caller: this principal must never enter ordinary owner/admin dispatch. */
@@ -104,7 +105,7 @@ export class OrchestratorAuthority {
           !row.golden_ids.includes(request.goldenId) ||
           !request.credentialId ||
           !row.account_ids.includes(request.credentialId) ||
-          (request.harness !== "claude" && request.harness !== "codex") ||
+          !isHarness(request.harness) ||
           !Number.isSafeInteger(request.credentialVersion) ||
           (request.credentialVersion ?? 0) < 1
         )

@@ -3076,6 +3076,41 @@ export type Database = {
           },
         ];
       };
+      runtime_commands: {
+        Row: {
+          sandbox_id: string;
+          request_id: string;
+          sequence: number;
+          epoch: number;
+          request_enc: string;
+          result_enc: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          request_id: string;
+          sequence: number;
+          epoch: number;
+          request_enc: string;
+          result_enc?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          request_id?: string;
+          sequence?: number;
+          epoch?: number;
+          request_enc?: string;
+          result_enc?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_commands_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       runtime_enrolments: {
         Row: {
           sandbox_id: string;
@@ -3578,6 +3613,7 @@ export type ResourceObservation = Database["public"]["Tables"]["resource_observa
 export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];
 export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
+export type RuntimeCommandRow = Database["public"]["Tables"]["runtime_commands"]["Row"];
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

@@ -1259,7 +1259,7 @@ type LifecycleFault =
   | "lost_resume"
   | "stop_failed"
   | "lost_launch";
-function lifecycleFixture(fault: LifecycleFault = "none", onExec?: () => Response | undefined) {
+function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
   let provider = "boat";
   let harness = "codex";
   let id = "";
@@ -1270,7 +1270,8 @@ function lifecycleFixture(fault: LifecycleFault = "none", onExec?: () => Respons
   let readiness = 0;
   let expiry = "";
   const fake = fixture((call) => {
-    if (call.path === "sandbox/exec" && onExec) return onExec();
+    const override = handler?.(call);
+    if (override) return override;
     if (call.path === "sandbox/launch") {
       launches++;
       provider = String(call.body.provider);
@@ -1516,6 +1517,106 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
   });
 });
 
+test("GitHub refresh reuses the lifecycle worker, proves launch/access continuity and reports Modal's shipped refusal", async () => {
+  for (const provider of ["boat", "modal"]) {
+    for (const harness of ["claude", "codex"]) {
+      const fake = lifecycleFixture("none", (call) => {
+        if (call.path === "github/refresh")
+          return provider === "boat"
+            ? json({ id: call.body.id, status: "connected", login: "owner" })
+            : json({ error: { code: "unsupported" } }, 400);
+      });
+      expect(await fake.run([{ ...selected, provider, harness }], ["--github-refresh"])).toBe(true);
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+      expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(provider === "boat" ? 2 : 1);
+      const reports = fake.receipts();
+      expect(reports).toContainEqual({ case: 0, step: "github_launch_access", pass: true });
+      expect(reports.findIndex((line) => line.step === "time_to_ready")).toBeLessThan(
+        reports.findIndex((line) => line.step === "github_launch_access"),
+      );
+      if (provider === "boat") {
+        for (const phase of ["first", "second"]) {
+          expect(reports).toContainEqual({ case: 0, step: `github_refresh_${phase}`, pass: true });
+          expect(reports).toContainEqual({ case: 0, step: `github_refresh_access_${phase}`, pass: true });
+        }
+      } else {
+        expect(reports).toContainEqual({ case: 0, step: "github_refresh_unsupported", pass: true });
+        expect(reports).toContainEqual({
+          case: 0,
+          step: "github_refresh_idempotency",
+          skip: true,
+          reason: "legacy_boat_only",
+        });
+      }
+      expect(JSON.stringify(reports)).not.toContain("owner");
+    }
+  }
+});
+
+test("GitHub refresh rejects false receipts, identity changes and broken access without replay or losing cleanup", async () => {
+  for (const fault of [
+    "wrong_id",
+    "wrong_status",
+    "changed_login",
+    "second_refusal",
+    "lost_second",
+    "launch_access",
+    "after_refresh_access",
+    "modal_admitted",
+    "modal_wrong_refusal",
+  ]) {
+    let refreshes = 0;
+    let accesses = 0;
+    const provider = fault.startsWith("modal") ? "modal" : "boat";
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/exec" && String(call.body.command).includes("ls-remote")) {
+        accesses++;
+        if ((fault === "launch_access" && accesses === 1) || (fault === "after_refresh_access" && refreshes > 0))
+          return json({ exitCode: 1, timedOut: false });
+      }
+      if (call.path === "github/refresh") {
+        refreshes++;
+        if (fault === "lost_second" && refreshes === 2) throw new Error("secret ambiguous repair");
+        if ((fault === "second_refusal" && refreshes === 2) || fault === "modal_wrong_refusal")
+          return json({ error: { code: "forbidden" } }, 403);
+        return json({
+          id: fault === "wrong_id" ? "wrong" : call.body.id,
+          status: fault === "wrong_status" ? "disconnected" : "connected",
+          login: fault === "changed_login" && refreshes === 2 ? "other" : "owner",
+        });
+      }
+    });
+    expect(await fake.run([{ ...selected, provider }], ["--github-refresh"])).toBe(false);
+    expect(refreshes).toBeLessThanOrEqual(provider === "boat" ? 2 : 1);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.receipts().at(-1)).toMatchObject({
+      step: "lifecycle_cleanup_summary",
+      pass: true,
+      leftoverSandboxIds: [],
+    });
+    expect(JSON.stringify(fake.receipts())).not.toContain("secret");
+  }
+});
+
+test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker before traffic", async () => {
+  for (const args of [
+    ["--github-refresh"],
+    ["--github-refresh", "--templates-skills"],
+    ["--github-refresh", "--lifecycle", "--orchestrator"],
+  ]) {
+    const fake = fixture();
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    expect(
+      await postDeploySmoke({ ...env, ARMADA_URL: staging }, args, {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      }),
+    ).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+  }
+});
+
 test("the advertised smoke workflow invocation admits ordinary staging checks without an orchestrator option", async () => {
   const workflow = Bun.YAML.parse(
     readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
@@ -1636,7 +1737,8 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
 test("readiness timing excludes slow integrity probes and survives either probe failing", async () => {
   for (const failedExec of [0, 1, 2]) {
     let execs = 0;
-    const fake = lifecycleFixture("none", () => {
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path !== "sandbox/exec") return;
       execs++;
       fake.advance(30_000);
       if (execs === failedExec) return json({ exitCode: 1, timedOut: false });
