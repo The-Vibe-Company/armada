@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   EventPage,
   EventsRequest,
+  Harness,
   HarnessCapabilities,
   MachineSize,
   ModalBinding,
@@ -76,9 +77,9 @@ export interface Machine {
   checkpointWatermark?: number;
   quiesced?: boolean;
   ordinaryStopAttempted?: boolean;
-  modelDefaults?: Record<"claude" | "codex", { model: string; reasoningEffort: string }>;
+  modelDefaults?: Record<Harness, { model: string; reasoningEffort: string }>;
   /** Trusted, nonsensitive POSIX paths only; never a wrapper command or harness auth state. */
-  harnessCwds?: Partial<Record<"claude" | "codex", string>>;
+  harnessCwds?: Partial<Record<Harness, string>>;
   phase:
     | "reserved"
     | "restoring"
@@ -165,7 +166,7 @@ export interface RunnerTransport {
 export interface RunnerDistribution {
   /** Credential-free, reproducibly built tools + dist/main.js. Must not include auth, sessions or SSH host keys. */
   image(client: ModalClient): Promise<Image>;
-  readonly capabilities: Readonly<Record<"claude" | "codex", HarnessCapabilities>>;
+  readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
   /** Starts runner with PRIVATE stdin bootstrap, explicit allowlisted model env, fresh expiring grants.
    * Re-resolve credentials on restore; never persist env/bootstrap in registry or Image layers. */
   /** Freshly allocated golden master or NEW logical fork only, before first bootstrap. Purge inherited

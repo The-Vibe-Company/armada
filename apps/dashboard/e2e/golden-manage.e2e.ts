@@ -431,6 +431,7 @@ test("same-name goldens on Boat and Modal are listed apart, and rebuild and laun
   await goldenPanel(page, "shared-golden", "boat");
   await expect(boat.getByRole("list", { name: "Repositories of shared-golden on Boat" })).toContainText("develop");
 
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   const dialog = page.getByRole("dialog");
   // A single repository is the default project; choosing another directory stays in Advanced.

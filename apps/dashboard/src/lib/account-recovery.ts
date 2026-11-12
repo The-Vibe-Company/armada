@@ -1,4 +1,4 @@
-import { CREDENTIAL_KINDS, type CredentialKind, type Harness, type SandboxStatus } from "@armada/core";
+import { CREDENTIAL_KINDS, type CredentialKind, HARNESS_KINDS, type Harness, type SandboxStatus } from "@armada/core";
 import { accountsFromList, isUsable } from "./model-accounts.ts";
 
 /**
@@ -7,12 +7,6 @@ import { accountsFromList, isUsable } from "./model-accounts.ts";
  * membership, compatible and authorized account, safely stopped, still unbound); the dashboard only offers the
  * choice and never picks one itself.
  */
-
-/** The account kinds each harness runs on, as the server's resolver reads them. Only the offer depends on it. */
-export const HARNESS_ACCOUNT_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
-  claude: ["claude_oauth", "anthropic"],
-  codex: ["openai", "codex_auth"],
-};
 
 /** One account the owner may choose: safe metadata only, never a value. */
 export type AccountOption = {
@@ -62,7 +56,7 @@ export function bindableStatus(status: SandboxStatus): "ready" | "stop-first" | 
  * (`accountsFromList`): personal ones, then the sandbox org's, each usable now and of a kind the harness runs on.
  */
 export function compatibleAccounts(list: unknown, harness: Harness, orgId: string, now: Date): AccountOption[] {
-  const kinds: readonly CredentialKind[] = HARNESS_ACCOUNT_KINDS[harness];
+  const kinds: readonly CredentialKind[] = HARNESS_KINDS[harness];
   return accountsFromList(list, orgId)
     .accounts.filter((account) => kinds.includes(account.kind) && isUsable(account, now.getTime()))
     .map((account) => ({

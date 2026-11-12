@@ -7,8 +7,6 @@ import type {
   ExecRequest,
   ExecResult,
   ForkRequest,
-  Harness,
-  HarnessCapabilities,
   InterruptRequest,
   ListRequest,
   Page,
@@ -29,7 +27,10 @@ import type {
 import {
   buildEventPage,
   eventPageOptions,
+  HARNESS_CAPABILITIES,
+  HARNESSES,
   MACHINE_SIZE_CATALOG,
+  mapHarnesses,
   ProviderError,
   parseMachineSize,
   providerRateLimitDetails,
@@ -64,31 +65,9 @@ export const DEFAULT_TTL_SECONDS = 3600;
 /** The longest TTL boat accepts: 30 days. */
 export const MAX_TTL_SECONDS = 2_592_000;
 
-/**
- * What boat gives each harness. Neither has an approvals API. Claude Code takes a steer into the running
- * turn; boat answers a Codex steer with mode `fallback`, which stops the turn and carries on in the same conversation.
- */
-const BOAT_HARNESS: HarnessCapabilities = {
-  steer: "native",
-  interrupt: true,
-  resume: true,
-  parallelConversations: true,
-  reasoningEffort: true,
-  fast: true,
-  streamsPartials: true,
-  toolEvents: true,
-  approvals: false,
-};
-
-export const BOAT_CAPABILITIES: Readonly<Record<Harness, HarnessCapabilities>> = {
-  claude: BOAT_HARNESS,
-  codex: { ...BOAT_HARNESS, steer: "restart" },
-};
-
-const BOAT_PROVIDER_NAME: Record<Harness, PromptRequestProviderEnum> = {
-  claude: "claude-code",
-  codex: "codex",
-};
+/** Native Boat and the runtime currently expose the same harness capabilities. */
+export const BOAT_CAPABILITIES = HARNESS_CAPABILITIES;
+const BOAT_PROVIDER_NAME = mapHarnesses<PromptRequestProviderEnum>((descriptor) => descriptor.boatProvider);
 
 const BOAT_STATES: Record<SandboxState, readonly string[]> = {
   starting: ["init", "provisioning", "provisioned", "cloning"],
@@ -316,7 +295,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
 
   const provider: BoatProvider = {
     id: PROVIDER_ID,
-    harnesses: ["claude", "codex"],
+    harnesses: HARNESSES,
     capabilities: BOAT_CAPABILITIES,
     maxGoldens: 1,
     async backendIdentity() {

@@ -129,6 +129,25 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string) {
       return work(tx, { sandboxId: sandbox.id, epoch: row.epoch });
     });
   }
+  /** Trusted server-side command issuer/readback, under the same owner/lifecycle fence. */
+  async function withOwner<T>(
+    sandboxId: string,
+    ownerId: string,
+    work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>,
+  ) {
+    return transaction(async (tx) => {
+      const sandbox = await lockSandbox(tx, sandboxId, ownerId);
+      const row = (
+        await tx.query<{ epoch: string }>(
+          `select epoch::text from public.runtime_enrolments where sandbox_id=$1
+         and lifecycle_generation=$2 and runtime_hash is not null for update`,
+          [sandbox.id, sandbox.lifecycle_generation],
+        )
+      ).rows[0];
+      if (!row) throw new RuntimeEnrolmentDenied();
+      return work(tx, { sandboxId: sandbox.id, epoch: row.epoch });
+    });
+  }
   const route: Route = async (request) => {
     const path = new URL(request.url).pathname;
     if (![ENROL_PATH, SESSION_PATH].includes(path)) return null;
@@ -148,5 +167,5 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string) {
       );
     }
   };
-  return { issue, enrol, withSession, route };
+  return { issue, enrol, withSession, withOwner, route };
 }
