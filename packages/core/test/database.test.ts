@@ -119,6 +119,7 @@ describe("database", () => {
         "routine_runs",
         "routines",
         "runtime_enrolments",
+        "runtime_events",
         "sandbox_turn_models",
         "sandbox_work_recovery",
         "sandboxes",
@@ -329,6 +330,7 @@ describe("database", () => {
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
         "runtime_enrolments.configuration_enc",
+        "runtime_events.event_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 
