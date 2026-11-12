@@ -1,14 +1,13 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, decryptSecret, type Sql } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubRuntime } from "../src/github-runtime.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 test("control maps oversized JSON to 413 while preserving parser errors and valid auth.json uploads", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     const userId = crypto.randomUUID();
     await db.query("insert into auth.users(id) values($1)", [userId]);
     const key = Buffer.alloc(32, 5).toString("base64");

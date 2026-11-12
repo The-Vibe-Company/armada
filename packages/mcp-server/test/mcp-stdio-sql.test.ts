@@ -3,17 +3,16 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqlMcpRegistry, createSqlSandboxStore, type Provider } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { type McpBootstrap, nativeMcpInstallScript, normalizeNativeMcpBootstrap } from "../src/mcp-native.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 // Real registry admission -> binding -> backend normalization -> private native config consumer.
 // The provider fixture supplies a VM filesystem, not an MCP health receipt. No package is run here.
 test("registry-admitted pinned npx and uvx reach both native configs through fixed executable resolution", async () => {
-  const db = await openDatabase(),
+  const db = await migratedDatabase(),
     home = await mkdtemp(join(tmpdir(), "armada-stdio-native-"));
   try {
-    await applyMigrations(db);
     const user = crypto.randomUUID(),
       org = crypto.randomUUID(),
       golden = crypto.randomUUID(),

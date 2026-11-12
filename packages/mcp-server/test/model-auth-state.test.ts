@@ -18,11 +18,11 @@ import {
   type Scope,
   scopeKey,
 } from "@armada/provider-modal";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createHistoricalSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import { call, database, ENCRYPTION_KEY, fakeBoat, harness, SECRETS } from "./support.ts";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
@@ -42,9 +42,8 @@ const native = (revision: number, accountId = "native-account") =>
   });
 
 test("real native state publication seals rotation without replacing binding, fences source changes and rejects other owners", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id) values($1),($2)", [OWNER, PEER]);
     await db.query("insert into orgs(id,name) values($1,'Native state')", [ORG]);
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin'),($1,$3,'admin')", [
@@ -312,9 +311,8 @@ test("real native state publication seals rotation without replacing binding, fe
 });
 
 test("Modal private publication binds current app, native generation and account revision; ACK retries are safe", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id) values($1)", [OWNER]);
     await db.query("insert into orgs(id,name) values($1,'Native modal')", [ORG]);
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [ORG, OWNER]);

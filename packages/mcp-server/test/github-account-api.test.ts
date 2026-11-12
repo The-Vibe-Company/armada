@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
 import { createSqlVaultStore } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubAccountApi } from "../src/github-account.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 const auditEvents = captureGitHubAuditLogs();
 
@@ -14,9 +14,8 @@ const key = Buffer.alloc(32, 7).toString("base64");
 const bearer = (user: string) => `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`;
 
 test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay and disconnect cancels in-flight callback", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id) values ($1),($2)", [owner, other]);
     const authStore = createMemoryAuthStore();
     let logoutCalls = 0;

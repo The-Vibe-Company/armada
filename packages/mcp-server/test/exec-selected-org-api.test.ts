@@ -6,7 +6,6 @@ import { createMemoryAuthStore } from "@armada/auth";
 import type { Provider } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { filePreferences } from "../../cli/src/preferences.ts";
 import { run } from "../../cli/src/run.ts";
@@ -14,6 +13,7 @@ import { memorySessionStore } from "../../cli/src/session.ts";
 import { sandbox as boatSandbox } from "../../provider-boat/test/support.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
 const user = "11111111-1111-4111-8111-111111111111";
@@ -22,10 +22,9 @@ const orgB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const sandboxB = "22222222-2222-4222-8222-222222222222";
 
 test("exec command text after -- cannot bypass persisted selected-org HTTP scope", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   const directory = await mkdtemp(join(tmpdir(), "armada-exec-scope-"));
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id) values ($1)", [user]);
     await db.query("insert into orgs(id,name) values ($1,'Alpha'),($2,'Beta')", [orgA, orgB]);
     await db.query("insert into members(org_id,user_id,role) values ($1,$3,'admin'),($2,$3,'admin')", [

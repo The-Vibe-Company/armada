@@ -2,17 +2,16 @@ import { expect, test } from "bun:test";
 import { createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import type { McpConnectionDto } from "@armada/core";
 import { createSqlVaultStore, type Provider, type SandboxRecord } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { endpoint } from "../../mcp-gateway/src/index.ts";
 import { configFromEnv } from "../src/config.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "../src/mcp-integration.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 test("HTTP connection control keeps credentials private, scopes organizations, and refuses service-token callbacks", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
-    await applyMigrations(db);
     const user = crypto.randomUUID(),
       org = crypto.randomUUID();
     await db.query("insert into auth.users(id) values($1)", [user]);
@@ -249,10 +248,9 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
 });
 
 test("actual MCP integration construction preserves explicitly configured development dashboard callback origin", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
-    await applyMigrations(db);
     const config = configFromEnv({
       NODE_ENV: "development",
       ARMADA_DATABASE_URL: "postgres://fixture",

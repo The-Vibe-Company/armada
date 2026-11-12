@@ -7,10 +7,10 @@ import {
   type McpConnectionDto,
   type Sql,
 } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { catalogAuthenticationFromEnv, SLACK_OAUTH_BINDING } from "../src/mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 const callback = "https://dashboard.example/auth/mcp/callback";
 const registration = () => ({
@@ -24,10 +24,9 @@ const registration = () => ({
 });
 
 test("registered Slack catalog uses confidential OAuth without DCR and isolates two named account grants", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
-    await applyMigrations(db);
     const user = crypto.randomUUID(),
       other = crypto.randomUUID(),
       org = crypto.randomUUID();
