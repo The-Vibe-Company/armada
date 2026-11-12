@@ -11,6 +11,7 @@ import {
   createSqlVaultStore,
   createTemplateService,
   encryptSecret,
+  goldenForLaunch,
   type LaunchTemplate,
   launchSandbox,
   PrivateSkillError,
@@ -329,7 +330,7 @@ for (const retained of [false, true]) {
       expect(result).toMatchObject(
         retained
           ? { state: "reconciling", reason: "allocation_or_start_unknown" }
-          : { state: "failed", reason: "provider_rate_limited" },
+          : { state: "failed", reason: "rate_limited" },
       );
       expect(await f.launch(t.id)).toEqual(result);
       expect(calls).toBe(1);
@@ -1274,7 +1275,7 @@ test("template launch preserves public account and provider refusals and their r
           retryable: false,
           message: "Your provider plan does not allow this machine. Choose another size.",
         }),
-        "provider_payment_required",
+        "payment_required",
       ],
     ] as const) {
       f.runtime.provider = async () => {
@@ -1285,6 +1286,81 @@ test("template launch preserves public account and provider refusals and their r
       expect(await f.launch(t.id, key)).toEqual(result);
     }
     expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template golden admission preserves direct-launch public classifications", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    await f.db.query("update goldens set provider_snapshot_id=null,boat_snapshot_id=null where id=$1", [f.goldenId]);
+    await expect(
+      goldenForLaunch(
+        f.runtime.stores.goldens,
+        { userId: f.people.owner, orgId: f.people.org, role: "member" },
+        "shared",
+        "boat",
+      ),
+    ).rejects.toMatchObject({ code: "conflict", message: "Golden 'shared' has no snapshot yet." });
+    expect(await f.launch(t.id, "no-snapshot")).toMatchObject({
+      state: "failed",
+      reason: "conflict",
+      message: "Golden 'shared' has no snapshot yet.",
+    });
+    await f.db.query("update goldens set removed_at=now() where id=$1", [f.goldenId]);
+    expect(await f.launch(t.id, "removed-golden")).toMatchObject({
+      state: "failed",
+      reason: "not_found",
+      message: "No such golden.",
+    });
+    expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("busy template account hints expose only currently authorized holder sandboxes, including on replay", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    const started = await f.launch(t.id, "holder");
+    const account = (
+      await f.db.query<{ id: string; name: string }>("select id,name from credentials where kind='openai'")
+    ).rows[0]!;
+    await f.db.query("insert into model_auth_ownership(account_id,account_version,sandbox_id) values($1,1,$2)", [
+      account.id,
+      started.id,
+    ]);
+    f.runtime.provider = async () => {
+      throw new VaultError("credential_busy", "Choose another account.");
+    };
+    const refused = await f.launch(t.id, "busy-holder");
+    expect(refused.busyAccount).toEqual({ id: account.id, name: account.name, sandboxId: started.id });
+    const holder = async (owner: string, visibility: string, org = f.people.org) => {
+      const sandboxId = crypto.randomUUID();
+      const goldenId = (
+        await f.db.query<{ id: string }>("select id from goldens where org_id=$1 and owner_id=$2 limit 1", [org, owner])
+      ).rows[0]!.id;
+      await f.db.query(
+        "insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version) values($1,$2,$3,$4,'codex','ready',$5,$5,$6,$7,1)",
+        [sandboxId, org, owner, goldenId, `holder-${sandboxId}`, visibility, account.id],
+      );
+      await f.db.query("update model_auth_ownership set sandbox_id=$2 where account_id=$1", [account.id, sandboxId]);
+      return sandboxId;
+    };
+    await holder(f.people.admin, "private");
+    expect((await f.launch(t.id, "busy-holder")).busyAccount).toEqual({ id: account.id, name: account.name });
+    const own = await holder(f.people.owner, "private");
+    expect((await f.launch(t.id, "busy-holder")).busyAccount).toEqual({
+      id: account.id,
+      name: account.name,
+      sandboxId: own,
+    });
+    await holder(f.people.member, "org", f.people.otherOrg);
+    expect((await f.launch(t.id, "busy-holder")).busyAccount).toEqual({ id: account.id, name: account.name });
+    expect(f.boat.forks).toHaveLength(1);
   } finally {
     await f.db.close();
   }

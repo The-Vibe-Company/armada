@@ -139,7 +139,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     try {
       return await sql.transaction(work);
     } catch (error) {
-      if (error instanceof VaultError) throw error;
+      if (error instanceof VaultError || error instanceof GoldenError) throw error;
       if (error && typeof error === "object" && "code" in error && error.code === "23505")
         throw new VaultError("conflict", "Template name or request key already exists.");
       throw new VaultError("unavailable", "Template service unavailable.");
@@ -178,15 +178,28 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (!r) throw new VaultError("not_found", "Template revision unavailable.");
     return r;
   }
-  async function golden(tx: Sql, actor: GoldenActor, scope: string, goldenId: string, provider: unknown) {
+  async function golden(
+    tx: Sql,
+    actor: GoldenActor,
+    scope: string,
+    goldenId: string,
+    provider: unknown,
+    launchAdmission = false,
+  ) {
     const row = (
       await tx.query<GoldenRow>(
         `select ${GOLDEN_SELECT} from public.goldens where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share`,
         [goldenId, actor.orgId, actor.userId],
       )
     ).rows[0];
-    if (!row || row.provider !== provider || !row.provider_snapshot_id || (scope === "org" && row.visibility !== "org"))
+    if (!row || row.provider !== provider || (scope === "org" && row.visibility !== "org")) {
+      if (launchAdmission) throw new GoldenError("not_found", "No such golden.");
       unavailable("environment_unavailable");
+    }
+    if (!row.provider_snapshot_id) {
+      if (launchAdmission) throw new GoldenError("conflict", `Golden '${row.name}' has no snapshot yet.`);
+      unavailable("environment_unavailable");
+    }
     return mapGoldenRow(row);
   }
   async function references(
@@ -197,7 +210,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     enforceModelScope = true,
     expectedConnections?: Manifest["connections"],
   ) {
-    const g = await golden(tx, actor, scope, def.goldenId, def.provider);
+    const g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
     if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
     const retired = (
       await tx.query(
@@ -407,6 +420,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       try {
         return await launch(actor, org, input, runtime);
       } catch (error) {
+        // Pre-claim golden admission has no durable request yet, but its public
+        // refusal must use the same outcome contract as post-claim refusals.
+        if (error instanceof GoldenError) return { state: "failed", reason: error.code, message: error.message };
         const reason = refusalReason(error);
         // Closed reason only: never log credential errors, request bodies or readable values.
         if (reason) console.warn("armada: template launch refused", { reason, templateId: id(input.id), orgId: org });
@@ -492,7 +508,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         )
       ).rows[0];
     });
-    if (existing) return replay(existing, bodyDigest);
+    if (existing) return replay(existing, bodyDigest, actor, org);
     const selection = await transaction(async (tx) => {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, id(input.id));
@@ -603,7 +619,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       claimed = true;
       return result;
     });
-    if (!claimed) return replay(request, bodyDigest);
+    if (!claimed) return replay(request, bodyDigest, actor, org);
     const m = request.manifest;
     let allocating = false;
     let fenceConsumed = false;
@@ -726,7 +742,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
       const state = allocating && !refused ? "reconciling" : "failed";
       const safeReason = refused
-        ? `provider_${error.code}`
+        ? error.code
         : (refusalReason(error) ??
           (error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
             ? error.code
@@ -761,26 +777,59 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         "update public.template_launch_requests set state=$2,reason=$3,result=$4::text::jsonb,updated_at=now() where id=$1 and result is null",
         [request.id, state, safeReason, state === "failed" ? JSON.stringify(output) : null],
       );
-      return output;
+      return withBusyDetails(output, actor, org, m.account.id);
     }
   }
-  function replay(row: RequestRow, bodyDigest: string): Record<string, unknown> {
+  async function withBusyDetails(
+    output: Record<string, unknown>,
+    actor: ApplicationVaultActor,
+    org: string,
+    accountId: string,
+  ): Promise<Record<string, unknown>> {
+    if (output.reason !== "credential_busy") return output;
+    // Refusal hints are live, authorized reads, never durable disclosure receipts:
+    // a replay must not expose a holder after its visibility or membership changes.
+    return transaction(async (tx) => {
+      const a = await member(tx, actor, org);
+      const row = (
+        await tx.query<{ id: string; name: string; sandbox_id: string | null }>(
+          `select c.id,c.name,s.id as sandbox_id from public.credentials c
+         left join public.model_auth_ownership o on o.account_id=c.id
+         left join public.sandboxes s on s.id=o.sandbox_id and s.org_id=$2
+           and s.deleted_at is null and (s.visibility='org' or s.owner_id=$3)
+         where c.id=$1 and ((c.scope='user' and c.owner_id=$3) or (c.scope='org' and c.owner_id=$2))`,
+          [accountId, org, a.userId],
+        )
+      ).rows[0];
+      return row
+        ? {
+            ...output,
+            busyAccount: { id: row.id, name: row.name, ...(row.sandbox_id ? { sandboxId: row.sandbox_id } : {}) },
+          }
+        : output;
+    });
+  }
+  async function replay(
+    row: RequestRow,
+    bodyDigest: string,
+    actor: ApplicationVaultActor,
+    org: string,
+  ): Promise<Record<string, unknown>> {
     if (row.digest !== bodyDigest)
       throw new VaultError("conflict", "Request key already used with a different request.");
-    return (
-      row.result ?? {
-        requestId: row.id,
-        state: row.state,
-        id: row.sandbox_id,
-        reason: row.reason,
-        ...(row.reason?.startsWith("skillpack_")
-          ? {
-              message: skillRefusalMessage(row.reason),
-            }
-          : {}),
-        manifest: row.manifest,
-      }
-    );
+    const output = row.result ?? {
+      requestId: row.id,
+      state: row.state,
+      id: row.sandbox_id,
+      reason: row.reason,
+      ...(row.reason?.startsWith("skillpack_")
+        ? {
+            message: skillRefusalMessage(row.reason),
+          }
+        : {}),
+      manifest: row.manifest,
+    };
+    return withBusyDetails(output, actor, org, row.manifest.account.id);
   }
   async function revalidate(actor: ApplicationVaultActor, org: string, m: Manifest) {
     await transaction(async (tx) => {

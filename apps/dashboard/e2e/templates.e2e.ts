@@ -325,9 +325,19 @@ test("a refused launch says why and takes a fresh key; a successful one opens th
     state: "failed",
     reason: "credential_busy",
     message: "This subscription account is busy. Choose another account.",
+    busyAccount: {
+      id: "00000000-0000-4000-8000-000000000040",
+      name: "Personal Codex",
+      sandboxId: "00000000-0000-4000-8000-000000000070",
+    },
   });
   await dialog.getByRole("button", { name: /Launch/ }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("This subscription account is busy. Choose another account.");
+  await expect(dialog.getByRole("alert")).toContainText("This subscription account is busy. Choose another account.");
+  await expect(dialog.getByRole("alert")).toContainText("Account: Personal Codex");
+  await expect(dialog.getByRole("link", { name: "Open its sandbox" })).toHaveAttribute(
+    "href",
+    "/sandboxes/00000000-0000-4000-8000-000000000070",
+  );
   await dialog.getByRole("button", { name: /Launch/ }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
   const launches = (await mockState()).templateCalls.filter((call) => call.route === "templates/launch");

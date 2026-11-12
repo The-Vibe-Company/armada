@@ -455,7 +455,12 @@ export function templateFailure(status: number | undefined, message: string): st
 /** What a `templates/launch` answered: the sandbox it started, a definite refusal, or an outcome not known yet. */
 export type LaunchOutcome =
   | { state: "succeeded"; id: string }
-  | { state: "failed"; reason: string; message?: string }
+  | {
+      state: "failed";
+      reason: string;
+      message?: string;
+      busyAccount?: { id: string; name: string; sandboxId?: string };
+    }
   | { state: "reconciling"; id: string | null; reason?: string; message?: string };
 
 export function parseLaunchOutcome(value: unknown): LaunchOutcome | null {
@@ -465,6 +470,15 @@ export function parseLaunchOutcome(value: unknown): LaunchOutcome | null {
     return {
       state: "failed",
       reason: typeof value.reason === "string" ? value.reason : "",
+      ...(isRecord(value.busyAccount) && isId(value.busyAccount.id) && typeof value.busyAccount.name === "string"
+        ? {
+            busyAccount: {
+              id: value.busyAccount.id,
+              name: value.busyAccount.name,
+              ...(isId(value.busyAccount.sandboxId) ? { sandboxId: value.busyAccount.sandboxId } : {}),
+            },
+          }
+        : {}),
       ...(typeof value.message === "string" ? { message: value.message } : {}),
     };
   // Claimed, allocating or reconciling: a sandbox may exist. Never reported as a failure that invites a new launch.
