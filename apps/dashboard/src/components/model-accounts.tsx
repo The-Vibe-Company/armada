@@ -752,6 +752,7 @@ function ReplaceDialog({
     onResult,
     onOpenChange,
   );
+  const formRef = usePreservedActionForm();
   const info = KIND_INFO[account.kind];
   const id = useId();
   return (
@@ -781,6 +782,12 @@ function ReplaceDialog({
                   re-enter its URL and key. Choosing OpenAI default changes routing to OpenAI.
                 </p>
               )}
+              {account.kind === "anthropic" && (
+                <p>
+                  Choose the destination again: existing gateway details are not returned. To keep a custom gateway,
+                  re-enter its URL, authentication and key. Choosing Anthropic default changes routing to Anthropic.
+                </p>
+              )}
               <p data-replace-effect>
                 {recoverySandboxId ? (
                   <>
@@ -799,13 +806,15 @@ function ReplaceDialog({
             </div>
           </DialogDescription>
         </DialogHeader>
-        <form key={generation} action={formAction} className="space-y-4">
+        <form ref={formRef} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           {recoverySandboxId && <input type="hidden" name="sandboxId" value={recoverySandboxId} />}
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
           {account.kind === "openai" ? (
             <CodexConnectionFields idPrefix={id} requireChoice />
+          ) : account.kind === "anthropic" ? (
+            <ClaudeReplacementFields idPrefix={id} />
           ) : (
             <SecretField idPrefix={id} kind={account.kind} />
           )}
@@ -891,6 +900,67 @@ function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }
         />
       )}
       <p className="text-xs text-muted-foreground">Stored encrypted. Never shown again.</p>
+    </div>
+  );
+}
+
+/** Gateway rotation requires a conscious destination; no sealed metadata or key is prefilled. */
+function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
+  const [mode, setMode] = useState("");
+  const [auth, setAuth] = useState("bearer");
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-connection-mode`}>Connection type</Label>
+        <NativeSelect
+          id={`${idPrefix}-connection-mode`}
+          name="connectionMode"
+          required
+          value={mode}
+          onChange={(event) => setMode(event.target.value)}
+        >
+          <option value="" disabled>
+            Choose a destination
+          </option>
+          <option value="anthropic">Anthropic default endpoint</option>
+          <option value="custom">Custom gateway (Modal)</option>
+        </NativeSelect>
+      </div>
+      {mode === "custom" && (
+        <fieldset className="min-w-0 space-y-3 rounded-lg border bg-muted/30 p-4">
+          <legend className="px-1 text-sm font-medium">Claude gateway</legend>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-gateway-url`}>Base URL</Label>
+            <Input
+              id={`${idPrefix}-gateway-url`}
+              name="baseUrl"
+              type="url"
+              required
+              spellCheck={false}
+              autoComplete="off"
+              aria-describedby={`${idPrefix}-gateway-hint`}
+              placeholder="https://gateway.example.com/anthropic"
+            />
+          </div>
+          <p id={`${idPrefix}-gateway-hint`} className="text-xs text-muted-foreground">
+            Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages; it must
+            support Anthropic Messages, streaming and tool use.
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-gateway-auth`}>Gateway authentication</Label>
+            <NativeSelect
+              id={`${idPrefix}-gateway-auth`}
+              name="endpointAuth"
+              value={auth}
+              onChange={(event) => setAuth(event.target.value)}
+            >
+              <option value="bearer">Bearer token (Authorization)</option>
+              <option value="api-key">API key (x-api-key)</option>
+            </NativeSelect>
+          </div>
+        </fieldset>
+      )}
+      {mode && <SecretField key={`${mode}:${auth}`} idPrefix={idPrefix} kind="anthropic" />}
     </div>
   );
 }

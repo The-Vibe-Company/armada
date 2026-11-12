@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { customCodexAccountValue, replacementCodexAccountValue } from "../src/lib/model-connection-input";
+import {
+  customCodexAccountValue,
+  replacementClaudeAccountValue,
+  replacementCodexAccountValue,
+} from "../src/lib/model-connection-input";
 
 function data(baseUrl: string, key: string, apiVersion = "") {
   const form = new FormData();
@@ -55,4 +59,38 @@ test("Codex replacement requires a destination and refuses JSON pretending to be
     ok: true,
     value: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
   });
+});
+
+test.each(["api-key", "bearer"])("Claude replacement composes a complete gateway with %s authentication", (auth) => {
+  const key = randomUUID();
+  const form = data("https://example.com/anthropic/", key);
+  form.set("connectionMode", "custom");
+  form.set("endpointAuth", auth);
+  expect(replacementClaudeAccountValue(form)).toEqual({
+    ok: true,
+    value: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/anthropic", auth }, apiKey: key }),
+  });
+});
+
+test("Claude replacement requires a destination and refuses malformed or ambiguous configuration", () => {
+  const key = randomUUID();
+  const form = data("https://example.com", key);
+  expect(replacementClaudeAccountValue(form).ok).toBe(false);
+  form.set("connectionMode", "anthropic");
+  expect(replacementClaudeAccountValue(form)).toEqual({ ok: true, value: key });
+  form.set("value", JSON.stringify({ apiKey: key }));
+  expect(replacementClaudeAccountValue(form).ok).toBe(false);
+  form.set("value", key);
+  form.set("connectionMode", "custom");
+  form.set("endpointAuth", "oauth");
+  expect(replacementClaudeAccountValue(form).ok).toBe(false);
+  form.set("endpointAuth", "bearer");
+  form.set("apiVersion", "v1");
+  expect(replacementClaudeAccountValue(form).ok).toBe(false);
+  form.set("apiVersion", "");
+  form.set("baseUrl", "https://user:password@example.com");
+  const failure = replacementClaudeAccountValue(form);
+  expect(failure.ok).toBe(false);
+  expect(JSON.stringify(failure)).not.toContain(key);
+  expect(JSON.stringify(failure)).not.toContain("password");
 });
