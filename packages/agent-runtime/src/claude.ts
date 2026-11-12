@@ -27,6 +27,10 @@ export class ClaudeDriver implements Driver {
     let latest = crypto.randomUUID();
     let steered = false;
     let privateUsage = false;
+    // The SDK restores cumulative modelUsage from resumed transcripts. No verified pre-prompt
+    // snapshot is available here; treating the first returned totals as deltas would count history.
+    let usageBaselineUnknown = Boolean(c.sessionId);
+    let nativeSession: string | undefined;
     const privateInputs = new Set<string>();
     let terminalError: HarnessErrorCode | undefined;
     // Subagent streams can interleave with the top-level stream.
@@ -126,7 +130,12 @@ export class ClaudeDriver implements Driver {
     const done = (async () => {
       try {
         for await (const event of q) {
-          if ("session_id" in event) c.session(event.session_id);
+          if ("session_id" in event) {
+            if (!event.session_id || (nativeSession !== undefined && nativeSession !== event.session_id))
+              usageBaselineUnknown = true;
+            nativeSession = event.session_id;
+            c.session(event.session_id);
+          }
           if (event.type === "stream_event") {
             if (privateUsage) continue;
             const e = event.event;
@@ -211,12 +220,51 @@ export class ClaudeDriver implements Driver {
                     ],
                   });
           } else if (event.type === "result") {
+            const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
+            const intermediate = !interrupted && !consumed.includes(latest) && (steered || consumed.length > 0);
             c.emit({
               kind: "other",
               type: "result",
-              data: privateUsage ? { subtype: event.subtype, is_error: event.is_error } : event,
+              data: privateUsage
+                ? { subtype: event.subtype, is_error: event.is_error }
+                : {
+                    ...event,
+                    ...(intermediate
+                      ? {
+                          // Do not publish measured shares before the final native turn of this prompt.
+                          // A later reset may omit earlier model IDs entirely.
+                          modelUsage: {},
+                          total_cost_usd: null,
+                          usageAccounting: { reason: "intermediate_result" },
+                        }
+                      : usageBaselineUnknown
+                        ? {
+                            // Preserve model identity/metadata, but never substitute the main-loop-only `usage`.
+                            modelUsage: Object.fromEntries(
+                              Object.entries(event.modelUsage ?? {}).map(([model, usage]) => [
+                                model,
+                                {
+                                  ...usage,
+                                  inputTokens: null,
+                                  outputTokens: null,
+                                  cacheReadInputTokens: null,
+                                  cacheCreationInputTokens: null,
+                                  thinkingTokens: null,
+                                  reasoningTokens: null,
+                                  cacheCreationEphemeral5mInputTokens: null,
+                                  cacheCreationEphemeral1hInputTokens: null,
+                                  costUSD: null,
+                                  webSearchRequests: null,
+                                },
+                              ]),
+                            ),
+                            total_cost_usd: null,
+                            usageAccounting: { reason: c.sessionId ? "resumed_baseline_unverified" : "session_reset" },
+                          }
+                        : {}),
+                  },
             });
-            const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
+
             for (const id of consumed) privateInputs.delete(id);
             privateUsage = privateInputs.size > 0;
             if (!interrupted && steered && !consumed.length) throw new HarnessError("invalid_harness_protocol");
