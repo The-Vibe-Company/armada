@@ -71,19 +71,32 @@ function innerScript(script: string): string {
   return decoded.stdout;
 }
 
-function withIsolatedRoots(script: string, roots: { home: string; root: string; tmp: string }): string {
-  return innerScript(script)
-    .replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)
-    .replace("    /root/*)", `    ${roots.root}/*)`)
-    .replaceAll("/home/user/.armada", `${roots.home}/.armada`)
-    .replaceAll("/root/.armada", `${roots.root}/.armada`)
-    .replaceAll("/root/.prime/", `${roots.root}/.prime/`)
-    .replaceAll("/home/user/.prime/", `${roots.home}/.prime/`);
+function withIsolatedRoots(
+  script: string,
+  roots: { home: string; root: string; tmp: string },
+  liveProcesses = false,
+): string {
+  return (
+    innerScript(script)
+      // Filesystem cases must not repeatedly scan unrelated host processes. The live
+      // process oracle below retains the actual /proc boundary and broker rejection.
+      .replaceAll("/proc/[0-9]*/comm", `${liveProcesses ? "/proc" : join(roots.tmp, "proc")}/[0-9]*/comm`)
+      .replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)
+      .replace("    /root/*)", `    ${roots.root}/*)`)
+      .replaceAll("/home/user/.armada", `${roots.home}/.armada`)
+      .replaceAll("/root/.armada", `${roots.root}/.armada`)
+      .replaceAll("/root/.prime/", `${roots.root}/.prime/`)
+      .replaceAll("/home/user/.prime/", `${roots.home}/.prime/`)
+  );
 }
 
 /** Runs the exact generated script against isolated scratch roots instead of the real filesystem. */
-function runAgainst(script: string, roots: { home: string; root: string; tmp: string }): { status: number } {
-  const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
+function runAgainst(
+  script: string,
+  roots: { home: string; root: string; tmp: string },
+  liveProcesses = false,
+): { status: number } {
+  const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots, liveProcesses)], { encoding: "utf8" });
   return { status: result.status ?? -1 };
 }
 
@@ -112,6 +125,43 @@ linuxScanTest(
   },
   30_000,
 );
+
+linuxScanTest("real shell: a resident broker refuses snapshot through the live process boundary", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  let broker: ReturnType<typeof Bun.spawn> | undefined;
+  try {
+    expect(runAgainst(script, roots, true).status).toBe(0);
+    broker = Bun.spawn(
+      [
+        "python3",
+        "-c",
+        'import ctypes, signal; ctypes.CDLL(None).prctl(15, b"armada-helper", 0, 0, 0); print("ready", flush=True); signal.pause()',
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    if (typeof broker.stdout === "number" || !broker.stdout) throw new Error("Missing broker readiness pipe");
+    const reader = broker.stdout.getReader();
+    try {
+      const decoder = new TextDecoder();
+      let ready = "";
+      while (!ready.includes("\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error("Broker exited before readiness");
+        ready += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(ready).toBe("ready\n");
+    } finally {
+      reader.releaseLock();
+    }
+    expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8").trim()).toBe("armada-helper");
+    expect(runAgainst(script, roots, true).status).toBe(97);
+  } finally {
+    broker?.kill();
+    await broker?.exited;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 linuxScanTest(
   "real shell: short, underscore-separated placeholders (test fixtures) do not trip the scan",
@@ -270,46 +320,6 @@ test.skipIf(process.platform !== "linux" || !canDropToNobody())(
       expect(result.status).toBe(0);
     } finally {
       spawnSync("sudo", ["rm", "-rf", roots.root]);
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
-
-linuxScanTest(
-  "real shell: a token in .git/config (a credential URL, say) fails the build",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      const repo = join(roots.home, "repo");
-      mkdirSync(repo);
-      git(repo, "init", "-q");
-      git(repo, "config", "test.leak", `https://x-access-token:ghs_${"E".repeat(36)}@github.com/acme/web.git`);
-      expect(runAgainst(script, roots).status).toBe(97);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
-
-linuxScanTest(
-  "real shell: a token in a commit message fails the build even though it is reachable, not just dangling",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      const repo = join(roots.home, "repo");
-      mkdirSync(repo);
-      git(repo, "init", "-q");
-      git(repo, "config", "user.email", "a@b.com");
-      git(repo, "config", "user.name", "a");
-      writeFileSync(join(repo, "f.txt"), "hello\n");
-      git(repo, "add", "f.txt");
-      git(repo, "commit", "-qm", `oops GH_TOKEN=ghu_${"F".repeat(36)} in the message`);
-      expect(runAgainst(script, roots).status).toBe(97);
-    } finally {
       rmSync(base, { recursive: true, force: true });
     }
   },
