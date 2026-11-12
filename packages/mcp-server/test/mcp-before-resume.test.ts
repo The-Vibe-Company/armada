@@ -7,22 +7,21 @@ import { createSqlMcpLeasePort, createSqlSandboxStore } from "@armada/core/serve
 import { createBoatProvider } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { sandbox as boatSandbox } from "../../provider-boat/test/support.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { nativeMcpInstallScript } from "../src/mcp-native.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 // Boat actually preserves boot_id across archive/restore: authority must be fenced
 // before a possibly ambiguous resume, not inferred only from kernel identity.
 test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls only after readiness", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   const home = await mkdtemp(join(tmpdir(), "armada-sameboot-"));
   const servers: McpServer[] = [];
   let service: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
-    await applyMigrations(db);
     const user = crypto.randomUUID(),
       other = crypto.randomUUID(),
       org = crypto.randomUUID(),

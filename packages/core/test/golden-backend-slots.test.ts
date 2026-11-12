@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 
 test("golden backend slots are service-role only", async () => {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   try {
-    await applyMigrations(db);
     const grants = await db.query<{ grantee: string }>(
       "select grantee from information_schema.role_table_grants where table_schema = 'public' and table_name = 'golden_backend_slots' and grantee in ('anon', 'authenticated', 'PUBLIC')",
     );

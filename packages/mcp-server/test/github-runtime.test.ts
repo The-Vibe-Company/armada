@@ -7,13 +7,12 @@ import {
   type GitHubRuntimeConfiguration,
   type Provider,
 } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createGitHubRuntime } from "../src/github-runtime.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 test("private GitHub issuance rechecks original owner/org/physical identity and late SQL lifecycle changes", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     const owner = crypto.randomUUID(),
       admin = crypto.randomUUID(),
       org = crypto.randomUUID(),
