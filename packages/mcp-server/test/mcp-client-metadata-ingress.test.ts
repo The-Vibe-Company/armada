@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
 import { createServiceToken, createSqlAuthStore } from "@armada/auth";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fixed callback without trusting caller authority", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
-    await applyMigrations(db);
     const user = crypto.randomUUID(),
       org = crypto.randomUUID();
     await db.query("insert into auth.users(id) values($1)", [user]);

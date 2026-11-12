@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createMemoryAuthStore } from "@armada/auth";
 import { encryptSecret } from "@armada/core";
 import { createSqlMcpRegistry, createSqlVaultStore } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSqlData } from "../../mcp-server/src/data.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
@@ -29,9 +29,8 @@ const key = Buffer.alloc(32, 6).toString("base64");
 const sid = (n: number) => `99999999-9999-4999-8999-${String(n).padStart(12, "0")}`;
 
 async function fixture() {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   const directory = await mkdtemp(join(tmpdir(), "armada-web-parity-"));
-  await applyMigrations(db);
   await db.query("insert into auth.users(id) values ($1),($2)", [me, other]);
   await db.query("insert into orgs(id,name) values ($1,'Selected'),($2,'Other'),($3,'Alien')", [
     org,

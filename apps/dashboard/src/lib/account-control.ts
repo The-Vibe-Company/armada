@@ -68,9 +68,6 @@ export function createAccountControl(options: ArmadaApiOptions) {
         throw new ControlError("The server returned an invalid connection-test receipt.");
       return payload.test;
     },
-    holder: (target: AccountTarget & { version: number }) => post("creds/accounts/holder", target),
-    release: (target: AccountTarget & { sandboxId: string; version: number; value?: string }) =>
-      post("creds/accounts/release", target),
     async list(org: string): Promise<{ accounts: ModelAccount[]; legacy: boolean }> {
       const payload = await post(ACCOUNT_ROUTES.list, { org });
       if (!Array.isArray(payload.user)) throw new ControlError("The Armada server sent no credential list.");

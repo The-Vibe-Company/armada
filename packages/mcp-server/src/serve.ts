@@ -55,6 +55,7 @@ import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
+import { createSubscriptionMigration } from "./subscription-migration.ts";
 
 export { bunSql };
 
@@ -97,14 +98,12 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
-  const modelAuth = createModelAuthOwnership(
-    sql,
-    config.encryptionKey,
-    undefined,
-    undefined,
-    (tx, id) => createHistoricalSandboxProviderResolver(providers)(tx, id),
-    { origin: config.publicUrl },
-  );
+  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
+  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
+    origin: config.publicUrl,
+    prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
+    prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
+  });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const otto = createOttoRuntime(sql, env);
@@ -205,6 +204,12 @@ export async function startServer(
     modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
+  subscriptionMigration = createSubscriptionMigration(
+    sql,
+    createHistoricalSandboxProviderResolver(providers),
+    (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
+    modelAuth.broker!,
+  );
   const goldenAdoption = createGoldenAdoption(sql);
 
   const goldenBuilds = new GoldenBuildJobs({
@@ -226,7 +231,7 @@ export async function startServer(
     orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
     modelAuth,
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),

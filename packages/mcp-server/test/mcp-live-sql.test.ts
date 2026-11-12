@@ -16,17 +16,17 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { nativeMcpInstallScript } from "../src/mcp-native.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 // Distinct integration risk: real SQL grants/leases, real control discovery/capability counts,
 // and SDK protocol delivery must agree, including generation rotation and registry disable.
 test("SQL gateway delivers MCP objects and native configuration survives concurrent starts/restart, rotating only on physical restore", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   const home = await mkdtemp(join(tmpdir(), "armada-native-lifecycle-"));
   const encryptionKey = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
   const servers: McpServer[] = [],
@@ -70,7 +70,6 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     return response;
   };
   try {
-    await applyMigrations(db);
     const org = crypto.randomUUID(),
       user = crypto.randomUUID(),
       golden = crypto.randomUUID(),

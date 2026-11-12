@@ -12,7 +12,7 @@ export interface RuntimeNativePublication {
   expectedRevision: number;
 }
 
-/** Live Boat runtime only. Existing account ownership/CAS/sealing stays authoritative. */
+/** Live Boat runtime only. Current account/pin authorization, CAS and sealing stay authoritative. */
 export function createRuntimeNativeAuth(sql: Sql, key: string) {
   const authority = createRuntimeEnrolments(sql, key);
   return async (input: RuntimeNativePublication): Promise<{ authRevision: number; committed: boolean }> => {
@@ -35,7 +35,7 @@ export function createRuntimeNativeAuth(sql: Sql, key: string) {
     });
     if (!sql.transaction) throw Error("runtime_native_auth_transaction_required");
     return sql.transaction(async (tx) => {
-      // NativeStateStore locks member -> credential/ownership -> source -> state.
+      // NativeStateStore locks member -> credential -> source -> state.
       // Take an exclusive member lock FIRST: two readers must not share member
       // locks while one waits for credential and the other upgrades for the epoch.
       const member = await tx.query("select user_id from public.members where org_id=$1 and user_id=$2 for update", [
