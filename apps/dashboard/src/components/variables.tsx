@@ -27,7 +27,7 @@ import { ChoiceCard } from "@/components/connections";
 import { CopyButton } from "@/components/copy-button";
 import { CreateDialog } from "@/components/create-dialog";
 import { CreatedAt } from "@/components/created-at";
-import { visibleResourcePanelTitle } from "@/components/resource-browser";
+import { useResourceSelected, visibleResourcePanelTitle } from "@/components/resource-browser";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -50,6 +50,7 @@ import { cn } from "@/lib/utils";
 import {
   audience,
   expiryLabel,
+  itemKey,
   MAX_VALUE_BYTES,
   nameProblem,
   type VaultItem,
@@ -328,6 +329,18 @@ export function VaultPanel({
 }) {
   const [result, setResult] = useState<ActionResult | null>(null);
   const [dialog, setDialog] = useState<PanelDialog>(null);
+  const selected = useResourceSelected(itemKey(item));
+  const selectedRef = useRef(selected);
+  const editRequest = useRef(0);
+  selectedRef.current = selected;
+  // The retained detail must not leave a portalled editor/confirmation alive
+  // after Back closes it, especially an unsubmitted secret replacement.
+  useEffect(() => {
+    if (!selected) {
+      editRequest.current++;
+      setDialog(null);
+    }
+  }, [selected]);
   const active = item.status === "active";
   const fields = {
     org: item.orgId,
@@ -344,7 +357,10 @@ export function VaultPanel({
   // the focus then goes to the panel's title, or to the page's Add button.
   const restoreFocus = useCallback((event: Event) => {
     event.preventDefault();
-    if (opener.current?.isConnected) return opener.current.focus();
+    if (opener.current?.isConnected) {
+      if (opener.current.getClientRects().length) opener.current.focus();
+      return; // The parent restores row focus when a retained opener is hidden.
+    }
     const title = visibleResourcePanelTitle();
     if (title && !title.closest("[hidden]")) return title.focus();
     document.querySelector<HTMLElement>("[data-add-vault]")?.focus();
@@ -428,7 +444,10 @@ export function VaultPanel({
                 opener.current = event.currentTarget;
                 setResult(null);
                 // The form starts from the current value: read it first.
-                void value.load().then((loaded) => loaded && setDialog("edit"));
+                const request = ++editRequest.current;
+                void value.load().then((loaded) => {
+                  if (loaded && selectedRef.current && request === editRequest.current) setDialog("edit");
+                });
               }}
             >
               <PencilIcon /> Edit
@@ -459,7 +478,7 @@ export function VaultPanel({
         <>
           {item.kind === "variable" && value.state.status === "shown" && (
             <EditVariableDialog
-              open={dialog === "edit"}
+              open={selected && dialog === "edit"}
               onOpenChange={close}
               onCloseAutoFocus={restoreFocus}
               onResult={onResult}
@@ -469,7 +488,7 @@ export function VaultPanel({
           )}
           {item.kind === "secret" && (
             <ReplaceSecretDialog
-              open={dialog === "replace"}
+              open={selected && dialog === "replace"}
               onOpenChange={close}
               onCloseAutoFocus={restoreFocus}
               onResult={onResult}
@@ -477,7 +496,7 @@ export function VaultPanel({
             />
           )}
           <ConfirmAction
-            open={dialog === "revoke"}
+            open={selected && dialog === "revoke"}
             onOpenChange={close}
             onCloseAutoFocus={restoreFocus}
             onResult={onResult}
@@ -488,7 +507,7 @@ export function VaultPanel({
             confirm="Revoke"
           />
           <ConfirmAction
-            open={dialog === "delete"}
+            open={selected && dialog === "delete"}
             onOpenChange={close}
             onCloseAutoFocus={restoreFocus}
             onResult={onDeleted}

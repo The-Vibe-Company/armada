@@ -34,8 +34,12 @@ for (const width of [1280, 390])
             return title !== null && node.contains(title);
           }),
         ).toBe(true);
-        const bounds = await panel.boundingBox();
-        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+        await expect
+          .poll(async () => {
+            const bounds = await panel.boundingBox();
+            return bounds ? bounds.x + bounds.width : Number.POSITIVE_INFINITY;
+          })
+          .toBeLessThanOrEqual(width);
         await page.keyboard.press("Escape");
         await expect(panel).toBeHidden();
         await expect(select).toBeFocused();
