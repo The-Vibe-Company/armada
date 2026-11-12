@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, type GoldenActor, type Sql, VaultError } from "@armada/core/server";
 
 export interface NativeState {
@@ -5,6 +6,30 @@ export interface NativeState {
   secrets: string[];
   retired?: boolean;
   brokerDeliveries?: Record<string, number>;
+  retiredRefreshTokens?: string[];
+}
+/** Fingerprints prevent superseded refresh material from becoming authority again. */
+export function refreshFingerprint(state: NativeState): string {
+  return createHash("sha256").update(JSON.parse(state.authJson).tokens.refresh_token).digest("hex");
+}
+export function withRefreshHistory(state: NativeState): NativeState {
+  if (state.retiredRefreshTokens) return state;
+  const current = refreshFingerprint(state);
+  const identity = JSON.parse(state.authJson).tokens.account_id;
+  const retired = new Set<string>();
+  // Initialize older private snapshots before appending a fresh observation.
+  for (const value of state.secrets) {
+    if (!value.trimStart().startsWith("{")) continue;
+    try {
+      const previous = nativeState(value);
+      if (JSON.parse(previous.authJson).tokens.account_id !== identity) continue;
+      const fingerprint = refreshFingerprint(previous);
+      if (fingerprint !== current) retired.add(fingerprint);
+    } catch {
+      /* Only complete same-account snapshots count. */
+    }
+  }
+  return { ...state, retiredRefreshTokens: [...retired] };
 }
 export function nativeState(raw: string): NativeState {
   try {
@@ -74,6 +99,7 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
     observed: NativeState,
     sandboxId: string,
   ) {
+    previous = withRefreshHistory(previous);
     const retained: NativeState = { ...previous, secrets: [...new Set([...previous.secrets, ...observed.secrets])] };
     if (previous.brokerDeliveries) {
       retained.brokerDeliveries = { ...previous.brokerDeliveries };
@@ -92,7 +118,10 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
     const row = result.rows[0];
     if (!row?.source_generation.startsWith("server:"))
       throw new VaultError("unavailable", "Shared private state is unavailable.");
-    return JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+    const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+    const initialized = withRefreshHistory(previous);
+    if (initialized !== previous) await persist(tx, accountId, version, initialized);
+    return initialized;
   }
   return {
     /** Sealed evidence that this exact guest incarnation received access-only auth. */

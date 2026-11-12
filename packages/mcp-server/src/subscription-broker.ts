@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
 import { decryptSecret, encryptSecret, type GoldenActor, type Sql, VaultError } from "@armada/core/server";
-import { type NativeState, nativeState } from "./model-auth-state.ts";
+import { type NativeState, nativeState, refreshFingerprint, withRefreshHistory } from "./model-auth-state.ts";
 
 const PATH = "/api/internal/model/access";
 const READY = "server:ready";
@@ -75,7 +75,14 @@ export function createSubscriptionBroker(
     ).rows[0];
     if (!row || !row.source_generation.startsWith("server:"))
       throw new VaultError("credential_binding_required", "Shared subscription authentication state is unavailable.");
-    return { ...row, state: JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState };
+    const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+    const state = withRefreshHistory(previous);
+    if (state !== previous)
+      await tx.query(
+        "update public.model_auth_state set state_enc=$3::bytea where account_id=$1::uuid and account_version=$2",
+        [id, version, await encryptSecret(JSON.stringify(state), key)],
+      );
+    return { ...row, state };
   }
   const output = (state: NativeState, revision: number): SubscriptionAccess => {
     const tokens = JSON.parse(state.authJson).tokens;
@@ -142,17 +149,36 @@ export function createSubscriptionBroker(
     candidate: NativeState = row.state,
     verifySource?: (tx: Sql) => Promise<void>,
   ): Promise<SubscriptionAccess> {
+    const retired = new Set(row.state.retiredRefreshTokens ?? []);
+    const attempted = new Set<string>();
+    const rejected = new Set<string>();
+    const request = async (state: NativeState) => {
+      const fingerprint = refreshFingerprint(state);
+      if (retired.has(fingerprint)) throw new DefiniteRefreshRefusal("retired_refresh");
+      attempted.add(fingerprint);
+      try {
+        return await refreshTokens(state);
+      } catch (error) {
+        if (error instanceof DefiniteRefreshRefusal) rejected.add(fingerprint);
+        throw error;
+      }
+    };
     try {
+      if (retired.has(refreshFingerprint(candidate))) {
+        if (row.source_generation !== READY || retired.has(refreshFingerprint(row.state)))
+          throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
+        candidate = row.state;
+      }
       let next: NativeState;
       try {
-        next = await refreshTokens(candidate);
+        next = await request(candidate);
       } catch (error) {
         const distinct =
           JSON.parse(candidate.authJson).tokens.refresh_token !== JSON.parse(row.state.authJson).tokens.refresh_token;
         // A positively rejected stale guest token may fall back to a separately
         // held current token. Never retry an uncertain/spent token or lost reply.
         if (!(error instanceof DefiniteRefreshRefusal) || !distinct || row.source_generation !== READY) throw error;
-        next = await refreshTokens(row.state);
+        next = await request(row.state);
       }
       next.secrets = [...new Set([...row.state.secrets, ...candidate.secrets, ...next.secrets])];
       return await sql.transaction!(async (tx) => {
@@ -161,6 +187,9 @@ export function createSubscriptionBroker(
         const latest = await saved(tx, id, version);
         next.secrets = [...new Set([...latest.state.secrets, ...next.secrets])];
         if (latest.state.brokerDeliveries) next.brokerDeliveries = latest.state.brokerDeliveries;
+        next.retiredRefreshTokens = [...new Set([...(latest.state.retiredRefreshTokens ?? []), ...attempted])].filter(
+          (fingerprint) => fingerprint !== refreshFingerprint(next),
+        );
         if (Buffer.byteLength(JSON.stringify(next)) > 4 * 1024 * 1024)
           throw new VaultError("unavailable", "Native secret redaction budget exceeded.");
         const updated = await tx.query(
@@ -171,17 +200,30 @@ export function createSubscriptionBroker(
         return output(next, row.auth_revision + 1);
       });
     } catch (error) {
-      await sql
-        .query(
-          "update public.model_auth_state set source_generation=$4 where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing'",
+      await sql.transaction!(async (tx) => {
+        const latest = await saved(tx, id, version);
+        if (latest.auth_revision !== row.auth_revision || latest.source_generation !== "server:refreshing") return;
+        const retained: NativeState = {
+          ...latest.state,
+          retiredRefreshTokens: [
+            ...new Set([
+              ...(latest.state.retiredRefreshTokens ?? []),
+              ...(error instanceof SubscriptionTemporaryError ? rejected : attempted),
+            ]),
+          ],
+        };
+        if (Buffer.byteLength(JSON.stringify(retained)) > 4 * 1024 * 1024) throw Error("redaction_budget");
+        await tx.query(
+          "update public.model_auth_state set state_enc=$4::bytea,source_generation=$5 where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing'",
           [
             id,
             version,
             row.auth_revision,
+            await encryptSecret(JSON.stringify(retained), key),
             error instanceof SubscriptionTemporaryError ? row.source_generation : "server:uncertain",
           ],
-        )
-        .catch(() => {});
+        );
+      }).catch(() => {});
       if (error instanceof SubscriptionTemporaryError) throw error;
       throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
     }
@@ -373,15 +415,18 @@ export function createSubscriptionBroker(
         if (old?.source_generation === "server:uncertain")
           throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
         if (!old) {
-          const state = nativeState(await decryptSecret(new Uint8Array(raw), key));
+          const state = withRefreshHistory(nativeState(await decryptSecret(new Uint8Array(raw), key)));
           await tx.query(
             "insert into public.model_auth_state(account_id,account_version,state_enc,source_generation) values($1::uuid,$2,$3::bytea,$4)",
             [id, version, await encryptSecret(JSON.stringify(state), key), READY],
           );
         } else if (!old.source_generation.startsWith("server:")) {
+          const state = withRefreshHistory(
+            JSON.parse(await decryptSecret(new Uint8Array(old.state_enc), key)) as NativeState,
+          );
           await tx.query(
-            "update public.model_auth_state set source_generation=$3,updated_at=now() where account_id=$1::uuid and account_version=$2",
-            [id, version, READY],
+            "update public.model_auth_state set source_generation=$3,state_enc=$4::bytea,updated_at=now() where account_id=$1::uuid and account_version=$2",
+            [id, version, READY, await encryptSecret(JSON.stringify(state), key)],
           );
         }
         await saved(tx, id, version);

@@ -106,6 +106,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       drained = 0,
       renewals = 0;
     const grants = new Map<string, { url: string; capability: string }>();
+    const submitted: string[] = [];
     const pendingHomes = new Set<string>();
     let afterDrain = native(1);
     let vendorUnavailable = true;
@@ -142,6 +143,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       origin: "https://armada.example",
       fetch: (async (_url, init) => {
         const token = JSON.parse(String(init?.body)).refresh_token;
+        submitted.push(token);
         renewals++;
         if (token === "migration-refresh-2")
           return Response.json({ access_token: "migration-access-3", refresh_token: "migration-refresh-3" });
@@ -149,8 +151,12 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
           return Response.json({ error: { code: "refresh_token_reused" } }, { status: 401 });
         if (token === "migration-refresh-4")
           return Response.json({ access_token: "migration-access-5", refresh_token: "migration-refresh-5" });
-        if (token === "migration-refresh-0") return Response.json({ error: "invalid_grant" }, { status: 400 });
+        if (token === "migration-refresh-0") throw Error("Retired imported refresh token must never be posted");
+        if (token === "migration-refresh--1")
+          return Response.json({ error: { code: "refresh_token_reused" } }, { status: 401 });
         if (token === "migration-refresh-5")
+          return Response.json({ access_token: "migration-access-6", refresh_token: "migration-refresh-6" });
+        if (token === "migration-refresh-6")
           return Response.json({ access_token: "migration-access-6", refresh_token: "migration-refresh-6" });
         if (token === "migration-refresh-8") {
           if (vendorUnavailable) {
@@ -315,7 +321,8 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     });
     expect(boat.prompts.at(-1)?.text).toBe("old prompt after automatic recovery");
     expect(drained).toBe(2);
-    // An authoritatively invalid old snapshot may use the different saved token once.
+    // A known superseded import must never be replayed upstream; use the
+    // current ready authority rather than trigger vendor reuse protection.
     grants.delete(oldBoat.id);
     writer = true;
     disk = native(0);
@@ -325,11 +332,25 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       accessToken: "migration-access-6",
       revision: 5,
     });
-    expect(renewals).toBe(5);
+    expect(submitted).not.toContain("migration-refresh-0");
+    expect(renewals).toBe(4);
+    // An unknown stale token is different: its authoritative refusal permits
+    // exactly one attempt with the different, still-ready saved token.
+    grants.delete(oldBoat.id);
+    writer = true;
+    disk = native(-1);
+    afterDrain = native(-1);
+    await auth.beforePrompt(boat.provider, oldBoat.id, actor);
+    expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
+      accessToken: "migration-access-6",
+      revision: 6,
+    });
+    expect(submitted.slice(-2)).toEqual(["migration-refresh--1", "migration-refresh-6"]);
+    expect(renewals).toBe(6);
     pendingHomes.add(oldBoat.id);
     await auth.beforePrompt(boat.provider, oldBoat.id, actor);
     expect(pendingHomes.has(oldBoat.id)).toBe(false);
-    expect(renewals).toBe(5);
+    expect(renewals).toBe(6);
     // A received vendor outage is not lost auth: keep the private native token
     // paused and retry automatic handoff without requiring another login.
     grants.delete(oldBoat.id);
@@ -344,12 +365,12 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     expect(grants.has(oldBoat.id)).toBe(false);
     expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
       accessToken: "migration-access-6",
-      revision: 5,
+      revision: 6,
     });
     await auth.beforePrompt(boat.provider, oldBoat.id, actor);
     expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
       accessToken: "migration-access-9",
-      revision: 6,
+      revision: 7,
     });
     await boat.provider.prompt({ sandboxId: oldBoat.id, harness: "codex", text: "retried after provider outage" });
     expect(boat.prompts.at(-1)?.text).toBe("retried after provider outage");
@@ -369,7 +390,8 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     expect(disk).toBeUndefined();
     expect(grants.has(oldBoat.id)).toBe(true);
     await expect(auth.broker!.access(actor, account.id, 1)).rejects.toThrow("Sign in again to this ChatGPT account.");
-    expect(renewals).toBe(8);
+    expect(renewals).toBe(9);
+    expect(submitted).not.toContain("migration-refresh-0");
   } finally {
     await db.close();
   }
