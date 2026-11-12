@@ -160,5 +160,10 @@ test("without memberships the shell offers organization setup and no scoped reso
   await expect(page.getByLabel("Active organization")).toHaveCount(0);
   await expect(page.getByRole("link", { name: LABELS.running })).toHaveCount(0);
   await page.getByRole("link", { name: "Create an organization", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Create org", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "New org", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Create an org", exact: true })
+      .getByRole("button", { name: "Create org", exact: true }),
+  ).toBeVisible();
 });

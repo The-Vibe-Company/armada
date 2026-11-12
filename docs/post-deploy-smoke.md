@@ -358,3 +358,40 @@ per pair; provider cold-start/model rates determine cost. Extension requests
 headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
 35-minute work / five-minute cleanup deadlines and 120-poll bounds remain.
 Expiry-as-stop is not claimed by this slice. No migrations or deployment actions.
+
+### Personal vault slice (#969, night program)
+
+Both staging entrypoints additionally pass `--vault`. Standalone
+`bun scripts/post-deploy-smoke.ts --vault` performs only vault checks, allocating
+no sandbox/provider compute. Every selected provider × harness case gets fresh
+personal variable/secret names under its staging org UUID. No new case fields,
+provider keys, database access or migrations.
+
+Named verdicts cover variable set/list/read, secret set/list metadata-only,
+secret read refusal (direct control API400/invalid), rotation v1→v2, stale
+rotation409/conflict with unchanged version/epoch, revoke v2→v3, and refused
+rotation after revoke with unchanged revoked metadata. These are management/API
+checks, not runtime secret delivery or multi-user RLS proofs.
+
+Secret values are random disposable canaries protected before any request.
+Success metadata accepts only the shipped metadata columns; responses are checked
+for canary echoes. Error envelopes are checked too, before an expected409 can be
+accepted. Canaries, readable values, response bodies and exception text are never
+printed or written to local files; HTTP bodies are authenticated over HTTPS.
+Only owned identifiers/names appear in cleanup summaries.
+
+Finally, reconcile exact owned names/current metadata versions, delete the secret
+then variable, and continue cleanup if either fails. Unknown mutations are never
+replayed. A known ID is still deleted when a list omits it; an unknown create
+with no discoverable ID stays unconfirmed, with its exact random name reported.
+`vault_cleanup_summary` lists `leftoverSecrets` / `leftoverVariables`; a lost
+delete acknowledgement can be confirmed by read-only absence, without replaying
+the write. Normal runs leave only deleted metadata/audit history under ordinary
+retention; no active secret/value or compute remains.
+
+Approximately16 small API requests per pair, plus bounded reconciliation reads
+on failure; expect seconds per pair, no model/compute charges. The shared
+35-minute work deadline and five-minute cleanup reserve apply, with each request
+bounded by remaining time. Missing staging personal-vault permissions/encryption
+configuration fail closed. The existing smoke token must have personal vault
+management rights. No live staging receipt is implied by offline tests.

@@ -1,6 +1,7 @@
 import { mock, spyOn } from "bun:test";
 import assert from "node:assert/strict";
 import { VERSION } from "@armada/core";
+import { REQUIRED_MIGRATION } from "../../src/required-migration.ts";
 
 const sqlModule = await import("../../src/sql.ts");
 const originalSQL = Bun.SQL;
@@ -8,6 +9,7 @@ const pools: { max: number; closed: number }[] = [];
 let attempts = 0;
 let failUntil = 2;
 let now = 0;
+let schemaVersion = REQUIRED_MIGRATION;
 const logs: string[] = [];
 const intervals = spyOn(globalThis, "setInterval");
 const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
@@ -21,13 +23,13 @@ Bun.SQL = class {
     this.pool = { max: options.max, closed: 0 };
     pools.push(this.pool);
   }
-  async unsafe() {
+  async unsafe(text: string) {
     if (++attempts <= failUntil)
       throw Object.assign(new Error("(EMAXCONNSESSION) max clients reached; private connection detail"), {
         code: "ERR_POSTGRES_SERVER_ERROR",
         errno: "XX000",
       });
-    return [];
+    return text.includes("supabase_migrations.schema_migrations") ? [{ version: schemaVersion }] : [];
   }
   async close() {
     this.pool.closed++;
@@ -112,6 +114,11 @@ try {
     assert.equal(((await response.json()) as { ok: boolean }).ok, true);
     // Runtime failure after successful boot must not keep reporting healthy.
     now += 1_001;
+    schemaVersion = "20000101000000";
+    const behind = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+    assert.equal(behind.status, 503, "Database connectivity alone is not readiness");
+    now += 1_001;
+    schemaVersion = REQUIRED_MIGRATION;
     failUntil = Infinity;
     const unavailable = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(unavailable.status, 503);
@@ -151,6 +158,17 @@ try {
   );
 
   intervals.mockClear();
+  failUntil = 0;
+  schemaVersion = "20000101000000";
+  await assert.rejects(startServer(env, { log: () => {}, logError: (line) => logs.push(line) }), /schema behind/);
+  assert.equal(intervals.mock.calls.length, 0, "Outdated schema must fail before workers start");
+  assert.deepEqual(
+    pools.slice(2).map((p) => p.closed),
+    [1, 1],
+  );
+  schemaVersion = REQUIRED_MIGRATION;
+
+  intervals.mockClear();
   attempts = 0;
   failUntil = Infinity;
   now = 0;
@@ -158,7 +176,7 @@ try {
   assert.equal(attempts > 1, true);
   assert.equal(intervals.mock.calls.length, 0);
   assert.deepEqual(
-    pools.slice(2).map((p) => p.closed),
+    pools.slice(4).map((p) => p.closed),
     [1, 1],
   );
   console.log("BOOT_RETRY_SERVE_AND_EXHAUSTION_VERIFIED");

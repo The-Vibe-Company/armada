@@ -1,4 +1,5 @@
 import type { Sql } from "@armada/core";
+import { requireDatabaseSchema } from "./database-schema.ts";
 
 /** Observe the serving pool, never replay writes or create another connection pool.
  * A timed-out query remains single-flight until its actual driver promise settles. */
@@ -23,7 +24,7 @@ export function createDatabaseReadiness(sql: Sql): () => Promise<boolean> {
     // The deadline bounds the HTTP answer, not the underlying database operation.
     // Do not publish a late success or enqueue further probes behind a stuck one.
     void Promise.resolve()
-      .then(() => sql.query("select 1"))
+      .then(() => requireDatabaseSchema(sql))
       .then(
         () => finish(true),
         () => finish(false),

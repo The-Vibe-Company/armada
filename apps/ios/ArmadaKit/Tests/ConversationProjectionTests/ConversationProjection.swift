@@ -1,0 +1,1 @@
+../../../Armada/Model/ConversationProjection.swift
