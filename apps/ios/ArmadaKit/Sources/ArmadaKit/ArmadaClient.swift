@@ -215,7 +215,10 @@ public actor ArmadaClient {
                     throw ArmadaError.invalidRequest
                 }
                 throw ArmadaError.http(400)
-            case 409: throw ArmadaError.conflict
+            case 409:
+                let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
+                if code == "no_running_turn" { throw ArmadaError.noRunningTurn }
+                throw ArmadaError.conflict
             case 500...599: throw ArmadaError.unavailable
             default: throw ArmadaError.http(response.statusCode)
             }

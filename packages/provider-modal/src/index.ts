@@ -18,7 +18,12 @@ export { createModalIngestHandler } from "./ingest.ts";
 export type { ModalOrchestratorCheckpoint } from "./orchestrator-checkpoint.ts";
 export type * from "./ports.ts";
 export { captureProcessBaseline, quiesceSandboxProcesses } from "./process-scope.ts";
-export { createModalProvider, type ModalProvider, type ModalProviderOptions } from "./provider.ts";
+export {
+  createModalProvider,
+  type ModalPromptPhase,
+  type ModalProvider,
+  type ModalProviderOptions,
+} from "./provider.ts";
 export { mergeModalResourceReceipts } from "./receipts.ts";
 export { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 export { createSshPreparation, SSH_PORT, scrubSsh } from "./ssh.ts";

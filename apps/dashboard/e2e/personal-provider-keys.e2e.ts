@@ -25,8 +25,56 @@ test("a personal hosting key is stored encrypted and never shown again", async (
   expect(row?.value_enc.length).toBe(2 + 2 * (12 + SECRET.length + 16));
   expect(row?.value_enc).not.toContain(Buffer.from(SECRET).toString("hex"));
 
-  await mine.getByRole("button", { name: "Remove boat.dev API key" }).click();
-  await expect(mine.getByRole("button", { name: "Remove boat.dev API key" })).toHaveCount(0);
+  let mutations = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST") mutations++;
+  });
+  const remove = mine.getByRole("button", { name: "Remove boat.dev API key" });
+  await remove.click();
+  const dialog = page.getByRole("alertdialog", { name: "Remove boat.dev API key?" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.screenshot({ path: "test-results/personal-key-confirm-desktop.png" });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toBeFocused();
+  expect(mutations).toBe(0);
+  expect(await (await fetch(`${MOCK}/__test/credentials`)).json()).toEqual(stored);
+
+  await remove.click();
+  // A refused action stays in this dialog and can be retried without losing its context.
+  const id = dialog.locator('input[name="id"]');
+  const originalId = await id.inputValue();
+  await id.evaluate((input) => {
+    (input as HTMLInputElement).value = "invalid";
+  });
+  await dialog.getByRole("button", { name: "Remove key", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("That request is not valid.");
+  await expect(dialog.getByRole("alert")).toBeFocused();
+  // The same refusal on retry still hands focus back to its explanation.
+  await dialog.getByRole("button", { name: "Remove key", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toBeFocused();
+  await id.evaluate((input, value) => {
+    (input as HTMLInputElement).value = value;
+  }, originalId);
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/settings", async (route) => {
+    if (route.request().method() === "POST") await held;
+    await route.continue();
+  });
+  await dialog.getByRole("button", { name: "Remove key", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Removing…", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  release();
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toHaveCount(0);
+  await expect(mine.getByLabel("Kind")).toBeFocused();
 });
 
 test("a value with spaces is refused before anything is stored", async ({ page }) => {
@@ -95,6 +143,7 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
   expect(sealed?.value_enc).not.toContain(Buffer.from(MODAL_SECRET).toString("hex"));
 
   await mine.getByRole("button", { name: "Remove Modal token" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remove key", exact: true }).click();
   await expect(mine.getByRole("button", { name: "Remove Modal token" })).toHaveCount(0);
 });
 
